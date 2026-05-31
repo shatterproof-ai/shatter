@@ -4652,6 +4652,47 @@ fn generate_axum_harness(
     h.push_str("        } else { request };\n");
     h.push_str("        let mut request = request.body(body_bytes).unwrap();\n\n");
 
+    // Build the router with the handler.
+    // Determine the route method based on the HTTP method.
+    let has_state = mappings
+        .iter()
+        .any(|m| m.kind == crate::adapters::AxumExtractorKind::AppState);
+
+    if has_state {
+        let state_mapping = mappings
+            .iter()
+            .find(|m| m.kind == crate::adapters::AxumExtractorKind::AppState)
+            .expect("has_state implies a state mapping");
+        let idx = state_mapping.param_index;
+        let state_type = param_types
+            .get(idx)
+            .and_then(|ty| match classify_axum_extractor(ty) {
+                Some(AxumExtractor::State(inner)) => Some(inner),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                ExecuteError::InstrumentError(format!(
+                    "cannot determine axum state type for input {idx}"
+                ))
+            })?;
+        if native_replays.get(idx).and_then(|spec| spec.as_ref()).is_none() {
+            h.push_str(&format!(
+                "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":\"axum State<{state_type}> requires native replay input {idx}\"}})), 0.0, vec![]);\n"
+            ));
+            h.push_str("    });\n");
+            h.push_str("}\n");
+            return Ok(h);
+        }
+    }
+
+    // Build route pattern from path extractor presence.
+    let route_pattern = default_path.as_str();
+
+    // Execute native replay and the Axum request inside the same Tokio runtime.
+    h.push_str("\n        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+    h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
+    h.push_str("            __tokio_rt.block_on(async move {\n");
+
     for mapping in mappings {
         if mapping.kind != crate::adapters::AxumExtractorKind::Unsupported {
             continue;
@@ -4690,15 +4731,6 @@ fn generate_axum_harness(
         ));
     }
 
-    // Build the router with the handler.
-    // Determine the route method based on the HTTP method.
-    let has_state = mappings
-        .iter()
-        .any(|m| m.kind == crate::adapters::AxumExtractorKind::AppState);
-
-    // Build route pattern from path extractor presence.
-    let route_pattern = default_path.as_str();
-
     h.push_str(&format!(
         "        let app = Router::new().route(\"{route_pattern}\", routing::any(user_code::{function_name}));\n"
     ));
@@ -4721,16 +4753,10 @@ fn generate_axum_harness(
                     "cannot determine axum state type for input {idx}"
                 ))
             })?;
-        let Some(spec) = native_replays.get(idx).and_then(|spec| spec.as_ref()) else {
-            h.push_str(&format!(
-                "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":\"axum State<{state_type}> requires native replay input {idx}\"}})), 0.0, vec![]);\n"
-            ));
-            h.push_str("        #[allow(unreachable_code)] { let _ = app; }\n");
-            h.push_str("        #[allow(unreachable_code)] { let _ = request; }\n");
-            h.push_str("    });\n");
-            h.push_str("}\n");
-            return Ok(h);
-        };
+        let spec = native_replays
+            .get(idx)
+            .and_then(|spec| spec.as_ref())
+            .expect("validated axum state native replay");
         let recipe_json = serde_json::to_string(&spec.recipe).map_err(|e| {
             ExecuteError::InstrumentError(format!("cannot serialize native replay recipe: {e}"))
         })?;
@@ -4755,10 +4781,6 @@ fn generate_axum_harness(
         ));
     }
 
-    // Execute via oneshot inside a Tokio runtime.
-    h.push_str("\n        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
-    h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
-    h.push_str("            __tokio_rt.block_on(async {\n");
     h.push_str("                let response = app.oneshot(request).await.unwrap();\n");
     h.push_str("                let status = response.status().as_u16();\n");
     h.push_str("                let headers: serde_json::Map<String, Value> = response.headers().iter()\n");
