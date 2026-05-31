@@ -5649,7 +5649,6 @@ pub fn WrongType(_recipe: Option<serde_json::Value>) -> GeneratorResult {
             r#"
 use axum::{extract::{FromRequestParts, State}, Json};
 use axum::http::request::Parts;
-use async_trait::async_trait;
 
 #[derive(Clone)]
 pub struct AppStateLike {
@@ -5661,19 +5660,21 @@ pub struct CurrentAccountLike {
     pub id: u64,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for CurrentAccountLike
 where
     S: Send + Sync,
 {
     type Rejection = &'static str;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(parts
             .extensions
             .get::<CurrentAccountLike>()
             .cloned()
-            .ok_or("missing current account")
+            .ok_or("missing current account"))
     }
 }
 
