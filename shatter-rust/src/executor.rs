@@ -4258,7 +4258,11 @@ fn generate_axum_harness(
     let has_path_extractor = mappings
         .iter()
         .any(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams);
-    let default_path = if has_path_extractor { "/test/:p0" } else { "/test" };
+    let default_path = if has_path_extractor {
+        "/test/{p0}"
+    } else {
+        "/test"
+    };
     let path_param_index = mappings
         .iter()
         .find(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams)
@@ -5797,8 +5801,12 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         )
         .unwrap();
         assert!(
-            harness.contains("/:p0"),
-            "axum harness with Path extractor must use path template\n\nharness:\n{harness}"
+            harness.contains("/{p0}"),
+            "axum harness with Path extractor must use Axum 0.7+ path template\n\nharness:\n{harness}"
+        );
+        assert!(
+            !harness.contains("/:p0"),
+            "axum harness must not use legacy colon path template\n\nharness:\n{harness}"
         );
     }
 
