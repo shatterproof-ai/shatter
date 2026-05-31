@@ -7497,6 +7497,21 @@ fn enabled(config: Config) -> bool {
     }
 
     #[test]
+    fn axum_crate_driver_cargo_toml_activates_crate_bridge_feature() {
+        let toml = generate_axum_crate_driver_cargo_toml(
+            "my_crate",
+            std::path::Path::new("/some/path"),
+            std::path::Path::new("/runtime"),
+            "[dependencies]\nserde_json = \"1\"\n",
+        );
+
+        assert!(
+            toml.contains(r#"my_crate = { path = "/some/path", features = ["shatter-crate-bridge"] }"#),
+            "Axum crate driver must activate the staged crate feature so instrumented modules can see shatter-rust-runtime\n\n{toml}"
+        );
+    }
+
+    #[test]
     fn inject_lib_module_declaration_adds_mod() {
         let dir = std::env::temp_dir().join("shatter-test-inject-mod");
         std::fs::create_dir_all(&dir).unwrap();
