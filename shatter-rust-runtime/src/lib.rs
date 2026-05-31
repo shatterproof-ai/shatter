@@ -135,6 +135,7 @@ struct MockEntry {
 /// All state recorded during a single execution.
 struct RecordingState {
     branch_path: Vec<BranchDecision>,
+    lines_executed: Vec<u32>,
     external_calls: Vec<ExternalCall>,
     mock_registry: HashMap<String, MockEntry>,
     loop_iterations: HashMap<u32, u32>,
@@ -145,6 +146,7 @@ impl RecordingState {
     fn new() -> Self {
         Self {
             branch_path: Vec::new(),
+            lines_executed: Vec::new(),
             external_calls: Vec::new(),
             mock_registry: HashMap::new(),
             loop_iterations: HashMap::new(),
@@ -154,6 +156,7 @@ impl RecordingState {
 
     fn clear(&mut self) {
         self.branch_path.clear();
+        self.lines_executed.clear();
         self.external_calls.clear();
         self.mock_registry.clear();
         self.loop_iterations.clear();
@@ -188,6 +191,20 @@ pub fn branch_hit(id: u32, line: u32, taken: bool, constraint_json: &str) {
             taken,
             constraint,
         });
+    });
+}
+
+/// Record that a source line was executed.
+pub fn line_hit(line: u32) {
+    if line == 0 {
+        return;
+    }
+
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if !state.lines_executed.contains(&line) {
+            state.lines_executed.push(line);
+        }
     });
 }
 
@@ -281,6 +298,16 @@ fn lines_executed_from_branch_path(branch_path: &[BranchDecision]) -> Vec<u32> {
     lines
 }
 
+fn merge_lines_executed(recorded_lines: &[u32], branch_path: &[BranchDecision]) -> Vec<u32> {
+    let mut lines = recorded_lines.to_vec();
+    for line in lines_executed_from_branch_path(branch_path) {
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
 /// Serialize all recorded data into an `ExecuteResult` JSON string.
 ///
 /// The caller is responsible for filling in `return_value`, `thrown_error`,
@@ -303,7 +330,7 @@ pub fn flush_results() -> String {
             return_value: None,
             thrown_error: None,
             branch_path: state.branch_path.clone(),
-            lines_executed: lines_executed_from_branch_path(&state.branch_path),
+            lines_executed: merge_lines_executed(&state.lines_executed, &state.branch_path),
             calls_to_external: state.external_calls.clone(),
             path_constraints,
             loop_body_states: state.loop_body_states.clone(),
@@ -734,6 +761,21 @@ mod tests {
             serde_json::from_str(&json).expect("flush_results should produce valid JSON");
 
         assert_eq!(result.lines_executed, vec![10, 15]);
+    }
+
+    #[test]
+    fn flush_results_reports_line_hits_as_executed() {
+        setup();
+
+        line_hit(7);
+        line_hit(7);
+        branch_hit(1, 9, true, r#"{"op":"eq"}"#);
+
+        let json = flush_results();
+        let result: ExecuteResult =
+            serde_json::from_str(&json).expect("flush_results should produce valid JSON");
+
+        assert_eq!(result.lines_executed, vec![7, 9]);
     }
 
     #[test]

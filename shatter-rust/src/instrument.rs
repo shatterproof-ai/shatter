@@ -215,6 +215,14 @@ impl Instrumentor {
         })
     }
 
+    fn line_hit_stmt(&self, line: u32) -> Stmt {
+        let tokens: TokenStream = quote! {
+            shatter_rust_runtime::line_hit(#line);
+        };
+        syn::parse2(tokens)
+            .unwrap_or_else(|_| syn::parse2(quote! { ; }).expect("semicolon should parse"))
+    }
+
     fn loop_enter_stmt(&mut self) -> Stmt {
         let id = self.next_loop_id();
         let tokens: TokenStream = quote! {
@@ -241,6 +249,9 @@ impl VisitMut for Instrumentor {
             self.inside_target = true;
         }
 
+        let line = self.line_of(node);
+        node.block.stmts.insert(0, self.line_hit_stmt(line));
+
         // Visit the function body
         syn::visit_mut::visit_item_fn_mut(self, node);
 
@@ -260,6 +271,9 @@ impl VisitMut for Instrumentor {
         } else {
             self.inside_target = true;
         }
+
+        let line = self.line_of(node);
+        node.block.stmts.insert(0, self.line_hit_stmt(line));
 
         syn::visit_mut::visit_impl_item_fn_mut(self, node);
 
@@ -595,6 +609,20 @@ fn check(x: i32) -> bool {
         assert!(
             result.source.contains("branch_hit"),
             "should contain branch_hit call"
+        );
+    }
+
+    #[test]
+    fn function_entry_records_line_hit() {
+        let source = r#"
+fn check(x: i32) -> i32 {
+    x + 1
+}
+"#;
+        let result = instrument_fn(source, "check");
+        assert!(
+            result.source.contains("line_hit"),
+            "instrumented function should record entry line execution"
         );
     }
 
