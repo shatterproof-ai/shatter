@@ -231,6 +231,50 @@ func TestPlanParams_UnsupportedCompound_DoesNotBlockSiblings(t *testing.T) {
 	}
 }
 
+func TestPlanParam_InterfaceJSONEncodeCandidatesRequireHint(t *testing.T) {
+	p := protocol.ParamInfo{
+		Name: "v",
+		Type: protocol.TypeInfo{Kind: "opaque", Label: "interface"},
+	}
+
+	if plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{}); u == nil {
+		t.Fatalf("plain interface{} planned without JSON encode hint: plans=%+v", plans)
+	}
+
+	plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{
+		JSONEncodeInterfaceParams: map[string]bool{"v": true},
+	})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied for hinted interface{}: %+v", u)
+	}
+	if len(plans) < 4 {
+		t.Fatalf("len(plans) = %d, want bounded JSON candidate family; plans=%+v", len(plans), plans)
+	}
+
+	wantLiterals := map[string]bool{
+		`{"key":"value"}`: false,
+		`["value"]`:      false,
+		`"value"`:        false,
+		`true`:           false,
+	}
+	for _, plan := range plans {
+		if plan.Kind != protocol.ValuePlanKindLiteral {
+			t.Errorf("plan Kind = %q, want %q", plan.Kind, protocol.ValuePlanKindLiteral)
+		}
+		if plan.TypeHint != "interface{}" {
+			t.Errorf("plan TypeHint = %q, want interface{}", plan.TypeHint)
+		}
+		if _, ok := wantLiterals[string(plan.Literal)]; ok {
+			wantLiterals[string(plan.Literal)] = true
+		}
+	}
+	for literal, found := range wantLiterals {
+		if !found {
+			t.Errorf("missing JSON interface candidate literal %s; plans=%+v", literal, plans)
+		}
+	}
+}
+
 // AC4 variant: a recognized chan + an unsupported-chan sibling still lets the
 // recognized one plan.
 func TestPlanParams_MixedChanSupport(t *testing.T) {

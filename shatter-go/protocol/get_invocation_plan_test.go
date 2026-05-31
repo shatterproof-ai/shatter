@@ -137,3 +137,61 @@ func TestStubPlannerLookupUsesCachedAnalysis(t *testing.T) {
 	// Uses the testdata helper tree if available, else skips.
 	_ = stubPlanner // ensure stubPlanner compiles and is usable in other tests
 }
+
+func TestBuildTargetContextMarksJSONEncodeInterfaceParams(t *testing.T) {
+	file := "testdata/opaque.go"
+	analysisResp := sendRecv(t, reqJSON(1, "analyze", `"file":"`+file+`","function":"MarshalPlainInterface"`))
+	if analysisResp.Status != "analyze" || len(analysisResp.Functions) != 1 {
+		t.Fatalf("analyze MarshalPlainInterface failed: status=%q message=%q functions=%d", analysisResp.Status, analysisResp.Message, len(analysisResp.Functions))
+	}
+
+	var captured *TargetContext
+	planner := func(
+		requirements []InvocationRequirement,
+		lookup func(string) *TargetContext,
+	) ([]InvocationPlan, []UnsatisfiedRequirement) {
+		if len(requirements) != 1 {
+			t.Fatalf("requirements len = %d, want 1", len(requirements))
+		}
+		captured = lookup(requirements[0].TargetID)
+		return nil, nil
+	}
+
+	req := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:MarshalPlainInterface"}]`)
+	responses := runWithPlanner(t, planner, req)
+	if len(responses) != 1 || responses[0].Status != "invocation_plan" {
+		t.Fatalf("get_invocation_plan response = %+v", responses)
+	}
+	if captured == nil {
+		t.Fatal("planner lookup did not capture target context")
+	}
+	if !captured.JSONEncodeInterfaceParams["v"] {
+		t.Fatalf("JSONEncodeInterfaceParams = %+v, want v marked", captured.JSONEncodeInterfaceParams)
+	}
+}
+
+func TestBuildTargetContextDoesNotMarkJSONDecodeInterfaceParams(t *testing.T) {
+	file := "testdata/opaque.go"
+	analysisResp := sendRecv(t, reqJSON(1, "analyze", `"file":"`+file+`","function":"DecodePlainInterface"`))
+	if analysisResp.Status != "analyze" || len(analysisResp.Functions) != 1 {
+		t.Fatalf("analyze DecodePlainInterface failed: status=%q message=%q functions=%d", analysisResp.Status, analysisResp.Message, len(analysisResp.Functions))
+	}
+
+	var captured *TargetContext
+	planner := func(
+		requirements []InvocationRequirement,
+		lookup func(string) *TargetContext,
+	) ([]InvocationPlan, []UnsatisfiedRequirement) {
+		captured = lookup(requirements[0].TargetID)
+		return nil, nil
+	}
+
+	req := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:DecodePlainInterface"}]`)
+	_ = runWithPlanner(t, planner, req)
+	if captured == nil {
+		t.Fatal("planner lookup did not capture target context")
+	}
+	if captured.JSONEncodeInterfaceParams["v"] {
+		t.Fatalf("JSONEncodeInterfaceParams = %+v, decode destination should not be marked", captured.JSONEncodeInterfaceParams)
+	}
+}
