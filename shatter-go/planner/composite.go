@@ -199,14 +199,14 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImpo
 		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	case "unknown":
+		if isRegisteredPointerRuntimeValue(t.Label) {
+			return compositeZeroNilPointer, nil
+		}
 		if candidates := LookupRuntimeValue(t.Label); len(candidates) > 0 {
 			for _, imp := range candidates[0].Imports {
 				imports.add(imp)
 			}
 			return candidates[0].Expression, nil
-		}
-		if isRegisteredPointerRuntimeValue(t.Label) {
-			return compositeZeroNilPointer, nil
 		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	case "opaque", "union":
