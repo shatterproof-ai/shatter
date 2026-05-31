@@ -3320,6 +3320,10 @@ edition = "2021"
 [workspace]
 exclude = ["crate-shadow"]
 
+[profile.dev]
+debug = 0
+incremental = false
+
 [dependencies]
 {crate_name} = {{ path = "{crate_path}", features = ["shatter-crate-bridge"] }}
 {tokio_dep}"#
@@ -4676,6 +4680,10 @@ edition = "2021"
 
 [workspace]
 exclude = ["crate-shadow"]
+
+[profile.dev]
+debug = 0
+incremental = false
 
 [dependencies]
 {crate_name} = {{ path = "{crate_path}", features = ["shatter-crate-bridge"] }}
@@ -7611,6 +7619,8 @@ fn enabled(config: Config) -> bool {
         );
         assert!(toml.contains("shatter-crate-bridge"), "Cargo.toml must activate the shatter-crate-bridge feature");
         assert!(toml.contains("[workspace]"), "must opt out of parent workspace");
+        assert!(toml.contains("debug = 0"), "dev builds should not emit throwaway debug info");
+        assert!(toml.contains("incremental = false"), "dev builds should avoid per-driver incremental state");
     }
 
     #[test]
@@ -7631,6 +7641,8 @@ fn enabled(config: Config) -> bool {
             toml.contains(r#"my_crate = { path = "/some/path", features = ["shatter-crate-bridge"] }"#),
             "Axum crate driver must activate the staged crate feature so instrumented modules can see shatter-rust-runtime\n\n{toml}"
         );
+        assert!(toml.contains("debug = 0"), "dev builds should not emit throwaway debug info");
+        assert!(toml.contains("incremental = false"), "dev builds should avoid per-driver incremental state");
     }
 
     #[test]
