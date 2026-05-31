@@ -379,10 +379,10 @@ func TestAnalyzeScaleSliceExtractsRangeBranch(t *testing.T) {
 
 func TestAnalyzeSelectBranches(t *testing.T) {
 	tests := []struct {
-		name       string
-		funcName   string
-		wantCount  int
-		wantCases  []struct {
+		name      string
+		funcName  string
+		wantCount int
+		wantCases []struct {
 			conditionText string
 			branchType    string
 		}
@@ -1029,6 +1029,7 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 		{"AcceptsRequestPointer", "*http.Request"},
 		{"AcceptsIOReadCloser", "io.ReadCloser"},
 		{"AcceptsContext", "context.Context"},
+		{"AcceptsTemplatePointer", "*template.Template"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.funcName, func(t *testing.T) {
@@ -1051,6 +1052,43 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAnalyzeTemplateHolderDoesNotExposeParseNode(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("opaque.go"), "AcceptsTemplateHolder")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 || len(results[0].Params) != 1 {
+		t.Fatalf("unexpected params for AcceptsTemplateHolder: %+v", results)
+	}
+	p := results[0].Params[0]
+	if containsTypeLabel(p.Type, "parse.Node") {
+		t.Fatalf("template holder exposed parse.Node internals: %+v", p.Type)
+	}
+}
+
+func containsTypeLabel(t TypeInfo, needle string) bool {
+	if strings.Contains(t.Label, needle) {
+		return true
+	}
+	if t.Element != nil && containsTypeLabel(*t.Element, needle) {
+		return true
+	}
+	if t.Inner != nil && containsTypeLabel(*t.Inner, needle) {
+		return true
+	}
+	for _, field := range t.Fields {
+		if containsTypeLabel(field.Type, needle) {
+			return true
+		}
+	}
+	for _, variant := range t.Variants {
+		if containsTypeLabel(variant, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAnalyzePlainInterfaceReturnsOpaque(t *testing.T) {

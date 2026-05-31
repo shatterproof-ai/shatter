@@ -222,6 +222,57 @@ func Ping(ctx context.Context) int { return 1 }
 	}
 }
 
+func TestGenerateWrapper_RuntimeValueSubstitutesTemplate(t *testing.T) {
+	const src = `package svc
+
+import "text/template"
+
+func Render(t *template.Template) error { return t.Execute(nil, nil) }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "h.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("svc", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "svc",
+		PkgPath:   "example.com/svc",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("len(targets) = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	if got := target.Parameters[0].RuntimeValueExpr; got != `template.Must(template.New("shatter").Parse("{}"))` {
+		t.Fatalf("RuntimeValueExpr = %q", got)
+	}
+	if !slices.Contains(target.Imports, "text/template") {
+		t.Fatalf("target.Imports = %v, want text/template", target.Imports)
+	}
+
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, `var t *template.Template = template.Must(template.New("shatter").Parse("{}"))`) {
+		t.Errorf("wrapper missing template runtime assignment; source:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(inputs[0], &t)") {
+		t.Errorf("wrapper still decodes template from inputs; source:\n%s", out)
+	}
+}
+
 // TestBuildWrapperTargets_DoesNotImportResultOnlyPackages guards against
 // package-wide wrapper build failures from unused imports. The generated
 // wrapper never names result types, so result-only selector packages must not
@@ -305,8 +356,8 @@ func NewHandler(gen *Generator) *Handler { return &Handler{} }
 		// str-jeen.79: set Types so buildWrapperTarget can use pkg.Types.Path()
 		// ("handlers") for the qualifier comparison instead of pkg.PkgPath
 		// ("example.com/handlers"), which would mismatch the type checker's path.
-		Types:  tpkg,
-		Syntax: []*ast.File{file},
+		Types:     tpkg,
+		Syntax:    []*ast.File{file},
 		TypesInfo: info,
 	}
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"text/template"
 )
 
 // AcceptsChanInt takes a channel of ints.
@@ -88,4 +89,25 @@ func AcceptsIOReadCloser(rc io.ReadCloser) error {
 // synthesize with context.Background().
 func AcceptsContext(ctx context.Context) error {
 	return ctx.Err()
+}
+
+// AcceptsTemplatePointer takes a parsed text/template value. The analyzer
+// should treat the template pointer as a synthesizable runtime value instead
+// of descending into text/template/parse.Node internals.
+func AcceptsTemplatePointer(t *template.Template) error {
+	return t.Execute(io.Discard, nil)
+}
+
+// TemplateHolder stores a template pointer behind a struct field, matching
+// fixture-like values that own parsed templates internally.
+type TemplateHolder struct {
+	Name     string
+	Template *template.Template
+}
+
+// AcceptsTemplateHolder exercises composite synthesis for structs that carry a
+// template field. The field may be nil, but planning must not require
+// parse.Node construction.
+func AcceptsTemplateHolder(h TemplateHolder) bool {
+	return h.Template != nil || h.Name != ""
 }

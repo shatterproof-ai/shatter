@@ -819,6 +819,9 @@ var synthesizableStdlibPointerTypes = map[string]map[string]string{
 	"net/http": {
 		"Request": "*http.Request",
 	},
+	"text/template": {
+		"Template": "*template.Template",
+	},
 }
 
 // synthesizableStdlibType returns the canonical Go-source type spelling
@@ -1012,7 +1015,10 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 	// must run before isOpaqueGoType because the synthesizable set
 	// intentionally overlaps the historical opaque set for `io.Writer`
 	// and friends.
-	if synthesizableStdlibType(t) != "" {
+	if spelling := synthesizableStdlibType(t); spelling != "" {
+		if strings.HasPrefix(spelling, "*") {
+			return TypeInfo{Kind: "unknown", Label: spelling}
+		}
 		return TypeInfo{Kind: "unknown"}
 	}
 

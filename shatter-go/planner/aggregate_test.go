@@ -47,10 +47,10 @@ func structParam(name, typeName string, fields ...protocol.ObjectField) protocol
 // zero-length and a one-element literal.
 func TestPlanParam_SliceOfPrimitive_EmitsZeroAndOneElement(t *testing.T) {
 	cases := []struct {
-		name      string
-		param     protocol.ParamInfo
-		wantZero  string
-		wantOne   string
+		name     string
+		param    protocol.ParamInfo
+		wantZero string
+		wantOne  string
 	}{
 		{
 			name:     "int_slice",
@@ -229,6 +229,28 @@ func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
 		if u.Detail == "" {
 			t.Errorf("unsat[%d].Detail must be non-empty", i)
 		}
+	}
+}
+
+func TestPlanParam_StructWithTemplateFieldUsesNilField(t *testing.T) {
+	p := structParam("holder", "fixture.TemplateHolder",
+		protocol.ObjectField{Name: "Name", Type: protocol.TypeInfo{Kind: "str"}},
+		protocol.ObjectField{Name: "Template", Type: protocol.TypeInfo{Kind: "unknown", Label: "*template.Template"}},
+	)
+
+	plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected aggregate plan")
+	}
+	expr, err := decodeExpression(plans[0].Literal)
+	if err != nil {
+		t.Fatalf("plan literal is not expression string: %v", err)
+	}
+	if !strings.Contains(expr, "Template: nil") {
+		t.Fatalf("template field was not synthesized as nil: %q", expr)
 	}
 }
 
