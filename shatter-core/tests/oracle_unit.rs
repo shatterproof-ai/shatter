@@ -11,7 +11,7 @@ use serde_json::json;
 use shatter_core::config::LlmConfig;
 use shatter_core::oracle::{
     ConditionId, FailedCondition, InputVector, OracleContext, OracleResponse, OracleSlotMap,
-    OracleStats, SeedOracle,
+    SeedOracle,
 };
 
 // ---------------------------------------------------------------------------
