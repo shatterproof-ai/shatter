@@ -182,6 +182,9 @@ func TestBuildTargetContextMarksJSONEncodeInterfaceParams(t *testing.T) {
 	if len(responses) != 2 || responses[0].Status != "analyze" || responses[1].Status != "invocation_plan" {
 		t.Fatalf("get_invocation_plan response = %+v", responses)
 	}
+	if got := responses[0].Functions[0].Params[0].Type; got.Kind == "opaque" {
+		t.Fatalf("MarshalPlainInterface param type = %+v, want planner-satisfiable non-opaque type", got)
+	}
 	if captured == nil {
 		t.Fatal("planner lookup did not capture target context")
 	}
@@ -207,6 +210,9 @@ func TestBuildTargetContextDoesNotMarkJSONDecodeInterfaceParams(t *testing.T) {
 	responses := runWithPlannerWorkspace(t, planner, analyzeReq, planReq)
 	if len(responses) != 2 || responses[0].Status != "analyze" || responses[1].Status != "invocation_plan" {
 		t.Fatalf("get_invocation_plan response = %+v", responses)
+	}
+	if got := responses[0].Functions[0].Params[1].Type; got.Kind != "opaque" {
+		t.Fatalf("DecodePlainInterface destination type = %+v, want opaque", got)
 	}
 	if captured == nil {
 		t.Fatal("planner lookup did not capture target context")

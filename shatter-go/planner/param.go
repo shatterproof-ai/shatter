@@ -360,7 +360,7 @@ func byteSliceFamily() paramFamily {
 
 func isEmptyInterfaceParam(p protocol.ParamInfo) bool {
 	label := paramTypeLabel(p)
-	return p.Type.Kind == "opaque" && (label == "interface" || label == "interface{}" || label == "any")
+	return (p.Type.Kind == "opaque" || p.Type.Kind == "unknown") && (label == "interface" || label == "interface{}" || label == "any")
 }
 
 func jsonInterfaceValuePlans(paramIndex int, p protocol.ParamInfo, maxPlans int) []protocol.ValuePlan {

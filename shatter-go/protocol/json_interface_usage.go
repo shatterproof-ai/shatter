@@ -78,6 +78,10 @@ func isEmptyInterfaceExpr(info *types.Info, expr ast.Expr) bool {
 	return ok && iface.NumMethods() == 0
 }
 
+func isTypeInfoEmptyInterface(t TypeInfo) bool {
+	return t.Kind == "opaque" && (t.Label == "interface" || t.Label == "interface{}" || t.Label == "any")
+}
+
 func isJSONMarshalCall(info *types.Info, call *ast.CallExpr) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	return ok && sel.Sel.Name == "Marshal" && selectorPackagePath(info, sel) == encodingJSONImportPath
