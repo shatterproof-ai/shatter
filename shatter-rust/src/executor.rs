@@ -1578,6 +1578,70 @@ fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
     }
 }
 
+fn axum_path_segment_types(inner_ty: &str) -> Vec<String> {
+    let parsed: syn::Type = match syn::parse_str(inner_ty) {
+        Ok(parsed) => parsed,
+        Err(_) => return vec![inner_ty.to_string()],
+    };
+    match parsed {
+        syn::Type::Tuple(tuple) if !tuple.elems.is_empty() => tuple
+            .elems
+            .iter()
+            .map(|elem| {
+                use quote::ToTokens;
+                elem.to_token_stream().to_string()
+            })
+            .collect(),
+        other => {
+            use quote::ToTokens;
+            vec![other.to_token_stream().to_string()]
+        }
+    }
+}
+
+fn axum_default_path_segment(ty: &str, index: usize) -> String {
+    let normalized = ty.replace(' ', "");
+    if normalized.ends_with("Uuid") || normalized.contains("::Uuid") {
+        format!("00000000-0000-0000-0000-{value:012}", value = index + 1)
+    } else if matches!(
+        normalized.as_str(),
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+    ) {
+        (index + 1).to_string()
+    } else {
+        format!("p{index}")
+    }
+}
+
+fn axum_route_pattern_for_path(inner_ty: &str) -> String {
+    let segments = axum_path_segment_types(inner_ty);
+    let placeholders = (0..segments.len())
+        .map(|idx| format!("{{p{idx}}}"))
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("/test/{placeholders}")
+}
+
+fn axum_default_path_value_for_path(inner_ty: &str) -> String {
+    let segments = axum_path_segment_types(inner_ty)
+        .iter()
+        .enumerate()
+        .map(|(idx, ty)| axum_default_path_segment(ty, idx))
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("/test/{segments}")
+}
+
 /// Returns the fully-qualified Axum constructor expression to wrap an inner
 /// deserialized value into the extractor type, e.g. `axum::extract::Path`.
 fn axum_extractor_constructor(ext: &AxumExtractor) -> &'static str {
@@ -4255,21 +4319,28 @@ fn generate_axum_harness(
     ));
 
     // Extract path.
-    let has_path_extractor = mappings
-        .iter()
-        .any(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams);
-    let default_path = if has_path_extractor {
-        "/test/{p0}"
-    } else {
-        "/test"
-    };
     let path_param_index = mappings
         .iter()
         .find(|m| m.kind == crate::adapters::AxumExtractorKind::PathParams)
         .map(|m| m.param_index);
+    let path_inner_type = path_param_index
+        .and_then(|idx| param_types.get(idx))
+        .and_then(|ty| match classify_axum_extractor(ty) {
+            Some(AxumExtractor::Path(inner)) => Some(inner),
+            _ => None,
+        });
+    let default_path = path_inner_type
+        .as_deref()
+        .map(axum_route_pattern_for_path)
+        .unwrap_or_else(|| "/test".to_string());
     if let Some(idx) = path_param_index {
+        let default_path_value = path_inner_type
+            .as_deref()
+            .map(axum_default_path_value_for_path)
+            .unwrap_or_else(|| "/test/p0".to_string());
+        let default_path_value_literal = rust_string_literal(&default_path_value);
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            let segment = inputs.get({idx}).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_else(|| \"p0\".to_string());\n            format!(\"/test/{{}}\", segment)\n        }});\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
         ));
     } else {
         h.push_str(&format!(
@@ -4373,11 +4444,7 @@ fn generate_axum_harness(
         .any(|m| m.kind == crate::adapters::AxumExtractorKind::AppState);
 
     // Build route pattern from path extractor presence.
-    let route_pattern = if has_path_extractor {
-        default_path
-    } else {
-        "/test"
-    };
+    let route_pattern = default_path.as_str();
 
     h.push_str(&format!(
         "        let app = Router::new().route(\"{route_pattern}\", routing::any(user_code::{function_name}));\n"
@@ -5807,6 +5874,35 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         assert!(
             !harness.contains("/:p0"),
             "axum harness must not use legacy colon path template\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_with_tuple_path_uses_matching_route_segments() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "use axum::extract::Path;\nasync fn get_user(Path((workspace_id, bundle_id)): Path<(Uuid, Uuid)>) -> String { format!(\"{workspace_id}:{bundle_id}\") }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let harness = generate_axum_harness(
+            source,
+            "get_user",
+            &mappings,
+            &["Path<(Uuid, Uuid)>".to_string()],
+            &[None],
+            "[]",
+        )
+        .unwrap();
+        assert!(
+            harness.contains("/test/{p0}/{p1}"),
+            "tuple Path extractor must mount the same number of route segments as tuple fields\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002"),
+            "null tuple Path input must fall back to parseable default UUID path segments\n\nharness:\n{harness}"
         );
     }
 
