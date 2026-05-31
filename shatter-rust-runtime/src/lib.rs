@@ -712,6 +712,21 @@ mod tests {
     }
 
     #[test]
+    fn flush_results_reports_branch_lines_as_executed() {
+        setup();
+
+        branch_hit(1, 10, true, r#"{"op":"eq"}"#);
+        branch_hit(2, 10, false, r#"{"op":"ne"}"#);
+        branch_hit(3, 15, true, r#"{"op":"gt"}"#);
+
+        let json = flush_results();
+        let result: ExecuteResult =
+            serde_json::from_str(&json).expect("flush_results should produce valid JSON");
+
+        assert_eq!(result.lines_executed, vec![10, 15]);
+    }
+
+    #[test]
     fn flush_results_round_trips_as_execute_result() {
         setup();
 
