@@ -271,6 +271,16 @@ pub fn reset() {
     });
 }
 
+fn lines_executed_from_branch_path(branch_path: &[BranchDecision]) -> Vec<u32> {
+    let mut lines = Vec::new();
+    for decision in branch_path {
+        if decision.line > 0 && !lines.contains(&decision.line) {
+            lines.push(decision.line);
+        }
+    }
+    lines
+}
+
 /// Serialize all recorded data into an `ExecuteResult` JSON string.
 ///
 /// The caller is responsible for filling in `return_value`, `thrown_error`,
@@ -293,7 +303,7 @@ pub fn flush_results() -> String {
             return_value: None,
             thrown_error: None,
             branch_path: state.branch_path.clone(),
-            lines_executed: Vec::new(),
+            lines_executed: lines_executed_from_branch_path(&state.branch_path),
             calls_to_external: state.external_calls.clone(),
             path_constraints,
             loop_body_states: state.loop_body_states.clone(),

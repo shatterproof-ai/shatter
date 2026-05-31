@@ -7815,6 +7815,54 @@ fn enabled(config: Config) -> bool {
         }
     }
 
+    #[test]
+    fn crate_bridge_reports_executed_branch_lines() {
+        let dir = std::env::temp_dir().join("shatter-test-bridge-coverage");
+        let src_file = write_test_crate(
+            &dir,
+            "mod config {\n    #[derive(serde::Deserialize, serde::Serialize)]\n    pub(crate) struct Config { pub(crate) enabled: bool }\n}\n\nuse crate::config::Config;\n\nfn classify(config: Config) -> &'static str {\n    if config.enabled { \"enabled\" } else { \"disabled\" }\n}\n",
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!({"enabled": true})],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!("enabled")),
+                    "classify({{enabled: true}}) should return 'enabled'"
+                );
+                assert!(
+                    r.lines_executed.iter().any(|line| *line > 0),
+                    "crate_bridge should report executed source lines for instrumented branches"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg))
+                if cargo_build_unavailable(&msg) =>
+            {
+                eprintln!("skipping crate_bridge_reports_executed_branch_lines: cargo unavailable ({msg})");
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
     // ─── str-31j.3: crate_bridge respects nested module context ──────────────
 
     /// Build a fixture crate at `dir` with a nested module containing
