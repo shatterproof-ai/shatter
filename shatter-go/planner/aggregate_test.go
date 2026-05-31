@@ -161,8 +161,8 @@ func TestPlanParam_MapAndSliceOfInterface_EmitJSONLikeExpressions(t *testing.T) 
 			wantExpr: `map[string]any{"": "value"}`,
 		},
 		{
-			name: "slice_any",
-			param: sliceParam("xs", "[]any", protocol.TypeInfo{Kind: "unknown", Label: "interface"}),
+			name:     "slice_any",
+			param:    sliceParam("xs", "[]any", protocol.TypeInfo{Kind: "unknown", Label: "interface"}),
 			wantExpr: `[]any{"value"}`,
 		},
 	}
