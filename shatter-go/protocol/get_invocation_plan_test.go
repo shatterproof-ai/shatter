@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/shatter-dev/shatter/shatter-go/workspace"
 )
 
 // Minimal inline planner func used by tests to avoid pulling in the planner
@@ -39,9 +41,30 @@ func stubPlanner(
 
 func runWithPlanner(t *testing.T, planner PlannerFunc, requests ...string) []Response {
 	t.Helper()
+	return runWithPlannerHandler(t, NewHandler, planner, requests...)
+}
+
+func runWithPlannerWorkspace(t *testing.T, planner PlannerFunc, requests ...string) []Response {
+	t.Helper()
+	ws, err := workspace.Initialize(workspace.ResolveOptions{RepoOverrideRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("initialize workspace: %v", err)
+	}
+	return runWithPlannerHandler(t, func(r io.Reader, w io.Writer, logw io.Writer) *Handler {
+		return NewHandlerWithWorkspace(r, w, logw, ws)
+	}, planner, requests...)
+}
+
+func runWithPlannerHandler(
+	t *testing.T,
+	newHandler func(io.Reader, io.Writer, io.Writer) *Handler,
+	planner PlannerFunc,
+	requests ...string,
+) []Response {
+	t.Helper()
 	input := strings.NewReader(strings.Join(requests, "\n") + "\n")
 	var output bytes.Buffer
-	handler := NewHandler(input, &output, io.Discard)
+	handler := newHandler(input, &output, io.Discard)
 	handler.RegisterPlanner(planner)
 	if err := handler.Run(); err != nil {
 		t.Fatalf("handler.Run: %v", err)
@@ -140,10 +163,6 @@ func TestStubPlannerLookupUsesCachedAnalysis(t *testing.T) {
 
 func TestBuildTargetContextMarksJSONEncodeInterfaceParams(t *testing.T) {
 	file := "testdata/opaque.go"
-	analysisResp := sendRecv(t, reqJSON(1, "analyze", `"file":"`+file+`","function":"MarshalPlainInterface"`))
-	if analysisResp.Status != "analyze" || len(analysisResp.Functions) != 1 {
-		t.Fatalf("analyze MarshalPlainInterface failed: status=%q message=%q functions=%d", analysisResp.Status, analysisResp.Message, len(analysisResp.Functions))
-	}
 
 	var captured *TargetContext
 	planner := func(
@@ -157,9 +176,10 @@ func TestBuildTargetContextMarksJSONEncodeInterfaceParams(t *testing.T) {
 		return nil, nil
 	}
 
-	req := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:MarshalPlainInterface"}]`)
-	responses := runWithPlanner(t, planner, req)
-	if len(responses) != 1 || responses[0].Status != "invocation_plan" {
+	analyzeReq := reqJSON(1, "analyze", `"file":"`+file+`","function":"MarshalPlainInterface"`)
+	planReq := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:MarshalPlainInterface"}]`)
+	responses := runWithPlannerWorkspace(t, planner, analyzeReq, planReq)
+	if len(responses) != 2 || responses[0].Status != "analyze" || responses[1].Status != "invocation_plan" {
 		t.Fatalf("get_invocation_plan response = %+v", responses)
 	}
 	if captured == nil {
@@ -172,10 +192,6 @@ func TestBuildTargetContextMarksJSONEncodeInterfaceParams(t *testing.T) {
 
 func TestBuildTargetContextDoesNotMarkJSONDecodeInterfaceParams(t *testing.T) {
 	file := "testdata/opaque.go"
-	analysisResp := sendRecv(t, reqJSON(1, "analyze", `"file":"`+file+`","function":"DecodePlainInterface"`))
-	if analysisResp.Status != "analyze" || len(analysisResp.Functions) != 1 {
-		t.Fatalf("analyze DecodePlainInterface failed: status=%q message=%q functions=%d", analysisResp.Status, analysisResp.Message, len(analysisResp.Functions))
-	}
 
 	var captured *TargetContext
 	planner := func(
@@ -186,8 +202,12 @@ func TestBuildTargetContextDoesNotMarkJSONDecodeInterfaceParams(t *testing.T) {
 		return nil, nil
 	}
 
-	req := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:DecodePlainInterface"}]`)
-	_ = runWithPlanner(t, planner, req)
+	analyzeReq := reqJSON(1, "analyze", `"file":"`+file+`","function":"DecodePlainInterface"`)
+	planReq := reqJSON(2, "get_invocation_plan", `"invocation_requirements":[{"target_id":"github.com/shatter-dev/shatter/shatter-go/protocol/testdata:DecodePlainInterface"}]`)
+	responses := runWithPlannerWorkspace(t, planner, analyzeReq, planReq)
+	if len(responses) != 2 || responses[0].Status != "analyze" || responses[1].Status != "invocation_plan" {
+		t.Fatalf("get_invocation_plan response = %+v", responses)
+	}
 	if captured == nil {
 		t.Fatal("planner lookup did not capture target context")
 	}

@@ -253,9 +253,9 @@ func TestPlanParam_InterfaceJSONEncodeCandidatesRequireHint(t *testing.T) {
 
 	wantLiterals := map[string]bool{
 		`{"key":"value"}`: false,
-		`["value"]`:      false,
-		`"value"`:        false,
-		`true`:           false,
+		`["value"]`:       false,
+		`"value"`:         false,
+		`true`:            false,
 	}
 	for _, plan := range plans {
 		if plan.Kind != protocol.ValuePlanKindLiteral {

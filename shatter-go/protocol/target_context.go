@@ -43,6 +43,12 @@ type TargetContext struct {
 	// constructors for implementing types (str-4v9h). The planner routes
 	// these through PlanInterfaceImpls to produce runtime-value plans.
 	InterfaceImplsByParam map[string][]InterfaceParamCandidate
+
+	// JSONEncodeInterfaceParams names empty-interface parameters whose value
+	// flows directly into encoding/json encode APIs such as json.Marshal(v) or
+	// json.NewEncoder(w).Encode(v). This is Go-internal planner context, not a
+	// wire-protocol field. Decode destinations are intentionally excluded.
+	JSONEncodeInterfaceParams map[string]bool
 }
 
 // InterfaceParamCandidate names a concrete type that implements a parameter's
