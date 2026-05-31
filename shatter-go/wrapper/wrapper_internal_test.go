@@ -303,6 +303,36 @@ func TestGenerateWrapper_RuntimeValueSubstitutesWazeroRuntime(t *testing.T) {
 	}
 }
 
+func TestGenerateWrapper_RuntimeValueSubstitutesWazeroCompiledModule(t *testing.T) {
+	importSet := make(map[string]struct{})
+	params := []WrapperParam{{Name: "compiled", GoType: "wazero.CompiledModule"}}
+	applyRuntimeValueBindings(params, importSet)
+	if got := params[0].RuntimeValueExpr; !strings.Contains(got, `func() wazero.CompiledModule`) {
+		t.Fatalf("RuntimeValueExpr = %q, want compiled module expression", got)
+	}
+	if _, ok := importSet["context"]; !ok {
+		t.Fatalf("importSet = %v, want context", importSet)
+	}
+	if _, ok := importSet["github.com/tetratelabs/wazero"]; !ok {
+		t.Fatalf("importSet = %v, want github.com/tetratelabs/wazero", importSet)
+	}
+
+	targets := []WrapperTarget{{
+		ID:         "example.com/svc:UseCompiledModule",
+		SymbolName: "UseCompiledModule",
+		Kind:       TargetKindFunction,
+		Parameters: params,
+		Imports:    keysOf(importSet),
+	}}
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, `var compiled wazero.CompiledModule = func() wazero.CompiledModule`) {
+		t.Errorf("wrapper missing wazero compiled module assignment; source:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(inputs[0], &compiled)") {
+		t.Errorf("wrapper still decodes wazero compiled module from inputs; source:\n%s", out)
+	}
+}
+
 // TestBuildWrapperTargets_DoesNotImportResultOnlyPackages guards against
 // package-wide wrapper build failures from unused imports. The generated
 // wrapper never names result types, so result-only selector packages must not

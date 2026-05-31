@@ -192,6 +192,34 @@ func TestPlanComposite_RuntimeValueField_EmitsExpressionAndImports(t *testing.T)
 	}
 }
 
+func TestPlanComposite_CompiledModuleField_EmitsExpressionAndImports(t *testing.T) {
+	req := objectType(
+		field("compiled", protocol.TypeInfo{Kind: "unknown", Label: "wazero.CompiledModule"}),
+	)
+	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Generator", "example.com/pkg", req, planner.CompositeOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if !strings.Contains(plan.Expression, `pkg.Generator{compiled: func() wazero.CompiledModule`) {
+		t.Errorf("Expression = %q, want compiled module runtime expression", plan.Expression)
+	}
+	wantImports := map[string]bool{
+		"example.com/pkg":               false,
+		"context":                       false,
+		"github.com/tetratelabs/wazero": false,
+	}
+	for _, imp := range plan.Imports {
+		if _, ok := wantImports[imp]; ok {
+			wantImports[imp] = true
+		}
+	}
+	for imp, found := range wantImports {
+		if !found {
+			t.Errorf("Imports = %v, want to include %q", plan.Imports, imp)
+		}
+	}
+}
+
 // Empty pkgImport means Imports is empty (useful for package-local synthesis).
 func TestPlanComposite_NoPkgImport_NoImports(t *testing.T) {
 	plan, unsat := planner.PlanComposite(compositeTargetID, "Req", "", objectType(field("N", protocol.TypeInfo{Kind: "int"})), planner.CompositeOptions{})
