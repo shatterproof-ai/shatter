@@ -2316,7 +2316,8 @@ fn build_and_spawn_harness(
 /// Compile a crate-backed dispatch harness and spawn it as a persistent subprocess.
 ///
 /// Unlike `build_and_spawn_harness()`, this:
-/// - Uses a per-harness target dir at `harness_dir/target/` for stable binary storage
+/// - Uses a per-harness target dir for bin-only harnesses and a shared target
+///   dir for crate-bridge harnesses
 /// - Skips `cargo build` if the binary exists and `src/main.rs` content is unchanged
 fn build_and_spawn_crate_harness(
     harness_source: &str,
@@ -2329,9 +2330,16 @@ fn build_and_spawn_crate_harness(
 
     let release = harness_release_mode();
     let profile_dir = if release { "release" } else { "debug" };
-    let binary_name = if cfg!(windows) { "shatter-exec-temp.exe" } else { "shatter-exec-temp" };
-    let target_dir = harness_dir.join("target");
-    let binary_path = target_dir.join(profile_dir).join(binary_name);
+    let package_name = extract_crate_name(cargo_toml_content)
+        .unwrap_or_else(|| "shatter-exec-temp".to_string());
+    let binary_name = cargo_binary_name(&package_name);
+    let target_dir = crate_bridge_target_dir(harness_dir);
+    let cargo_binary_path = target_dir.join(profile_dir).join(&binary_name);
+    let binary_path = if target_dir == harness_dir.join("target") {
+        cargo_binary_path.clone()
+    } else {
+        local_harness_binary_path(harness_dir, profile_dir, &binary_name)
+    };
 
     // Skip recompile if binary exists and generated build inputs are unchanged.
     let main_rs_path = src_dir.join("main.rs");
@@ -2395,6 +2403,7 @@ fn build_and_spawn_crate_harness(
                 String::from_utf8_lossy(&build_output.stderr).into_owned(),
             ));
         }
+        copy_cargo_binary_to_harness(&cargo_binary_path, &binary_path)?;
     }
 
     if !binary_path.exists() {
@@ -2458,7 +2467,61 @@ fn stable_crate_bridge_dir(crate_root: &Path, wrapper_hash: u64, mh: u64) -> Pat
 }
 
 fn crate_bridge_target_dir(harness_dir: &Path) -> PathBuf {
+    if let Some(cache_root) = harness_cache_root() {
+        let bridge_root = cache_root.join("rust").join("crate-bridge");
+        if harness_dir.starts_with(&bridge_root) {
+            return bridge_root.join("target");
+        }
+    }
     harness_dir.join("target")
+}
+
+fn cargo_binary_name(package_name: &str) -> String {
+    if cfg!(windows) {
+        format!("{package_name}.exe")
+    } else {
+        package_name.to_string()
+    }
+}
+
+fn local_harness_binary_path(harness_dir: &Path, profile_dir: &str, binary_name: &str) -> PathBuf {
+    harness_dir.join("bin").join(profile_dir).join(binary_name)
+}
+
+fn copy_cargo_binary_to_harness(
+    cargo_binary_path: &Path,
+    harness_binary_path: &Path,
+) -> Result<(), ExecuteError> {
+    if cargo_binary_path == harness_binary_path {
+        return Ok(());
+    }
+    if let Some(parent) = harness_binary_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(cargo_binary_path, harness_binary_path).map_err(ExecuteError::IoError)?;
+    Ok(())
+}
+
+fn crate_bridge_driver_package_name(prefix: &str, harness_dir: &Path) -> String {
+    let suffix = harness_dir
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "harness".into())
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let suffix = suffix.trim_matches('-');
+    if suffix.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}-{suffix}")
+    }
 }
 
 /// Create an isolated staging copy of a user crate for crate_bridge compilation.
@@ -3236,7 +3299,12 @@ fn generate_crate_bridge_bin(crate_name: &str) -> String {
 ///
 /// The driver depends on the user's crate (by path) with the
 /// `shatter-crate-bridge` feature enabled, so it compiles `__shatter.rs`.
-fn generate_crate_bridge_cargo_toml(crate_name: &str, crate_root: &Path, needs_tokio: bool) -> String {
+fn generate_crate_bridge_cargo_toml(
+    driver_package_name: &str,
+    crate_name: &str,
+    crate_root: &Path,
+    needs_tokio: bool,
+) -> String {
     let crate_path = crate_root.display().to_string().replace('\\', "/");
     let tokio_dep = if needs_tokio {
         "tokio = { version = \"1\", features = [\"full\"] }\n"
@@ -3245,7 +3313,7 @@ fn generate_crate_bridge_cargo_toml(crate_name: &str, crate_root: &Path, needs_t
     };
     format!(
         r#"[package]
-name = "shatter-crate-bridge-exec"
+name = "{driver_package_name}"
 version = "0.1.0"
 edition = "2021"
 
@@ -3298,9 +3366,12 @@ fn build_and_spawn_crate_bridge_harness(
 
     let release = harness_release_mode();
     let profile_dir = if release { "release" } else { "debug" };
-    let binary_name = if cfg!(windows) { "shatter-crate-bridge-exec.exe" } else { "shatter-crate-bridge-exec" };
-    let target_dir = harness_dir.join("target");
-    let binary_path = target_dir.join(profile_dir).join(binary_name);
+    let package_name = extract_crate_name(cargo_toml_content)
+        .unwrap_or_else(|| "shatter-crate-bridge-exec".to_string());
+    let binary_name = cargo_binary_name(&package_name);
+    let target_dir = crate_bridge_target_dir(harness_dir);
+    let cargo_binary_path = target_dir.join(profile_dir).join(&binary_name);
+    let binary_path = local_harness_binary_path(harness_dir, profile_dir, &binary_name);
 
     let main_rs_path = src_dir.join("main.rs");
     let cargo_toml_path = harness_dir.join("Cargo.toml");
@@ -3357,6 +3428,7 @@ fn build_and_spawn_crate_bridge_harness(
                 String::from_utf8_lossy(&build_output.stderr).into_owned(),
             ));
         }
+        copy_cargo_binary_to_harness(&cargo_binary_path, &binary_path)?;
     }
 
     if !binary_path.exists() {
@@ -3572,7 +3644,10 @@ fn execute_function_crate_bridge(
 
     let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
     let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
-    let driver_cargo_toml = generate_crate_bridge_cargo_toml(&crate_name, &staging_crate, needs_tokio);
+    let driver_package_name =
+        crate_bridge_driver_package_name("shatter-crate-bridge-exec", &harness_dir);
+    let driver_cargo_toml =
+        generate_crate_bridge_cargo_toml(&driver_package_name, &crate_name, &staging_crate, needs_tokio);
 
     // Shadow `timing` as mutable so we can `take()` it inside the branch.
     let mut timing = timing;
@@ -4564,6 +4639,7 @@ fn generate_axum_crate_harness(
 }
 
 fn generate_axum_crate_driver_cargo_toml(
+    driver_package_name: &str,
     crate_name: &str,
     staging_crate: &Path,
     runtime_path: &Path,
@@ -4594,7 +4670,7 @@ fn generate_axum_crate_driver_cargo_toml(
     }
     format!(
         r#"[package]
-name = "shatter-exec-temp"
+name = "{driver_package_name}"
 version = "0.1.0"
 edition = "2021"
 
@@ -4742,7 +4818,10 @@ fn execute_axum_handler_crate_backed(
     })?;
     inject_crate_bridge_feature(&staging_crate.join("Cargo.toml"), &runtime_path)?;
 
+    let driver_package_name =
+        crate_bridge_driver_package_name("shatter-exec-temp", &harness_dir);
     let driver_cargo_toml = generate_axum_crate_driver_cargo_toml(
+        &driver_package_name,
         &crate_name,
         &staging_crate,
         &runtime_path,
@@ -7520,7 +7599,16 @@ fn enabled(config: Config) -> bool {
 
     #[test]
     fn crate_bridge_cargo_toml_has_feature_dep() {
-        let toml = generate_crate_bridge_cargo_toml("my-crate", std::path::Path::new("/some/path"), false);
+        let toml = generate_crate_bridge_cargo_toml(
+            "shatter-crate-bridge-exec-0123456789abcdef",
+            "my-crate",
+            std::path::Path::new("/some/path"),
+            false,
+        );
+        assert!(
+            toml.contains(r#"name = "shatter-crate-bridge-exec-0123456789abcdef""#),
+            "driver package name must be caller-controlled so shared target dirs do not overwrite binaries"
+        );
         assert!(toml.contains("shatter-crate-bridge"), "Cargo.toml must activate the shatter-crate-bridge feature");
         assert!(toml.contains("[workspace]"), "must opt out of parent workspace");
     }
@@ -7528,12 +7616,17 @@ fn enabled(config: Config) -> bool {
     #[test]
     fn axum_crate_driver_cargo_toml_activates_crate_bridge_feature() {
         let toml = generate_axum_crate_driver_cargo_toml(
+            "shatter-exec-temp-0123456789abcdef",
             "my_crate",
             std::path::Path::new("/some/path"),
             std::path::Path::new("/runtime"),
             "[dependencies]\nserde_json = \"1\"\n",
         );
 
+        assert!(
+            toml.contains(r#"name = "shatter-exec-temp-0123456789abcdef""#),
+            "Axum crate driver package name must be caller-controlled so shared target dirs do not overwrite binaries"
+        );
         assert!(
             toml.contains(r#"my_crate = { path = "/some/path", features = ["shatter-crate-bridge"] }"#),
             "Axum crate driver must activate the staged crate feature so instrumented modules can see shatter-rust-runtime\n\n{toml}"
