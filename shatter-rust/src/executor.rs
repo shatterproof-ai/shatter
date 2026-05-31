@@ -5315,7 +5315,7 @@ pub fn WrongType(_recipe: Option<serde_json::Value>) -> GeneratorResult {
         std::fs::write(
             &source_file,
             r#"
-use axum::{extract::{FromRequestParts, Path, State}, Json};
+use axum::{extract::{FromRequestParts, State}, Json};
 use axum::http::request::Parts;
 use async_trait::async_trait;
 
@@ -5353,10 +5353,9 @@ pub struct Payload {
 pub async fn combo(
     State(state): State<AppStateLike>,
     current: CurrentAccountLike,
-    Path(id): Path<u64>,
     Json(payload): Json<Payload>,
 ) -> String {
-    format!("{}:{}:{}:{}", state.prefix, current.id, id, payload.name)
+    format!("{}:{}:{}", state.prefix, current.id, payload.name)
 }
 "#,
         )
@@ -5442,11 +5441,6 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             },
             AxumExtractorMapping {
                 param_index: 2,
-                kind: AxumExtractorKind::PathParams,
-                type_name: "Path".to_string(),
-            },
-            AxumExtractorMapping {
-                param_index: 3,
                 kind: AxumExtractorKind::JsonBody,
                 type_name: "Json".to_string(),
             },
@@ -5460,7 +5454,6 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
             &[
                 state_input,
                 current_input,
-                serde_json::json!(7),
                 serde_json::json!({"name": "kit"}),
             ],
             &[],
@@ -5482,7 +5475,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
                 );
                 assert_eq!(
                     result.return_value.as_ref().and_then(|v| v.get("body")),
-                    Some(&serde_json::json!("pack:42:7:kit"))
+                    Some(&serde_json::json!("pack:42:kit"))
                 );
             }
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {

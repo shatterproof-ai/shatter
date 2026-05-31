@@ -851,6 +851,7 @@ impl Foo {
 #[allow(dead_code)]
 mod shatter_rust_runtime {
     pub fn branch_hit(_id: u32, _line: u32, _cond: bool, _json: &str) {}
+    pub fn line_hit(_line: u32) {}
     pub fn loop_enter(_id: u32) {}
     pub fn mock_call<T>(_name: &str, real: impl FnOnce() -> T) -> T { real() }
 }
