@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use quote::ToTokens;
 use serde_json::Value;
 
 use crate::instrument;
@@ -1640,6 +1641,173 @@ fn axum_default_path_value_for_path(inner_ty: &str) -> String {
         .collect::<Vec<_>>()
         .join("/");
     format!("/test/{segments}")
+}
+
+fn axum_json_default_value(type_sources: &[&str], inner_ty: &str) -> Value {
+    let structs = collect_struct_defs(type_sources);
+    let mut seen = HashSet::new();
+    axum_json_default_for_type_str(inner_ty, &structs, &mut seen)
+}
+
+fn collect_struct_defs(type_sources: &[&str]) -> HashMap<String, syn::ItemStruct> {
+    let mut structs = HashMap::new();
+    for source in type_sources {
+        let Ok(file) = syn::parse_file(source) else {
+            continue;
+        };
+        for item in file.items {
+            if let syn::Item::Struct(item_struct) = item {
+                structs.insert(item_struct.ident.to_string(), item_struct);
+            }
+        }
+    }
+    structs
+}
+
+fn axum_json_default_for_type_str(
+    ty: &str,
+    structs: &HashMap<String, syn::ItemStruct>,
+    seen: &mut HashSet<String>,
+) -> Value {
+    let Ok(parsed) = syn::parse_str::<syn::Type>(ty) else {
+        return Value::Object(serde_json::Map::new());
+    };
+    axum_json_default_for_type(&parsed, structs, seen)
+}
+
+fn axum_json_default_for_type(
+    ty: &syn::Type,
+    structs: &HashMap<String, syn::ItemStruct>,
+    seen: &mut HashSet<String>,
+) -> Value {
+    let syn::Type::Path(type_path) = ty else {
+        return Value::Null;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return Value::Null;
+    };
+    let name = segment.ident.to_string();
+    match name.as_str() {
+        "String" => return Value::String(String::new()),
+        "bool" => return Value::Bool(false),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
+        | "i128" | "isize" => return serde_json::json!(0),
+        "f32" | "f64" => return serde_json::json!(0.0),
+        "Uuid" => return Value::String("00000000-0000-0000-0000-000000000001".to_string()),
+        "NaiveDate" => return Value::String("1970-01-01".to_string()),
+        "DateTime" => return Value::String("1970-01-01T00:00:00Z".to_string()),
+        "Vec" | "HashSet" | "BTreeSet" => return Value::Array(Vec::new()),
+        "HashMap" | "BTreeMap" => return Value::Object(serde_json::Map::new()),
+        "Option" => return Value::Null,
+        _ => {}
+    }
+
+    if !seen.insert(name.clone()) {
+        return Value::Null;
+    }
+    let value = structs
+        .get(&name)
+        .map(|item_struct| axum_json_default_for_struct(item_struct, structs, seen))
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    seen.remove(&name);
+    value
+}
+
+fn axum_json_default_for_struct(
+    item_struct: &syn::ItemStruct,
+    structs: &HashMap<String, syn::ItemStruct>,
+    seen: &mut HashSet<String>,
+) -> Value {
+    match &item_struct.fields {
+        syn::Fields::Named(fields) => {
+            let rename_all_camel = serde_rename_all_camel_case(&item_struct.attrs);
+            let mut object = serde_json::Map::new();
+            for field in &fields.named {
+                let Some(ident) = &field.ident else {
+                    continue;
+                };
+                if serde_field_has_default(&field.attrs) || type_is_option(&field.ty) {
+                    continue;
+                }
+                let key = serde_field_name(ident.to_string(), &field.attrs, rename_all_camel);
+                object.insert(key, axum_json_default_for_type(&field.ty, structs, seen));
+            }
+            Value::Object(object)
+        }
+        syn::Fields::Unnamed(fields) => Value::Array(
+            fields
+                .unnamed
+                .iter()
+                .map(|field| axum_json_default_for_type(&field.ty, structs, seen))
+                .collect(),
+        ),
+        syn::Fields::Unit => Value::Null,
+    }
+}
+
+fn type_is_option(ty: &syn::Type) -> bool {
+    matches!(
+        ty,
+        syn::Type::Path(type_path)
+            if type_path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Option")
+    )
+}
+
+fn serde_field_has_default(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("serde") && attr.meta.to_token_stream().to_string().contains("default")
+    })
+}
+
+fn serde_rename_all_camel_case(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let tokens = attr.meta.to_token_stream().to_string();
+        attr.path().is_ident("serde")
+            && tokens.contains("rename_all")
+            && tokens.contains("camelCase")
+    })
+}
+
+fn serde_field_name(name: String, attrs: &[syn::Attribute], rename_all_camel: bool) -> String {
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let tokens = attr.meta.to_token_stream().to_string();
+        if let Some((_, rest)) = tokens.split_once("rename") {
+            if let Some(start) = rest.find('"') {
+                let after_start = &rest[start + 1..];
+                if let Some(end) = after_start.find('"') {
+                    return after_start[..end].to_string();
+                }
+            }
+        }
+    }
+    if rename_all_camel {
+        snake_to_lower_camel(&name)
+    } else {
+        name
+    }
+}
+
+fn snake_to_lower_camel(name: &str) -> String {
+    let mut parts = name.split('_');
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+    let mut camel = first.to_string();
+    for part in parts {
+        let mut chars = part.chars();
+        if let Some(first_char) = chars.next() {
+            camel.extend(first_char.to_uppercase());
+            camel.push_str(chars.as_str());
+        }
+    }
+    camel
 }
 
 /// Returns the fully-qualified Axum constructor expression to wrap an inner
@@ -4274,6 +4442,7 @@ fn generate_axum_harness(
     param_types: &[String],
     native_replays: &[Option<NativeReplaySpec>],
     mocks_json: &str,
+    type_sources: &[&str],
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
     let mut h = String::with_capacity(8192);
@@ -4368,9 +4537,23 @@ fn generate_axum_harness(
         .iter()
         .find(|m| m.kind == crate::adapters::AxumExtractorKind::JsonBody)
         .map(|m| m.param_index);
+    let default_body_json = json_param_index
+        .and_then(|idx| param_types.get(idx))
+        .and_then(|ty| match classify_axum_extractor(ty) {
+            Some(AxumExtractor::Json(inner)) => Some(axum_json_default_value(type_sources, &inner)),
+            _ => None,
+        })
+        .unwrap_or(Value::Null);
+    let default_body_json = serde_json::to_string(&default_body_json).map_err(|e| {
+        ExecuteError::InstrumentError(format!("cannot serialize default axum JSON body: {e}"))
+    })?;
+    let default_body_json_literal = rust_string_literal(&default_body_json);
     if let Some(idx) = json_param_index {
         h.push_str(&format!(
             "        let body_json = input_obj.get(\"body\").cloned().unwrap_or_else(|| inputs.get({idx}).cloned().unwrap_or(Value::Null));\n"
+        ));
+        h.push_str(&format!(
+            "        let body_json = if body_json.is_null() {{ serde_json::from_str::<Value>({default_body_json_literal}).unwrap_or(Value::Null) }} else {{ body_json }};\n"
         ));
     } else {
         h.push_str("        let body_json = input_obj.get(\"body\").cloned().unwrap_or(Value::Null);\n");
@@ -4671,6 +4854,7 @@ fn generate_axum_crate_harness(
     param_types: &[String],
     native_replays: &[Option<NativeReplaySpec>],
     mocks_json: &str,
+    type_sources: &[&str],
 ) -> Result<String, ExecuteError> {
     let mut harness = generate_axum_harness(
         "",
@@ -4679,6 +4863,7 @@ fn generate_axum_crate_harness(
         param_types,
         native_replays,
         mocks_json,
+        type_sources,
     )?;
     harness = harness.replace("#[allow(dead_code)]\nmod user_code {\n\n}", "");
     harness = harness.replace(
@@ -4791,6 +4976,33 @@ fn rust_dependency_lines_for_driver(cargo_toml: &str, crate_name: &str) -> Vec<(
     deps
 }
 
+fn crate_rust_type_sources(crate_root: &Path) -> Vec<String> {
+    let src = crate_root.join("src");
+    let mut sources = Vec::new();
+    collect_rust_sources(&src, &mut sources);
+    sources
+}
+
+fn collect_rust_sources(dir: &Path, sources: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_rust_sources(&path, sources);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+            && let Ok(source) = std::fs::read_to_string(&path)
+        {
+            sources.push(source);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_axum_handler_crate_backed(
     file_path: &str,
@@ -4838,6 +5050,8 @@ fn execute_axum_handler_crate_backed(
     })?;
     let instr_result = instrument::instrument_source(&source, Some(function_name))
         .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?;
+    let type_sources = crate_rust_type_sources(crate_root);
+    let type_source_refs = type_sources.iter().map(String::as_str).collect::<Vec<_>>();
     let harness_source = generate_axum_crate_harness(
         &source,
         function_name,
@@ -4848,6 +5062,7 @@ fn execute_axum_handler_crate_backed(
         &ctx.sig.param_types,
         &native_replays,
         &mocks_json,
+        &type_source_refs,
     )?;
     let wrapper_hash = source_hash(&format!("{}{}", instr_result.source, harness_source));
     let mh = mocks_hash(mocks);
@@ -5010,6 +5225,7 @@ pub fn execute_axum_handler(
         &ctx.sig.param_types,
         &native_replays,
         &mocks_json,
+        &[source.as_str()],
     )?;
 
     let harness_dir = make_harness_dir();
@@ -5895,6 +6111,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
             &["Json<String>".to_string()],
             &[None],
             "[]",
+            &[source],
         )
         .unwrap();
         assert!(
@@ -5928,6 +6145,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
             &["Path<u64>".to_string()],
             &[None],
             "[]",
+            &[source],
         )
         .unwrap();
         assert!(
@@ -5957,6 +6175,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
             &["Path<(Uuid, Uuid)>".to_string()],
             &[None],
             "[]",
+            &[source],
         )
         .unwrap();
         assert!(
@@ -5986,6 +6205,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
             &["Json<String>".to_string()],
             &[None],
             "[]",
+            &[source],
         )
         .unwrap();
         assert!(
@@ -6011,6 +6231,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
             &["Query<String>".to_string()],
             &[None],
             "[]",
+            &[source],
         )
         .unwrap();
         assert!(
@@ -6043,6 +6264,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
             &["State<String>".to_string()],
             &native_replays,
             "[]",
+            &[source],
         )
         .unwrap();
         assert!(
@@ -6102,6 +6324,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
             &["Path<u64>".to_string()],
             &[None],
             "[]",
+            &[],
         )
         .expect("generate harness");
 
@@ -6248,6 +6471,7 @@ pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
             &["Json<String>".to_string()],
             &[None],
             "[]",
+            &[source],
         )
         .unwrap();
         assert!(
