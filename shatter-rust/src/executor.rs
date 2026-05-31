@@ -4598,7 +4598,7 @@ edition = "2021"
 exclude = ["crate-shadow"]
 
 [dependencies]
-{crate_name} = {{ path = "{crate_path}" }}
+{crate_name} = {{ path = "{crate_path}", features = ["shatter-crate-bridge"] }}
 shatter-rust-runtime = {{ path = "{runtime_path}" }}
 {deps}
 "#
