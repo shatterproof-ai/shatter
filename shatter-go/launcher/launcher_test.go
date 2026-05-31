@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
-	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
 
 func TestGenerateLauncherMainIsDeterministic(t *testing.T) {
@@ -257,22 +256,6 @@ func Value() int { return lib.Value() }
 		t.Fatalf("write app.go: %v", err)
 	}
 
-	targets := []wrapper.WrapperTarget{
-		{
-			ID:           "example.com/app:Value",
-			SymbolName:   "Value",
-			Kind:         wrapper.TargetKindFunction,
-			HasResult:    true,
-			ResultGoType: "int",
-		},
-	}
-	hash := wrapper.DiscoveryHash(targets, nil)
-	wrapperDir := t.TempDir()
-	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "app", targets, nil)
-	if err != nil {
-		t.Fatalf("WriteWrapperFile: %v", err)
-	}
-
 	harnessRuntimeDir, err := filepath.Abs("../harness")
 	if err != nil {
 		t.Fatalf("resolve harness runtime: %v", err)
@@ -282,14 +265,21 @@ func Value() int { return lib.Value() }
 		TargetModulePath:  "example.com/app",
 		TargetModuleDir:   targetModuleDir,
 		TargetImportPath:  "example.com/app",
-		DiscoveryHash:     hash,
-		WrapperRealPath:   wrapperPath,
-		WrapperInTreePath: filepath.Join(targetModuleDir, wrapper.WrapperFilename(hash)),
+		DiscoveryHash:     "gomodoverlayrepro",
 		GeneratedDir:      filepath.Join(workDir, "generated"),
 		BinariesDir:       filepath.Join(workDir, "binaries"),
 		GoEnv:             append(os.Environ(), "GOFLAGS="),
 		UseHarnessLoop:    true,
 		HarnessRuntimeDir: harnessRuntimeDir,
+		MainSource: `package main
+
+import (
+	_ "example.com/app"
+	_ "shatter-harness"
+)
+
+func main() {}
+`,
 	})
 	if err != nil {
 		t.Fatalf("BuildLauncher: %v", err)
@@ -373,10 +363,10 @@ chmod +x "$out"
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	type workerResult struct {
-		path        string
-		size        int64
-		statErr     error
-		err         error
+		path    string
+		size    int64
+		statErr error
+		err     error
 	}
 	results := make(chan workerResult, workers)
 
