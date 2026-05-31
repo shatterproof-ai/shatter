@@ -96,6 +96,14 @@ fn build_go_frontend(manifest_dir: &Path, out_dir: &Path) {
     );
     println!(
         "cargo:rerun-if-changed={}",
+        go_dir.join("planner").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        go_dir.join("runtimeval").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
         go_dir.join("launcher").display()
     );
     println!(
