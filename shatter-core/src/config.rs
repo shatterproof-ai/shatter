@@ -2281,6 +2281,49 @@ llm:
     }
 
     #[test]
+    fn resolve_function_config_matches_scan_function_ids() {
+        let mut functions = HashMap::new();
+        functions.insert(
+            "**/legs.rs::fetch_legs_for_workspace".to_string(),
+            FunctionConfig {
+                skip: Some(true),
+                ..FunctionConfig::default()
+            },
+        );
+        functions.insert(
+            "**/*fetch_tasks_for_workspace".to_string(),
+            FunctionConfig {
+                skip: Some(true),
+                ..FunctionConfig::default()
+            },
+        );
+
+        let config = ShatterConfig {
+            defaults: DefaultsConfig::default(),
+            functions,
+            ..ShatterConfig::default()
+        };
+
+        let legs = resolve_function_config(
+            "/repo/src/handlers/legs.rs::fetch_legs_for_workspace",
+            std::slice::from_ref(&config),
+            Some(100),
+            60,
+        )
+        .unwrap();
+        assert!(legs.skip);
+
+        let tasks = resolve_function_config(
+            "/repo/src/handlers/tasks.rs::fetch_tasks_for_workspace",
+            &[config],
+            Some(100),
+            60,
+        )
+        .unwrap();
+        assert!(tasks.skip);
+    }
+
+    #[test]
     fn resolve_function_config_with_inputs_loads_candidates() {
         let root = TempDir::new().unwrap();
 

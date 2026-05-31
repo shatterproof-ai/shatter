@@ -3484,6 +3484,47 @@ pub async fn parallel_scan_with_progress(
                 }
             };
 
+            let config_function_inputs = load_config_function_inputs(
+                analysis,
+                func_name,
+                &config.config_dir,
+                config.max_iterations_per_function,
+                config.timeout_per_fn.as_secs(),
+            );
+            if config_function_inputs.skip {
+                skipped.push(SkippedFunction {
+                    function_name: func_name.clone(),
+                    reason: "skip=true in config".into(),
+                    category: SkipCategory::Expected,
+                });
+                write_skipped_scan_artifact(
+                    artifact_root.as_deref(),
+                    current_progress,
+                    total_functions,
+                    func_name,
+                    "skip=true in config",
+                    SkipCategory::Expected,
+                );
+                summary_record_skipped(
+                    &mut summary,
+                    func_name,
+                    current_progress,
+                    "skip=true in config",
+                    SkipCategory::Expected,
+                    scan_start.elapsed(),
+                );
+                maybe_write_summary(&summary);
+                emit_progress(
+                    progress_handler.as_ref(),
+                    func_name,
+                    current_progress,
+                    total_functions,
+                    scan_start.elapsed(),
+                    ScanProgressStatus::Skipped,
+                );
+                continue;
+            }
+
             // Compute shallow fingerprint, then deep fingerprint incorporating callees.
             let shallow_fingerprint = compute_fingerprint_for_function(func_name, analysis, config);
 
@@ -3730,13 +3771,6 @@ pub async fn parallel_scan_with_progress(
                 )
             };
 
-            let config_function_inputs = load_config_function_inputs(
-                analysis,
-                func_name,
-                &config.config_dir,
-                config.max_iterations_per_function,
-                config.timeout_per_fn.as_secs(),
-            );
             let mut candidate_inputs = config_function_inputs.candidate_inputs;
             // Extend with cached seeds from prior exploration runs.
             if let Some(ref cache) = config.cache
@@ -5345,6 +5379,7 @@ pub fn format_dry_run_plan(
 
 #[derive(Debug, Default)]
 struct ConfigFunctionInputs {
+    skip: bool,
     candidate_inputs: Vec<Vec<serde_json::Value>>,
     value_sources: Vec<crate::input_gen::ValueSource>,
 }
@@ -5390,6 +5425,7 @@ fn load_config_function_inputs(
                 &resolved.generators,
             );
             ConfigFunctionInputs {
+                skip: resolved.skip,
                 candidate_inputs,
                 value_sources,
             }
@@ -7982,6 +8018,102 @@ mod tests {
             load_test_config_candidate_inputs("myFunc", &Some(tmp.path().to_path_buf()), 100, 30);
 
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parallel_scan_skips_functions_marked_in_config() {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let shatter_dir = tmp.path().join(".shatter");
+        std::fs::create_dir_all(&shatter_dir).unwrap();
+        std::fs::write(
+            shatter_dir.join("config.yaml"),
+            "functions:\n  solo:\n    skip: true\n",
+        )
+        .unwrap();
+
+        let analysis = FunctionAnalysis {
+            name: "solo".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+            source_file: None,
+            adapter_hints: vec![],
+        };
+
+        let mut file_map = HashMap::new();
+        file_map.insert("solo".to_string(), "test.ts".to_string());
+        let config = ScanConfig {
+            max_iterations_per_function: 2,
+            seed: Some(99),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: TEST_REQUEST_TIMEOUT,
+            build_timeout: Duration::from_secs(30),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: Some(tmp.path().to_path_buf()),
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
+        };
+
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let sink_events = Arc::clone(&events);
+        let progress = Arc::new(move |update: ScanProgressUpdate| {
+            sink_events.lock().unwrap().push(update);
+        }) as ProgressHandler;
+
+        let frontend_config = FrontendConfig::new(PathBuf::from("missing-frontend-not-used"));
+        let result = parallel_scan_with_progress(
+            &frontend_config,
+            std::slice::from_ref(&analysis),
+            &config,
+            Some(progress),
+        )
+        .await
+        .expect("config-skipped scan should not spawn a frontend");
+
+        assert!(result.function_results.is_empty());
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].function_name, "solo");
+        assert_eq!(result.skipped[0].reason, "skip=true in config");
+        assert_eq!(result.skipped[0].category, SkipCategory::Expected);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, ScanProgressStatus::Skipped);
+        assert_eq!(events[0].function_name, "solo");
     }
 
     #[test]
