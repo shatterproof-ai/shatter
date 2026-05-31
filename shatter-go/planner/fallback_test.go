@@ -231,23 +231,17 @@ func TestPlanParams_UnsupportedCompound_DoesNotBlockSiblings(t *testing.T) {
 	}
 }
 
-func TestPlanParam_InterfaceJSONEncodeCandidatesRequireHint(t *testing.T) {
+func TestPlanParam_InterfaceJSONCandidatesDoNotRequireHint(t *testing.T) {
 	p := protocol.ParamInfo{
 		Name: "v",
 		Type: protocol.TypeInfo{Kind: "opaque", Label: "interface"},
 	}
 
-	if plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{}); u == nil {
-		t.Fatalf("plain interface{} planned without JSON encode hint: plans=%+v", plans)
-	}
-
-	plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{
-		JSONEncodeInterfaceParams: map[string]bool{"v": true},
-	})
+	plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{MaxPlansPerParam: 7})
 	if u != nil {
-		t.Fatalf("unexpected unsatisfied for hinted interface{}: %+v", u)
+		t.Fatalf("unexpected unsatisfied for interface{}: %+v", u)
 	}
-	if len(plans) < 4 {
+	if len(plans) < 6 {
 		t.Fatalf("len(plans) = %d, want bounded JSON candidate family; plans=%+v", len(plans), plans)
 	}
 
@@ -256,13 +250,15 @@ func TestPlanParam_InterfaceJSONEncodeCandidatesRequireHint(t *testing.T) {
 		`["value"]`:       false,
 		`"value"`:         false,
 		`true`:            false,
+		`1.5`:             false,
+		`null`:            false,
 	}
 	for _, plan := range plans {
-		if plan.Kind != protocol.ValuePlanKindLiteral {
-			t.Errorf("plan Kind = %q, want %q", plan.Kind, protocol.ValuePlanKindLiteral)
-		}
 		if plan.TypeHint != "interface{}" {
 			t.Errorf("plan TypeHint = %q, want interface{}", plan.TypeHint)
+		}
+		if plan.Kind != protocol.ValuePlanKindLiteral {
+			continue
 		}
 		if _, ok := wantLiterals[string(plan.Literal)]; ok {
 			wantLiterals[string(plan.Literal)] = true

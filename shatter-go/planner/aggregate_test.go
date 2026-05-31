@@ -146,6 +146,53 @@ func TestPlanParam_MapOfPrimitives_EmitsOneEntryLiteral(t *testing.T) {
 	}
 }
 
+func TestPlanParam_MapAndSliceOfInterface_EmitJSONLikeExpressions(t *testing.T) {
+	cases := []struct {
+		name     string
+		param    protocol.ParamInfo
+		wantExpr string
+	}{
+		{
+			name: "map_string_any",
+			param: mapParam("m", "map[string]any",
+				protocol.TypeInfo{Kind: "str"},
+				protocol.TypeInfo{Kind: "unknown", Label: "interface"},
+			),
+			wantExpr: `map[string]any{"": "value"}`,
+		},
+		{
+			name: "slice_any",
+			param: sliceParam("xs", "[]any", protocol.TypeInfo{Kind: "unknown", Label: "interface"}),
+			wantExpr: `[]any{"value"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plans, u := planner.PlanParam(testTargetID, 0, tc.param, planner.ParamPlanOptions{})
+			if u != nil {
+				t.Fatalf("unexpected unsatisfied: %+v", u)
+			}
+			var found bool
+			for _, p := range plans {
+				if p.Kind != protocol.ValuePlanKindRuntimeValue {
+					t.Errorf("plan Kind = %q, want %q", p.Kind, protocol.ValuePlanKindRuntimeValue)
+				}
+				expr, err := decodeExpression(p.Literal)
+				if err != nil {
+					t.Errorf("plan Literal is not a JSON string: %v (%s)", err, string(p.Literal))
+					continue
+				}
+				if expr == tc.wantExpr {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing expression %q in plans %+v", tc.wantExpr, plans)
+			}
+		})
+	}
+}
+
 // AC3: Struct-typed parameter emits one ValuePlan built by PlanComposite.
 func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 	param := structParam("req", "pkg.Req",
