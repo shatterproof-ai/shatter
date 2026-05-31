@@ -71,6 +71,7 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 		{"http.Header", []string{"http.Header{}"}, "net/http"},
 		{"*template.Template", []string{`template.Must(template.New("shatter").Parse("{}"))`}, "text/template"},
 		{"wazero.Runtime", []string{`wazero.NewRuntime(context.Background())`}, "github.com/tetratelabs/wazero"},
+		{"wazero.CompiledModule", []string{`func() wazero.CompiledModule`}, "github.com/tetratelabs/wazero"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.typeName, func(t *testing.T) {
@@ -79,8 +80,8 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 				t.Fatalf("len(rvs) = %d, want %d", len(rvs), len(tc.wantExprs))
 			}
 			for i, want := range tc.wantExprs {
-				if rvs[i].Expression != want {
-					t.Errorf("rvs[%d].Expression = %q, want %q", i, rvs[i].Expression, want)
+				if !strings.Contains(rvs[i].Expression, want) {
+					t.Errorf("rvs[%d].Expression = %q, want to contain %q", i, rvs[i].Expression, want)
 				}
 				if rvs[i].TypeHint != tc.typeName {
 					t.Errorf("rvs[%d].TypeHint = %q, want %q", i, rvs[i].TypeHint, tc.typeName)

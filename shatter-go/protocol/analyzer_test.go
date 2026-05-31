@@ -1074,6 +1074,26 @@ func TestAnalyzeSynthesizableWazeroRuntime(t *testing.T) {
 	}
 }
 
+func TestAnalyzeSynthesizableWazeroCompiledModule(t *testing.T) {
+	results, err := AnalyzeFile(filepath.Join("testdata", "wazero_project", "wazero.go"), "AcceptsCompiledModule")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 || len(results[0].Params) < 1 {
+		t.Fatalf("no params returned for AcceptsCompiledModule")
+	}
+	p := results[0].Params[0]
+	if p.Type.Kind != "unknown" {
+		t.Errorf("Type.Kind = %q, want unknown", p.Type.Kind)
+	}
+	if p.TypeName == nil {
+		t.Fatalf("TypeName = nil, want wazero.CompiledModule")
+	}
+	if *p.TypeName != "wazero.CompiledModule" {
+		t.Errorf("TypeName = %q, want wazero.CompiledModule", *p.TypeName)
+	}
+}
+
 func TestAnalyzeStructFieldPreservesWazeroRuntimeType(t *testing.T) {
 	results, err := AnalyzeFile(filepath.Join("testdata", "wazero_project", "wazero.go"), "AcceptsRunner")
 	if err != nil {
@@ -1095,6 +1115,30 @@ func TestAnalyzeStructFieldPreservesWazeroRuntimeType(t *testing.T) {
 	}
 	if rtField.Type.Kind != "unknown" || rtField.Type.Label != "wazero.Runtime" {
 		t.Fatalf("rt field type = %+v, want unknown wazero.Runtime", rtField.Type)
+	}
+}
+
+func TestAnalyzeStructFieldPreservesWazeroCompiledModuleType(t *testing.T) {
+	results, err := AnalyzeFile(filepath.Join("testdata", "wazero_project", "wazero.go"), "AcceptsGenerator")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 || len(results[0].Params) != 1 {
+		t.Fatalf("unexpected params for AcceptsGenerator: %+v", results)
+	}
+	p := results[0].Params[0]
+	if p.Type.Kind != "object" {
+		t.Fatalf("generator type kind = %q, want object", p.Type.Kind)
+	}
+	if len(p.Type.Fields) != 1 {
+		t.Fatalf("generator fields = %+v, want exactly compiled", p.Type.Fields)
+	}
+	compiledField := p.Type.Fields[0]
+	if compiledField.Name != "compiled" {
+		t.Fatalf("field name = %q, want compiled", compiledField.Name)
+	}
+	if compiledField.Type.Kind != "unknown" || compiledField.Type.Label != "wazero.CompiledModule" {
+		t.Fatalf("compiled field type = %+v, want unknown wazero.CompiledModule", compiledField.Type)
 	}
 }
 
