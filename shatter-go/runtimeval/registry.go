@@ -133,6 +133,16 @@ var registry = map[string][]Candidate{
 			Imports:    []string{"text/template"},
 		},
 	},
+	// str-ibba: wazero.Runtime is a live in-process WASM runtime. The default
+	// constructor does not bind sockets or files; wrappers own it for the scan
+	// process lifetime until runtime-value teardown support exists.
+	"wazero.Runtime": {
+		{
+			Expression: `wazero.NewRuntime(context.Background())`,
+			TypeHint:   "wazero.Runtime",
+			Imports:    []string{"context", "github.com/tetratelabs/wazero"},
+		},
+	},
 }
 
 // Lookup returns the ordered runtime-value candidates registered for

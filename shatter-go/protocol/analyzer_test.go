@@ -1054,6 +1054,26 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 	}
 }
 
+func TestAnalyzeSynthesizableWazeroRuntime(t *testing.T) {
+	results, err := AnalyzeFile(filepath.Join("testdata", "wazero_project", "wazero.go"), "AcceptsWazeroRuntime")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 || len(results[0].Params) < 1 {
+		t.Fatalf("no params returned for AcceptsWazeroRuntime")
+	}
+	p := results[0].Params[0]
+	if p.Type.Kind != "unknown" {
+		t.Errorf("Type.Kind = %q, want unknown", p.Type.Kind)
+	}
+	if p.TypeName == nil {
+		t.Fatalf("TypeName = nil, want wazero.Runtime")
+	}
+	if *p.TypeName != "wazero.Runtime" {
+		t.Errorf("TypeName = %q, want wazero.Runtime", *p.TypeName)
+	}
+}
+
 func TestAnalyzeTemplateHolderDoesNotExposeParseNode(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("opaque.go"), "AcceptsTemplateHolder")
 	if err != nil {

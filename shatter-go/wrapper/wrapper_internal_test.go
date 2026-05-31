@@ -273,6 +273,36 @@ func Render(t *template.Template) error { return t.Execute(nil, nil) }
 	}
 }
 
+func TestGenerateWrapper_RuntimeValueSubstitutesWazeroRuntime(t *testing.T) {
+	importSet := make(map[string]struct{})
+	params := []WrapperParam{{Name: "rt", GoType: "wazero.Runtime"}}
+	applyRuntimeValueBindings(params, importSet)
+	if got := params[0].RuntimeValueExpr; got != `wazero.NewRuntime(context.Background())` {
+		t.Fatalf("RuntimeValueExpr = %q", got)
+	}
+	if _, ok := importSet["context"]; !ok {
+		t.Fatalf("importSet = %v, want context", importSet)
+	}
+	if _, ok := importSet["github.com/tetratelabs/wazero"]; !ok {
+		t.Fatalf("importSet = %v, want github.com/tetratelabs/wazero", importSet)
+	}
+
+	targets := []WrapperTarget{{
+		ID:         "example.com/svc:UseRuntime",
+		SymbolName: "UseRuntime",
+		Kind:       TargetKindFunction,
+		Parameters: params,
+		Imports:    keysOf(importSet),
+	}}
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, `var rt wazero.Runtime = wazero.NewRuntime(context.Background())`) {
+		t.Errorf("wrapper missing wazero runtime assignment; source:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(inputs[0], &rt)") {
+		t.Errorf("wrapper still decodes wazero runtime from inputs; source:\n%s", out)
+	}
+}
+
 // TestBuildWrapperTargets_DoesNotImportResultOnlyPackages guards against
 // package-wide wrapper build failures from unused imports. The generated
 // wrapper never names result types, so result-only selector packages must not

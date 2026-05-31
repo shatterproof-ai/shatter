@@ -786,8 +786,9 @@ var opaqueGoTypes = map[string]map[string]bool{
 	"database/sql": {"DB": true, "Tx": true, "Rows": true},
 }
 
-// synthesizableStdlibTypes lists stdlib named types the Go planner can
-// satisfy without user hints via the runtime-value registry (str-gxjs).
+// synthesizableStdlibTypes lists named types the Go planner can satisfy without
+// user hints via the runtime-value registry (str-gxjs). It started with stdlib
+// types but also includes selected external runtime values.
 // Each entry maps `pkg.Path() / type name` to the canonical Go-source
 // spelling used by `planner.LookupRuntimeValue`.
 //
@@ -813,6 +814,9 @@ var synthesizableStdlibTypes = map[string]map[string]string{
 	},
 	"net/http": {
 		"ResponseWriter": "http.ResponseWriter",
+	},
+	"github.com/tetratelabs/wazero": {
+		"Runtime": "wazero.Runtime",
 	},
 }
 
