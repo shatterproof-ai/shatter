@@ -1020,6 +1020,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_timeout_kills_unresponsive_frontend() {
+        let (mut config, _keep) = crashing_frontend_config(
+            "read -r line\n\
+             echo '{\"protocol_version\":\"0.1.0\",\"id\":1,\"status\":\"handshake\",\"frontend_version\":\"0.1.0\",\"language\":\"stubborn\",\"capabilities\":[]}'\n\
+             read -r line\n\
+             sleep 5\n",
+        );
+        config.request_timeout = Duration::from_millis(100);
+
+        let frontend = Frontend::spawn(&config).await.expect("handshake should succeed");
+        let child_pid = frontend.child.id().expect("child pid should be known");
+
+        let result = frontend.shutdown().await;
+        assert!(
+            matches!(result, Err(FrontendError::Timeout(_))),
+            "unresponsive shutdown should surface a timeout, got: {result:?}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !Path::new(&format!("/proc/{child_pid}")).exists(),
+            "frontend child process {child_pid} should be killed after shutdown timeout"
+        );
+    }
+
+    #[tokio::test]
     async fn spawn_timeout_returns_timeout_error() {
         let config = slow_frontend_config();
         match Frontend::spawn(&config).await {
