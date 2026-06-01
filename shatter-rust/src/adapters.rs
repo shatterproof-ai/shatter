@@ -1086,6 +1086,14 @@ mod tests {
     }
 
     #[test]
+    fn classify_multipart_extractor_is_supported() {
+        let params = vec![param_with_type_name("multipart", "Multipart")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_ne!(mappings[0].kind, AxumExtractorKind::Unsupported);
+    }
+
+    #[test]
     fn classify_multiple_extractors() {
         let params = vec![
             param_with_type_name("db", "State"),
