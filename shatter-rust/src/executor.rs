@@ -6220,7 +6220,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
     }
 
     #[test]
-    fn execute_axum_handler_ignores_short_native_recipe_path_for_tuple_path() {
+    fn execute_axum_handler_extends_short_native_recipe_path_for_tuple_path() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6315,12 +6315,12 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
                 );
                 assert_eq!(
                     result.return_value.as_ref().and_then(|v| v.get("body")),
-                    Some(&serde_json::json!("1:2"))
+                    Some(&serde_json::json!("42:2"))
                 );
             }
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
                 eprintln!(
-                    "skipping execute_axum_handler_ignores_short_native_recipe_path_for_tuple_path: cargo unavailable ({msg})"
+                    "skipping execute_axum_handler_extends_short_native_recipe_path_for_tuple_path: cargo unavailable ({msg})"
                 );
             }
             Err(err) => panic!("execute failed: {err:?}"),
@@ -6368,7 +6368,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
             }
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
                 eprintln!(
-                    "skipping execute_axum_handler_ignores_short_native_recipe_path_for_tuple_path full arity check: cargo unavailable ({msg})"
+                    "skipping execute_axum_handler_extends_short_native_recipe_path_for_tuple_path full arity check: cargo unavailable ({msg})"
                 );
             }
             Err(err) => panic!("execute failed: {err:?}"),
