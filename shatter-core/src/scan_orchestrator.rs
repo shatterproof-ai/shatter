@@ -41,6 +41,8 @@ use crate::status_export::{
 };
 use crate::types::TypeInfo;
 
+const TOTAL_SCAN_TIMEOUT_REASON: &str = "timed out (total scan budget exceeded)";
+
 /// Shared budget surplus within a topological layer.
 ///
 /// Functions that terminate early (worklist exhausted, coverage plateau, full
@@ -402,6 +404,9 @@ enum FunctionOutcome {
         /// `--timeout-per-fn` (str-7v73).
         phase: &'static str,
     },
+    /// The whole-scan wall-clock budget expired while this function was
+    /// queued or running in the active layer.
+    TotalTimeout { function_name: String },
     /// Exploration encountered an error.
     Error {
         function_name: String,
@@ -1107,6 +1112,9 @@ fn summary_record_failed(
 /// Finalize the summary status based on outcomes.
 fn summary_finalize(summary: &mut ScanSummary, elapsed: Duration) {
     summary.elapsed_secs = elapsed.as_secs_f64();
+    if summary.status == ScanRunStatus::Interrupted {
+        return;
+    }
     summary.status = if summary.failed > 0 && summary.completed == 0 {
         ScanRunStatus::Failed
     } else {
@@ -2138,6 +2146,20 @@ impl WorkerPool {
         self.live_count.load(Ordering::Relaxed) <= pending.max(1)
     }
 
+    /// Replace a poisoned/dead checked-out worker, or account for the dead slot
+    /// if replacement is unnecessary or spawning fails.
+    async fn replace_dead_worker_if_needed(&self, pending: usize) {
+        if !self.needs_replacement(pending) {
+            self.reap_dead_slot();
+            return;
+        }
+
+        match Frontend::spawn(&self.config).await {
+            Ok(new_fe) => self.return_or_reap_worker(new_fe, pending).await,
+            Err(_) => self.reap_dead_slot(),
+        }
+    }
+
     /// Grow the pool by one worker if demand justifies it and we are below the ceiling.
     ///
     /// `tasks_remaining` is the number of tasks that have not yet completed.  If that
@@ -3073,6 +3095,9 @@ fn merge_replica_outcomes(
             | FunctionOutcome::Error {
                 ref function_name, ..
             }
+            | FunctionOutcome::TotalTimeout {
+                ref function_name, ..
+            }
             | FunctionOutcome::Unsupported {
                 ref function_name, ..
             } => {
@@ -3339,6 +3364,7 @@ pub async fn parallel_scan_with_progress(
     let mut skipped: Vec<SkippedFunction> = Vec::new();
 
     let scan_start = Instant::now();
+    let scan_deadline = total_deadline(scan_start, config.timeout_total);
     let total_functions = analyses.len();
     let mut progress_index = 0usize;
     // When `config.write_artifacts` is false, every project-local artifact
@@ -3378,8 +3404,8 @@ pub async fn parallel_scan_with_progress(
 
     for (layer_idx, layer) in layers.iter().enumerate() {
         // Check total scan timeout at layer boundary.
-        if let Some(total) = config.timeout_total
-            && scan_start.elapsed() >= total
+        if let Some(deadline) = scan_deadline
+            && Instant::now() >= deadline
         {
             // Skip all functions in this and remaining layers.
             for remaining_layer in &layers[layer_idx..] {
@@ -3387,7 +3413,7 @@ pub async fn parallel_scan_with_progress(
                     progress_index += 1;
                     skipped.push(SkippedFunction {
                         function_name: func_name.clone(),
-                        reason: "timed out (total scan budget exceeded)".into(),
+                        reason: TOTAL_SCAN_TIMEOUT_REASON.into(),
                         category: SkipCategory::Error,
                     });
                     write_skipped_scan_artifact(
@@ -3395,14 +3421,14 @@ pub async fn parallel_scan_with_progress(
                         progress_index,
                         total_functions,
                         func_name,
-                        "timed out (total scan budget exceeded)",
+                        TOTAL_SCAN_TIMEOUT_REASON,
                         SkipCategory::Error,
                     );
                     summary_record_skipped(
                         &mut summary,
                         func_name,
                         progress_index,
-                        "timed out (total scan budget exceeded)",
+                        TOTAL_SCAN_TIMEOUT_REASON,
                         SkipCategory::Error,
                         scan_start.elapsed(),
                     );
@@ -3836,9 +3862,15 @@ pub async fn parallel_scan_with_progress(
         // Collect the speculative pre-spawn (only in-flight when pool didn't
         // exist yet). If it succeeded, pass it to the new pool.
         let prewarmed = if let Some(rx) = prespawn_rx {
-            match rx.await {
-                Ok(Ok(fe)) => Some(fe),
-                _ => None,
+            match total_deadline_remaining(scan_deadline) {
+                Some(remaining) => match tokio::time::timeout(remaining, rx).await {
+                    Ok(Ok(Ok(fe))) => Some(fe),
+                    _ => None,
+                },
+                None => match rx.await {
+                    Ok(Ok(fe)) => Some(fe),
+                    _ => None,
+                },
             }
         } else {
             None
@@ -3995,12 +4027,13 @@ pub async fn parallel_scan_with_progress(
                     let input_pool = Arc::clone(&input_pool);
                     let timeout = config.timeout_per_fn;
                     let build_timeout = config.build_timeout;
-                    let fe_config = Arc::clone(&fe_config_persistent);
                     let tasks_remaining = Arc::clone(&tasks_remaining);
                     let genetic_config = config.genetic_config.clone();
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
                     let artifact_root = artifact_root.clone();
+                    let handle_func_name = func_name.clone();
+                    let handle_progress_index = progress_index;
                     let handle = tokio::spawn(async move {
                         // str-poyv: emit `started` only after we actually
                         // acquire a worker from the pool. Emitting on spawn
@@ -4072,17 +4105,7 @@ pub async fn parallel_scan_with_progress(
                         if timed_out || !frontend.is_alive() || poisoned {
                             // Drop the poisoned/dead frontend (kills the child process).
                             drop(frontend);
-                            if pool.needs_replacement(remaining) {
-                                match Frontend::spawn(&fe_config).await {
-                                    Ok(new_fe) => {
-                                        pool.return_or_reap_worker(new_fe, remaining).await
-                                    }
-                                    Err(_) => { /* pool shrinks — acceptable degradation */ }
-                                }
-                            } else {
-                                // Over-capacity: absorb the dead slot without spawning.
-                                pool.reap_dead_slot();
-                            }
+                            pool.replace_dead_worker_if_needed(remaining).await;
                         } else {
                             pool.return_or_reap_worker(frontend, remaining).await;
                         }
@@ -4165,15 +4188,62 @@ pub async fn parallel_scan_with_progress(
                         }
                     });
 
-                    handles.push(handle);
+                    handles.push((handle_func_name, handle_progress_index, handle));
                 }
 
                 let mut raw_outcomes = Vec::with_capacity(handles.len());
-                for handle in handles {
-                    match handle.await {
+                let mut pending_handles = handles;
+                let task_watchdog = config
+                    .build_timeout
+                    .saturating_add(config.timeout_per_fn)
+                    .saturating_add(Duration::from_secs(30));
+                while !pending_handles.is_empty() {
+                    let (function_name, progress_index, mut handle) = pending_handles.remove(0);
+                    let join_limit = total_deadline_remaining(scan_deadline)
+                        .map(|remaining| remaining.min(task_watchdog))
+                        .unwrap_or(task_watchdog);
+                    let join_result = match tokio::time::timeout(join_limit, &mut handle).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            handle.abort();
+                            let outcome = if total_deadline_remaining(scan_deadline)
+                                .is_some_and(|remaining| remaining.is_zero())
+                            {
+                                FunctionOutcome::TotalTimeout {
+                                    function_name: function_name.clone(),
+                                }
+                            } else {
+                                let reason = phase_timeout_reason("task", task_watchdog);
+                                write_failed_scan_artifact(
+                                    artifact_root.as_deref(),
+                                    progress_index,
+                                    total_functions,
+                                    &function_name,
+                                    &reason,
+                                );
+                                emit_progress(
+                                    progress_handler.as_ref(),
+                                    &function_name,
+                                    progress_index,
+                                    total_functions,
+                                    scan_start.elapsed(),
+                                    ScanProgressStatus::Failed,
+                                );
+                                FunctionOutcome::Timeout {
+                                    function_name: function_name.clone(),
+                                    limit: task_watchdog,
+                                    phase: "task",
+                                }
+                            };
+                            raw_outcomes.push(outcome);
+                            continue;
+                        }
+                    };
+
+                    match join_result {
                         Ok(outcome) => raw_outcomes.push(outcome),
                         Err(e) => raw_outcomes.push(FunctionOutcome::Error {
-                            function_name: "(unknown)".into(),
+                            function_name,
                             error: format!("task join error: {e}"),
                         }),
                     }
@@ -4267,6 +4337,39 @@ pub async fn parallel_scan_with_progress(
                             reason,
                             category: SkipCategory::Error,
                         });
+                    }
+                    FunctionOutcome::TotalTimeout { function_name } => {
+                        let idx = fn_progress_index.get(&function_name).copied().unwrap_or(0);
+                        write_skipped_scan_artifact(
+                            artifact_root.as_deref(),
+                            idx,
+                            total_functions,
+                            &function_name,
+                            TOTAL_SCAN_TIMEOUT_REASON,
+                            SkipCategory::Error,
+                        );
+                        summary_record_skipped(
+                            &mut summary,
+                            &function_name,
+                            idx,
+                            TOTAL_SCAN_TIMEOUT_REASON,
+                            SkipCategory::Error,
+                            scan_start.elapsed(),
+                        );
+                        emit_progress(
+                            progress_handler.as_ref(),
+                            &function_name,
+                            idx,
+                            total_functions,
+                            scan_start.elapsed(),
+                            ScanProgressStatus::Skipped,
+                        );
+                        skipped.push(SkippedFunction {
+                            function_name,
+                            reason: TOTAL_SCAN_TIMEOUT_REASON.into(),
+                            category: SkipCategory::Error,
+                        });
+                        summary.status = ScanRunStatus::Interrupted;
                     }
                     FunctionOutcome::Error {
                         function_name,
@@ -4550,6 +4653,14 @@ fn execution_profile_from_analysis(
 /// in sync and the message is unit-testable (str-ubp1).
 fn phase_timeout_reason(phase: &str, d: Duration) -> String {
     format!("timed out during {phase} after {:.0}s", d.as_secs_f64())
+}
+
+fn total_deadline(scan_start: Instant, timeout_total: Option<Duration>) -> Option<Instant> {
+    timeout_total.map(|timeout| scan_start + timeout)
+}
+
+fn total_deadline_remaining(deadline: Option<Instant>) -> Option<Duration> {
+    deadline.map(|instant| instant.saturating_duration_since(Instant::now()))
 }
 
 /// Outcome of a phased Prepare + explore run.
@@ -8863,6 +8974,45 @@ defaults:
             result.workers_used >= 1,
             "workers_used must reflect the true peak (got {})",
             result.workers_used,
+        );
+    }
+
+    /// If a timed-out worker is dropped and its replacement cannot be spawned,
+    /// the pool must decrement live_count. Otherwise queued tasks can block
+    /// forever on checkout even though no frontend process remains.
+    #[tokio::test]
+    async fn worker_pool_reaps_dead_slot_when_replacement_spawn_fails() {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let live_count = Arc::new(AtomicUsize::new(1));
+        let idle_reaped = Arc::new(AtomicUsize::new(0));
+        let config = Arc::new(FrontendConfig::new(PathBuf::from(
+            "definitely-missing-shatter-frontend",
+        )));
+
+        let pool = WorkerPool {
+            sender,
+            receiver: Mutex::new(receiver),
+            max_workers: 1,
+            live_count: Arc::clone(&live_count),
+            peak_size: Arc::new(AtomicUsize::new(1)),
+            idle_reaped: Arc::clone(&idle_reaped),
+            config,
+        };
+
+        pool.replace_dead_worker_if_needed(1).await;
+
+        assert_eq!(
+            live_count.load(Ordering::Relaxed),
+            0,
+            "failed replacement must release the dead worker slot",
+        );
+        assert_eq!(
+            idle_reaped.load(Ordering::Relaxed),
+            1,
+            "failed replacement should be counted as a reaped dead slot",
         );
     }
 
