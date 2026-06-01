@@ -330,6 +330,21 @@ impl VisitMut for Instrumentor {
             return;
         }
 
+        if contains_let_expr(&node.cond) {
+            let line = self.line_of(&node.cond);
+            let constraint_json = format!(
+                r#"{{"kind":"unknown","hint":"while let: {}"}}"#,
+                escape_json_string(&node.cond.to_token_stream().to_string()),
+            );
+            let branch_hit = self.branch_hit_stmt(line, &constraint_json);
+            let loop_enter = self.loop_enter_stmt();
+            node.body.stmts.insert(0, branch_hit);
+            node.body.stmts.insert(0, loop_enter);
+
+            syn::visit_mut::visit_expr_while_mut(self, node);
+            return;
+        }
+
         let wrapped = self.wrap_condition(&node.cond);
         *node.cond = wrapped;
         let loop_enter = self.loop_enter_stmt();
@@ -661,6 +676,26 @@ fn count_up(mut n: i32) -> i32 {
         assert!(result.branch_count >= 1);
         assert!(result.source.contains("branch_hit"));
         assert!(result.source.contains("loop_enter"));
+    }
+
+    #[test]
+    fn while_let_loop_preserves_pattern_binding() {
+        let source = r#"
+fn first_positive(values: Vec<Option<i32>>) -> i32 {
+    let mut iter = values.into_iter();
+    while let Some(item) = iter.next() {
+        if let Some(value) = item {
+            if value > 0 {
+                return value;
+            }
+        }
+    }
+    0
+}
+"#;
+        let result = instrument(source);
+        assert!(result.source.contains("loop_enter"));
+        rustc_check(&result.source).expect("instrumented while-let loop must compile");
     }
 
     #[test]
