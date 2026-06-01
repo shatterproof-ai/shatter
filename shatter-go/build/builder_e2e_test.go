@@ -5,10 +5,12 @@ package build_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/build"
@@ -216,6 +218,71 @@ func TestBuilderInstrumentedLauncherEmitsRecorderData(t *testing.T) {
 	}
 }
 
+func TestBuilderConcurrentSameCacheKeyFromSeparateBuilders(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain unavailable")
+	}
+
+	modDir, ws := setupManyFileMainModule(t, 24)
+	req := build.BuildRequest{
+		Targets: []wrapper.WrapperTarget{
+			{
+				ID:           "example.com/concurrent:Classify",
+				SymbolName:   "Classify",
+				Kind:         wrapper.TargetKindFunction,
+				Parameters:   []wrapper.WrapperParam{{Name: "n", GoType: "int"}},
+				HasResult:    true,
+				ResultGoType: "string",
+			},
+		},
+		PackageName:            "main",
+		TargetModulePath:       "example.com/concurrent",
+		TargetModuleDir:        modDir,
+		TargetImportPath:       "example.com/concurrent",
+		TargetPackageDir:       modDir,
+		InstrumentedSourceFile: filepath.Join(modDir, "target.go"),
+	}
+
+	const workers = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	paths := make(chan string, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := build.NewBuilder(ws).Build(context.Background(), req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			paths <- res.BinaryPath
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(paths)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Build failed: %v", err)
+		}
+	}
+	var first string
+	for path := range paths {
+		if path == "" {
+			t.Fatal("Build returned empty BinaryPath")
+		}
+		if first == "" {
+			first = path
+			continue
+		}
+		if path != first {
+			t.Fatalf("concurrent Build paths differ: %q vs %q", first, path)
+		}
+	}
+}
+
 // ---- helpers ----
 
 const singleTargetSrc = `package targets
@@ -248,6 +315,49 @@ func setupFixtureModule(t *testing.T, src, modulePath string) (modDir string, ws
 	goMod := "module " + modulePath + "\n\ngo 1.23\n"
 	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
+	}
+	ws = mustWorkspace(t)
+	return modDir, ws
+}
+
+func setupManyFileMainModule(t *testing.T, helpers int) (modDir string, ws *workspace.Workspace) {
+	t.Helper()
+	modDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/concurrent\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	targetSrc := `package main
+
+func Classify(n int) string {
+	if n > 0 {
+		return "positive"
+	}
+	return "nonpositive"
+}
+
+func main() {}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "target.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write target.go: %v", err)
+	}
+	for i := 0; i < helpers; i++ {
+		helperSrc := fmt.Sprintf(`package main
+
+func helper%d(n int) int {
+	total := 0
+	for i := 0; i < n; i++ {
+		if i%%2 == 0 {
+			total += i
+		} else {
+			total -= i
+		}
+	}
+	return total
+}
+`, i)
+		if err := os.WriteFile(filepath.Join(modDir, fmt.Sprintf("helper_%02d.go", i)), []byte(helperSrc), 0o644); err != nil {
+			t.Fatalf("write helper: %v", err)
+		}
 	}
 	ws = mustWorkspace(t)
 	return modDir, ws
