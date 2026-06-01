@@ -453,6 +453,14 @@ func buildCombinedOverlay(opts BuildOptions) (overlayPath string, modFilePath st
 
 	tempPaths := []string{}
 	addTemp := func(p string) { tempPaths = append(tempPaths, p) }
+	cleanup = func() {
+		for _, p := range tempPaths {
+			_ = os.Remove(p)
+			if strings.HasSuffix(p, ".mod") {
+				_ = os.Remove(strings.TrimSuffix(p, ".mod") + ".sum")
+			}
+		}
+	}
 
 	if opts.UseHarnessLoop {
 		augmentedGoMod, augErr := writeAugmentedGoMod(opts)
@@ -480,15 +488,6 @@ func buildCombinedOverlay(opts BuildOptions) (overlayPath string, modFilePath st
 		return "", "", noop, fmt.Errorf("launcher: write overlay manifest: %w", err)
 	}
 	addTemp(overlayPath)
-
-	cleanup = func() {
-		for _, p := range tempPaths {
-			_ = os.Remove(p)
-			if strings.HasSuffix(p, ".mod") {
-				_ = os.Remove(strings.TrimSuffix(p, ".mod") + ".sum")
-			}
-		}
-	}
 	return overlayPath, modFilePath, cleanup, nil
 }
 
