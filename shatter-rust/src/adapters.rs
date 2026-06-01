@@ -369,6 +369,8 @@ pub enum AxumExtractorKind {
     AppState,
     /// `Form<T>` — request body as form-urlencoded.
     FormBody,
+    /// `Multipart` — request body as multipart/form-data.
+    MultipartBody,
     /// `Extension<T>` — request extension layer.
     Extension,
     /// `RawBody` — raw request body bytes.
@@ -419,6 +421,7 @@ pub fn classify_axum_extractors(
                 "Query" => AxumExtractorKind::QueryParams,
                 "State" => AxumExtractorKind::AppState,
                 "Form" => AxumExtractorKind::FormBody,
+                "Multipart" => AxumExtractorKind::MultipartBody,
                 "Extension" => AxumExtractorKind::Extension,
                 "RawBody" => AxumExtractorKind::RawBody,
                 "RawQuery" => AxumExtractorKind::RawQuery,
@@ -1086,6 +1089,14 @@ mod tests {
     }
 
     #[test]
+    fn classify_multipart_extractor_is_supported() {
+        let params = vec![param_with_type_name("multipart", "Multipart")];
+        let mappings = classify_axum_extractors(&params);
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::MultipartBody);
+    }
+
+    #[test]
     fn classify_multiple_extractors() {
         let params = vec![
             param_with_type_name("db", "State"),
@@ -1141,9 +1152,10 @@ mod tests {
             param_with_type_name("h", "RawQuery"),
             param_with_type_name("i", "Host"),
             param_with_type_name("j", "OriginalUri"),
+            param_with_type_name("k", "Multipart"),
         ];
         let mappings = classify_axum_extractors(&params);
-        assert_eq!(mappings.len(), 10);
+        assert_eq!(mappings.len(), 11);
         assert_eq!(mappings[0].kind, AxumExtractorKind::JsonBody);
         assert_eq!(mappings[1].kind, AxumExtractorKind::PathParams);
         assert_eq!(mappings[2].kind, AxumExtractorKind::QueryParams);
@@ -1154,6 +1166,7 @@ mod tests {
         assert_eq!(mappings[7].kind, AxumExtractorKind::RawQuery);
         assert_eq!(mappings[8].kind, AxumExtractorKind::Host);
         assert_eq!(mappings[9].kind, AxumExtractorKind::OriginalUri);
+        assert_eq!(mappings[10].kind, AxumExtractorKind::MultipartBody);
     }
 
     // ── Axum adapter strategy tests ──
@@ -1261,7 +1274,7 @@ mod tests {
         let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
         let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
         let mut analysis = stub_analysis();
-        analysis.params = vec![param_with_type_name("ctx", "Multipart")];
+        analysis.params = vec![param_with_type_name("ctx", "CustomUnsupportedExtractor")];
         let result = execute_adapter_owned(
             ADAPTER_ID_AXUM_HANDLER,
             "/tmp/test.rs",
@@ -1278,7 +1291,7 @@ mod tests {
         match result.unwrap_err() {
             crate::executor::ExecuteError::NonExecutable(msg) => {
                 assert!(msg.contains("unsupported extractor types"), "got: {msg}");
-                assert!(msg.contains("Multipart"), "got: {msg}");
+                assert!(msg.contains("CustomUnsupportedExtractor"), "got: {msg}");
             }
             other => panic!("expected NonExecutable, got: {other:?}"),
         }
