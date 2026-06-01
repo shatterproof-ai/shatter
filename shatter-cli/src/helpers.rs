@@ -602,9 +602,25 @@ pub(crate) fn apply_storage_env(
 /// roots fall back to temp-based paths (no durable cache).
 pub(crate) fn apply_project_storage(config: &mut FrontendConfig, project_root: Option<&str>) {
     if let Some(root) = project_root {
-        let storage = shatter_core::harness_storage::HarnessStorage::for_project(Path::new(root));
+        let storage = project_storage_for_env(Path::new(root));
         apply_storage_env(config, &storage);
     }
+}
+
+fn project_storage_for_env(project_root: &Path) -> shatter_core::harness_storage::HarnessStorage {
+    use shatter_core::harness_storage::{ENV_HARNESS_CACHE, HarnessStorage};
+
+    let default = HarnessStorage::for_project(project_root);
+    let cache_root = std::env::var_os(ENV_HARNESS_CACHE)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default.cache_root().to_path_buf());
+
+    HarnessStorage::new(
+        cache_root,
+        default.scratch_root().to_path_buf(),
+        default.artifact_root().to_path_buf(),
+    )
 }
 
 /// Apply harness storage env vars rooted under the OS temp dir, so a
@@ -1018,6 +1034,7 @@ mod cli_parity_tests {
     const CLI_BUILD_TIMEOUT_DEFAULT_SECS: u64 = 30;
     /// Canonical CLI default for `--log-level`.
     const CLI_LOG_LEVEL_DEFAULT: &str = "info";
+    static HARNESS_CACHE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Every governed env var must appear in the env_vars vector produced by
     /// `apply_frontend_env`. This is the minimal contract: if a var is missing,
@@ -1201,6 +1218,70 @@ mod cli_parity_tests {
         for var in [ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH, ENV_ARTIFACT_DIR] {
             assert!(keys.contains(var), "apply_project_storage must set {var}");
         }
+    }
+
+    #[test]
+    fn apply_project_storage_honors_harness_cache_env_override() {
+        use shatter_core::harness_storage::ENV_HARNESS_CACHE;
+
+        let _guard = HARNESS_CACHE_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os(ENV_HARNESS_CACHE);
+        unsafe {
+            std::env::set_var(ENV_HARNESS_CACHE, "/tmp/shatter-harness-override");
+        }
+
+        let mut config = FrontendConfig::new(PathBuf::from("dummy"));
+        apply_project_storage(&mut config, Some("/tmp/project"));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(ENV_HARNESS_CACHE, value),
+                None => std::env::remove_var(ENV_HARNESS_CACHE),
+            }
+        }
+
+        let value = config
+            .env_vars
+            .iter()
+            .rev()
+            .find_map(|(key, value)| (key == ENV_HARNESS_CACHE).then_some(value));
+        assert_eq!(
+            value,
+            Some(&"/tmp/shatter-harness-override".to_string()),
+            "project storage must not overwrite caller-provided SHATTER_HARNESS_CACHE"
+        );
+    }
+
+    #[test]
+    fn apply_project_storage_uses_project_harness_cache_by_default() {
+        use shatter_core::harness_storage::ENV_HARNESS_CACHE;
+
+        let _guard = HARNESS_CACHE_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os(ENV_HARNESS_CACHE);
+        unsafe {
+            std::env::remove_var(ENV_HARNESS_CACHE);
+        }
+
+        let mut config = FrontendConfig::new(PathBuf::from("dummy"));
+        apply_project_storage(&mut config, Some("/tmp/project"));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(ENV_HARNESS_CACHE, value),
+                None => std::env::remove_var(ENV_HARNESS_CACHE),
+            }
+        }
+
+        let value = config
+            .env_vars
+            .iter()
+            .rev()
+            .find_map(|(key, value)| (key == ENV_HARNESS_CACHE).then_some(value));
+        assert_eq!(
+            value,
+            Some(&"/tmp/project/.shatter/cache/harness".to_string()),
+            "project storage should keep the project-local harness cache default when no override is set"
+        );
     }
 
     // ---- str-bnsw: frontend availability precheck ----
