@@ -341,12 +341,14 @@ struct CompatFn {
 }
 
 /// Cache key for a crate-backed file-level dispatch harness.
-/// One harness per (file, source_hash, mocks) — handles all compatible functions via dispatch.
+/// One harness per (file, source_hash, mocks, native replays) — handles all compatible functions via dispatch.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateHarnessKey {
     file_path: String,
     source_hash: u64,
     mocks_hash: u64,
+    /// Hash of native generator replay metadata baked into the dispatch harness source.
+    native_replay_hash: u64,
 }
 
 pub struct CrateHarnessEntry {
@@ -367,6 +369,7 @@ impl CrateHarnessKey {
             file_path: file_path.to_string(),
             source_hash: 0,
             mocks_hash: 0,
+            native_replay_hash: 0,
         }
     }
 }
@@ -697,13 +700,14 @@ fn find_crate_root(file_path: &str) -> Option<PathBuf> {
 }
 
 /// Content-addressed stable directory for a crate-backed dispatch harness.
-/// The directory path is deterministic: same file+source+mocks → same path.
-fn stable_crate_harness_dir(file_path: &str, src_hash: u64, mocks_hash: u64) -> PathBuf {
+/// The directory path is deterministic: same file+source+mocks+native replays → same path.
+fn stable_crate_harness_dir(file_path: &str, src_hash: u64, mocks_hash: u64, native_replay_hash: u64) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     file_path.hash(&mut h);
     src_hash.hash(&mut h);
     mocks_hash.hash(&mut h);
+    native_replay_hash.hash(&mut h);
     let key = h.finish();
     harness_cache_root()
         .map(|c| c.join("rust").join("bin-only").join(format!("{key:016x}")))
@@ -1496,6 +1500,14 @@ fn crate_bridge_serde_bound_failure_reason(build_error: &str) -> Option<&'static
     None
 }
 
+fn is_input_dependent_prepare_error(err: &ExecuteError) -> bool {
+    matches!(
+        err,
+        ExecuteError::NonExecutable(msg)
+            if msg.contains("not JSON-harness compatible: function parameters")
+    )
+}
+
 /// Map a reference parameter type to its owned equivalent for deserialization.
 ///
 /// Returns `Some((owned_deser_type, owned_var_type, borrow_expr))` where:
@@ -2263,13 +2275,26 @@ fn generate_dispatch_harness(
     fns: &[CompatFn],
     mocks_json: &str,
     static_mut_names: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
 ) -> Result<String, ExecuteError> {
     let module_block = wrap_in_module(instrumented_source)?;
     let mut h = String::with_capacity(8192);
 
     h.push_str("#![allow(unused_imports)]\n");
     h.push_str("use serde_json::Value;\n\n");
+    if native_replays.iter().any(Option::is_some) {
+        h.push_str(
+            "extern crate self as shatter_rust;\npub mod generators {\n    pub struct GeneratorResult {\n        pub id: String,\n        pub value: Box<dyn std::any::Any + Send>,\n        pub recipe: serde_json::Value,\n    }\n}\n\n",
+        );
+    }
     h.push_str(&module_block);
+    for spec in native_replays.iter().flatten() {
+        let file_path = rust_string_literal(&spec.file_path.display().to_string());
+        h.push_str(&format!(
+            "\n#[path = {file_path}]\nmod {};\n",
+            spec.module_name
+        ));
+    }
     h.push_str("\n\nfn main() {\n");
     h.push_str(&format!(
         "    shatter_rust_runtime::run_dispatch_loop(r#\"{}\"#, |function_name, inputs| {{\n",
@@ -2324,7 +2349,26 @@ fn generate_dispatch_harness(
         // Deserialize each parameter.
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
-            if let Some(ext) = classify_axum_extractor(ty) {
+            if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
+                let recipe_json =
+                    serde_json::to_string(&spec.recipe).unwrap_or_else(|_| "null".to_string());
+                let recipe_literal = rust_string_literal(&recipe_json);
+                h.push_str(&format!(
+                    "                let __recipe_{i}: serde_json::Value = serde_json::from_str({recipe_literal}).unwrap();\n"
+                ));
+                h.push_str(&format!(
+                    "                let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
+                    spec.module_name, spec.function_name
+                ));
+                h.push_str(&format!(
+                    "                let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                ));
+                h.push_str("                    Ok(value) => *value,\n");
+                h.push_str(&format!(
+                    "                    Err(_) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {ty}\"}})), 0.0),\n"
+                ));
+                h.push_str("                };\n");
+            } else if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
                     AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
                 AxumExtractor::State(_) => unreachable!("State handled above"),
@@ -3196,16 +3240,40 @@ fn find_lib_rs(crate_root: &Path) -> Option<PathBuf> {
     if default.exists() { Some(default) } else { None }
 }
 
-/// Append `#[cfg(feature = "shatter-crate-bridge")] pub mod __shatter;` to lib.rs
-/// if the declaration is not already present (idempotent).
-fn inject_lib_module_declaration(lib_rs_path: &Path) -> Result<(), ExecuteError> {
+/// Append crate_bridge-only declarations to lib.rs if not already present.
+fn inject_lib_module_declaration(lib_rs_path: &Path, crate_alias: &str) -> Result<(), ExecuteError> {
     const MARKER: &str = "pub mod __shatter;";
+    const SHATTER_RUST_ALIAS: &str = "extern crate self as shatter_rust;";
+    const GENERATORS_MARKER: &str = "pub mod generators {";
     let content = std::fs::read_to_string(lib_rs_path)
         .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot read lib.rs: {e}"))))?;
-    if content.contains(MARKER) {
+    let alias_decl = format!("extern crate self as {crate_alias};");
+    if content.contains(MARKER)
+        && content.contains(&alias_decl)
+        && content.contains(SHATTER_RUST_ALIAS)
+        && content.contains(GENERATORS_MARKER)
+    {
         return Ok(());
     }
-    let declaration = "\n#[cfg(feature = \"shatter-crate-bridge\")]\npub mod __shatter;\n";
+    let mut declaration = String::new();
+    if !content.contains(&alias_decl) {
+        declaration.push_str(&format!(
+            "\n#[cfg(feature = \"shatter-crate-bridge\")]\nextern crate self as {crate_alias};\n"
+        ));
+    }
+    if !content.contains(SHATTER_RUST_ALIAS) {
+        declaration.push_str(
+            "\n#[cfg(feature = \"shatter-crate-bridge\")]\nextern crate self as shatter_rust;\n",
+        );
+    }
+    if !content.contains(GENERATORS_MARKER) {
+        declaration.push_str(
+            "\n#[cfg(feature = \"shatter-crate-bridge\")]\npub mod generators {\n    pub struct GeneratorResult {\n        pub id: String,\n        pub value: Box<dyn std::any::Any + Send>,\n        pub recipe: serde_json::Value,\n    }\n}\n",
+        );
+    }
+    if !content.contains(MARKER) {
+        declaration.push_str("\n#[cfg(feature = \"shatter-crate-bridge\")]\npub mod __shatter;\n");
+    }
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(lib_rs_path)
@@ -3217,8 +3285,8 @@ fn inject_lib_module_declaration(lib_rs_path: &Path) -> Result<(), ExecuteError>
 /// Add the `shatter-crate-bridge` feature plus optional `serde_json` and
 /// `shatter-rust-runtime` dependencies to the user's Cargo.toml (idempotent).
 ///
-/// The `__shatter.rs` wrapper module calls both of these crates directly, so
-/// they must be present as optional deps gated by the feature.
+/// The `__shatter.rs` wrapper module calls both crates directly, so they must
+/// be present as optional deps gated by the feature.
 ///
 /// Injection strategy avoids duplicate TOML section headers:
 /// - Appends a `[features]` block if no feature marker is present.
@@ -3289,12 +3357,25 @@ fn generate_crate_bridge_wrapper(
     fns: &[CompatFn],
     mocks_json: &str,
     static_mut_names: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
 ) -> String {
     let mut w = String::with_capacity(8192);
     w.push_str("// Generated by shatter-rust crate_bridge — do not edit\n");
     w.push_str("#![allow(unused_imports, dead_code, clippy::all)]\n");
     w.push_str("use serde_json::Value;\n\n");
+    if native_replays.iter().any(Option::is_some) {
+        w.push_str(
+            "extern crate self as shatter_rust;\npub mod generators {\n    pub struct GeneratorResult {\n        pub id: String,\n        pub value: Box<dyn std::any::Any + Send>,\n        pub recipe: serde_json::Value,\n    }\n}\n\n",
+        );
+    }
     w.push_str("use super::*;\n\n");
+    for spec in native_replays.iter().flatten() {
+        let file_path = rust_string_literal(&spec.file_path.display().to_string());
+        w.push_str(&format!(
+            "\n#[path = {file_path}]\nmod {};\n",
+            spec.module_name
+        ));
+    }
 
     // Per-function wrapper: deserialise inputs, call via super::, return JSON.
     for fn_info in fns {
@@ -3324,7 +3405,26 @@ fn generate_crate_bridge_wrapper(
 
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean = name.strip_prefix("mut ").unwrap_or(name).trim();
-            if let Some(ext) = classify_axum_extractor(ty) {
+            if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
+                let recipe_json =
+                    serde_json::to_string(&spec.recipe).unwrap_or_else(|_| "null".to_string());
+                let recipe_literal = rust_string_literal(&recipe_json);
+                w.push_str(&format!(
+                    "    let __recipe_{i}: serde_json::Value = serde_json::from_str({recipe_literal}).unwrap();\n"
+                ));
+                w.push_str(&format!(
+                    "    let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
+                    spec.module_name, spec.function_name
+                ));
+                w.push_str(&format!(
+                    "    let {clean}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                ));
+                w.push_str("        Ok(value) => *value,\n");
+                w.push_str(&format!(
+                    "        Err(_) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": \"native replay downcast failed for input {i}: expected {ty}\"}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                ));
+                w.push_str("    };\n");
+            } else if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
                     AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
                 AxumExtractor::State(_) => unreachable!("State handled above"),
@@ -3547,8 +3647,9 @@ fn generate_in_module_wrapper(
     fns: &[CompatFn],
     mocks_json: &str,
     static_mut_names: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
 ) -> String {
-    let body = generate_crate_bridge_wrapper(fns, mocks_json, static_mut_names);
+    let body = generate_crate_bridge_wrapper(fns, mocks_json, static_mut_names, native_replays);
     let mut w = String::with_capacity(body.len() + 512);
     w.push('\n');
     w.push_str(SHATTER_WRAPPER_BEGIN);
@@ -3844,6 +3945,7 @@ fn execute_function_crate_bridge(
             inputs.len()
         )));
     }
+    let native_replays = native_replay_specs(inputs)?;
 
     let mocks_json = serde_json::to_string(mocks)
         .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
@@ -3862,7 +3964,7 @@ fn execute_function_crate_bridge(
     // In-module wrapper appended to the target file so it sees module-local
     // imports and private items (str-31j.3). The crate-root `__shatter.rs` is
     // a small FFI stub that forwards to the in-module entry symbol.
-    let in_module_wrapper = generate_in_module_wrapper(&compatible_fns, &mocks_json, &static_mut_names);
+    let in_module_wrapper = generate_in_module_wrapper(&compatible_fns, &mocks_json, &static_mut_names, &native_replays);
     let root_stub = generate_crate_bridge_root_stub();
     let wrapper_hash = source_hash(&format!("{in_module_wrapper}{root_stub}"));
 
@@ -3942,7 +4044,7 @@ fn execute_function_crate_bridge(
         .map_err(ExecuteError::IoError)?;
 
     // Inject mod declaration into staging lib.rs (idempotent).
-    inject_lib_module_declaration(&staging_lib_rs)?;
+    inject_lib_module_declaration(&staging_lib_rs, &crate_name.replace('-', "_"))?;
 
     // Inject feature + deps into staging Cargo.toml (idempotent).
     inject_crate_bridge_feature(&staging_cargo_toml, &runtime_path)?;
@@ -4020,11 +4122,14 @@ fn execute_function_crate_backed(
         .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
     let src_hash = source_hash(&source);
     let mh = mocks_hash(mocks);
+    let native_replays = native_replay_specs(inputs)?;
+    let native_replay_hash = native_replay_hash(&native_replays);
 
     let key = CrateHarnessKey {
         file_path: file_path.to_string(),
         source_hash: src_hash,
         mocks_hash: mh,
+        native_replay_hash,
     };
 
     // Fast path: dispatch harness running, function in dispatch table.
@@ -4108,6 +4213,7 @@ fn execute_function_crate_backed(
         &compatible_fns,
         &mocks_json,
         &static_mut_names,
+        &native_replays,
     )?;
 
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
@@ -4118,7 +4224,7 @@ fn execute_function_crate_backed(
     let cargo_toml_content =
         generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path, needs_tokio, false, false);
 
-    let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh);
+    let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh, native_replay_hash);
     std::fs::create_dir_all(&harness_dir)?;
 
     let mut harness = if let Some(timing) = timing {
@@ -4186,10 +4292,14 @@ pub fn prepare_harness(
         // Build the bridge harness by executing with default inputs.
         let ctx = extract_fn_context(&source, function_name)?;
         let dummy_inputs: Vec<Value> = ctx.sig.param_names.iter().map(|_| Value::Null).collect();
-        let _ = execute_function_crate_bridge(
+        match execute_function_crate_bridge(
             file_path, function_name, &dummy_inputs, mocks,
             timeout_ms, None, bridge_cache, &crate_root,
-        )?;
+        ) {
+            Ok(_) => {}
+            Err(err) if is_input_dependent_prepare_error(&err) => return Ok(()),
+            Err(err) => return Err(err),
+        }
         return Ok(());
     }
 
@@ -4203,7 +4313,7 @@ pub fn prepare_harness(
         match result {
             Ok(_) => {}
             Err(ExecuteError::NonExecutable(_)) if harness_mode.is_none() => {
-                let _ = execute_function_crate_bridge(
+                match execute_function_crate_bridge(
                     file_path,
                     function_name,
                     &dummy_inputs,
@@ -4212,7 +4322,11 @@ pub fn prepare_harness(
                     None,
                     bridge_cache,
                     &crate_root,
-                )?;
+                ) {
+                    Ok(_) => {}
+                    Err(err) if is_input_dependent_prepare_error(&err) => return Ok(()),
+                    Err(err) => return Err(err),
+                }
             }
             Err(err) => return Err(err),
         }
@@ -6402,7 +6516,7 @@ pub struct Nested {
             return_type: Some("String".to_string()),
             is_async: true,
         }];
-        let w = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let w = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(
             !w.contains("let id: Path<Uuid>"),
             "crate-bridge wrapper must not declare param as extractor:\n{w}"
@@ -6426,7 +6540,7 @@ pub struct Nested {
             return_type: Some("Result<Json<Vec<u8>>, ApiError>".to_string()),
             is_async: true,
         }];
-        let w = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let w = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(
             !w.contains("serde_json::from_value(inputs[0]"),
             "must not try to deserialize State<AppState>:\n{w}"
@@ -6454,7 +6568,7 @@ pub struct Nested {
             return_type: Some("Result<Json<Vec<BundleSummary>>, ApiError>".to_string()),
             is_async: true,
         }];
-        let w = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let w = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(
             !w.contains("serde_json::to_value(ret_val)"),
             "axum handler return must not require Serialize:\n{w}"
@@ -6475,7 +6589,7 @@ pub struct Nested {
             is_async: true,
         }];
         let source = "use axum::extract::Path;\nasync fn h(Path(id): Path<u64>) -> String { id.to_string() }";
-        let h = generate_dispatch_harness(source, &fns, "[]", &[]).unwrap();
+        let h = generate_dispatch_harness(source, &fns, "[]", &[], &[]).unwrap();
         assert!(
             !h.contains("let id: Path<u64>"),
             "dispatch harness must not declare param as extractor:\n{h}"
@@ -6488,6 +6602,97 @@ pub struct Nested {
             h.contains("axum::extract::Path(id_inner)"),
             "dispatch harness must reconstruct Path:\n{h}"
         );
+    }
+
+    #[test]
+    fn generate_dispatch_harness_native_replay_param_uses_generator() {
+        let fns = vec![CompatFn {
+            name: "session".to_string(),
+            param_names: vec!["current".to_string()],
+            param_types: vec!["CurrentAccount".to_string()],
+            return_type: Some("String".to_string()),
+            is_async: false,
+        }];
+        let native_replays = vec![Some(NativeReplaySpec {
+            input_index: 0,
+            module_name: "__shatter_native_gen_0".to_string(),
+            function_name: "make_current_account".to_string(),
+            file_path: PathBuf::from("/tmp/current_account.rs"),
+            recipe: serde_json::json!({"account_id": "acct_123"}),
+        })];
+        let source = "struct CurrentAccount; fn session(current: CurrentAccount) -> String { String::new() }";
+
+        let h = generate_dispatch_harness(source, &fns, "[]", &[], &native_replays).unwrap();
+
+        assert!(
+            h.contains("mod __shatter_native_gen_0"),
+            "dispatch harness must include native generator module:\n{h}"
+        );
+        assert!(
+            h.contains("__shatter_native_gen_0::make_current_account(Some(__recipe_0))"),
+            "dispatch harness must invoke native generator:\n{h}"
+        );
+        assert!(
+            h.contains(".value.downcast::<CurrentAccount>()"),
+            "dispatch harness must downcast generated value to parameter type:\n{h}"
+        );
+        assert!(
+            !h.contains("serde_json::from_value(inputs[0]"),
+            "native replay parameter must not be deserialized from JSON:\n{h}"
+        );
+    }
+
+    #[test]
+    fn generate_crate_bridge_wrapper_native_replay_param_uses_generator() {
+        let fns = vec![CompatFn {
+            name: "session".to_string(),
+            param_names: vec!["current".to_string()],
+            param_types: vec!["CurrentAccount".to_string()],
+            return_type: Some("String".to_string()),
+            is_async: false,
+        }];
+        let native_replays = vec![Some(NativeReplaySpec {
+            input_index: 0,
+            module_name: "__shatter_native_gen_0".to_string(),
+            function_name: "make_current_account".to_string(),
+            file_path: PathBuf::from("/tmp/current_account.rs"),
+            recipe: serde_json::json!({"account_id": "acct_123"}),
+        })];
+
+        let w = generate_crate_bridge_wrapper(&fns, "[]", &[], &native_replays);
+
+        assert!(
+            w.contains("mod __shatter_native_gen_0"),
+            "crate-bridge wrapper must include native generator module:\n{w}"
+        );
+        assert!(
+            w.contains("__shatter_native_gen_0::make_current_account(Some(__recipe_0))"),
+            "crate-bridge wrapper must invoke native generator:\n{w}"
+        );
+        assert!(
+            w.contains(".value.downcast::<CurrentAccount>()"),
+            "crate-bridge wrapper must downcast generated value to parameter type:\n{w}"
+        );
+        assert!(
+            !w.contains("serde_json::from_value(inputs[0]"),
+            "native replay parameter must not be deserialized from JSON:\n{w}"
+        );
+    }
+
+    #[test]
+    fn prepare_defers_input_dependent_json_param_error() {
+        let err = ExecuteError::NonExecutable(
+            "crate_bridge: function `session` is not JSON-harness compatible: function parameters are not JSON-harness compatible and may not implement DeserializeOwned".to_string(),
+        );
+        assert!(is_input_dependent_prepare_error(&err));
+    }
+
+    #[test]
+    fn prepare_does_not_defer_unrelated_non_executable_error() {
+        let err = ExecuteError::NonExecutable(
+            "crate_bridge: function `session` has generic type parameters".to_string(),
+        );
+        assert!(!is_input_dependent_prepare_error(&err));
     }
 
     #[test]
@@ -7021,7 +7226,7 @@ pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
             return_type: Some("Result < f64 , String >".to_string()),
             is_async: false,
         }];
-        let harness = generate_dispatch_harness(source, &fns, "[]", &[]).unwrap();
+        let harness = generate_dispatch_harness(source, &fns, "[]", &[], &[]).unwrap();
         assert!(
             harness.contains("Ok(ref v)"),
             "dispatch harness for Result-returning fn must use Ok(ref v)\n\nharness:\n{harness}"
@@ -7043,7 +7248,7 @@ pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
             return_type: Some("Result < f64 , String >".to_string()),
             is_async: false,
         }];
-        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(
             wrapper.contains("Ok(ref ret_val)"),
             "crate-bridge wrapper must use Ok(ref ret_val)\n\nwrapper:\n{wrapper}"
@@ -8396,7 +8601,7 @@ fn enabled(config: Config) -> bool {
             CompatFn { name: "foo".to_string(), param_names: vec!["x".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()), is_async: false },
             CompatFn { name: "bar".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
         ];
-        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(wrapper.contains("shatter_wrap_foo"), "wrapper must contain shatter_wrap_foo");
         assert!(wrapper.contains("shatter_wrap_bar"), "wrapper must contain shatter_wrap_bar");
     }
@@ -8410,7 +8615,7 @@ fn enabled(config: Config) -> bool {
             return_type: Some("Json<Value>".to_string()),
             is_async: true,
         }];
-        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(wrapper.contains("shatter_wrap_health"));
         assert!(wrapper.contains("\"health\" => shatter_wrap_health(inputs)"));
         assert!(
@@ -8428,7 +8633,7 @@ fn enabled(config: Config) -> bool {
         let fns = vec![
             CompatFn { name: "my_fn".to_string(), param_names: vec!["n".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()), is_async: false },
         ];
-        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(wrapper.contains("super::my_fn"), "wrapper must call super::my_fn, not bare my_fn");
     }
 
@@ -8437,7 +8642,7 @@ fn enabled(config: Config) -> bool {
         let fns = vec![
             CompatFn { name: "calc".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
         ];
-        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(wrapper.contains("pub fn shatter_run_harness()"), "wrapper must export shatter_run_harness");
         assert!(wrapper.contains("shatter_wrap_calc"), "dispatch in run_harness must call wrapper");
     }
@@ -8448,7 +8653,7 @@ fn enabled(config: Config) -> bool {
             CompatFn { name: "alpha".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
             CompatFn { name: "beta".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
         ];
-        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[]);
+        let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
         assert!(wrapper.contains("\"alpha\""), "dispatch must match on \"alpha\"");
         assert!(wrapper.contains("\"beta\""), "dispatch must match on \"beta\"");
     }
@@ -8509,10 +8714,22 @@ fn enabled(config: Config) -> bool {
         let lib_rs = dir.join("lib.rs");
         std::fs::write(&lib_rs, "pub fn foo() {}\n").unwrap();
 
-        inject_lib_module_declaration(&lib_rs).unwrap();
+        inject_lib_module_declaration(&lib_rs, "test_crate").unwrap();
 
         let content = std::fs::read_to_string(&lib_rs).unwrap();
         assert!(content.contains("pub mod __shatter;"), "must contain mod declaration");
+        assert!(
+            content.contains("extern crate self as test_crate;"),
+            "must expose a crate self-alias for native generator imports"
+        );
+        assert!(
+            content.contains("extern crate self as shatter_rust;"),
+            "must expose the shatter_rust alias expected by native generator files"
+        );
+        assert!(
+            content.contains("pub mod generators") && content.contains("pub struct GeneratorResult"),
+            "must expose the native generator result shim"
+        );
         assert!(content.contains("shatter-crate-bridge"), "must be feature-gated");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -8525,12 +8742,24 @@ fn enabled(config: Config) -> bool {
         let lib_rs = dir.join("lib.rs");
         std::fs::write(&lib_rs, "pub fn foo() {}\n").unwrap();
 
-        inject_lib_module_declaration(&lib_rs).unwrap();
-        inject_lib_module_declaration(&lib_rs).unwrap();
+        inject_lib_module_declaration(&lib_rs, "test_crate").unwrap();
+        inject_lib_module_declaration(&lib_rs, "test_crate").unwrap();
 
         let content = std::fs::read_to_string(&lib_rs).unwrap();
         let count = content.matches("pub mod __shatter;").count();
         assert_eq!(count, 1, "declaration must appear exactly once, got {count}");
+        let alias_count = content.matches("extern crate self as test_crate;").count();
+        assert_eq!(alias_count, 1, "crate alias must appear exactly once, got {alias_count}");
+        let shatter_rust_alias_count = content.matches("extern crate self as shatter_rust;").count();
+        assert_eq!(
+            shatter_rust_alias_count, 1,
+            "shatter_rust alias must appear exactly once, got {shatter_rust_alias_count}"
+        );
+        let generator_count = content.matches("pub struct GeneratorResult").count();
+        assert_eq!(
+            generator_count, 1,
+            "generator shim must appear exactly once, got {generator_count}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -8551,6 +8780,10 @@ fn enabled(config: Config) -> bool {
         let content = std::fs::read_to_string(&toml_path).unwrap();
         assert!(content.contains("shatter-crate-bridge"), "must add feature to Cargo.toml");
         assert!(content.contains("serde_json"), "must add serde_json optional dep");
+        assert!(
+            !content.contains("shatter-rust ="),
+            "must not add the frontend crate as a staged user-crate dependency"
+        );
         assert!(content.contains("shatter-rust-runtime"), "must add runtime optional dep");
 
         let _ = std::fs::remove_dir_all(&dir);
