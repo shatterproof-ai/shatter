@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -2221,6 +2221,67 @@ impl WorkerPool {
     }
 }
 
+/// Per-task cleanup state for a checked-out shared-pool worker.
+///
+/// The outer task watchdog can abort a worker future before it reaches the
+/// normal "return or replace frontend" block. This lease lets the join side
+/// recover pool capacity exactly once so later queued tasks don't wait forever
+/// on a slot held by the aborted future.
+struct WorkerTaskLease {
+    pool: Arc<WorkerPool>,
+    tasks_remaining: Arc<AtomicUsize>,
+    checked_out: AtomicBool,
+    finished: AtomicBool,
+    pool_accounted: AtomicBool,
+}
+
+impl WorkerTaskLease {
+    fn new(pool: Arc<WorkerPool>, tasks_remaining: Arc<AtomicUsize>) -> Self {
+        Self {
+            pool,
+            tasks_remaining,
+            checked_out: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            pool_accounted: AtomicBool::new(false),
+        }
+    }
+
+    fn mark_checked_out(&self) {
+        self.checked_out.store(true, Ordering::Release);
+    }
+
+    fn finish_once(&self) -> usize {
+        if self.finished.swap(true, Ordering::AcqRel) {
+            self.tasks_remaining.load(Ordering::Acquire)
+        } else {
+            self.tasks_remaining
+                .fetch_sub(1, Ordering::AcqRel)
+                .saturating_sub(1)
+        }
+    }
+
+    async fn account_live_worker(&self, frontend: Frontend, pending: usize) {
+        if !self.pool_accounted.swap(true, Ordering::AcqRel) {
+            self.pool.return_or_reap_worker(frontend, pending).await;
+        }
+    }
+
+    async fn account_dead_worker_if_checked_out(&self, pending: usize) {
+        if self.checked_out.load(Ordering::Acquire)
+            && !self.pool_accounted.swap(true, Ordering::AcqRel)
+        {
+            self.pool.replace_dead_worker_if_needed(pending).await;
+        }
+    }
+
+    async fn recover_after_abort(&self) -> usize {
+        let remaining = self.finish_once();
+        self.account_dead_worker_if_checked_out(remaining).await;
+        self.pool.maybe_grow(remaining);
+        remaining
+    }
+}
+
 /// Execute a layer of function tasks using round-robin batch scheduling.
 ///
 /// Each function is explored one at a time for a fixed number of iterations
@@ -4027,13 +4088,17 @@ pub async fn parallel_scan_with_progress(
                     let input_pool = Arc::clone(&input_pool);
                     let timeout = config.timeout_per_fn;
                     let build_timeout = config.build_timeout;
-                    let tasks_remaining = Arc::clone(&tasks_remaining);
                     let genetic_config = config.genetic_config.clone();
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
                     let artifact_root = artifact_root.clone();
                     let handle_func_name = func_name.clone();
                     let handle_progress_index = progress_index;
+                    let lease = Arc::new(WorkerTaskLease::new(
+                        Arc::clone(&pool),
+                        Arc::clone(&tasks_remaining),
+                    ));
+                    let handle_lease = Arc::clone(&lease);
                     let handle = tokio::spawn(async move {
                         // str-poyv: emit `started` only after we actually
                         // acquire a worker from the pool. Emitting on spawn
@@ -4043,6 +4108,7 @@ pub async fn parallel_scan_with_progress(
                         // `--scheduler-policy serial`, where the pool size
                         // is 1 and execution is strictly sequential.
                         let mut frontend = pool.checkout().await;
+                        lease.mark_checked_out();
                         emit_progress(
                             progress_handler.as_ref(),
                             &func_name,
@@ -4077,9 +4143,7 @@ pub async fn parallel_scan_with_progress(
                         // Decrement the remaining-task counter FIRST so that
                         // return_or_reap_worker sees the updated pending count when
                         // deciding whether to reap this worker.
-                        let remaining = tasks_remaining
-                            .fetch_sub(1, Ordering::AcqRel)
-                            .saturating_sub(1);
+                        let remaining = lease.finish_once();
 
                         // After a timeout the frontend's stdout buffer contains a
                         // stale response that would cause an ID mismatch on the next
@@ -4105,9 +4169,9 @@ pub async fn parallel_scan_with_progress(
                         if timed_out || !frontend.is_alive() || poisoned {
                             // Drop the poisoned/dead frontend (kills the child process).
                             drop(frontend);
-                            pool.replace_dead_worker_if_needed(remaining).await;
+                            lease.account_dead_worker_if_checked_out(remaining).await;
                         } else {
-                            pool.return_or_reap_worker(frontend, remaining).await;
+                            lease.account_live_worker(frontend, remaining).await;
                         }
 
                         // Grow the pool if tasks are still blocked on checkout().
@@ -4188,7 +4252,12 @@ pub async fn parallel_scan_with_progress(
                         }
                     });
 
-                    handles.push((handle_func_name, handle_progress_index, handle));
+                    handles.push((
+                        handle_func_name,
+                        handle_progress_index,
+                        handle_lease,
+                        handle,
+                    ));
                 }
 
                 let mut raw_outcomes = Vec::with_capacity(handles.len());
@@ -4198,7 +4267,8 @@ pub async fn parallel_scan_with_progress(
                     .saturating_add(config.timeout_per_fn)
                     .saturating_add(Duration::from_secs(30));
                 while !pending_handles.is_empty() {
-                    let (function_name, progress_index, mut handle) = pending_handles.remove(0);
+                    let (function_name, progress_index, lease, mut handle) =
+                        pending_handles.remove(0);
                     let join_limit = total_deadline_remaining(scan_deadline)
                         .map(|remaining| remaining.min(task_watchdog))
                         .unwrap_or(task_watchdog);
@@ -4206,6 +4276,8 @@ pub async fn parallel_scan_with_progress(
                         Ok(result) => result,
                         Err(_) => {
                             handle.abort();
+                            let _ = handle.await;
+                            lease.recover_after_abort().await;
                             let outcome = if total_deadline_remaining(scan_deadline)
                                 .is_some_and(|remaining| remaining.is_zero())
                             {
@@ -4242,10 +4314,13 @@ pub async fn parallel_scan_with_progress(
 
                     match join_result {
                         Ok(outcome) => raw_outcomes.push(outcome),
-                        Err(e) => raw_outcomes.push(FunctionOutcome::Error {
-                            function_name,
-                            error: format!("task join error: {e}"),
-                        }),
+                        Err(e) => {
+                            lease.recover_after_abort().await;
+                            raw_outcomes.push(FunctionOutcome::Error {
+                                function_name,
+                                error: format!("task join error: {e}"),
+                            });
+                        }
                     }
                 }
 
@@ -9881,6 +9956,59 @@ defaults:
         pool.return_or_reap_worker(worker, 1).await;
 
         pool.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn worker_task_lease_recovers_checked_out_worker_after_abort() {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        let fe_config = Arc::new(fe_config);
+
+        let pool = Arc::new(
+            WorkerPool::spawn_capped(Arc::clone(&fe_config), 1, 2, None)
+                .await
+                .expect("pool should spawn"),
+        );
+        let tasks_remaining = Arc::new(AtomicUsize::new(2));
+        let lease = Arc::new(WorkerTaskLease::new(
+            Arc::clone(&pool),
+            Arc::clone(&tasks_remaining),
+        ));
+
+        let checked_out = pool.checkout().await;
+        lease.mark_checked_out();
+        drop(checked_out);
+
+        let waiter_pool = Arc::clone(&pool);
+        let mut waiter = tokio::spawn(async move { waiter_pool.checkout().await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "checkout should block before the aborted lease restores capacity"
+        );
+
+        let remaining = lease.recover_after_abort().await;
+        assert_eq!(remaining, 1);
+
+        let replacement = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("checkout should be woken by abort recovery")
+            .expect("checkout task should not panic");
+        pool.return_or_reap_worker(replacement, 0).await;
+
+        drop(lease);
+        drop(tasks_remaining);
+        if let Ok(pool) = Arc::try_unwrap(pool) {
+            pool.shutdown().await;
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────
