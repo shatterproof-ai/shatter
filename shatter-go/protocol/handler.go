@@ -737,6 +737,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		delete(h.preparedTargets, targetKey)
 	}
 
+	h.prunePreparedHarnessesBeforeNewPrepare(prepareID)
 	h.log.Debug("Preparing harness", "file", file, "function", *req.Function, "prepare_id", prepareID)
 
 	finishPrepare := timing.Start("prepare.total")
@@ -1396,6 +1397,21 @@ func (h *Handler) pruneOrphans() int {
 		}
 	}
 	return pruned
+}
+
+func (h *Handler) prunePreparedHarnessesBeforeNewPrepare(keepID string) {
+	for prepareID, harness := range h.preparedHarnesses {
+		if prepareID == keepID {
+			continue
+		}
+		harness.Cleanup()
+		delete(h.preparedHarnesses, prepareID)
+	}
+	for targetKey, prepareID := range h.preparedTargets {
+		if prepareID != keepID {
+			delete(h.preparedTargets, targetKey)
+		}
+	}
 }
 
 func (h *Handler) handleSetup(resp Response, req Request) Response {
