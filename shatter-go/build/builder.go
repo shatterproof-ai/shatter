@@ -14,13 +14,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
+)
+
+const (
+	buildGenerationLockPollInterval = 50 * time.Millisecond
+	buildGenerationLockStaleAfter   = 30 * time.Minute
 )
 
 // BuildRequest describes a target package for which a launcher binary should
@@ -106,7 +114,15 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (BuildResult, err
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Re-check under the lock (another goroutine may have built it while we waited).
+	releaseBuildLock, err := acquireBuildGenerationLock(b.ws.GeneratedDir(), hash)
+	if err != nil {
+		return BuildResult{}, err
+	}
+	defer releaseBuildLock()
+
+	// Re-load and re-check under the cross-builder lock. Another Builder
+	// instance may have produced and registered this binary while we waited.
+	b.registry = NewBinaryRegistry(b.ws.BinariesDir())
 	if path, ok := b.registry.Lookup(hash); ok {
 		return BuildResult{BinaryPath: path, FromCache: true}, nil
 	}
@@ -144,6 +160,59 @@ func (b *Builder) Build(ctx context.Context, req BuildRequest) (BuildResult, err
 	}
 
 	return BuildResult{BinaryPath: binaryPath, Diagnostics: diags}, nil
+}
+
+func acquireBuildGenerationLock(rootDir, hash string) (release func(), err error) {
+	if rootDir == "" {
+		return nil, fmt.Errorf("build: generation lock root must not be empty")
+	}
+	if hash == "" {
+		return nil, fmt.Errorf("build: generation lock hash must not be empty")
+	}
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		return nil, fmt.Errorf("build: create generation lock dir: %w", err)
+	}
+
+	lockPath := filepath.Join(rootDir, hash+".build.lock")
+	for {
+		lockFile, openErr := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if openErr == nil {
+			_, _ = fmt.Fprintf(lockFile, "%d\n", os.Getpid())
+			if closeErr := lockFile.Close(); closeErr != nil {
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("build: close generation lock %q: %w", lockPath, closeErr)
+			}
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !os.IsExist(openErr) {
+			return nil, fmt.Errorf("build: acquire generation lock %q: %w", lockPath, openErr)
+		}
+		if buildGenerationLockIsStale(lockPath) {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		time.Sleep(buildGenerationLockPollInterval)
+	}
+}
+
+func buildGenerationLockIsStale(lockPath string) bool {
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		return false
+	}
+	if time.Since(info.ModTime()) <= buildGenerationLockStaleAfter {
+		return false
+	}
+	data, readErr := os.ReadFile(lockPath)
+	if readErr != nil {
+		return true
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if parseErr != nil || pid <= 0 || pid == os.Getpid() {
+		return true
+	}
+	proc, findErr := os.FindProcess(pid)
+	return findErr != nil || proc.Signal(syscall.Signal(0)) != nil
 }
 
 func (b *Builder) compileLauncher(
