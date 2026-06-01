@@ -1274,7 +1274,7 @@ mod tests {
         let crate_cache = crate::executor::CrateHarnessCache::new(HashMap::new());
         let bridge_cache = crate::executor::CrateBridgeHarnessCache::new(HashMap::new());
         let mut analysis = stub_analysis();
-        analysis.params = vec![param_with_type_name("ctx", "Multipart")];
+        analysis.params = vec![param_with_type_name("ctx", "CustomUnsupportedExtractor")];
         let result = execute_adapter_owned(
             ADAPTER_ID_AXUM_HANDLER,
             "/tmp/test.rs",
@@ -1291,7 +1291,7 @@ mod tests {
         match result.unwrap_err() {
             crate::executor::ExecuteError::NonExecutable(msg) => {
                 assert!(msg.contains("unsupported extractor types"), "got: {msg}");
-                assert!(msg.contains("Multipart"), "got: {msg}");
+                assert!(msg.contains("CustomUnsupportedExtractor"), "got: {msg}");
             }
             other => panic!("expected NonExecutable, got: {other:?}"),
         }
