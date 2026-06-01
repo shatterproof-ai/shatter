@@ -84,6 +84,7 @@ type fakePreparedExecution struct {
 	BinaryPath   string
 	InvokeResult *instrument.ExecuteResult
 	InvokeErr    error
+	Cleaned      bool
 	// LastReceiverKind records the receiver_kind the most recent
 	// InvokeWithReceiverKind call received. Tests assert on this to
 	// verify the receiver-aware Execute path threads the plan through
@@ -106,6 +107,7 @@ func (f *fakePreparedExecution) IsValid() bool {
 }
 
 func (f *fakePreparedExecution) Cleanup() {
+	f.Cleaned = true
 	if f.ArtifactDir != "" {
 		_ = os.RemoveAll(f.ArtifactDir)
 	}
@@ -645,6 +647,37 @@ func add(a int, b int) int {
 	}
 	if r1.PrepareID != r2.PrepareID {
 		t.Errorf("prepare_id should be deterministic: %q != %q", r1.PrepareID, r2.PrepareID)
+	}
+}
+
+func TestPreparePrunesPreviousPreparedHarnesses(t *testing.T) {
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	oldHarness := &fakePreparedExecution{}
+	keptHarness := &fakePreparedExecution{}
+	handler.preparedHarnesses["old-prepare-id"] = oldHarness
+	handler.preparedHarnesses["new-prepare-id"] = keptHarness
+	handler.preparedTargets["old-target"] = "old-prepare-id"
+	handler.preparedTargets["new-target"] = "new-prepare-id"
+
+	handler.prunePreparedHarnessesBeforeNewPrepare("new-prepare-id")
+
+	if !oldHarness.Cleaned {
+		t.Fatal("previous prepared harness was not cleaned")
+	}
+	if keptHarness.Cleaned {
+		t.Fatal("current prepared harness should not be cleaned")
+	}
+	if _, ok := handler.preparedHarnesses["old-prepare-id"]; ok {
+		t.Fatal("old prepared harness should be removed from cache")
+	}
+	if _, ok := handler.preparedTargets["old-target"]; ok {
+		t.Fatal("old prepared target should be removed from cache")
+	}
+	if _, ok := handler.preparedHarnesses["new-prepare-id"]; !ok {
+		t.Fatal("current prepared harness should remain cached")
+	}
+	if _, ok := handler.preparedTargets["new-target"]; !ok {
+		t.Fatal("current prepared target should remain cached")
 	}
 }
 

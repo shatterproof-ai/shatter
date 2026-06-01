@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -212,6 +213,56 @@ func TestDockerCommandUsesHardenedDefaults(t *testing.T) {
 	}
 }
 
+func TestDockerCleanupRemovesCIDFileContainer(t *testing.T) {
+	hostRoot := t.TempDir()
+	projectRoot := filepath.Join(hostRoot, "project")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatalf("mkdir project root: %v", err)
+	}
+	binaryPath := writeExecutable(t, hostRoot, "launcher")
+	dockerLog := filepath.Join(t.TempDir(), "docker.log")
+	fakeDocker := filepath.Join(t.TempDir(), "docker")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> " + strconv.Quote(dockerLog) + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(fakeDocker, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+
+	prepared, err := NewRunner(Config{
+		Backend:     BackendDocker,
+		DockerPath:  fakeDocker,
+		DockerImage: "shatter-go-runtime:test",
+		TempRoot:    t.TempDir(),
+	}).Command(Spec{
+		BinaryPath:  binaryPath,
+		ProjectRoot: projectRoot,
+		WorkDir:     projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+
+	cidFile := argValue(t, prepared.Cmd.Args, "--cidfile")
+	if err := os.WriteFile(cidFile, []byte("container-123\n"), 0o644); err != nil {
+		t.Fatalf("write cidfile: %v", err)
+	}
+	if err := prepared.Cleanup(); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(dockerLog)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(logBytes)), "rm -f container-123"; got != want {
+		t.Fatalf("docker cleanup command = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(prepared.SandboxRoot); !os.IsNotExist(err) {
+		t.Fatalf("sandbox root should be removed, err=%v", err)
+	}
+}
+
 func TestBubblewrapCommandContainsRelativeAndTmpWrites(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		t.Skip("bwrap not installed")
@@ -295,6 +346,17 @@ func assertArgPair(t *testing.T, args []string, key, value string) {
 		}
 	}
 	t.Fatalf("args missing pair %q %q:\n%s", key, value, strings.Join(args, "\n"))
+}
+
+func argValue(t *testing.T, args []string, key string) string {
+	t.Helper()
+	for i, arg := range args {
+		if arg == key && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	t.Fatalf("args missing value after %q:\n%s", key, strings.Join(args, "\n"))
+	return ""
 }
 
 func assertArgAfter(t *testing.T, args []string, key, value string) {

@@ -258,8 +258,12 @@ func (s *LauncherSession) InvokeWithTimeout(req LauncherRequest, timeout time.Du
 		if s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
+		cleanupErr := s.runCleanup()
 		<-done
 		_ = s.wait()
+		if cleanupErr != nil {
+			return LauncherResponse{}, fmt.Errorf("launcher: execution timed out after %s: cleanup: %w", timeout, cleanupErr)
+		}
 		return LauncherResponse{}, fmt.Errorf("launcher: execution timed out after %s", timeout)
 	}
 

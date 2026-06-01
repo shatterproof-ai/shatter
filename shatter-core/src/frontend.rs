@@ -173,7 +173,8 @@ impl Frontend {
             cmd.args(&config.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
             for (key, value) in &config.env_vars {
                 cmd.env(key, value);
             }
@@ -495,7 +496,16 @@ impl Frontend {
             return Ok(());
         }
 
-        let response = self.send(ProtoCommand::Shutdown).await?;
+        let response = match self.send(ProtoCommand::Shutdown).await {
+            Ok(response) => response,
+            Err(error) => {
+                // The child may be busy handling a timed-out request and never
+                // read the shutdown command. Since this method consumes the
+                // frontend, force-kill here instead of relying on drop.
+                let _ = self.child.kill().await;
+                return Err(error);
+            }
+        };
 
         match response.result {
             ResponseResult::ShutdownAck => {}
@@ -1017,6 +1027,32 @@ mod tests {
             }
             other => panic!("expected SubprocessExited, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_kills_unresponsive_frontend() {
+        let (mut config, _keep) = crashing_frontend_config(
+            "read -r line\n\
+             echo '{\"protocol_version\":\"0.1.0\",\"id\":1,\"status\":\"handshake\",\"frontend_version\":\"0.1.0\",\"language\":\"stubborn\",\"capabilities\":[]}'\n\
+             read -r line\n\
+             sleep 5\n",
+        );
+        config.request_timeout = Duration::from_millis(100);
+
+        let frontend = Frontend::spawn(&config).await.expect("handshake should succeed");
+        let child_pid = frontend.child.id().expect("child pid should be known");
+
+        let result = frontend.shutdown().await;
+        assert!(
+            matches!(result, Err(FrontendError::Timeout(_))),
+            "unresponsive shutdown should surface a timeout, got: {result:?}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !Path::new(&format!("/proc/{child_pid}")).exists(),
+            "frontend child process {child_pid} should be killed after shutdown timeout"
+        );
     }
 
     #[tokio::test]

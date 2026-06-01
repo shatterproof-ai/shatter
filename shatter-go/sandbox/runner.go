@@ -62,8 +62,10 @@ type PreparedCommand struct {
 	ProjectCopy   string
 	ExecutableDir string
 
-	cleanupOnce sync.Once
-	cleanupErr  error
+	dockerPath    string
+	dockerCIDFile string
+	cleanupOnce   sync.Once
+	cleanupErr    error
 }
 
 // NewRunner returns a Runner using config defaults for unset fields.
@@ -120,13 +122,51 @@ func (r Runner) Command(spec Spec, args ...string) (*PreparedCommand, error) {
 // Cleanup removes the disposable sandbox filesystem. It is safe to call more
 // than once.
 func (p *PreparedCommand) Cleanup() error {
-	if p == nil || p.SandboxRoot == "" {
+	if p == nil {
 		return nil
 	}
 	p.cleanupOnce.Do(func() {
-		p.cleanupErr = os.RemoveAll(p.SandboxRoot)
+		containerErr := p.cleanupDockerContainer()
+		var rootErr error
+		if p.SandboxRoot != "" {
+			rootErr = os.RemoveAll(p.SandboxRoot)
+		}
+		switch {
+		case containerErr != nil && rootErr != nil:
+			p.cleanupErr = fmt.Errorf("%v; sandbox: remove root: %w", containerErr, rootErr)
+		case containerErr != nil:
+			p.cleanupErr = containerErr
+		default:
+			p.cleanupErr = rootErr
+		}
 	})
 	return p.cleanupErr
+}
+
+func (p *PreparedCommand) cleanupDockerContainer() error {
+	if p.dockerPath == "" || p.dockerCIDFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(p.dockerCIDFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("sandbox: read docker cidfile: %w", err)
+	}
+	containerID := strings.TrimSpace(string(data))
+	if containerID == "" {
+		return nil
+	}
+	output, err := exec.Command(p.dockerPath, "rm", "-f", containerID).CombinedOutput() //nolint:gosec
+	if err == nil || isDockerContainerMissing(string(output)) {
+		return nil
+	}
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		return fmt.Errorf("sandbox: remove docker container %s: %w", containerID, err)
+	}
+	return fmt.Errorf("sandbox: remove docker container %s: %w: %s", containerID, err, message)
 }
 
 func (r Runner) noopCommand(spec Spec, args ...string) *PreparedCommand {
@@ -177,8 +217,10 @@ func (r Runner) dockerCommand(spec Spec, launcherArgs ...string) (*PreparedComma
 	if err != nil {
 		return nil, err
 	}
+	state.dockerPath = r.config.DockerPath
+	state.dockerCIDFile = filepath.Join(state.SandboxRoot, "container.cid")
 
-	args := []string{"run", "--rm", "-i"}
+	args := []string{"run", "--rm", "-i", "--cidfile", state.dockerCIDFile}
 	if runtimeName := strings.TrimSpace(r.config.DockerRuntime); runtimeName != "" {
 		args = append(args, "--runtime", runtimeName)
 	}
@@ -418,4 +460,9 @@ func shouldForwardEnv(entry string) bool {
 	default:
 		return true
 	}
+}
+
+func isDockerContainerMissing(output string) bool {
+	message := strings.ToLower(output)
+	return strings.Contains(message, "no such container") || strings.Contains(message, "not found")
 }
