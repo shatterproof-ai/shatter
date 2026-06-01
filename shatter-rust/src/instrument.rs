@@ -664,6 +664,26 @@ fn count_up(mut n: i32) -> i32 {
     }
 
     #[test]
+    fn while_let_loop_preserves_pattern_binding() {
+        let source = r#"
+fn first_positive(values: Vec<Option<i32>>) -> i32 {
+    let mut iter = values.into_iter();
+    while let Some(item) = iter.next() {
+        if let Some(value) = item {
+            if value > 0 {
+                return value;
+            }
+        }
+    }
+    0
+}
+"#;
+        let result = instrument(source);
+        assert!(result.source.contains("loop_enter"));
+        rustc_check(&result.source).expect("instrumented while-let loop must compile");
+    }
+
+    #[test]
     fn match_arms_are_instrumented() {
         let source = r#"
 fn classify(x: i32) -> &'static str {
