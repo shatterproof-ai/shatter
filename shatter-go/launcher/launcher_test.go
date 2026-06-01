@@ -2,6 +2,7 @@ package launcher_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -215,6 +216,87 @@ chmod +x "$out"
 	}
 }
 
+func TestBuildLauncherWithGoModOverlayDoesNotNeedModuleUpdates(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain unavailable")
+	}
+
+	root := t.TempDir()
+	libDir := filepath.Join(root, "lib")
+	targetModuleDir := filepath.Join(root, "app")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatalf("mkdir lib: %v", err)
+	}
+	if err := os.MkdirAll(targetModuleDir, 0o755); err != nil {
+		t.Fatalf("mkdir app: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(libDir, "go.mod"), []byte("module example.com/lib\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatalf("write lib go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, "lib.go"), []byte("package lib\n\nfunc Value() int { return 42 }\n"), 0o644); err != nil {
+		t.Fatalf("write lib.go: %v", err)
+	}
+
+	const targetGoMod = `module example.com/app
+
+go 1.23
+
+replace example.com/lib => ../lib
+`
+	if err := os.WriteFile(filepath.Join(targetModuleDir, "go.mod"), []byte(targetGoMod), 0o644); err != nil {
+		t.Fatalf("write target go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetModuleDir, "app.go"), []byte(`package app
+
+import "example.com/lib"
+
+func Value() int { return lib.Value() }
+`), 0o644); err != nil {
+		t.Fatalf("write app.go: %v", err)
+	}
+
+	harnessRuntimeDir, err := filepath.Abs("../harness")
+	if err != nil {
+		t.Fatalf("resolve harness runtime: %v", err)
+	}
+	workDir := t.TempDir()
+	_, _, err = launcher.BuildLauncher(launcher.BuildOptions{
+		TargetModulePath:  "example.com/app",
+		TargetModuleDir:   targetModuleDir,
+		TargetImportPath:  "example.com/app",
+		DiscoveryHash:     "gomodoverlayrepro",
+		GeneratedDir:      filepath.Join(workDir, "generated"),
+		BinariesDir:       filepath.Join(workDir, "binaries"),
+		GoEnv:             append(os.Environ(), "GOFLAGS="),
+		UseHarnessLoop:    true,
+		HarnessRuntimeDir: harnessRuntimeDir,
+		MainSource: `package main
+
+import (
+	_ "example.com/app"
+	_ "shatter-harness"
+)
+
+func main() {}
+`,
+	})
+	if err != nil {
+		t.Fatalf("BuildLauncher: %v", err)
+	}
+
+	gotGoMod, err := os.ReadFile(filepath.Join(targetModuleDir, "go.mod"))
+	if err != nil {
+		t.Fatalf("read target go.mod: %v", err)
+	}
+	if string(gotGoMod) != targetGoMod {
+		t.Fatalf("target go.mod was modified:\n%s", gotGoMod)
+	}
+	if _, err := os.Stat(filepath.Join(targetModuleDir, "go.sum")); !os.IsNotExist(err) {
+		t.Fatalf("target go.sum was created or stat failed: %v", err)
+	}
+}
+
 // TestBuildLauncherAtomicWriteAgainstSlowBuild reproduces str-0cui: when go
 // build creates the output file non-atomically (e.g. via copy-fallback on a
 // cross-filesystem GOCACHE), a concurrent BuildLauncher call can observe the
@@ -281,10 +363,10 @@ chmod +x "$out"
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	type workerResult struct {
-		path        string
-		size        int64
-		statErr     error
-		err         error
+		path    string
+		size    int64
+		statErr error
+		err     error
 	}
 	results := make(chan workerResult, workers)
 

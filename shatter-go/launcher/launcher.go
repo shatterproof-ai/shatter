@@ -287,7 +287,7 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 		return "", false, fmt.Errorf("launcher: write main.go: %w", err)
 	}
 
-	overlayPath, overlayCleanup, err := buildCombinedOverlay(opts)
+	overlayPath, modFilePath, overlayCleanup, err := buildCombinedOverlay(opts)
 	if err != nil {
 		return "", false, err
 	}
@@ -310,6 +310,9 @@ func BuildLauncher(opts BuildOptions) (binaryPath string, fresh bool, err error)
 	// (e.g. when shatter is run against a real module checkout from a
 	// generated workspace path). See str-qo1.15.
 	buildArgs := []string{"build", "-mod=mod", "-buildvcs=false"}
+	if modFilePath != "" {
+		buildArgs = append(buildArgs, "-modfile", modFilePath)
+	}
 	if overlayPath != "" {
 		buildArgs = append(buildArgs, "-overlay", overlayPath)
 	}
@@ -424,22 +427,22 @@ func hasActiveLauncherDirs() bool {
 }
 
 // buildCombinedOverlay assembles a single overlay manifest combining any
-// caller-supplied overlay entries, the wrapper-in-tree override, and (for
-// UseHarnessLoop) an augmented target go.mod that injects the shatter-harness
-// require/replace pair without modifying the target module on disk. Returns
-// an empty path when no overlay is needed.
-func buildCombinedOverlay(opts BuildOptions) (overlayPath string, cleanup func(), err error) {
+// caller-supplied overlay entries and the wrapper-in-tree override. For
+// UseHarnessLoop it also returns an augmented target go.mod path to pass via
+// -modfile, which lets the Go tool update generated module metadata without
+// modifying the target module on disk. Returns empty paths when not needed.
+func buildCombinedOverlay(opts BuildOptions) (overlayPath string, modFilePath string, cleanup func(), err error) {
 	noop := func() {}
 	replace := map[string]string{}
 
 	if opts.OverlayPath != "" {
 		data, readErr := os.ReadFile(opts.OverlayPath)
 		if readErr != nil {
-			return "", noop, fmt.Errorf("launcher: read overlay %q: %w", opts.OverlayPath, readErr)
+			return "", "", noop, fmt.Errorf("launcher: read overlay %q: %w", opts.OverlayPath, readErr)
 		}
 		var existing map[string]map[string]string
 		if jsonErr := json.Unmarshal(data, &existing); jsonErr != nil {
-			return "", noop, fmt.Errorf("launcher: parse overlay %q: %w", opts.OverlayPath, jsonErr)
+			return "", "", noop, fmt.Errorf("launcher: parse overlay %q: %w", opts.OverlayPath, jsonErr)
 		}
 		maps.Copy(replace, existing["Replace"])
 	}
@@ -450,41 +453,42 @@ func buildCombinedOverlay(opts BuildOptions) (overlayPath string, cleanup func()
 
 	tempPaths := []string{}
 	addTemp := func(p string) { tempPaths = append(tempPaths, p) }
+	cleanup = func() {
+		for _, p := range tempPaths {
+			_ = os.Remove(p)
+			if strings.HasSuffix(p, ".mod") {
+				_ = os.Remove(strings.TrimSuffix(p, ".mod") + ".sum")
+			}
+		}
+	}
 
 	if opts.UseHarnessLoop {
 		augmentedGoMod, augErr := writeAugmentedGoMod(opts)
 		if augErr != nil {
-			return "", noop, augErr
+			return "", "", noop, augErr
 		}
+		modFilePath = augmentedGoMod
 		addTemp(augmentedGoMod)
-		targetGoModPath := filepath.Join(opts.TargetModuleDir, "go.mod")
-		replace[targetGoModPath] = augmentedGoMod
 	}
 
 	if len(replace) == 0 {
-		return "", noop, nil
+		return "", modFilePath, noop, nil
 	}
 
 	manifest := map[string]map[string]string{"Replace": replace}
 	data, marshalErr := json.MarshalIndent(manifest, "", "  ")
 	if marshalErr != nil {
-		return "", noop, fmt.Errorf("launcher: marshal overlay manifest: %w", marshalErr)
+		return "", "", noop, fmt.Errorf("launcher: marshal overlay manifest: %w", marshalErr)
 	}
 	if err := os.MkdirAll(opts.GeneratedDir, 0o755); err != nil {
-		return "", noop, fmt.Errorf("launcher: create generated dir: %w", err)
+		return "", "", noop, fmt.Errorf("launcher: create generated dir: %w", err)
 	}
 	overlayPath = filepath.Join(opts.GeneratedDir, "overlay-"+opts.DiscoveryHash+".json")
 	if err := os.WriteFile(overlayPath, data, 0o644); err != nil {
-		return "", noop, fmt.Errorf("launcher: write overlay manifest: %w", err)
+		return "", "", noop, fmt.Errorf("launcher: write overlay manifest: %w", err)
 	}
 	addTemp(overlayPath)
-
-	cleanup = func() {
-		for _, p := range tempPaths {
-			_ = os.Remove(p)
-		}
-	}
-	return overlayPath, cleanup, nil
+	return overlayPath, modFilePath, cleanup, nil
 }
 
 // writeAugmentedGoMod parses the target module's go.mod and writes an
