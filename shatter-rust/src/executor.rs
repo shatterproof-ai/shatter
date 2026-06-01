@@ -778,7 +778,7 @@ fn generate_cargo_toml_with_user_deps(
     };
     let axum_deps = if needs_axum {
         concat!(
-            "axum = { version = \"0.8\", features = [\"json\"] }\n",
+            "axum = { version = \"0.8\", features = [\"json\", \"multipart\"] }\n",
             "tower = { version = \"0.5\", features = [\"util\"] }\n",
             "http = \"1\"\n",
             "http-body-util = \"0.1\"\n",
@@ -1392,7 +1392,7 @@ fn generate_cargo_toml(
     };
     let axum_deps = if needs_axum {
         concat!(
-            "axum = { version = \"0.8\", features = [\"json\"] }\n",
+            "axum = { version = \"0.8\", features = [\"json\", \"multipart\"] }\n",
             "tower = { version = \"0.5\", features = [\"util\"] }\n",
             "http = \"1\"\n",
             "http-body-util = \"0.1\"\n",
@@ -1551,6 +1551,8 @@ enum AxumExtractor {
     /// The wrapper must early-return with a clear "not supported" error instead
     /// of emitting an uncompilable `serde_json::from_value::<State<T>>` call.
     State(String),
+    /// `Multipart` — supported by synthesizing a multipart/form-data request.
+    Multipart,
 }
 
 fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
@@ -1586,6 +1588,7 @@ fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
         "Query" => inner_type().map(AxumExtractor::Query),
         "Json" => inner_type().map(AxumExtractor::Json),
         "State" => inner_type().map(AxumExtractor::State),
+        "Multipart" => Some(AxumExtractor::Multipart),
         _ => None,
     }
 }
@@ -1899,6 +1902,7 @@ fn axum_extractor_constructor(ext: &AxumExtractor) -> &'static str {
         AxumExtractor::Query(_) => "axum::extract::Query",
         AxumExtractor::Json(_) => "axum::Json",
         AxumExtractor::State(_) => "", // unreachable: State doesn't get constructed here
+        AxumExtractor::Multipart => "", // unreachable: Multipart is synthesized as an HTTP body
     }
 }
 
@@ -2084,6 +2088,7 @@ fn generate_harness(
             let inner = match &ext {
                 AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
                 AxumExtractor::State(_) => unreachable!("State handled above"),
+                AxumExtractor::Multipart => unreachable!("Multipart handled by axum request synthesis"),
             };
             let ctor = axum_extractor_constructor(&ext);
             h.push_str(&format!(
@@ -2371,7 +2376,8 @@ fn generate_dispatch_harness(
             } else if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
                     AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
-                AxumExtractor::State(_) => unreachable!("State handled above"),
+                    AxumExtractor::State(_) => unreachable!("State handled above"),
+                    AxumExtractor::Multipart => unreachable!("Multipart handled by axum request synthesis"),
                 };
                 let ctor = axum_extractor_constructor(&ext);
                 h.push_str(&format!(
@@ -3427,7 +3433,8 @@ fn generate_crate_bridge_wrapper(
             } else if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
                     AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
-                AxumExtractor::State(_) => unreachable!("State handled above"),
+                    AxumExtractor::State(_) => unreachable!("State handled above"),
+                    AxumExtractor::Multipart => unreachable!("Multipart handled by axum request synthesis"),
                 };
                 let ctor = axum_extractor_constructor(&ext);
                 w.push_str(&format!(
@@ -4662,7 +4669,9 @@ fn generate_axum_harness(
     let has_body_extractor = mappings.iter().any(|m| {
         matches!(
             m.kind,
-            crate::adapters::AxumExtractorKind::JsonBody | crate::adapters::AxumExtractorKind::FormBody
+            crate::adapters::AxumExtractorKind::JsonBody
+                | crate::adapters::AxumExtractorKind::FormBody
+                | crate::adapters::AxumExtractorKind::MultipartBody
         )
     });
     let default_method = if has_body_extractor { "POST" } else { "GET" };
@@ -4736,18 +4745,90 @@ fn generate_axum_harness(
         .iter()
         .find(|m| m.kind == crate::adapters::AxumExtractorKind::JsonBody)
         .map(|m| m.param_index);
-    let default_body_json = json_param_index
-        .and_then(|idx| param_types.get(idx))
-        .and_then(|ty| match classify_axum_extractor(ty) {
-            Some(AxumExtractor::Json(inner)) => Some(axum_json_default_value(type_sources, &inner)),
-            _ => None,
-        })
-        .unwrap_or(Value::Null);
-    let default_body_json = serde_json::to_string(&default_body_json).map_err(|e| {
-        ExecuteError::InstrumentError(format!("cannot serialize default axum JSON body: {e}"))
-    })?;
-    let default_body_json_literal = rust_string_literal(&default_body_json);
-    if let Some(idx) = json_param_index {
+    let has_multipart_body = mappings
+        .iter()
+        .any(|m| m.kind == crate::adapters::AxumExtractorKind::MultipartBody);
+    if has_multipart_body {
+        h.push_str(r#"        let multipart_input = input_obj.get("multipart").cloned().or_else(|| axum_recipe_field("multipart"));
+        let multipart_boundary = multipart_input
+            .as_ref()
+            .and_then(|v| v.get("boundary"))
+            .and_then(Value::as_str)
+            .unwrap_or("SHATTER-BOUNDARY");
+        let multipart_field_name = multipart_input
+            .as_ref()
+            .and_then(|v| v.get("field"))
+            .and_then(Value::as_str)
+            .unwrap_or("file");
+        let multipart_filename = multipart_input
+            .as_ref()
+            .and_then(|v| v.get("filename"))
+            .and_then(Value::as_str)
+            .unwrap_or("shatter.png");
+        let multipart_content_type = multipart_input
+            .as_ref()
+            .and_then(|v| v.get("content_type"))
+            .and_then(Value::as_str)
+            .unwrap_or("image/png");
+        let multipart_file_bytes = multipart_input
+            .as_ref()
+            .and_then(|v| v.get("bytes"))
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_u64().map(|byte| byte as u8))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|bytes| !bytes.is_empty())
+            .or_else(|| {
+                multipart_input
+                    .as_ref()
+                    .and_then(|v| v.get("text"))
+                    .and_then(Value::as_str)
+                    .map(|text| text.as_bytes().to_vec())
+            })
+            .unwrap_or_else(|| vec![
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+                0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0,
+                0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3, 2,
+                0, 239, 191, 167, 219, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+                130,
+            ]);
+        let mut multipart_body = Vec::new();
+        multipart_body.extend_from_slice(format!("--{}\r\n", multipart_boundary).as_bytes());
+        multipart_body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
+                multipart_field_name, multipart_filename
+            )
+            .as_bytes(),
+        );
+        multipart_body.extend_from_slice(
+            format!("Content-Type: {}\r\n\r\n", multipart_content_type).as_bytes(),
+        );
+        multipart_body.extend_from_slice(&multipart_file_bytes);
+        multipart_body.extend_from_slice(format!("\r\n--{}--\r\n", multipart_boundary).as_bytes());
+        let body_bytes = axum::body::Body::from(multipart_body);
+        let content_type_header = format!("multipart/form-data; boundary={}", multipart_boundary);
+
+"#);
+    } else if let Some(idx) = json_param_index {
+        let default_body_json = json_param_index
+            .and_then(|idx| param_types.get(idx))
+            .and_then(|ty| match classify_axum_extractor(ty) {
+                Some(AxumExtractor::Json(inner)) => {
+                    Some(axum_json_default_value(type_sources, &inner))
+                }
+                _ => None,
+            })
+            .unwrap_or(Value::Null);
+        let default_body_json = serde_json::to_string(&default_body_json).map_err(|e| {
+            ExecuteError::InstrumentError(format!(
+                "cannot serialize default axum JSON body: {e}"
+            ))
+        })?;
+        let default_body_json_literal = rust_string_literal(&default_body_json);
         h.push_str(&format!(
             "        let body_json = input_obj.get(\"body\").cloned().or_else(|| axum_recipe_field(\"body\")).unwrap_or_else(|| inputs.get({idx}).cloned().unwrap_or(Value::Null));\n"
         ));
@@ -4755,6 +4836,7 @@ fn generate_axum_harness(
             "        let body_json = if body_json.is_null() {{ serde_json::from_str::<Value>({default_body_json_literal}).unwrap_or(Value::Null) }} else {{ body_json }};\n"
         ));
         h.push_str("        let body_bytes = axum::body::Body::from(serde_json::to_vec(&body_json).unwrap_or_default());\n\n");
+        h.push_str("        let content_type_header = \"application/json\".to_string();\n\n");
     } else {
         h.push_str("        let body_json = input_obj.get(\"body\").cloned().or_else(|| axum_recipe_field(\"body\")).unwrap_or(Value::Null);\n");
         h.push_str("        let body_bytes = if body_json.is_null() {\n");
@@ -4762,12 +4844,13 @@ fn generate_axum_harness(
         h.push_str("        } else {\n");
         h.push_str("            axum::body::Body::from(serde_json::to_vec(&body_json).unwrap_or_default())\n");
         h.push_str("        };\n\n");
+        h.push_str("        let content_type_header = \"application/json\".to_string();\n\n");
     }
 
     h.push_str("        let request = http::Request::builder()\n");
     h.push_str("            .method(method_str)\n");
     h.push_str("            .uri(&uri)\n");
-    h.push_str("            .header(\"content-type\", \"application/json\")\n");
+    h.push_str("            .header(\"content-type\", content_type_header.as_str())\n");
 
     // Add custom headers.
     h.push_str("            ;\n");
@@ -5139,7 +5222,7 @@ fn generate_axum_crate_driver_cargo_toml(
     for (name, line) in [
         ("serde_json", r#"serde_json = "1""#),
         ("tokio", r#"tokio = { version = "1", features = ["full"] }"#),
-        ("axum", r#"axum = { version = "0.8", features = ["json"] }"#),
+        ("axum", r#"axum = { version = "0.8", features = ["json", "multipart"] }"#),
         ("tower", r#"tower = { version = "0.5", features = ["util"] }"#),
         ("http", r#"http = "1""#),
         ("http-body-util", r#"http-body-util = "0.1""#),
@@ -6269,6 +6352,80 @@ pub async fn maybe(Json(payload): Json<Option<String>>) -> String {
     }
 
     #[test]
+    fn execute_axum_handler_sends_default_multipart_file_part() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::Multipart;
+
+pub async fn upload(mut multipart: Multipart) -> String {
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap_or("").to_string();
+        let filename = field.file_name().unwrap_or("").to_string();
+        let bytes = field.bytes().await.unwrap();
+        return format!("{}:{}:{}", name, filename, bytes.len());
+    }
+    "empty".to_string()
+}
+"#,
+        )
+        .expect("write source");
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::MultipartBody,
+            type_name: "Multipart".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "upload",
+            &[serde_json::Value::Null],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result
+                        .return_value
+                        .as_ref()
+                        .and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                let body = result
+                    .return_value
+                    .as_ref()
+                    .and_then(|v| v.get("body"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                assert!(
+                    body.starts_with("file:shatter.png:"),
+                    "expected default multipart file part, got {result:?}"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_sends_default_multipart_file_part: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
     fn axum_json_default_uses_qualified_structs_and_unique_bare_fallback() {
         let domain = r#"
 pub struct Duplicate {
@@ -6412,6 +6569,12 @@ pub struct Nested {
     fn classify_axum_state_extractor_returns_state() {
         let ext = classify_axum_extractor("State<AppState>").unwrap();
         assert_eq!(ext, AxumExtractor::State("AppState".to_string()));
+    }
+
+    #[test]
+    fn classify_axum_multipart_extractor_returns_multipart() {
+        let ext = classify_axum_extractor("axum::extract::Multipart").unwrap();
+        assert_eq!(ext, AxumExtractor::Multipart);
     }
 
     #[test]

@@ -369,6 +369,8 @@ pub enum AxumExtractorKind {
     AppState,
     /// `Form<T>` — request body as form-urlencoded.
     FormBody,
+    /// `Multipart` — request body as multipart/form-data.
+    MultipartBody,
     /// `Extension<T>` — request extension layer.
     Extension,
     /// `RawBody` — raw request body bytes.
@@ -419,6 +421,7 @@ pub fn classify_axum_extractors(
                 "Query" => AxumExtractorKind::QueryParams,
                 "State" => AxumExtractorKind::AppState,
                 "Form" => AxumExtractorKind::FormBody,
+                "Multipart" => AxumExtractorKind::MultipartBody,
                 "Extension" => AxumExtractorKind::Extension,
                 "RawBody" => AxumExtractorKind::RawBody,
                 "RawQuery" => AxumExtractorKind::RawQuery,
@@ -1090,7 +1093,7 @@ mod tests {
         let params = vec![param_with_type_name("multipart", "Multipart")];
         let mappings = classify_axum_extractors(&params);
         assert_eq!(mappings.len(), 1);
-        assert_ne!(mappings[0].kind, AxumExtractorKind::Unsupported);
+        assert_eq!(mappings[0].kind, AxumExtractorKind::MultipartBody);
     }
 
     #[test]
@@ -1149,9 +1152,10 @@ mod tests {
             param_with_type_name("h", "RawQuery"),
             param_with_type_name("i", "Host"),
             param_with_type_name("j", "OriginalUri"),
+            param_with_type_name("k", "Multipart"),
         ];
         let mappings = classify_axum_extractors(&params);
-        assert_eq!(mappings.len(), 10);
+        assert_eq!(mappings.len(), 11);
         assert_eq!(mappings[0].kind, AxumExtractorKind::JsonBody);
         assert_eq!(mappings[1].kind, AxumExtractorKind::PathParams);
         assert_eq!(mappings[2].kind, AxumExtractorKind::QueryParams);
@@ -1162,6 +1166,7 @@ mod tests {
         assert_eq!(mappings[7].kind, AxumExtractorKind::RawQuery);
         assert_eq!(mappings[8].kind, AxumExtractorKind::Host);
         assert_eq!(mappings[9].kind, AxumExtractorKind::OriginalUri);
+        assert_eq!(mappings[10].kind, AxumExtractorKind::MultipartBody);
     }
 
     // ── Axum adapter strategy tests ──
