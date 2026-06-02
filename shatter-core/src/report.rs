@@ -960,6 +960,19 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         .iter()
         .map(|(_, _mocks, r)| r.path_constraints.len())
         .sum();
+    let solver_guided_inputs = exploration
+        .discoveries
+        .iter()
+        .filter(|(_, method)| {
+            matches!(
+                method,
+                crate::coverage_metrics::DiscoveryMethod::Z3
+                    | crate::coverage_metrics::DiscoveryMethod::McdcTarget
+                    | crate::coverage_metrics::DiscoveryMethod::Drilled
+                    | crate::coverage_metrics::DiscoveryMethod::BoundarySearch
+            )
+        })
+        .count();
 
     let lines_covered = recovered_lines_covered(exploration);
     let coverage_pct = if exploration.total_lines > 0 {
@@ -1018,7 +1031,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         completion_reason,
         constraint_stats: ConstraintStats {
             total_constraints,
-            solver_guided_inputs: 0,
+            solver_guided_inputs,
         },
         iterations: exploration.iterations,
         lines_covered,
