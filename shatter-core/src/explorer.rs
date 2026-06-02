@@ -4066,6 +4066,15 @@ mod tests {
             .expect("spawn recording frontend")
     }
 
+    fn observer_log_path(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix("shatter-observer-test-")
+            .tempdir()
+            .expect("create observer log tempdir");
+        let path = dir.path().join(format!("{name}.log"));
+        (dir, path)
+    }
+
     fn stub_analysis() -> FunctionAnalysis {
         use crate::types::{ParamInfo, TypeInfo};
         FunctionAnalysis {
@@ -4092,15 +4101,7 @@ mod tests {
 
     #[tokio::test]
     async fn explore_function_observer_pool_uses_multiple_frontend_processes() {
-        let log_path = std::env::temp_dir().join(format!(
-            "shatter-observer-pool-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_file(&log_path);
+        let (_log_dir, log_path) = observer_log_path("pool");
 
         let observer_frontend_config = recording_frontend_config(&log_path);
         let mut frontend = spawn_recording_frontend(&log_path).await;
@@ -4197,15 +4198,7 @@ mod tests {
 
     #[tokio::test]
     async fn explore_function_observer_pool_runs_function_setup_per_observer() {
-        let log_path = std::env::temp_dir().join(format!(
-            "shatter-observer-setup-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_file(&log_path);
+        let (_log_dir, log_path) = observer_log_path("setup");
 
         let observer_frontend_config = recording_frontend_config(&log_path);
         let mut frontend = spawn_recording_frontend(&log_path).await;
@@ -4266,15 +4259,7 @@ mod tests {
 
     #[tokio::test]
     async fn explore_function_observer_pool_drains_in_flight_on_timeout() {
-        let log_path = std::env::temp_dir().join(format!(
-            "shatter-observer-timeout-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_file(&log_path);
+        let (_log_dir, log_path) = observer_log_path("timeout");
 
         let observer_frontend_config = recording_frontend_config(&log_path);
         let mut frontend = spawn_recording_frontend(&log_path).await;
@@ -4336,15 +4321,7 @@ mod tests {
 
     #[tokio::test]
     async fn explore_function_observer_pool_suppresses_duplicate_candidates() {
-        let log_path = std::env::temp_dir().join(format!(
-            "shatter-observer-dedup-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_file(&log_path);
+        let (_log_dir, log_path) = observer_log_path("dedup");
 
         let duplicate = vec![serde_json::json!(7)];
         let observer_frontend_config = recording_frontend_config(&log_path);
@@ -4413,15 +4390,7 @@ mod tests {
 
     #[tokio::test]
     async fn explore_function_observer_pool_budget_counts_executed_not_enqueued() {
-        let log_path = std::env::temp_dir().join(format!(
-            "shatter-observer-budget-{}-{}.log",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_file(&log_path);
+        let (_log_dir, log_path) = observer_log_path("budget");
 
         let duplicate = vec![serde_json::json!(11)];
         let unique = vec![serde_json::json!(12)];
