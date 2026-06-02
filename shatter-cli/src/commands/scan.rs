@@ -28,6 +28,18 @@ fn dry_run_deadline_remaining(deadline: Option<Instant>) -> Option<Duration> {
     deadline.map(|d| d.saturating_duration_since(Instant::now()))
 }
 
+fn scan_run_deadline(run_started: Instant, timeout_total: u64) -> Option<Instant> {
+    if timeout_total > 0 {
+        Some(run_started + Duration::from_secs(timeout_total))
+    } else {
+        None
+    }
+}
+
+fn scan_orchestrator_timeout_total(deadline: Option<Instant>) -> Option<Duration> {
+    dry_run_deadline_remaining(deadline)
+}
+
 /// str-bbyy: fail fast if the dry-run deadline has already elapsed at a
 /// staging boundary (e.g. between discovery and batch analysis, or
 /// between batch analysis and plan emission). `timeout_total_secs`
@@ -122,17 +134,13 @@ pub(crate) async fn run_scan(
     require_rust: bool,
     failure_policy: shatter_core::scan_orchestrator::ScanFailurePolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // str-bbyy: anchor for the dry-run total-timeout deadline. Captured
-    // before discovery so file enumeration and batch analysis are both
-    // accounted for. `dry_run_deadline` is `Some` only when the caller
-    // requested both `--dry-run` and a positive `--timeout-total`; full
-    // scans use the in-orchestrator deadline (`ScanConfig.timeout_total`).
+    // Anchor the total-timeout deadline before discovery so file enumeration
+    // and batch analysis are charged against the same wall-clock budget as
+    // exploration. `--timeout-total 0` preserves the documented disabled
+    // deadline behavior.
     let run_started = Instant::now();
-    let dry_run_deadline: Option<Instant> = if dry_run && timeout_total > 0 {
-        Some(run_started + Duration::from_secs(timeout_total))
-    } else {
-        None
-    };
+    let run_deadline: Option<Instant> = scan_run_deadline(run_started, timeout_total);
+    let dry_run_deadline: Option<Instant> = if dry_run { run_deadline } else { None };
 
     let scan_pool_path = if no_seeds {
         None
@@ -514,12 +522,10 @@ pub(crate) async fn run_scan(
         )
     };
 
-    // str-bbyy: under `--dry-run --timeout-total`, enforce the total
-    // deadline during batch analysis — the pre-fix Kapow audit observed
-    // a 120s dry-run still batch-analyzing past the deadline. Full
-    // scans continue to enforce the deadline inside the scan
-    // orchestrator (`ScanConfig.timeout_total`) so this wrapper is
-    // dry-run only.
+    // Enforce the total deadline during batch analysis. Dry-runs use this
+    // to avoid emitting stale plans; full scans use the same run-start
+    // deadline so discovery/analysis time is charged before the remaining
+    // budget is handed to the scan orchestrator.
     let registry = {
         let fut = batch_analyze::batch_analyze(
             &mut frontends,
@@ -527,15 +533,23 @@ pub(crate) async fn run_scan(
             analysis_cache.as_ref(),
             project_root_str.as_deref(),
         );
-        if let Some(remaining) = dry_run_deadline_remaining(dry_run_deadline) {
+        if let Some(remaining) = dry_run_deadline_remaining(run_deadline) {
             tokio::time::timeout(remaining, fut)
                 .await
                 .map_err(|_| -> Box<dyn std::error::Error> {
-                    format!(
-                        "scan --dry-run aborted: --timeout-total {timeout_total}s exceeded during batch analysis. \
-                         Plan emission skipped. Re-run with a larger --timeout-total or narrow scope with --include / --language."
-                    )
-                    .into()
+                    if dry_run {
+                        format!(
+                            "scan --dry-run aborted: --timeout-total {timeout_total}s exceeded during batch analysis. \
+                             Plan emission skipped. Re-run with a larger --timeout-total or narrow scope with --include / --language."
+                        )
+                        .into()
+                    } else {
+                        format!(
+                            "scan aborted: --timeout-total {timeout_total}s exceeded during batch analysis. \
+                             Re-run with a larger --timeout-total or narrow scope with --include / --language."
+                        )
+                        .into()
+                    }
                 })?
                 .map_err(|e| format!("batch analyze failed: {e}"))?
         } else {
@@ -981,11 +995,7 @@ pub(crate) async fn run_scan(
         },
         mock_overrides,
         resume_path: resolved_resume_path,
-        timeout_total: if timeout_total == 0 {
-            None
-        } else {
-            Some(Duration::from_secs(timeout_total))
-        },
+        timeout_total: scan_orchestrator_timeout_total(run_deadline),
         pool_path: scan_pool_path,
         project_root: project_root_str.clone(),
         config_dir: Some(std::path::PathBuf::from(directory)),
@@ -1894,6 +1904,41 @@ mod tests {
         assert!(
             remaining > Duration::from_secs(25),
             "expected ~30s remaining, got {remaining:?}",
+        );
+    }
+
+    #[test]
+    fn full_scan_gets_total_deadline_from_run_start() {
+        let started = Instant::now();
+        let deadline = scan_run_deadline(started, 30).expect("positive timeout creates deadline");
+        assert_eq!(
+            deadline.duration_since(started),
+            Duration::from_secs(30),
+            "full scans should count discovery and analysis against --timeout-total",
+        );
+    }
+
+    #[test]
+    fn zero_scan_total_disables_total_deadline() {
+        assert!(
+            scan_run_deadline(Instant::now(), 0).is_none(),
+            "--timeout-total 0 keeps the existing disabled-deadline behavior",
+        );
+    }
+
+    #[test]
+    fn full_scan_orchestrator_budget_uses_remaining_total_time() {
+        let started = Instant::now() - Duration::from_secs(12);
+        let deadline = scan_run_deadline(started, 30);
+        let remaining = scan_orchestrator_timeout_total(deadline)
+            .expect("positive timeout should leave a remaining orchestrator budget");
+        assert!(
+            remaining <= Duration::from_secs(19),
+            "analysis/discovery time must be charged against the orchestrator budget; got {remaining:?}",
+        );
+        assert!(
+            remaining >= Duration::from_secs(16),
+            "test setup should leave roughly 18s of the 30s total budget; got {remaining:?}",
         );
     }
 
