@@ -4714,6 +4714,7 @@ mod tests {
             max_iterations: Some(20),
             max_executions: Some(100),
             plateau_threshold: 10,
+            seed: Some(7),
             ..Default::default()
         };
 
