@@ -455,23 +455,39 @@ impl Frontend {
         }
     }
 
-    /// If `outcome` is a `SubprocessExited` sentinel from the read loop,
-    /// wait briefly for the child to terminate and attach the exit status
-    /// plus captured stderr tail. Other errors and `Ok` pass through.
+    /// If `outcome` indicates the subprocess has gone away, wait briefly for
+    /// the child to terminate and attach the exit status plus captured stderr
+    /// tail. Other errors and `Ok` pass through.
     async fn enrich_subprocess_exit(
         &mut self,
         outcome: Result<Response, FrontendError>,
     ) -> Result<Response, FrontendError> {
-        let Err(FrontendError::SubprocessExited { .. }) = &outcome else {
-            return outcome;
+        let exit_status = match outcome {
+            Err(FrontendError::SubprocessExited { .. }) => {
+                match tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
+                    Ok(Ok(status)) => Some(status),
+                    _ => None,
+                }
+            }
+            Err(FrontendError::Write(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                match tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
+                    Ok(Ok(status)) => Some(status),
+                    _ => return Err(FrontendError::Write(error)),
+                }
+            }
+            other => return other,
         };
-        let exit_status = match tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
-            Ok(Ok(status)) => Some(status),
-            _ => None,
-        };
+        self.subprocess_exited_error(exit_status).await
+    }
+
+    async fn subprocess_exited_error(
+        &mut self,
+        exit_status: Option<std::process::ExitStatus>,
+    ) -> Result<Response, FrontendError> {
         // The stderr capture task only finishes once the child closes stderr,
-        // which `wait()` above guarantees. Awaiting the task ensures any
-        // buffered bytes have been copied into `stderr_buf` before we drain.
+        // which `wait()` above guarantees when an exit status is present.
+        // Awaiting the task ensures any buffered bytes have been copied into
+        // `stderr_buf` before we drain.
         if let Some(handle) = self.stderr_task.take() {
             let _ = tokio::time::timeout(POST_EOF_WAIT, handle).await;
         }
@@ -1003,7 +1019,9 @@ mod tests {
              echo 'fatal: out of memory during module init' >&2\n\
              exit 137\n",
         );
-        let mut frontend = Frontend::spawn(&config).await.expect("handshake should succeed");
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("handshake should succeed");
         let result = frontend
             .send(ProtoCommand::Analyze {
                 file: "x.ts".into(),
@@ -1030,6 +1048,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_broken_pipe_after_child_exit_surfaces_subprocess_diagnostic() {
+        let (config, _keep) = crashing_frontend_config(
+            "read -r line\n\
+             echo '{\"protocol_version\":\"0.1.0\",\"id\":1,\"status\":\"handshake\",\"frontend_version\":\"0.1.0\",\"language\":\"crash-ts\",\"capabilities\":[]}'\n\
+             echo 'fatal: child exited before request write' >&2\n\
+             exit 23\n",
+        );
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("handshake should succeed");
+        for _ in 0..20 {
+            if !frontend.is_alive() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        let result = frontend
+            .send(ProtoCommand::Analyze {
+                file: "x.ts".into(),
+                function: None,
+                project_root: None,
+                execution_profile: None,
+            })
+            .await;
+
+        match result {
+            Err(FrontendError::SubprocessExited {
+                exit_status,
+                stderr_tail,
+                ..
+            }) => {
+                assert!(
+                    stderr_tail.contains("fatal: child exited before request write"),
+                    "stderr tail should include the crash message, got: {stderr_tail:?}"
+                );
+                let status = exit_status.expect("exit status should be captured");
+                assert_eq!(status.code(), Some(23));
+            }
+            other => panic!("expected SubprocessExited, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn shutdown_timeout_kills_unresponsive_frontend() {
         let (mut config, _keep) = crashing_frontend_config(
             "read -r line\n\
@@ -1039,7 +1101,9 @@ mod tests {
         );
         config.request_timeout = Duration::from_millis(100);
 
-        let frontend = Frontend::spawn(&config).await.expect("handshake should succeed");
+        let frontend = Frontend::spawn(&config)
+            .await
+            .expect("handshake should succeed");
         let child_pid = frontend.child.id().expect("child pid should be known");
 
         let result = frontend.shutdown().await;
@@ -1086,7 +1150,9 @@ mod tests {
         // Handshake must succeed — use a long timeout just for that step, then
         // override to a short one for the subsequent slow request.
         config.request_timeout = Duration::from_secs(5);
-        let mut frontend = Frontend::spawn(&config).await.expect("spawn/handshake failed");
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("spawn/handshake failed");
 
         // Now shorten the timeout so the slow analyze triggers it.
         frontend.request_timeout = Duration::from_millis(300);
@@ -1134,8 +1200,13 @@ mod tests {
         let mut config = slow_once_frontend_config();
         // Start with long timeout for handshake.
         config.request_timeout = Duration::from_secs(5);
-        let mut frontend = Frontend::spawn(&config).await.expect("spawn/handshake failed");
-        assert!(!frontend.is_tainted(), "fresh frontend should not be tainted");
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("spawn/handshake failed");
+        assert!(
+            !frontend.is_tainted(),
+            "fresh frontend should not be tainted"
+        );
 
         // Trigger a timeout.
         frontend.request_timeout = Duration::from_millis(300);
