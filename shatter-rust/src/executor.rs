@@ -4717,7 +4717,7 @@ fn generate_axum_harness(
         let default_path_literal = rust_string_literal(&default_path);
         let default_path_value_literal = rust_string_literal(&default_path_value);
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = axum_recipe_field(\"path\") {{\n                if let Some(path) = value.as_str() {{\n                    let expected_segments = {default_path_literal}.split('/').filter(|segment| !segment.is_empty()).count();\n                    let actual_segments = path.split('?').next().unwrap_or(path).split('/').filter(|segment| !segment.is_empty()).count();\n                    if actual_segments == expected_segments {{\n                        return path.to_string();\n                    }}\n                }}\n            }}\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = axum_recipe_field(\"path\") {{\n                if let Some(path) = value.as_str() {{\n                    let expected_pattern_segments = {default_path_literal}.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                    let expected_segments = expected_pattern_segments.len();\n                    let (path_without_query, query_suffix) = match path.split_once('?') {{\n                        Some((path, query)) => (path, format!(\"?{{query}}\")),\n                        None => (path, String::new()),\n                    }};\n                    let actual_segments = path_without_query.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                    if actual_segments.len() == expected_segments {{\n                        return path.to_string();\n                    }}\n                    if !actual_segments.is_empty() && actual_segments.len() < expected_segments {{\n                        let static_prefix_matches = actual_segments.iter().zip(expected_pattern_segments.iter()).all(|(actual, expected)| expected.starts_with('{{') || *actual == *expected);\n                        if static_prefix_matches {{\n                            let mut composed = actual_segments.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>();\n                            let default_segments = {default_path_value_literal}.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                            composed.extend(default_segments.into_iter().skip(composed.len()).take(expected_segments.saturating_sub(composed.len())).map(str::to_string));\n                            if composed.len() == expected_segments {{\n                                return format!(\"/{{}}{{}}\", composed.join(\"/\"), query_suffix);\n                            }}\n                        }}\n                    }}\n                }}\n            }}\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
         ));
     } else {
         h.push_str(&format!(
@@ -6220,7 +6220,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
     }
 
     #[test]
-    fn execute_axum_handler_ignores_short_native_recipe_path_for_tuple_path() {
+    fn execute_axum_handler_extends_short_native_recipe_path_for_tuple_path() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6236,8 +6236,12 @@ pub struct AppStateLike;
 pub async fn handler(
     State(_state): State<AppStateLike>,
     Path((workspace_id, item_id)): Path<(u64, u64)>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> String {
-    format!("{workspace_id}:{item_id}")
+    format!(
+        "{workspace_id}:{item_id}:{}",
+        query.get("debug").map(String::as_str).unwrap_or("none")
+    )
 }
 "#,
         )
@@ -6268,9 +6272,9 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
                 "language": "rust",
                 "file": state_generator,
                 "name": "RecipePathState",
-                "recipe": {
+                        "recipe": {
                     "axum": {
-                        "path": "/test/42"
+                        "path": "/test/42?debug=true"
                     }
                 }
             }
@@ -6286,6 +6290,11 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
                 kind: AxumExtractorKind::PathParams,
                 type_name: "Path".to_string(),
             },
+            AxumExtractorMapping {
+                param_index: 2,
+                kind: AxumExtractorKind::QueryParams,
+                type_name: "Query".to_string(),
+            },
         ];
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
@@ -6294,7 +6303,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
         let result = execute_axum_handler(
             &source_file.to_string_lossy(),
             "handler",
-            &[state_input, serde_json::Value::Null],
+            &[state_input, serde_json::Value::Null, serde_json::Value::Null],
             &[],
             30_000,
             &mappings,
@@ -6315,12 +6324,12 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
                 );
                 assert_eq!(
                     result.return_value.as_ref().and_then(|v| v.get("body")),
-                    Some(&serde_json::json!("1:2"))
+                    Some(&serde_json::json!("42:2:true"))
                 );
             }
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
                 eprintln!(
-                    "skipping execute_axum_handler_ignores_short_native_recipe_path_for_tuple_path: cargo unavailable ({msg})"
+                    "skipping execute_axum_handler_extends_short_native_recipe_path_for_tuple_path: cargo unavailable ({msg})"
                 );
             }
             Err(err) => panic!("execute failed: {err:?}"),
@@ -6335,7 +6344,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
                 "name": "RecipePathState",
                 "recipe": {
                     "axum": {
-                        "path": "/test/42/99"
+                        "path": "/test/42/99?debug=full"
                     }
                 }
             }
@@ -6343,7 +6352,11 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
         let result = execute_axum_handler(
             &source_file.to_string_lossy(),
             "handler",
-            &[full_arity_state_input, serde_json::Value::Null],
+            &[
+                full_arity_state_input,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            ],
             &[],
             30_000,
             &mappings,
@@ -6363,12 +6376,12 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
                 );
                 assert_eq!(
                     result.return_value.as_ref().and_then(|v| v.get("body")),
-                    Some(&serde_json::json!("42:99"))
+                    Some(&serde_json::json!("42:99:full"))
                 );
             }
             Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
                 eprintln!(
-                    "skipping execute_axum_handler_ignores_short_native_recipe_path_for_tuple_path full arity check: cargo unavailable ({msg})"
+                    "skipping execute_axum_handler_extends_short_native_recipe_path_for_tuple_path full arity check: cargo unavailable ({msg})"
                 );
             }
             Err(err) => panic!("execute failed: {err:?}"),
