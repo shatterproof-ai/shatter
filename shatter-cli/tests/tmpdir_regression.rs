@@ -16,7 +16,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 mod common;
 
@@ -52,6 +52,16 @@ fn snapshot_tmp_shatter_entries() -> HashSet<PathBuf> {
     out
 }
 
+fn shatter_entry_matches_pid(path: &std::path::Path, pid: u32) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let pid = pid.to_string();
+    name.contains(&format!("-{pid}-"))
+        || name.ends_with(&format!("-{pid}"))
+        || name.contains(&format!("-{pid}."))
+}
+
 #[test]
 fn explore_respects_tmpdir_no_host_tmp_pollution() {
     // Project fixture with a tiny Go function so scan has real work to do
@@ -74,7 +84,7 @@ fn explore_respects_tmpdir_no_host_tmp_pollution() {
     let _host_tmp_lock = common::host_tmp_shatter_lock();
     let before = snapshot_tmp_shatter_entries();
 
-    let output = Command::new(shatter_binary())
+    let child = Command::new(shatter_binary())
         .env("TMPDIR", &sentinel_path)
         .args([
             "scan",
@@ -92,11 +102,18 @@ fn explore_respects_tmpdir_no_host_tmp_pollution() {
             "-o",
         ])
         .arg(&report_path)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("invoke shatter scan");
+    let child_pid = child.id();
+    let output = child.wait_with_output().expect("wait for shatter scan");
 
     let after = snapshot_tmp_shatter_entries();
-    let new_entries: Vec<_> = after.difference(&before).collect();
+    let new_entries: Vec<_> = after
+        .difference(&before)
+        .filter(|path| shatter_entry_matches_pid(path, child_pid))
+        .collect();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
