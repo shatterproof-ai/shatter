@@ -49,10 +49,12 @@ fn explore_with_external_output_and_no_cache_no_seeds_writes_no_project_local_di
     // Output goes to a separate tempdir — explicit external path.
     let out_dir = tempfile::tempdir().expect("create output tempdir");
     let report_path = out_dir.path().join("report.md");
+    let command_tmp = tempfile::tempdir().expect("create command tmpdir");
 
     let target_arg = format!("{}:Add", target_file.to_str().expect("utf8 target"));
 
     let output = Command::new(shatter_binary())
+        .env("TMPDIR", command_tmp.path())
         .args([
             "explore",
             &target_arg,

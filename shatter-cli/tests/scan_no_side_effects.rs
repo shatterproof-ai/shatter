@@ -41,8 +41,10 @@ fn scan_with_external_output_and_no_cache_no_seeds_writes_no_project_local_dirs(
     // Output goes to a separate tempdir — explicit external path.
     let out_dir = tempfile::tempdir().expect("create output tempdir");
     let report_path = out_dir.path().join("scan.json");
+    let command_tmp = tempfile::tempdir().expect("create command tmpdir");
 
     let output = Command::new(shatter_binary())
+        .env("TMPDIR", command_tmp.path())
         .args([
             "scan",
             project_root.to_str().expect("utf8 project path"),
