@@ -390,9 +390,7 @@ pub enum ScanError {
     Cycle(#[from] CallGraphError),
     #[error("frontend error: {0}")]
     Frontend(#[from] FrontendError),
-    #[error(
-        "frontend transport retry budget exhausted after {attempts} attempt(s): {message}"
-    )]
+    #[error("frontend transport retry budget exhausted after {attempts} attempt(s): {message}")]
     FrontendRetryExhausted { attempts: usize, message: String },
     #[error("stratum error: {0}")]
     Stratum(String),
@@ -2517,9 +2515,8 @@ async fn run_layer_batched(
         // prevent cascading Timeout/IdMismatch across subsequent tasks.
         let frontend_error = matches!(
             result,
-            PhasedOutcome::Failed(ScanError::Explore(
-                ExploreError::Frontend(_),
-            )) | PhasedOutcome::Failed(ScanError::Frontend(_))
+            PhasedOutcome::Failed(ScanError::Explore(ExploreError::Frontend(_),))
+                | PhasedOutcome::Failed(ScanError::Frontend(_))
         );
         let poisoned = fe.is_tainted() || frontend_error;
         if timed_out || !fe.is_alive() || poisoned {
@@ -2615,8 +2612,7 @@ async fn run_layer_batched(
                     acc.cumulative_behaviors = func_result.behavior_map.behaviors.len();
                 }
 
-                outcomes[batch_config.task_index] =
-                    Some(FunctionOutcome::Success(func_result));
+                outcomes[batch_config.task_index] = Some(FunctionOutcome::Success(func_result));
 
                 scheduler.record_outcome(BatchOutcome {
                     task_index: batch_config.task_index,
@@ -4327,6 +4323,8 @@ pub async fn parallel_scan_with_progress(
                         );
 
                         let mut frontend_transport_attempts = 1usize;
+                        let mut retried_build_timeout = false;
+                        let mut phase_build_timeout = build_timeout;
                         let result = loop {
                             let Some(fe) = frontend.as_mut() else {
                                 break PhasedOutcome::Failed(ScanError::Frontend(
@@ -4350,10 +4348,27 @@ pub async fn parallel_scan_with_progress(
                                 &input_pool,
                                 &genetic_config,
                                 &cache,
-                                build_timeout,
+                                phase_build_timeout,
                                 timeout,
                             )
                             .await;
+
+                            if matches!(result, PhasedOutcome::BuildTimedOut(_))
+                                && !retried_build_timeout
+                            {
+                                retried_build_timeout = true;
+                                phase_build_timeout = build_timeout_retry_budget(build_timeout);
+                                drop(frontend.take());
+                                match Frontend::spawn(&pool.config).await {
+                                    Ok(replacement) => {
+                                        frontend = Some(replacement);
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        break PhasedOutcome::Failed(ScanError::Frontend(error));
+                                    }
+                                }
+                            }
 
                             let Some(retry_source) =
                                 retryable_frontend_transport_failure_source(&result)
@@ -4406,9 +4421,8 @@ pub async fn parallel_scan_with_progress(
                         // relative to remaining tasks — absorb the dead slot instead.
                         let frontend_error = matches!(
                             result,
-                            PhasedOutcome::Failed(ScanError::Explore(
-                                ExploreError::Frontend(_),
-                            )) | PhasedOutcome::Failed(ScanError::Frontend(_))
+                            PhasedOutcome::Failed(ScanError::Explore(ExploreError::Frontend(_),))
+                                | PhasedOutcome::Failed(ScanError::Frontend(_))
                         );
                         if let Some(mut frontend) = frontend {
                             let poisoned = frontend.is_tainted() || frontend_error;
@@ -4935,10 +4949,7 @@ async fn fetch_default_execute_plan_for_method(
                 .find(|p| !p.receiver_kind.is_empty())
         }
         Err(e) => {
-            log::debug!(
-                "[scan] planner fetch failed for {}: {e}",
-                analysis.name,
-            );
+            log::debug!("[scan] planner fetch failed for {}: {e}", analysis.name,);
             None
         }
     }
@@ -4978,9 +4989,15 @@ fn phase_timeout_reason(phase: &str, d: Duration) -> String {
 }
 
 const SHARED_POOL_TASK_CLEANUP_GRACE: Duration = Duration::from_secs(5);
+const BUILD_TIMEOUT_RETRY_FACTOR: u32 = 2;
+
+fn build_timeout_retry_budget(build_timeout: Duration) -> Duration {
+    build_timeout.saturating_mul(BUILD_TIMEOUT_RETRY_FACTOR)
+}
 
 fn shared_pool_task_watchdog(build_timeout: Duration, timeout_per_fn: Duration) -> Duration {
     build_timeout
+        .saturating_add(build_timeout_retry_budget(build_timeout))
         .saturating_add(timeout_per_fn)
         .saturating_add(SHARED_POOL_TASK_CLEANUP_GRACE)
 }
@@ -5098,9 +5115,7 @@ async fn run_phased(
                     effective.prepare_id_override = Some(prepare_id);
                 }
                 other => {
-                    log::debug!(
-                        "scan prepare unexpected response for {func_name}: {other:?}",
-                    );
+                    log::debug!("scan prepare unexpected response for {func_name}: {other:?}",);
                 }
             },
         }
@@ -5934,18 +5949,19 @@ mod tests {
     }
 
     /// str-0agd regression: the shared-pool join watchdog is only a cleanup
-    /// backstop around the explicit build and exploration phase timeouts. It
-    /// must not add the old hidden 30-second grace that turned the documented
-    /// default `--timeout-per-fn=30` into user-visible `task after 90s`
-    /// outcomes for Kapow scan targets.
+    /// backstop around the explicit build, build-retry, and exploration phase
+    /// timeouts. It must not add the old hidden 30-second grace that turned
+    /// the documented default `--timeout-per-fn=30` into user-visible opaque
+    /// task-watchdog outcomes for Kapow scan targets.
     #[test]
     fn shared_pool_task_watchdog_uses_small_cleanup_cushion() {
-        let watchdog =
-            shared_pool_task_watchdog(Duration::from_secs(30), Duration::from_secs(30));
+        let build_timeout = Duration::from_secs(30);
+        let retry_build = build_timeout_retry_budget(build_timeout);
+        let watchdog = shared_pool_task_watchdog(build_timeout, Duration::from_secs(30));
 
         assert!(
-            watchdog <= Duration::from_secs(65),
-            "watchdog should not stretch default scan task timeout to {watchdog:?}"
+            watchdog <= build_timeout + retry_build + Duration::from_secs(35),
+            "watchdog should retain only the small cleanup cushion, got {watchdog:?}"
         );
     }
 
@@ -5984,7 +6000,8 @@ mod tests {
             synthetic_params: vec![],
             scenario_schema: None,
         };
-        let profile = execution_profile_from_analysis(&analysis).expect("adapter must produce profile");
+        let profile =
+            execution_profile_from_analysis(&analysis).expect("adapter must produce profile");
         assert_eq!(profile.adapters.len(), 1);
         assert_eq!(profile.adapters[0].id, "go/http-handler");
     }
@@ -8811,12 +8828,7 @@ mod tests {
         max_iterations: u32,
         timeout_secs: u64,
     ) -> Vec<Vec<serde_json::Value>> {
-        let analysis = make_analysis_with_params(
-            func_name,
-            vec![],
-            TypeInfo::Unknown,
-            vec![],
-        );
+        let analysis = make_analysis_with_params(func_name, vec![], TypeInfo::Unknown, vec![]);
         load_config_function_inputs(
             &analysis,
             func_name,
@@ -10859,7 +10871,10 @@ defaults:
                 reason,
             } => {
                 assert_eq!(function_name, "middleware_fn");
-                assert!(reason.contains("axum middleware not supported"), "got: {reason}");
+                assert!(
+                    reason.contains("axum middleware not supported"),
+                    "got: {reason}"
+                );
             }
             other => panic!("expected Unsupported, got: {other:?}"),
         }
