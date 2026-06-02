@@ -106,6 +106,7 @@ fn make_function_report(
         mocks_used: vec![],
         refactoring_recommendations: vec![],
         completion_outcome: Default::default(),
+        completion_reason: None,
     }
 }
 

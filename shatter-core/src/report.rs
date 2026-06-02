@@ -311,9 +311,10 @@ pub struct MockUsageReport {
 /// "exploration completed" count instead of inflating it with
 /// host-side dispatch failures.
 ///
-/// `Behavioral` is the default for the empty-discovered-inputs edge
-/// case so the variant matches the conservative "we didn't see any
-/// invocation errors" reading.
+/// `Behavioral` remains the serde default for pre-str-jeen.53 reports.
+/// New report construction refines positive-attempt empty-observation rows
+/// to `DispatchFailed` so all-execute-skip scans do not inflate observed
+/// behavior counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletionOutcome {
@@ -348,10 +349,9 @@ impl CompletionOutcome {
     }
 
     /// Classify a function from its discovered-input list. A function
-    /// with zero discovered inputs reads as `Behavioral` — the
-    /// `ErrorOnly` bucket only fires when at least one input was
-    /// recorded and all of them threw, and `DispatchFailed` only fires
-    /// when every throw carries the launcher wrapper sentinel.
+    /// with zero discovered inputs reads as `Behavioral` here for legacy
+    /// callers; report construction separately handles the positive-attempt,
+    /// zero-observation all-execute-skip case.
     fn from_discovered_inputs(inputs: &[DiscoveredInput]) -> Self {
         if inputs.is_empty() {
             return CompletionOutcome::Behavioral;
@@ -447,6 +447,11 @@ pub struct FunctionReport {
     /// `behavioral` for pre-str-jeen.53 reports that lack the field.
     #[serde(default)]
     pub completion_outcome: CompletionOutcome,
+    /// Human-readable explanation for a non-behavioral completed row when the
+    /// row remains useful for diagnostics but should not count as observed
+    /// behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -875,7 +880,25 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     // (str-tzbr contract). file_path is supplied by the caller via the
     // qualified-ID-keyed file_map.
     let (_qid_file, display_name) = crate::behavior::split_qualified_id(&result.function_name);
-    let completion_outcome = CompletionOutcome::from_discovered_inputs(&discovered_inputs);
+    let all_execute_skip = discovered_inputs.is_empty()
+        && behavior_clusters.is_empty()
+        && exploration.iterations > 0
+        && exploration.raw_results.is_empty();
+    let (completion_outcome, completion_reason) = if all_execute_skip {
+        (
+            CompletionOutcome::DispatchFailed,
+            Some(format!(
+                "no successful observations recorded after {} attempted execution(s); \
+                 frontend likely skipped or rejected every execute attempt",
+                exploration.iterations
+            )),
+        )
+    } else {
+        (
+            CompletionOutcome::from_discovered_inputs(&discovered_inputs),
+            None,
+        )
+    };
     FunctionReport {
         function_name: display_name.to_string(),
         display_name: display_name.to_string(),
@@ -888,6 +911,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         discovered_inputs,
         behavior_clusters,
         completion_outcome,
+        completion_reason,
         constraint_stats: ConstraintStats {
             total_constraints,
             solver_guided_inputs: 0,
@@ -1615,6 +1639,9 @@ fn write_md_function_details(out: &mut String, functions: &[FunctionReport]) {
             func.lines_covered, func.total_lines
         );
         let _ = writeln!(out, "- **Iterations:** {}", func.iterations);
+        if let Some(reason) = &func.completion_reason {
+            let _ = writeln!(out, "- **Completion reason:** {reason}");
+        }
         let _ = writeln!(
             out,
             "- **Constraints collected:** {}",
@@ -3095,8 +3122,26 @@ mod tests {
             CompletionOutcome::DispatchFailed,
             "all-execute-skip function must not report behavioral completion",
         );
+        let reason = func
+            .completion_reason
+            .as_deref()
+            .expect("all-execute-skip function should explain the dispatch failure");
+        assert!(
+            reason.contains("no successful observations recorded after 25 attempted execution(s)"),
+            "completion reason should explain the empty behavior map: {reason}",
+        );
         assert_eq!(report.codebase.completed_with_behavior, 0);
         assert_eq!(report.codebase.completed_dispatch_failed, 1);
+
+        let json = serde_json::to_string(&report).expect("serialize report");
+        assert!(json.contains("\"completion_outcome\":\"dispatch_failed\""));
+        assert!(json.contains("\"completion_reason\":"));
+
+        let md = format_markdown_report(&report);
+        assert!(
+            md.contains("Completion reason"),
+            "markdown should surface the completion reason: {md}",
+        );
     }
 
     /// str-jeen.50 regression: a function whose every recorded outcome
@@ -3363,6 +3408,7 @@ mod tests {
             mocks_used: vec![],
             refactoring_recommendations: vec![],
             completion_outcome: CompletionOutcome::Behavioral,
+            completion_reason: None,
         }
     }
 
