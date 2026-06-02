@@ -690,6 +690,10 @@ pub(crate) struct ScanArgs {
     #[arg(long)]
     pub(crate) all: bool,
 
+    /// Use concolic (Z3-backed) exploration instead of random exploration.
+    #[arg(long)]
+    pub(crate) concolic: bool,
+
     /// Maximum directory traversal depth.
     #[arg(long)]
     pub(crate) max_depth: Option<usize>,
@@ -3469,6 +3473,16 @@ mod tests {
             }
             _ => panic!("expected Scan command"),
         }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_concolic_flag() {
+        let cli = Cli::try_parse_from(["shatter", "scan", "--concolic", "test_dir"]);
+
+        assert!(
+            cli.is_ok(),
+            "scan should accept --concolic to enable Z3-backed branch-guided exploration"
+        );
     }
 
     #[test]

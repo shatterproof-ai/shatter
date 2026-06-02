@@ -227,7 +227,7 @@ pub fn build_random_explorer_meta_strategy(
 /// Build the concolic orchestrator's shared registered strategy set.
 ///
 /// Registration order is the scheduling seam:
-/// `[UserProvided, BoundarySeeds, Z3Solver, Fuzzer]`
+/// `[UserProvided, BoundarySeeds, Z3Solver, Fuzzer, Random]`
 ///
 /// Drilling, boundary-search interpolation, and MC/DC targets are intentional
 /// special cases handled by
@@ -266,6 +266,10 @@ pub fn build_concolic_meta_strategy(
             RegisteredStrategy::new(
                 RegisteredStrategyKind::Fuzzer,
                 Box::new(FuzzerStrategy::new(None)),
+            ),
+            RegisteredStrategy::new(
+                RegisteredStrategyKind::Random,
+                Box::new(RandomStrategy::new(None)),
             ),
         ],
         meta_config,
@@ -1583,6 +1587,7 @@ mod tests {
                 RegisteredStrategyKind::BoundarySeeds,
                 RegisteredStrategyKind::Z3Solver,
                 RegisteredStrategyKind::Fuzzer,
+                RegisteredStrategyKind::Random,
             ]
         );
         assert_eq!(
@@ -1709,6 +1714,32 @@ mod tests {
         let ctx = empty_ctx();
         assert_eq!(bs.estimated_size(), Some(0));
         assert!(bs.next(&ctx).is_none());
+    }
+
+    #[test]
+    fn concolic_meta_strategy_falls_back_for_unsolved_seedless_params() {
+        let params = make_params(&[TypeInfo::Unknown]);
+        let mut meta = build_concolic_meta_strategy(
+            vec![],
+            vec![],
+            vec![],
+            &params,
+            vec![],
+            None,
+            MetaConfig::default(),
+        );
+        let ctx = StrategyContext {
+            params,
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+
+        let candidate = meta
+            .next(&ctx, &mut rng)
+            .expect("seedless concolic exploration should still execute a fallback candidate");
+
+        assert_eq!(candidate.0.len(), 1);
     }
 
     #[test]
