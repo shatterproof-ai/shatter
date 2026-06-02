@@ -246,6 +246,27 @@ func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 	}
 }
 
+func TestPlanParam_StructWithRoundTripperField_EmitsNilInterfaceField(t *testing.T) {
+	param := structParam("fetcher", "pkg.Fetcher",
+		protocol.ObjectField{Name: "Transport", Type: protocol.TypeInfo{Kind: "opaque", Label: "http.RoundTripper"}},
+		protocol.ObjectField{Name: "BaseURL", Type: protocol.TypeInfo{Kind: "str"}},
+	)
+	plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("len(plans) = %d, want 1", len(plans))
+	}
+	expr, err := decodeExpression(plans[0].Literal)
+	if err != nil {
+		t.Fatalf("plan Literal is not a JSON string: %v (%s)", err, string(plans[0].Literal))
+	}
+	if expr != `pkg.Fetcher{Transport: nil, BaseURL: ""}` {
+		t.Fatalf("expression = %q, want RoundTripper nil field", expr)
+	}
+}
+
 // AC4: Unsupported element/field types fall through to complex_type
 // UnsatisfiedRequirement without blocking sibling params.
 func TestPlanParam_UnsupportedAggregate_DoesNotBlockSiblings(t *testing.T) {
