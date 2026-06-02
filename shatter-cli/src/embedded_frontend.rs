@@ -160,6 +160,18 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
     use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn isolated_temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "shatter-test-{name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn bundle_is_embedded() {
@@ -181,7 +193,7 @@ mod tests {
 
     #[test]
     fn extract_to_writes_bundle_to_cache() {
-        let tmp = std::env::temp_dir().join("shatter-test-extract");
+        let tmp = isolated_temp_dir("extract");
         let _ = fs::remove_dir_all(&tmp);
 
         let path = extract_to(&tmp).expect("extraction failed");
@@ -198,7 +210,7 @@ mod tests {
 
     #[test]
     fn extract_to_is_idempotent() {
-        let tmp = std::env::temp_dir().join("shatter-test-idempotent");
+        let tmp = isolated_temp_dir("idempotent");
         let _ = fs::remove_dir_all(&tmp);
 
         let path1 = extract_to(&tmp).expect("first extraction failed");
@@ -211,7 +223,7 @@ mod tests {
 
     #[test]
     fn extract_to_cleans_up_old_bundles() {
-        let tmp = std::env::temp_dir().join("shatter-test-cleanup");
+        let tmp = isolated_temp_dir("cleanup");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -235,7 +247,7 @@ mod tests {
     fn extract_to_falls_back_when_cache_unwritable() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = std::env::temp_dir().join("shatter-test-unwritable-ts");
+        let tmp = isolated_temp_dir("unwritable-ts");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -261,7 +273,7 @@ mod tests {
     fn ensure_extracted_falls_back_on_unwritable_cache() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = std::env::temp_dir().join("shatter-test-fallback-ts");
+        let tmp = isolated_temp_dir("fallback-ts");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -286,7 +298,7 @@ mod tests {
 
     #[test]
     fn extract_to_writes_worker_bundle() {
-        let tmp = std::env::temp_dir().join("shatter-test-worker-extract");
+        let tmp = isolated_temp_dir("worker-extract");
         let _ = fs::remove_dir_all(&tmp);
 
         extract_to(&tmp).expect("extraction failed");
@@ -314,7 +326,7 @@ mod tests {
     /// the str-jeen.9 private-target exposure trailer.
     #[test]
     fn extract_to_refreshes_stale_worker_when_bundle_hash_changes() {
-        let tmp = std::env::temp_dir().join("shatter-test-worker-refresh");
+        let tmp = isolated_temp_dir("worker-refresh");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -355,7 +367,7 @@ mod tests {
 
     #[test]
     fn extract_to_is_safe_under_concurrent_calls() {
-        let tmp = std::env::temp_dir().join("shatter-test-concurrent-extract");
+        let tmp = isolated_temp_dir("concurrent-extract");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 

@@ -162,6 +162,18 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
     use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn isolated_temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "shatter-test-go-{name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
 
     /// Number of concurrent extractors used in the race regression test.
     /// Eight matches the parallel test in `embedded_frontend.rs` and is
@@ -188,7 +200,7 @@ mod tests {
 
     #[test]
     fn extract_to_writes_binary_to_cache() {
-        let tmp = std::env::temp_dir().join("shatter-test-go-extract");
+        let tmp = isolated_temp_dir("extract");
         let _ = fs::remove_dir_all(&tmp);
 
         let path = extract_to(&tmp).expect("extraction failed");
@@ -209,7 +221,7 @@ mod tests {
 
     #[test]
     fn extract_to_is_idempotent() {
-        let tmp = std::env::temp_dir().join("shatter-test-go-idempotent");
+        let tmp = isolated_temp_dir("idempotent");
         let _ = fs::remove_dir_all(&tmp);
 
         let path1 = extract_to(&tmp).expect("first extraction failed");
@@ -224,7 +236,7 @@ mod tests {
     fn extract_to_falls_back_when_cache_unwritable() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = std::env::temp_dir().join("shatter-test-unwritable-go");
+        let tmp = isolated_temp_dir("unwritable-go");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -247,7 +259,7 @@ mod tests {
     fn ensure_extracted_falls_back_on_unwritable_cache() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = std::env::temp_dir().join("shatter-test-fallback-go");
+        let tmp = isolated_temp_dir("fallback-go");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -269,7 +281,7 @@ mod tests {
 
     #[test]
     fn extract_to_cleans_up_old_binaries() {
-        let tmp = std::env::temp_dir().join("shatter-test-go-cleanup");
+        let tmp = isolated_temp_dir("cleanup");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -299,7 +311,7 @@ mod tests {
     /// the shared tmp out from under us.
     #[test]
     fn extract_to_is_safe_under_concurrent_calls() {
-        let tmp = std::env::temp_dir().join("shatter-test-go-concurrent-extract");
+        let tmp = isolated_temp_dir("concurrent-extract");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
