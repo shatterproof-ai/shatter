@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader};
+use std::path::PathBuf;
 
 use crate::generators::NativeRegistry;
 use crate::protocol::{
@@ -68,7 +69,10 @@ fn harness_scratch_from_env() -> Option<String> {
 
 /// Write instrumented source to a temp directory and return the output path.
 fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
-    let dir = std::env::temp_dir().join(format!("shatter-instrument-{}", std::process::id()));
+    let root = harness_scratch_from_env()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join(".shatter-instrument"));
+    let dir = root.join(std::process::id().to_string());
     std::fs::create_dir_all(&dir)?;
     let out_path = dir.join(filename);
     std::fs::write(&out_path, source)?;
@@ -1857,6 +1861,30 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn instrument_temp_file_avoids_direct_shatter_tmp_parent() {
+        let output = write_instrumented_temp(
+            "sample.rs",
+            "fn sample(x: i32) -> i32 { if x > 0 { x } else { -x } }",
+        )
+        .expect("write instrumented temp");
+        let output_path = std::path::PathBuf::from(&output);
+        let parent = output_path
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .expect("instrumented output has named parent");
+
+        assert!(
+            !parent.starts_with("shatter-instrument-"),
+            "instrumentation temp files must not use a direct shatter-* parent under TMPDIR: {output}"
+        );
+
+        if let Some(parent) = output_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
     }
 
     #[test]
