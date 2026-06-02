@@ -4411,10 +4411,8 @@ pub async fn parallel_scan_with_progress(
 
                 let mut raw_outcomes = Vec::with_capacity(handles.len());
                 let mut pending_handles = handles;
-                let task_watchdog = config
-                    .build_timeout
-                    .saturating_add(config.timeout_per_fn)
-                    .saturating_add(Duration::from_secs(30));
+                let task_watchdog =
+                    shared_pool_task_watchdog(config.build_timeout, config.timeout_per_fn);
                 while !pending_handles.is_empty() {
                     let (function_name, progress_index, lease, mut handle) =
                         pending_handles.remove(0);
@@ -4877,6 +4875,14 @@ fn execution_profile_from_analysis(
 /// in sync and the message is unit-testable (str-ubp1).
 fn phase_timeout_reason(phase: &str, d: Duration) -> String {
     format!("timed out during {phase} after {:.0}s", d.as_secs_f64())
+}
+
+const SHARED_POOL_TASK_CLEANUP_GRACE: Duration = Duration::from_secs(5);
+
+fn shared_pool_task_watchdog(build_timeout: Duration, timeout_per_fn: Duration) -> Duration {
+    build_timeout
+        .saturating_add(timeout_per_fn)
+        .saturating_add(SHARED_POOL_TASK_CLEANUP_GRACE)
 }
 
 fn total_deadline(scan_start: Instant, timeout_total: Option<Duration>) -> Option<Instant> {
@@ -5815,6 +5821,22 @@ mod tests {
         assert_eq!(
             phase_timeout_reason("execution", Duration::from_secs(15)),
             "timed out during execution after 15s",
+        );
+    }
+
+    /// str-0agd regression: the shared-pool join watchdog is only a cleanup
+    /// backstop around the explicit build and exploration phase timeouts. It
+    /// must not add the old hidden 30-second grace that turned the documented
+    /// default `--timeout-per-fn=30` into user-visible `task after 90s`
+    /// outcomes for Kapow scan targets.
+    #[test]
+    fn shared_pool_task_watchdog_uses_small_cleanup_cushion() {
+        let watchdog =
+            shared_pool_task_watchdog(Duration::from_secs(30), Duration::from_secs(30));
+
+        assert!(
+            watchdog <= Duration::from_secs(65),
+            "watchdog should not stretch default scan task timeout to {watchdog:?}"
         );
     }
 
