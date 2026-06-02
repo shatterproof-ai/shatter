@@ -1860,6 +1860,30 @@ mod tests {
     }
 
     #[test]
+    fn instrument_temp_file_avoids_direct_shatter_tmp_parent() {
+        let output = write_instrumented_temp(
+            "sample.rs",
+            "fn sample(x: i32) -> i32 { if x > 0 { x } else { -x } }",
+        )
+        .expect("write instrumented temp");
+        let output_path = std::path::PathBuf::from(&output);
+        let parent = output_path
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .expect("instrumented output has named parent");
+
+        assert!(
+            !parent.starts_with("shatter-instrument-"),
+            "instrumentation temp files must not use a direct shatter-* parent under TMPDIR: {output}"
+        );
+
+        if let Some(parent) = output_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
     fn execute_without_file_returns_error() {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":4,"command":"execute","function":"F","inputs":[],"mocks":[]}"#,
