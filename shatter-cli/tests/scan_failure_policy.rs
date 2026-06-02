@@ -66,8 +66,10 @@ fn scan_summary_names_all_buckets() {
     let project = write_fixture();
     let out_dir = tempfile::tempdir().expect("create output tempdir");
     let report_path = out_dir.path().join("scan.txt");
+    let command_tmp = tempfile::tempdir().expect("create command tmpdir");
 
     let output = Command::new(shatter_binary())
+        .env("TMPDIR", command_tmp.path())
         .args([
             "scan",
             project.path().to_str().expect("utf8 project path"),

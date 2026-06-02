@@ -65,7 +65,9 @@ fn scan_with_no_cache_no_seeds_does_not_dirty_target_project() {
     std::fs::write(orphan_dir.join("main.go"), b"package main\n").expect("seed orphan main.go");
 
     let report_path = tmp.path().join("report.json");
+    let command_tmp = tempfile::tempdir().expect("create command tmpdir");
     let output = Command::new(binary)
+        .env("TMPDIR", command_tmp.path())
         .current_dir(&fixture)
         .args([
             "scan",
