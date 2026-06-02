@@ -1077,6 +1077,8 @@ pub(crate) async fn run_scan(
             lang_analyses.len(),
             key,
         );
+        let mut phase_scan_config = scan_config.clone();
+        phase_scan_config.timeout_total = scan_orchestrator_timeout_total(run_deadline);
 
         // str-4oa1: build a per-language progress handler that maps
         // phase-local counters to global counters and labels the
@@ -1124,7 +1126,7 @@ pub(crate) async fn run_scan(
         let lang_result = scan_orchestrator::parallel_scan_with_progress(
             lang_fe_config,
             &lang_analyses,
-            &scan_config,
+            &phase_scan_config,
             progress_handler,
         )
         .await;
