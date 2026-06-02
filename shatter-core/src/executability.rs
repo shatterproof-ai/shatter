@@ -7,7 +7,7 @@ use crate::config::CustomOpaqueType;
 use crate::types::{MediumOpacityReason, ParamInfo, StaticOpacityReason, TypeInfo};
 use serde::{Deserialize, Serialize};
 
-const STD_LIB_ROUND_TRIPPER_INTERFACE: &str = "http.RoundTripper";
+const NILABLE_STDLIB_INTERFACE_FIELDS: &[&str] = &["http.CookieJar", "http.RoundTripper"];
 
 /// Categorizes WHY a type is opaque — what kind of runtime resource it represents.
 ///
@@ -276,10 +276,7 @@ impl SkipReason {
 /// pointer at the `generators` config is returned so users always get a
 /// next step.
 #[must_use]
-pub fn guidance_for_opaque_label(
-    label: &str,
-    category: &OpaqueCategory,
-) -> Option<&'static str> {
+pub fn guidance_for_opaque_label(label: &str, category: &OpaqueCategory) -> Option<&'static str> {
     // SQLx pools.
     if matches!(label, "PgPool" | "SqlitePool" | "MySqlPool" | "AnyPool")
         || label.starts_with("Pool<")
@@ -330,13 +327,7 @@ pub fn guidance_for_opaque_label(
     // Chrono date / time types.
     if matches!(
         label,
-        "NaiveDate"
-            | "NaiveDateTime"
-            | "NaiveTime"
-            | "Date"
-            | "DateTime"
-            | "Time"
-            | "Duration"
+        "NaiveDate" | "NaiveDateTime" | "NaiveTime" | "Date" | "DateTime" | "Time" | "Duration"
     ) || label.starts_with("DateTime<")
         || label.starts_with("Date<")
     {
@@ -523,7 +514,8 @@ fn find_blocking_opaque_node(
 }
 
 fn is_nilable_named_interface_field(label: &str, path: &[PathSegment]) -> bool {
-    label == STD_LIB_ROUND_TRIPPER_INTERFACE && matches!(path.last(), Some(PathSegment::Field(_)))
+    NILABLE_STDLIB_INTERFACE_FIELDS.contains(&label)
+        && matches!(path.last(), Some(PathSegment::Field(_)))
 }
 
 fn is_map_encoding(fields: &[(String, TypeInfo)]) -> bool {
@@ -800,6 +792,14 @@ mod tests {
                         "Transport".into(),
                         TypeInfo::Opaque {
                             label: "http.RoundTripper".into(),
+                            static_opacity: None,
+                            medium_opacity: None,
+                        },
+                    ),
+                    (
+                        "Jar".into(),
+                        TypeInfo::Opaque {
+                            label: "http.CookieJar".into(),
                             static_opacity: None,
                             medium_opacity: None,
                         },
@@ -1437,9 +1437,11 @@ mod tests {
 
     #[test]
     fn guidance_for_sqlx_generic_pool() {
-        assert!(guidance_for_opaque_label("Pool<Postgres>", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("sqlx::PgPool::connect"));
+        assert!(
+            guidance_for_opaque_label("Pool<Postgres>", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("sqlx::PgPool::connect")
+        );
     }
 
     #[test]
@@ -1451,22 +1453,27 @@ mod tests {
 
     #[test]
     fn guidance_for_axum_state_generic() {
-        let hint = guidance_for_opaque_label("State<AppState>", &OpaqueCategory::Unknown)
-            .unwrap();
+        let hint = guidance_for_opaque_label("State<AppState>", &OpaqueCategory::Unknown).unwrap();
         assert!(hint.contains("Axum extractor"));
     }
 
     #[test]
     fn guidance_for_axum_request_and_next() {
-        assert!(guidance_for_opaque_label("Request", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("Axum extractor"));
-        assert!(guidance_for_opaque_label("Next", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("Axum extractor"));
-        assert!(guidance_for_opaque_label("Json<Payload>", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("Axum extractor"));
+        assert!(
+            guidance_for_opaque_label("Request", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("Axum extractor")
+        );
+        assert!(
+            guidance_for_opaque_label("Next", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("Axum extractor")
+        );
+        assert!(
+            guidance_for_opaque_label("Json<Payload>", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("Axum extractor")
+        );
     }
 
     #[test]

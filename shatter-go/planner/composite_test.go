@@ -186,13 +186,14 @@ func TestPlanComposite_EmptyInterfaceAndJSONContainerFields(t *testing.T) {
 func TestPlanComposite_NamedInterfaceField_EmitsNil(t *testing.T) {
 	req := objectType(
 		field("Transport", protocol.TypeInfo{Kind: "opaque", Label: "http.RoundTripper"}),
+		field("Jar", protocol.TypeInfo{Kind: "opaque", Label: "http.CookieJar"}),
 		field("BaseURL", protocol.TypeInfo{Kind: "str"}),
 	)
 	plan, unsat := planner.PlanComposite(compositeTargetID, "pkg.Fetcher", "example.com/pkg", req, planner.CompositeOptions{})
 	if unsat != nil {
 		t.Fatalf("unexpected unsatisfied: %+v", unsat)
 	}
-	wantExpr := `pkg.Fetcher{Transport: nil, BaseURL: ""}`
+	wantExpr := `pkg.Fetcher{Transport: nil, Jar: nil, BaseURL: ""}`
 	if plan.Expression != wantExpr {
 		t.Errorf("Expression = %q, want %q", plan.Expression, wantExpr)
 	}

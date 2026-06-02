@@ -27,7 +27,10 @@ const (
 	compositeZeroInterface  = `"value"`
 )
 
-const stdlibRoundTripperInterface = "http.RoundTripper"
+var nilableStdlibInterfaceFields = map[string]struct{}{
+	"http.CookieJar":    {},
+	"http.RoundTripper": {},
+}
 
 // CompositeOptions bundles caller inputs for composite-literal synthesis.
 type CompositeOptions struct {
@@ -259,7 +262,11 @@ func isEmptyInterfaceType(t protocol.TypeInfo) bool {
 }
 
 func isNilableNamedInterfaceField(t protocol.TypeInfo) bool {
-	return t.Kind == "opaque" && t.Label == stdlibRoundTripperInterface
+	if t.Kind != "opaque" {
+		return false
+	}
+	_, ok := nilableStdlibInterfaceFields[t.Label]
+	return ok
 }
 
 func isRegisteredPointerRuntimeValue(typeName string) bool {

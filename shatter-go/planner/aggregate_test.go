@@ -249,6 +249,7 @@ func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 func TestPlanParam_StructWithRoundTripperField_EmitsNilInterfaceField(t *testing.T) {
 	param := structParam("fetcher", "pkg.Fetcher",
 		protocol.ObjectField{Name: "Transport", Type: protocol.TypeInfo{Kind: "opaque", Label: "http.RoundTripper"}},
+		protocol.ObjectField{Name: "Jar", Type: protocol.TypeInfo{Kind: "opaque", Label: "http.CookieJar"}},
 		protocol.ObjectField{Name: "BaseURL", Type: protocol.TypeInfo{Kind: "str"}},
 	)
 	plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{})
@@ -262,7 +263,7 @@ func TestPlanParam_StructWithRoundTripperField_EmitsNilInterfaceField(t *testing
 	if err != nil {
 		t.Fatalf("plan Literal is not a JSON string: %v (%s)", err, string(plans[0].Literal))
 	}
-	if expr != `pkg.Fetcher{Transport: nil, BaseURL: ""}` {
+	if expr != `pkg.Fetcher{Transport: nil, Jar: nil, BaseURL: ""}` {
 		t.Fatalf("expression = %q, want RoundTripper nil field", expr)
 	}
 }
