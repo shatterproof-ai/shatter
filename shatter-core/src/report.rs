@@ -3064,6 +3064,41 @@ mod tests {
         );
     }
 
+    /// str-2x4u regression. A scan/exploration result with positive
+    /// attempted executions but no raw observations, no discovered inputs,
+    /// and no behavior clusters means the frontend rejected or skipped every
+    /// execute attempt. It must not be counted as observed behavior.
+    #[test]
+    fn report_marks_all_execute_skip_as_dispatch_failed() {
+        let empty_attempts = make_function_result("NeedsCurrentAccount", 25, 0, 0, 12, vec![]);
+        let parallel_result = ParallelScanResult {
+            function_results: vec![empty_attempts],
+            test_order: vec!["NeedsCurrentAccount".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        let mut file_map = HashMap::new();
+        file_map.insert("NeedsCurrentAccount".into(), "src/handlers/items.rs".into());
+
+        let report = generate_report(&parallel_result, &file_map, None);
+        let func = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "NeedsCurrentAccount")
+            .expect("function should be in the report");
+
+        assert_eq!(
+            func.completion_outcome,
+            CompletionOutcome::DispatchFailed,
+            "all-execute-skip function must not report behavioral completion",
+        );
+        assert_eq!(report.codebase.completed_with_behavior, 0);
+        assert_eq!(report.codebase.completed_dispatch_failed, 1);
+    }
+
     /// str-jeen.50 regression: a function whose every recorded outcome
     /// is the launcher wrapper's `"unknown receiver kind"` sentinel must
     /// classify as `DispatchFailed` (not `ErrorOnly` and not
