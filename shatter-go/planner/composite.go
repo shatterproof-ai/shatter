@@ -27,6 +27,11 @@ const (
 	compositeZeroInterface  = `"value"`
 )
 
+var nilableStdlibInterfaceFields = map[string]struct{}{
+	"http.CookieJar":    {},
+	"http.RoundTripper": {},
+}
+
 // CompositeOptions bundles caller inputs for composite-literal synthesis.
 type CompositeOptions struct {
 	// MaxDepth caps recursive struct traversal. Zero means
@@ -240,6 +245,9 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImpo
 		if isEmptyInterfaceType(t) {
 			return compositeZeroInterface, nil
 		}
+		if isNilableNamedInterfaceField(t) {
+			return compositeZeroNilPointer, nil
+		}
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
 	case "union":
 		return "", fmt.Errorf("type %s is not synthesizable", describeKind(&t))
@@ -251,6 +259,14 @@ func synthesizeFieldValue(t protocol.TypeInfo, depth int, imports *compositeImpo
 func isEmptyInterfaceType(t protocol.TypeInfo) bool {
 	return (t.Kind == "opaque" || t.Kind == "unknown") &&
 		(t.Label == "interface" || t.Label == "interface{}" || t.Label == "any")
+}
+
+func isNilableNamedInterfaceField(t protocol.TypeInfo) bool {
+	if t.Kind != "opaque" {
+		return false
+	}
+	_, ok := nilableStdlibInterfaceFields[t.Label]
+	return ok
 }
 
 func isRegisteredPointerRuntimeValue(typeName string) bool {

@@ -101,6 +101,34 @@ func TestPlanParams_OpaqueSQLDB_UnsatisfiedWithDetail(t *testing.T) {
 	}
 }
 
+func TestPlanParams_RoundTripperParam_RemainsUnsatisfied(t *testing.T) {
+	cases := []struct {
+		name  string
+		param protocol.ParamInfo
+	}{
+		{name: "round_tripper", param: opaqueParam("transport", "http.RoundTripper")},
+		{name: "cookie_jar", param: opaqueParam("jar", "http.CookieJar")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matrix, unsat := planner.PlanParams(testTargetID, []protocol.ParamInfo{tc.param}, planner.ParamPlanOptions{})
+			if len(matrix) != 1 || matrix[0] != nil {
+				t.Errorf("expected matrix[0]==nil, got %+v", matrix)
+			}
+			if len(unsat) != 1 {
+				t.Fatalf("len(unsat) = %d, want 1", len(unsat))
+			}
+			u := unsat[0]
+			if u.Kind != protocol.UnsatisfiedRequirementKindComplexType {
+				t.Errorf("unsat.Kind = %q, want %q", u.Kind, protocol.UnsatisfiedRequirementKindComplexType)
+			}
+			if !contains(u.Detail, tc.param.Name) || !contains(u.Detail, tc.param.Type.Label) {
+				t.Errorf("unsat.Detail = %q, want it to mention param and type", u.Detail)
+			}
+		})
+	}
+}
+
 // Unsupported parameter must not block the whole plan — other params are still planned.
 func TestPlanParams_UnsupportedDoesNotBlockOthers(t *testing.T) {
 	params := []protocol.ParamInfo{
@@ -131,10 +159,10 @@ func TestPlanParams_UnsupportedDoesNotBlockOthers(t *testing.T) {
 
 func TestPlanParam_PrimitiveFamilies(t *testing.T) {
 	cases := []struct {
-		name       string
-		param      protocol.ParamInfo
-		wantHint   string
-		minPlans   int
+		name         string
+		param        protocol.ParamInfo
+		wantHint     string
+		minPlans     int
 		mustHaveZero bool
 	}{
 		{"string", strParam("s"), "string", 2, true},

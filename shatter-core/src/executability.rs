@@ -7,6 +7,8 @@ use crate::config::CustomOpaqueType;
 use crate::types::{MediumOpacityReason, ParamInfo, StaticOpacityReason, TypeInfo};
 use serde::{Deserialize, Serialize};
 
+const NILABLE_STDLIB_INTERFACE_FIELDS: &[&str] = &["http.CookieJar", "http.RoundTripper"];
+
 /// Categorizes WHY a type is opaque — what kind of runtime resource it represents.
 ///
 /// This lets CLI output explain not just *what* was detected but *why* the type
@@ -274,10 +276,7 @@ impl SkipReason {
 /// pointer at the `generators` config is returned so users always get a
 /// next step.
 #[must_use]
-pub fn guidance_for_opaque_label(
-    label: &str,
-    category: &OpaqueCategory,
-) -> Option<&'static str> {
+pub fn guidance_for_opaque_label(label: &str, category: &OpaqueCategory) -> Option<&'static str> {
     // SQLx pools.
     if matches!(label, "PgPool" | "SqlitePool" | "MySqlPool" | "AnyPool")
         || label.starts_with("Pool<")
@@ -328,13 +327,7 @@ pub fn guidance_for_opaque_label(
     // Chrono date / time types.
     if matches!(
         label,
-        "NaiveDate"
-            | "NaiveDateTime"
-            | "NaiveTime"
-            | "Date"
-            | "DateTime"
-            | "Time"
-            | "Duration"
+        "NaiveDate" | "NaiveDateTime" | "NaiveTime" | "Date" | "DateTime" | "Time" | "Duration"
     ) || label.starts_with("DateTime<")
         || label.starts_with("Date<")
     {
@@ -392,7 +385,9 @@ pub fn check_executability(
         .filter_map(|p| {
             // Check built-in opaque detection first.
             let mut path = vec![PathSegment::Param(p.name.clone())];
-            if let Some((label, static_reason, medium_reason)) = p.typ.find_opaque_node(&mut path) {
+            if let Some((label, static_reason, medium_reason)) =
+                find_blocking_opaque_node(&p.typ, &mut path)
+            {
                 // Medium-confidence opaque types (medium_opacity set, no static_opacity, label not in
                 // high-confidence table) are intentionally NOT added to skip reasons. They serve as
                 // advisory signals for learning mode (str-gtrv) — a single medium-confidence signal is
@@ -435,6 +430,99 @@ pub fn check_executability(
             None
         })
         .collect()
+}
+
+fn find_blocking_opaque_node(
+    typ: &TypeInfo,
+    path: &mut Vec<PathSegment>,
+) -> Option<(
+    String,
+    Option<StaticOpacityReason>,
+    Option<MediumOpacityReason>,
+)> {
+    match typ {
+        TypeInfo::Opaque {
+            label,
+            static_opacity,
+            medium_opacity,
+        } => {
+            if is_nilable_named_interface_field(label, path) {
+                None
+            } else {
+                Some((
+                    label.clone(),
+                    static_opacity.clone(),
+                    medium_opacity.clone(),
+                ))
+            }
+        }
+        TypeInfo::Array { element } => {
+            path.push(PathSegment::ArrayElement);
+            if let Some(result) = find_blocking_opaque_node(element, path) {
+                Some(result)
+            } else {
+                path.pop();
+                None
+            }
+        }
+        TypeInfo::Object { fields } => {
+            if is_map_encoding(fields) {
+                return None;
+            }
+            for (name, field_type) in fields {
+                path.push(PathSegment::Field(name.clone()));
+                if let Some(result) = find_blocking_opaque_node(field_type, path) {
+                    return Some(result);
+                }
+                path.pop();
+            }
+            None
+        }
+        TypeInfo::Union { variants } => {
+            for variant in variants {
+                path.push(PathSegment::UnionVariant);
+                if let Some(result) = find_blocking_opaque_node(variant, path) {
+                    return Some(result);
+                }
+                path.pop();
+            }
+            None
+        }
+        TypeInfo::Nullable { inner } => {
+            path.push(PathSegment::NullableInner);
+            if let Some(result) = find_blocking_opaque_node(inner, path) {
+                Some(result)
+            } else {
+                path.pop();
+                None
+            }
+        }
+        TypeInfo::Complex { inner, .. } => {
+            if let Some(inner_type) = inner.as_deref() {
+                path.push(PathSegment::ComplexInner);
+                if let Some(result) = find_blocking_opaque_node(inner_type, path) {
+                    return Some(result);
+                }
+                path.pop();
+            }
+            None
+        }
+        TypeInfo::Int | TypeInfo::Float | TypeInfo::Str | TypeInfo::Bool | TypeInfo::Unknown => {
+            None
+        }
+    }
+}
+
+fn is_nilable_named_interface_field(label: &str, path: &[PathSegment]) -> bool {
+    NILABLE_STDLIB_INTERFACE_FIELDS.contains(&label)
+        && matches!(path.last(), Some(PathSegment::Field(_)))
+}
+
+fn is_map_encoding(fields: &[(String, TypeInfo)]) -> bool {
+    matches!(
+        fields,
+        [key, value] if key.0 == "_key" && value.0 == "_value"
+    )
 }
 
 /// Minimum number of failed Z3 solve attempts for a parameter before it is
@@ -690,6 +778,92 @@ mod tests {
                 PathSegment::Param("config".into()),
                 PathSegment::ArrayElement,
                 PathSegment::Field("handler".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn round_tripper_struct_field_does_not_skip() {
+        let params = vec![param(
+            "fetcher",
+            TypeInfo::Object {
+                fields: vec![
+                    (
+                        "Transport".into(),
+                        TypeInfo::Opaque {
+                            label: "http.RoundTripper".into(),
+                            static_opacity: None,
+                            medium_opacity: None,
+                        },
+                    ),
+                    (
+                        "Jar".into(),
+                        TypeInfo::Opaque {
+                            label: "http.CookieJar".into(),
+                            static_opacity: None,
+                            medium_opacity: None,
+                        },
+                    ),
+                    ("BaseURL".into(), TypeInfo::Str),
+                ],
+            },
+        )];
+        assert!(check_executability(&params, &[]).is_empty());
+    }
+
+    #[test]
+    fn direct_round_tripper_param_still_skips() {
+        let params = vec![param(
+            "transport",
+            TypeInfo::Opaque {
+                label: "http.RoundTripper".into(),
+                static_opacity: None,
+                medium_opacity: None,
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].param_name, "transport");
+        assert_eq!(reasons[0].opaque_label, "http.RoundTripper");
+        assert_eq!(
+            reasons[0].nesting_path,
+            vec![PathSegment::Param("transport".into())]
+        );
+    }
+
+    #[test]
+    fn nilable_round_tripper_field_does_not_mask_later_opaque_field() {
+        let params = vec![param(
+            "fetcher",
+            TypeInfo::Object {
+                fields: vec![
+                    (
+                        "Transport".into(),
+                        TypeInfo::Opaque {
+                            label: "http.RoundTripper".into(),
+                            static_opacity: None,
+                            medium_opacity: None,
+                        },
+                    ),
+                    (
+                        "DB".into(),
+                        TypeInfo::Opaque {
+                            label: "sql.DB".into(),
+                            static_opacity: None,
+                            medium_opacity: None,
+                        },
+                    ),
+                ],
+            },
+        )];
+        let reasons = check_executability(&params, &[]);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].opaque_label, "sql.DB");
+        assert_eq!(
+            reasons[0].nesting_path,
+            vec![
+                PathSegment::Param("fetcher".into()),
+                PathSegment::Field("DB".into()),
             ]
         );
     }
@@ -1263,9 +1437,11 @@ mod tests {
 
     #[test]
     fn guidance_for_sqlx_generic_pool() {
-        assert!(guidance_for_opaque_label("Pool<Postgres>", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("sqlx::PgPool::connect"));
+        assert!(
+            guidance_for_opaque_label("Pool<Postgres>", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("sqlx::PgPool::connect")
+        );
     }
 
     #[test]
@@ -1277,22 +1453,27 @@ mod tests {
 
     #[test]
     fn guidance_for_axum_state_generic() {
-        let hint = guidance_for_opaque_label("State<AppState>", &OpaqueCategory::Unknown)
-            .unwrap();
+        let hint = guidance_for_opaque_label("State<AppState>", &OpaqueCategory::Unknown).unwrap();
         assert!(hint.contains("Axum extractor"));
     }
 
     #[test]
     fn guidance_for_axum_request_and_next() {
-        assert!(guidance_for_opaque_label("Request", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("Axum extractor"));
-        assert!(guidance_for_opaque_label("Next", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("Axum extractor"));
-        assert!(guidance_for_opaque_label("Json<Payload>", &OpaqueCategory::Unknown)
-            .unwrap()
-            .contains("Axum extractor"));
+        assert!(
+            guidance_for_opaque_label("Request", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("Axum extractor")
+        );
+        assert!(
+            guidance_for_opaque_label("Next", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("Axum extractor")
+        );
+        assert!(
+            guidance_for_opaque_label("Json<Payload>", &OpaqueCategory::Unknown)
+                .unwrap()
+                .contains("Axum extractor")
+        );
     }
 
     #[test]
