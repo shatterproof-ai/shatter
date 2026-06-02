@@ -2455,6 +2455,22 @@ mod tests {
     }
 
     #[test]
+    fn solver_guided_inputs_report_branch_guided_discoveries() {
+        let mut func_result = make_function_result("branch_guided_target", 6, 2, 7, 12, vec![]);
+        func_result.exploration.discoveries = vec![
+            (0, crate::coverage_metrics::DiscoveryMethod::Random),
+            (1, crate::coverage_metrics::DiscoveryMethod::Z3),
+        ];
+
+        let report = build_function_report(&func_result, "src/branch_guided_target.rs");
+
+        assert_eq!(
+            report.constraint_stats.solver_guided_inputs, 1,
+            "Z3-discovered branches should be surfaced as solver-guided report inputs"
+        );
+    }
+
+    #[test]
     fn generate_report_from_parallel_scan() {
         let parallel_result = ParallelScanResult {
             function_results: vec![
