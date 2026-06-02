@@ -308,12 +308,15 @@ impl BehaviorMap {
                 let mock_values = matching_raw
                     .map(|(_, mocks, _)| mocks.clone())
                     .unwrap_or_default();
+                let branch_path = matching_raw
+                    .map(|(_, _mocks, res)| res.branch_path.clone())
+                    .unwrap_or_default();
                 Behavior {
                     id: i as u32,
                     input_args: exec.inputs.clone(),
                     return_value: exec.return_value.clone(),
                     thrown_error,
-                    branch_path: vec![],
+                    branch_path,
                     side_effects: vec![],
                     dependency_trace,
                     mock_values,
@@ -1728,10 +1731,19 @@ mod tests {
 
     #[test]
     fn from_exploration_result_populates_trace_from_raw_results() {
+        let branch_path = vec![BranchDecision {
+            branch_id: 7,
+            line: 42,
+            taken: true,
+            constraint: crate::execution_record::SymConstraint::Unknown {
+                hint: "x > 0".to_string(),
+            },
+            conditions: None,
+        }];
         let raw_result = ExecuteResult {
             return_value: Some(json!("positive")),
             thrown_error: None,
-            branch_path: vec![],
+            branch_path: branch_path.clone(),
             lines_executed: vec![1, 2],
             calls_to_external: vec![ExternalCall {
                 symbol: "logger".to_string(),
@@ -1785,6 +1797,7 @@ mod tests {
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
         assert_eq!(map.behaviors.len(), 1);
+        assert_eq!(map.behaviors[0].branch_path, branch_path);
         assert!(map.behaviors[0].dependency_trace.is_some());
         let trace = map.behaviors[0].dependency_trace.as_ref().unwrap();
         assert_eq!(trace.external_calls.len(), 1);
