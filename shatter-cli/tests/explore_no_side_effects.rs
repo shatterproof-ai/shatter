@@ -15,6 +15,8 @@
 
 use std::process::Command;
 
+mod common;
+
 const GO_FIXTURE: &str = "package toy\n\n\
 func Add(a, b int) int {\n\
 \tif a > 0 {\n\
@@ -53,6 +55,7 @@ fn explore_with_external_output_and_no_cache_no_seeds_writes_no_project_local_di
 
     let target_arg = format!("{}:Add", target_file.to_str().expect("utf8 target"));
 
+    let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(shatter_binary())
         .env("TMPDIR", command_tmp.path())
         .args([

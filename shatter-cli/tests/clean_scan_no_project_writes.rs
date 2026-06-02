@@ -17,6 +17,8 @@
 use std::path::Path;
 use std::process::Command;
 
+mod common;
+
 fn copy_dir_recursive(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).expect("create dst");
     for entry in std::fs::read_dir(src).expect("read src") {
@@ -66,6 +68,7 @@ fn scan_with_no_cache_no_seeds_does_not_dirty_target_project() {
 
     let report_path = tmp.path().join("report.json");
     let command_tmp = tempfile::tempdir().expect("create command tmpdir");
+    let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(binary)
         .env("TMPDIR", command_tmp.path())
         .current_dir(&fixture)
