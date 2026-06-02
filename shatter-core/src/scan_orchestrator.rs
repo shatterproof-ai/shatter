@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -2221,6 +2221,67 @@ impl WorkerPool {
     }
 }
 
+/// Per-task cleanup state for a checked-out shared-pool worker.
+///
+/// The outer task watchdog can abort a worker future before it reaches the
+/// normal "return or replace frontend" block. This lease lets the join side
+/// recover pool capacity exactly once so later queued tasks don't wait forever
+/// on a slot held by the aborted future.
+struct WorkerTaskLease {
+    pool: Arc<WorkerPool>,
+    tasks_remaining: Arc<AtomicUsize>,
+    checked_out: AtomicBool,
+    finished: AtomicBool,
+    pool_accounted: AtomicBool,
+}
+
+impl WorkerTaskLease {
+    fn new(pool: Arc<WorkerPool>, tasks_remaining: Arc<AtomicUsize>) -> Self {
+        Self {
+            pool,
+            tasks_remaining,
+            checked_out: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            pool_accounted: AtomicBool::new(false),
+        }
+    }
+
+    fn mark_checked_out(&self) {
+        self.checked_out.store(true, Ordering::Release);
+    }
+
+    fn finish_once(&self) -> usize {
+        if self.finished.swap(true, Ordering::AcqRel) {
+            self.tasks_remaining.load(Ordering::Acquire)
+        } else {
+            self.tasks_remaining
+                .fetch_sub(1, Ordering::AcqRel)
+                .saturating_sub(1)
+        }
+    }
+
+    async fn account_live_worker(&self, frontend: Frontend, pending: usize) {
+        if !self.pool_accounted.swap(true, Ordering::AcqRel) {
+            self.pool.return_or_reap_worker(frontend, pending).await;
+        }
+    }
+
+    async fn account_dead_worker_if_checked_out(&self, pending: usize) {
+        if self.checked_out.load(Ordering::Acquire)
+            && !self.pool_accounted.swap(true, Ordering::AcqRel)
+        {
+            self.pool.replace_dead_worker_if_needed(pending).await;
+        }
+    }
+
+    async fn recover_after_abort(&self) -> usize {
+        let remaining = self.finish_once();
+        self.account_dead_worker_if_checked_out(remaining).await;
+        self.pool.maybe_grow(remaining);
+        remaining
+    }
+}
+
 /// Execute a layer of function tasks using round-robin batch scheduling.
 ///
 /// Each function is explored one at a time for a fixed number of iterations
@@ -4027,13 +4088,17 @@ pub async fn parallel_scan_with_progress(
                     let input_pool = Arc::clone(&input_pool);
                     let timeout = config.timeout_per_fn;
                     let build_timeout = config.build_timeout;
-                    let tasks_remaining = Arc::clone(&tasks_remaining);
                     let genetic_config = config.genetic_config.clone();
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
                     let artifact_root = artifact_root.clone();
                     let handle_func_name = func_name.clone();
                     let handle_progress_index = progress_index;
+                    let lease = Arc::new(WorkerTaskLease::new(
+                        Arc::clone(&pool),
+                        Arc::clone(&tasks_remaining),
+                    ));
+                    let handle_lease = Arc::clone(&lease);
                     let handle = tokio::spawn(async move {
                         // str-poyv: emit `started` only after we actually
                         // acquire a worker from the pool. Emitting on spawn
@@ -4042,7 +4107,8 @@ pub async fn parallel_scan_with_progress(
                         // burst of `started` events even under
                         // `--scheduler-policy serial`, where the pool size
                         // is 1 and execution is strictly sequential.
-                        let mut frontend = pool.checkout().await;
+                        let mut frontend = Some(pool.checkout().await);
+                        lease.mark_checked_out();
                         emit_progress(
                             progress_handler.as_ref(),
                             &func_name,
@@ -4052,22 +4118,51 @@ pub async fn parallel_scan_with_progress(
                             ScanProgressStatus::Started,
                         );
 
-                        let result = run_phased(
-                            &mut frontend,
-                            &func_name,
-                            &analysis,
-                            &explore_config,
-                            &mocks_used,
-                            &callees,
-                            &behavior_maps,
-                            deep_fp.clone(),
-                            &input_pool,
-                            &genetic_config,
-                            &cache,
-                            build_timeout,
-                            timeout,
-                        )
-                        .await;
+                        let mut retried_frontend_transport = false;
+                        let result = loop {
+                            let Some(fe) = frontend.as_mut() else {
+                                break PhasedOutcome::Failed(ScanError::Frontend(
+                                    FrontendError::SubprocessExited {
+                                        binary: pool.config.command.clone(),
+                                        exit_status: None,
+                                        stderr_tail: String::new(),
+                                    },
+                                ));
+                            };
+                            let result = run_phased(
+                                fe,
+                                &func_name,
+                                &analysis,
+                                &explore_config,
+                                &mocks_used,
+                                &callees,
+                                &behavior_maps,
+                                deep_fp.clone(),
+                                &input_pool,
+                                &genetic_config,
+                                &cache,
+                                build_timeout,
+                                timeout,
+                            )
+                            .await;
+
+                            if retried_frontend_transport
+                                || !retryable_frontend_transport_failure(&result)
+                            {
+                                break result;
+                            }
+
+                            retried_frontend_transport = true;
+                            drop(frontend.take());
+                            match Frontend::spawn(&pool.config).await {
+                                Ok(replacement) => {
+                                    frontend = Some(replacement);
+                                }
+                                Err(error) => {
+                                    break PhasedOutcome::Failed(ScanError::Frontend(error));
+                                }
+                            }
+                        };
 
                         let timed_out = matches!(
                             result,
@@ -4077,9 +4172,7 @@ pub async fn parallel_scan_with_progress(
                         // Decrement the remaining-task counter FIRST so that
                         // return_or_reap_worker sees the updated pending count when
                         // deciding whether to reap this worker.
-                        let remaining = tasks_remaining
-                            .fetch_sub(1, Ordering::AcqRel)
-                            .saturating_sub(1);
+                        let remaining = lease.finish_once();
 
                         // After a timeout the frontend's stdout buffer contains a
                         // stale response that would cause an ID mismatch on the next
@@ -4101,13 +4194,17 @@ pub async fn parallel_scan_with_progress(
                                 ExploreError::Frontend(_),
                             )) | PhasedOutcome::Failed(ScanError::Frontend(_))
                         );
-                        let poisoned = frontend.is_tainted() || frontend_error;
-                        if timed_out || !frontend.is_alive() || poisoned {
-                            // Drop the poisoned/dead frontend (kills the child process).
-                            drop(frontend);
-                            pool.replace_dead_worker_if_needed(remaining).await;
+                        if let Some(mut frontend) = frontend {
+                            let poisoned = frontend.is_tainted() || frontend_error;
+                            if timed_out || !frontend.is_alive() || poisoned {
+                                // Drop the poisoned/dead frontend (kills the child process).
+                                drop(frontend);
+                                lease.account_dead_worker_if_checked_out(remaining).await;
+                            } else {
+                                lease.account_live_worker(frontend, remaining).await;
+                            }
                         } else {
-                            pool.return_or_reap_worker(frontend, remaining).await;
+                            lease.account_dead_worker_if_checked_out(remaining).await;
                         }
 
                         // Grow the pool if tasks are still blocked on checkout().
@@ -4188,7 +4285,12 @@ pub async fn parallel_scan_with_progress(
                         }
                     });
 
-                    handles.push((handle_func_name, handle_progress_index, handle));
+                    handles.push((
+                        handle_func_name,
+                        handle_progress_index,
+                        handle_lease,
+                        handle,
+                    ));
                 }
 
                 let mut raw_outcomes = Vec::with_capacity(handles.len());
@@ -4198,7 +4300,8 @@ pub async fn parallel_scan_with_progress(
                     .saturating_add(config.timeout_per_fn)
                     .saturating_add(Duration::from_secs(30));
                 while !pending_handles.is_empty() {
-                    let (function_name, progress_index, mut handle) = pending_handles.remove(0);
+                    let (function_name, progress_index, lease, mut handle) =
+                        pending_handles.remove(0);
                     let join_limit = total_deadline_remaining(scan_deadline)
                         .map(|remaining| remaining.min(task_watchdog))
                         .unwrap_or(task_watchdog);
@@ -4206,6 +4309,8 @@ pub async fn parallel_scan_with_progress(
                         Ok(result) => result,
                         Err(_) => {
                             handle.abort();
+                            let _ = handle.await;
+                            lease.recover_after_abort().await;
                             let outcome = if total_deadline_remaining(scan_deadline)
                                 .is_some_and(|remaining| remaining.is_zero())
                             {
@@ -4242,10 +4347,13 @@ pub async fn parallel_scan_with_progress(
 
                     match join_result {
                         Ok(outcome) => raw_outcomes.push(outcome),
-                        Err(e) => raw_outcomes.push(FunctionOutcome::Error {
-                            function_name,
-                            error: format!("task join error: {e}"),
-                        }),
+                        Err(e) => {
+                            lease.recover_after_abort().await;
+                            raw_outcomes.push(FunctionOutcome::Error {
+                                function_name,
+                                error: format!("task join error: {e}"),
+                            });
+                        }
                     }
                 }
 
@@ -4678,6 +4786,26 @@ enum PhasedOutcome {
     /// Concolic exploration phase exceeded `timeout_per_fn`.
     ExploreTimedOut(Duration),
 }
+
+fn retryable_frontend_transport_error(error: &FrontendError) -> bool {
+    matches!(
+        error,
+        FrontendError::Write(_) | FrontendError::Read(_) | FrontendError::SubprocessExited { .. }
+    )
+}
+
+fn retryable_frontend_transport_failure(outcome: &PhasedOutcome) -> bool {
+    match outcome {
+        PhasedOutcome::Failed(ScanError::Frontend(error)) => {
+            retryable_frontend_transport_error(error)
+        }
+        PhasedOutcome::Failed(ScanError::Explore(ExploreError::Frontend(error))) => {
+            retryable_frontend_transport_error(error)
+        }
+        _ => false,
+    }
+}
+
 /// Run a function's `Prepare` phase under `build_timeout`, then run the
 /// concolic exploration under `explore_timeout` with the resulting
 /// `prepare_id` already attached so the explorer doesn't re-prepare.
@@ -7387,6 +7515,117 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn parallel_scan_retries_dead_idle_frontend_before_failing_function() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dead_once_path = manifest_dir.join("../protocol/dead-after-handshake-once-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![dead_once_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = Duration::from_secs(10);
+        let flag_file = std::env::temp_dir().join(format!(
+            "shatter-dead-after-handshake-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&flag_file);
+        fe_config.env_vars.push((
+            "SHATTER_DEAD_AFTER_HANDSHAKE_FLAG".to_string(),
+            flag_file.to_string_lossy().into_owned(),
+        ));
+
+        let analyses = vec![
+            FunctionAnalysis {
+                name: "fn_a".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "x".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+                loops: vec![],
+                source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
+            },
+            FunctionAnalysis {
+                name: "fn_b".to_string(),
+                exported: true,
+                params: vec![ParamInfo {
+                    name: "y".into(),
+                    typ: TypeInfo::Int,
+                    type_name: None,
+                }],
+                branches: vec![],
+                dependencies: vec![],
+                return_type: TypeInfo::Unknown,
+                start_line: 1,
+                end_line: 5,
+                literals: vec![],
+                crypto_boundaries: vec![],
+                loops: vec![],
+                source_file: None,
+                adapter_hints: vec![],
+                invocation_model: crate::protocol::InvocationModel::Direct,
+            },
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("fn_a".to_string(), "test.ts".to_string());
+        file_map.insert("fn_b".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 1,
+            seed: Some(42),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(30),
+            build_timeout: Duration::from_secs(30),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should retry a dead idle frontend");
+
+        assert_eq!(result.function_results.len(), 2);
+        assert!(
+            result.skipped.is_empty(),
+            "no function should inherit the dead worker failure: {:?}",
+            result.skipped
+        );
+    }
+
     // ── dry-run plan tests ──────────────────────────────────────────
 
     fn make_analysis_with_params(
@@ -9881,6 +10120,59 @@ defaults:
         pool.return_or_reap_worker(worker, 1).await;
 
         pool.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn worker_task_lease_recovers_checked_out_worker_after_abort() {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let noop_path = manifest_dir.join("../protocol/noop-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![noop_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        let fe_config = Arc::new(fe_config);
+
+        let pool = Arc::new(
+            WorkerPool::spawn_capped(Arc::clone(&fe_config), 1, 2, None)
+                .await
+                .expect("pool should spawn"),
+        );
+        let tasks_remaining = Arc::new(AtomicUsize::new(2));
+        let lease = Arc::new(WorkerTaskLease::new(
+            Arc::clone(&pool),
+            Arc::clone(&tasks_remaining),
+        ));
+
+        let checked_out = pool.checkout().await;
+        lease.mark_checked_out();
+        drop(checked_out);
+
+        let waiter_pool = Arc::clone(&pool);
+        let mut waiter = tokio::spawn(async move { waiter_pool.checkout().await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "checkout should block before the aborted lease restores capacity"
+        );
+
+        let remaining = lease.recover_after_abort().await;
+        assert_eq!(remaining, 1);
+
+        let replacement = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("checkout should be woken by abort recovery")
+            .expect("checkout task should not panic");
+        pool.return_or_reap_worker(replacement, 0).await;
+
+        drop(lease);
+        drop(tasks_remaining);
+        if let Ok(pool) = Arc::try_unwrap(pool) {
+            pool.shutdown().await;
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────
