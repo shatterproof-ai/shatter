@@ -1712,6 +1712,32 @@ mod tests {
     }
 
     #[test]
+    fn concolic_meta_strategy_falls_back_for_unsolved_seedless_params() {
+        let params = make_params(&[TypeInfo::Unknown]);
+        let mut meta = build_concolic_meta_strategy(
+            vec![],
+            vec![],
+            vec![],
+            &params,
+            vec![],
+            None,
+            MetaConfig::default(),
+        );
+        let ctx = StrategyContext {
+            params,
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+
+        let candidate = meta
+            .next(&ctx, &mut rng)
+            .expect("seedless concolic exploration should still execute a fallback candidate");
+
+        assert_eq!(candidate.0.len(), 1);
+    }
+
+    #[test]
     fn boundary_seeds_name() {
         let bs = BoundarySeeds::new(&[]);
         assert_eq!(bs.name(), "boundary");
