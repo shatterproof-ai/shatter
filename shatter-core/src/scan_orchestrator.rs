@@ -5949,6 +5949,29 @@ mod tests {
         );
     }
 
+    /// str-kuc0 regression: Kapow's cold Go builds can exceed the initial
+    /// scan build timeout but then complete once the build cache has warmed.
+    /// The shared-pool task watchdog needs to include the explicit retry
+    /// build budget so the retry reports as a build-phase timeout/success,
+    /// not as an opaque task watchdog abort.
+    #[test]
+    fn shared_pool_task_watchdog_accounts_for_build_retry_budget() {
+        let initial_build = Duration::from_secs(30);
+        let retry_build = build_timeout_retry_budget(initial_build);
+        assert_eq!(retry_build, Duration::from_secs(60));
+
+        let watchdog = shared_pool_task_watchdog(initial_build, Duration::from_secs(20));
+
+        assert!(
+            watchdog >= initial_build + retry_build + Duration::from_secs(20),
+            "watchdog {watchdog:?} must allow initial build, retry build, and exploration budgets"
+        );
+        assert!(
+            watchdog <= initial_build + retry_build + Duration::from_secs(25),
+            "watchdog {watchdog:?} should retain only the small cleanup cushion"
+        );
+    }
+
     /// str-0x82: adapter-typed invocation models produce an execution profile
     /// containing the adapter id. Direct models produce `None`. This ensures
     /// scan-discovered adapter targets (e.g. go/http-handler) carry the correct
