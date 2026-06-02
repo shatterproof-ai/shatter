@@ -18,6 +18,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
+mod common;
+
 const GO_FIXTURE: &str = "package toy\n\n\
 func Add(a, b int) int {\n\
 \tif a > 0 {\n\
@@ -69,6 +71,7 @@ fn explore_respects_tmpdir_no_host_tmp_pollution() {
     let out_dir = tempfile::tempdir().expect("create output tempdir");
     let report_path = out_dir.path().join("scan.json");
 
+    let _host_tmp_lock = common::host_tmp_shatter_lock();
     let before = snapshot_tmp_shatter_entries();
 
     let output = Command::new(shatter_binary())

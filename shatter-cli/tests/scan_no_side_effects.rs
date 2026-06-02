@@ -15,6 +15,8 @@
 
 use std::process::Command;
 
+mod common;
+
 const GO_FIXTURE: &str = "package toy\n\n\
 func Add(a, b int) int {\n\
 \tif a > 0 {\n\
@@ -43,6 +45,7 @@ fn scan_with_external_output_and_no_cache_no_seeds_writes_no_project_local_dirs(
     let report_path = out_dir.path().join("scan.json");
     let command_tmp = tempfile::tempdir().expect("create command tmpdir");
 
+    let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(shatter_binary())
         .env("TMPDIR", command_tmp.path())
         .args([

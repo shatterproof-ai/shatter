@@ -20,6 +20,8 @@
 
 use std::process::Command;
 
+mod common;
+
 const GO_FIXTURE: &str = "package toy\n\n\
 func Add(a, b int) int {\n\
 \tif a > 0 {\n\
@@ -68,6 +70,7 @@ fn scan_summary_names_all_buckets() {
     let report_path = out_dir.path().join("scan.txt");
     let command_tmp = tempfile::tempdir().expect("create command tmpdir");
 
+    let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(shatter_binary())
         .env("TMPDIR", command_tmp.path())
         .args([
