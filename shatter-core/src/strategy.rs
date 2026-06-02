@@ -227,7 +227,7 @@ pub fn build_random_explorer_meta_strategy(
 /// Build the concolic orchestrator's shared registered strategy set.
 ///
 /// Registration order is the scheduling seam:
-/// `[UserProvided, BoundarySeeds, Z3Solver, Fuzzer]`
+/// `[UserProvided, BoundarySeeds, Z3Solver, Fuzzer, Random]`
 ///
 /// Drilling, boundary-search interpolation, and MC/DC targets are intentional
 /// special cases handled by
@@ -266,6 +266,10 @@ pub fn build_concolic_meta_strategy(
             RegisteredStrategy::new(
                 RegisteredStrategyKind::Fuzzer,
                 Box::new(FuzzerStrategy::new(None)),
+            ),
+            RegisteredStrategy::new(
+                RegisteredStrategyKind::Random,
+                Box::new(RandomStrategy::new(None)),
             ),
         ],
         meta_config,
@@ -1583,6 +1587,7 @@ mod tests {
                 RegisteredStrategyKind::BoundarySeeds,
                 RegisteredStrategyKind::Z3Solver,
                 RegisteredStrategyKind::Fuzzer,
+                RegisteredStrategyKind::Random,
             ]
         );
         assert_eq!(

@@ -156,6 +156,8 @@ impl ClaimPolicy {
 pub struct ScanConfig {
     /// Maximum number of iterations (execute calls) per function.
     pub max_iterations_per_function: u32,
+    /// Use the Z3-backed concolic orchestrator instead of random exploration.
+    pub concolic: bool,
     /// Random seed for reproducibility. If None, uses entropy.
     pub seed: Option<u64>,
     /// Map from qualified function ID to source file path (needed for instrumentation).
@@ -381,6 +383,8 @@ pub struct ScanResult {
 pub enum ScanError {
     #[error("exploration error: {0}")]
     Explore(#[from] ExploreError),
+    #[error("concolic exploration error: {0}")]
+    Concolic(#[from] crate::orchestrator::ExploreError),
     #[error("call graph cycle detected: {0}")]
     Cycle(#[from] CallGraphError),
     #[error("frontend error: {0}")]
@@ -1682,7 +1686,7 @@ pub async fn scan(
         };
 
         let exploration =
-            explorer::explore_function(frontend, analysis, &explore_config, None, None).await?;
+            explore_with_scan_mode(frontend, analysis, config.concolic, &explore_config).await?;
 
         // Harvest interesting inputs into the cross-function pool.
         interesting_pool::harvest_from_exploration(
@@ -2296,6 +2300,7 @@ async fn run_layer_batched(
     fe_config: Arc<FrontendConfig>,
     tasks: Vec<ExploreTask>,
     batch_size: u32,
+    concolic: bool,
     timeout: Duration,
     build_timeout: Duration,
     cache: &Option<Arc<BehaviorMapCache>>,
@@ -2483,6 +2488,7 @@ async fn run_layer_batched(
             fe,
             &task.func_name,
             &task.analysis,
+            concolic,
             &batch_explore_config,
             &task.mocks_used,
             &task.callees,
@@ -2819,6 +2825,110 @@ fn compute_uncovered_branch_strings(
         .collect()
 }
 
+async fn explore_with_scan_mode(
+    frontend: &mut Frontend,
+    analysis: &FunctionAnalysis,
+    concolic: bool,
+    explore_config: &ExploreConfig,
+) -> Result<crate::explorer::ObservationOutput, ScanError> {
+    if !concolic {
+        return Ok(
+            explorer::explore_function(frontend, analysis, explore_config, None, None).await?,
+        );
+    }
+
+    if let Err(e) = frontend
+        .send(crate::protocol::Command::Instrument {
+            file: explore_config.file.clone(),
+            function: analysis.name.clone(),
+            mocks: explore_config.mocks.clone(),
+            project_root: explore_config.project_root.clone(),
+            execution_profile: explore_config.execution_profile.clone(),
+        })
+        .await
+    {
+        log::debug!("scan concolic instrument failed for {}: {e}", analysis.name);
+    }
+
+    let capabilities = crate::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities());
+    let prepare_id = if explore_config.prepare_id_override.is_some() {
+        explore_config.prepare_id_override.clone()
+    } else if capabilities.commands.contains("prepare") {
+        match frontend
+            .send(crate::protocol::Command::Prepare {
+                file: explore_config.file.clone(),
+                function: analysis.name.clone(),
+                mocks: explore_config.mocks.clone(),
+                project_root: explore_config.project_root.clone(),
+                execution_profile: explore_config.execution_profile.clone(),
+                plan: explore_config.default_execute_plan.clone(),
+            })
+            .await
+        {
+            Ok(resp) => match resp.result {
+                crate::protocol::ResponseResult::Prepare { prepare_id } => Some(prepare_id),
+                other => {
+                    log::debug!(
+                        "scan concolic prepare returned unexpected response for {}: {other:?}",
+                        analysis.name
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                log::debug!("scan concolic prepare failed for {}: {e}", analysis.name);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut seed_inputs = crate::boundary_dict::generate_boundary_inputs(&analysis.params);
+    seed_inputs.extend(explore_config.pool_seeds.clone());
+    let mut user_inputs = explore_config.user_seeds.clone();
+    user_inputs.extend(explore_config.candidate_inputs.clone());
+
+    let max_iterations = explore_config.max_iterations.unwrap_or(100) as usize;
+    let concolic_config = crate::orchestrator::ExploreConfig {
+        max_iterations: Some(max_iterations),
+        max_executions: Some(max_iterations * 5),
+        plateau_threshold: 20,
+        mocks: explore_config.mocks.clone(),
+        mock_params: explore_config.mock_params.clone(),
+        solver_timeout_ms: None,
+        seed: explore_config.seed,
+        solver_offload: true,
+        timeout_explore: explore_config.timeout_explore,
+        branch_profile: None,
+        meta_config: explore_config.meta_config.clone(),
+        execution_profile: explore_config.execution_profile.clone(),
+        loop_convergence_window: 3,
+        refine_budget: None,
+        shrink_budget: explore_config.shrink_budget,
+        mcdc: false,
+        fuzz: crate::config::FuzzConfig::default(),
+        planner: explore_config.planner.clone(),
+        default_execute_plan: explore_config.default_execute_plan.clone(),
+    };
+    let (mut result, _state) = crate::orchestrator::explore(
+        frontend,
+        &analysis.name,
+        seed_inputs,
+        user_inputs,
+        &analysis.params,
+        &concolic_config,
+        None,
+        prepare_id,
+        analysis.loops.clone(),
+        None,
+        None,
+    )
+    .await?;
+    result.total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
+    Ok(result.into())
+}
+
 /// Execute a layer of function tasks in Function isolation mode.
 ///
 /// Each function gets a dedicated fresh frontend process. Concurrency is capped
@@ -2830,6 +2940,7 @@ async fn run_layer_function_mode(
     fe_config: Arc<FrontendConfig>,
     tasks: Vec<ExploreTask>,
     max_concurrent: usize,
+    concolic: bool,
     timeout: Duration,
     build_timeout: Duration,
     cache: &Option<Arc<BehaviorMapCache>>,
@@ -2905,6 +3016,7 @@ async fn run_layer_function_mode(
                 &mut frontend,
                 &func_name,
                 &analysis,
+                concolic,
                 &explore_config,
                 &mocks_used,
                 &callees,
@@ -3962,6 +4074,7 @@ pub async fn parallel_scan_with_progress(
                     Arc::clone(&fe_config_persistent),
                     tasks,
                     bs,
+                    config.concolic,
                     config.timeout_per_fn,
                     config.build_timeout,
                     &config.cache,
@@ -3990,6 +4103,7 @@ pub async fn parallel_scan_with_progress(
                     Arc::clone(&fe_config_persistent),
                     tasks,
                     effective_parallelism,
+                    config.concolic,
                     config.timeout_per_fn,
                     config.build_timeout,
                     &config.cache,
@@ -4088,6 +4202,7 @@ pub async fn parallel_scan_with_progress(
                     let input_pool = Arc::clone(&input_pool);
                     let timeout = config.timeout_per_fn;
                     let build_timeout = config.build_timeout;
+                    let concolic = config.concolic;
                     let genetic_config = config.genetic_config.clone();
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
@@ -4133,6 +4248,7 @@ pub async fn parallel_scan_with_progress(
                                 fe,
                                 &func_name,
                                 &analysis,
+                                concolic,
                                 &explore_config,
                                 &mocks_used,
                                 &callees,
@@ -4814,6 +4930,7 @@ async fn run_phased(
     frontend: &mut Frontend,
     func_name: &str,
     analysis: &FunctionAnalysis,
+    concolic: bool,
     explore_config: &ExploreConfig,
     mocks_used: &[MockUsage],
     callees: &std::collections::HashSet<String>,
@@ -4880,6 +4997,7 @@ async fn run_phased(
             frontend,
             func_name,
             analysis,
+            concolic,
             &effective,
             mocks_used,
             callees,
@@ -4906,6 +5024,7 @@ async fn explore_single_function(
     frontend: &mut Frontend,
     func_name: &str,
     analysis: &FunctionAnalysis,
+    concolic: bool,
     explore_config: &ExploreConfig,
     mocks_used: &[MockUsage],
     callees: &std::collections::HashSet<String>,
@@ -4934,8 +5053,7 @@ async fn explore_single_function(
         effective_config.default_execute_plan = Some(plan);
     }
     let explore_config = &effective_config;
-    let exploration =
-        explorer::explore_function(frontend, analysis, explore_config, None, None).await?;
+    let exploration = explore_with_scan_mode(frontend, analysis, concolic, explore_config).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
     let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
@@ -5789,6 +5907,7 @@ mod tests {
     fn minimal_scan_config(file_map: HashMap<String, String>) -> ScanConfig {
         ScanConfig {
             max_iterations_per_function: 1,
+            concolic: false,
             seed: None,
             file_map,
             parallelism: 1,
@@ -6569,6 +6688,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 3,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 2,
@@ -6658,6 +6778,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(99),
             file_map,
             parallelism: 1,
@@ -6740,6 +6861,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 1,
@@ -6842,6 +6964,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 3,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 1,
@@ -6925,6 +7048,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(99),
             file_map,
             parallelism: 1,
@@ -7012,6 +7136,7 @@ mod tests {
         skipped_file_map.insert("solo".to_string(), "test.ts".to_string());
         let skipped_config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(99),
             file_map: skipped_file_map,
             parallelism: 1,
@@ -7072,6 +7197,7 @@ mod tests {
         failed_file_map.insert("solo".to_string(), "test.ts".to_string());
         let failed_config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(99),
             file_map: failed_file_map,
             parallelism: 1,
@@ -7197,6 +7323,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 3,
+            concolic: false,
             seed: Some(42),
             file_map,
             // Single worker: same pool slot is reused, exposing stale-response bug.
@@ -7319,6 +7446,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 3,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 1,
@@ -7456,6 +7584,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 3,
+            concolic: false,
             seed: Some(42),
             file_map,
             // Single worker: forces pool reuse, exposing cascade if the fix
@@ -7586,6 +7715,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 1,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 1,
@@ -7666,6 +7796,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 100,
+            concolic: false,
             seed: None,
             file_map,
             parallelism: 2,
@@ -7742,6 +7873,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 100,
+            concolic: false,
             seed: None,
             file_map,
             parallelism: 1,
@@ -7824,6 +7956,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 100,
+            concolic: false,
             seed: None,
             file_map,
             parallelism: 1,
@@ -7871,6 +8004,7 @@ mod tests {
 
         let config = ScanConfig {
             max_iterations_per_function: 100,
+            concolic: false,
             seed: None,
             file_map: [("good".to_string(), "src/lib.ts".to_string())]
                 .into_iter()
@@ -7911,6 +8045,7 @@ mod tests {
     fn dry_run_plan_empty_analyses() {
         let config = ScanConfig {
             max_iterations_per_function: 100,
+            concolic: false,
             seed: None,
             file_map: HashMap::new(),
             parallelism: 1,
@@ -8524,6 +8659,7 @@ mod tests {
         file_map.insert("solo".to_string(), "test.ts".to_string());
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(99),
             file_map,
             parallelism: 1,
@@ -8744,6 +8880,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 3,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 4,
@@ -8872,6 +9009,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 4,
@@ -8962,6 +9100,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             // High parallelism — but only 1 task exists, so pool must be capped at 1.
@@ -9053,6 +9192,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 4,
@@ -9160,6 +9300,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 4,
@@ -9317,6 +9458,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 2,
@@ -9451,6 +9593,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 4,
@@ -9585,6 +9728,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 4, // Serial policy must ignore this and use 1 worker.
@@ -9690,6 +9834,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(7),
             file_map,
             parallelism: 4,
@@ -9845,6 +9990,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 4,
@@ -9957,6 +10103,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(42),
             file_map,
             parallelism: 2,
@@ -12121,6 +12268,7 @@ defaults:
 
         let config = ScanConfig {
             max_iterations_per_function: 2,
+            concolic: false,
             seed: Some(7),
             file_map,
             parallelism: 1,

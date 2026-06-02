@@ -82,6 +82,7 @@ pub(crate) async fn run_scan(
     until: Option<&str>,
     include_untracked: bool,
     all_functions: bool,
+    concolic: bool,
     max_depth: Option<usize>,
     max_iterations: u32,
     timeout_total: u64,
@@ -790,6 +791,7 @@ pub(crate) async fn run_scan(
     if dry_run {
         let scan_config = ScanConfig {
             max_iterations_per_function: max_iterations,
+            concolic,
             seed: None,
             file_map: file_map.clone(),
             parallelism: effective_parallelism,
@@ -965,6 +967,7 @@ pub(crate) async fn run_scan(
 
     let scan_config = ScanConfig {
         max_iterations_per_function: max_iterations,
+        concolic,
         seed: None,
         file_map,
         parallelism: effective_parallelism,
