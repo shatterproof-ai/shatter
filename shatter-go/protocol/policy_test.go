@@ -324,6 +324,36 @@ func TestPrepare_DefaultPolicy_DoesNotBuildBrowserTarget(t *testing.T) {
 	}
 }
 
+func TestPrepare_DefaultPolicy_AnalyzesMissingPolicyCache(t *testing.T) {
+	file := "testdata/opaque.go"
+	function := "AcceptsSqlDB"
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	handler.policyConfigLoader = func(string) (config.File, error) {
+		return config.File{}, nil
+	}
+
+	resp := handler.handlePrepare(Response{ProtocolVersion: ProtocolVersion, ID: 1}, Request{
+		ProtocolVersion: ProtocolVersion,
+		ID:              1,
+		Command:         "prepare",
+		File:            file,
+		Function:        &function,
+	})
+
+	if resp.Status != "prepare" {
+		t.Fatalf("prepare status = %q, want prepare (full resp: %+v)", resp.Status, resp)
+	}
+	if resp.PrepareID == "" {
+		t.Fatalf("prepare_id must be populated for policy-skipped prepare")
+	}
+	if len(handler.preparedHarnesses) != 0 {
+		t.Fatalf("policy-skipped prepare must not build harnesses, got %d", len(handler.preparedHarnesses))
+	}
+	if handler.cachedAnalyses[file+"\x00"+function] == nil {
+		t.Fatalf("expected prepare to populate policy analysis cache for %s", function)
+	}
+}
+
 // TestExecute_PolicyAllowOverride_RunsDatabaseTarget is the second
 // acceptance scenario: with policy.allow=[database] for the target, the
 // policy gate does not short-circuit — execution proceeds past the gate
