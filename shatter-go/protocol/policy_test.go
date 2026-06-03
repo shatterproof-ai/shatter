@@ -59,6 +59,39 @@ func TestClassifyFunction_BrowserAutomationDependencyIsClassified(t *testing.T) 
 	}
 }
 
+func TestClassifyFunction_BrowserReturnTypeIsClassified(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name:       "NewBrowser",
+		ReturnType: TypeInfo{Kind: "opaque", Label: "scraper.Browser"},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
+		t.Fatalf("expected browser return type to classify as subprocess, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_LocalBrowserHelperIsClassified(t *testing.T) {
+	root := &FunctionAnalysis{
+		Name: "Scrape",
+		Dependencies: []ExternalDependency{
+			{Symbol: "newBrowser", SourceModule: "example.com/project", Kind: "call"},
+		},
+	}
+	helper := &FunctionAnalysis{
+		Name:       "newBrowser",
+		ReturnType: TypeInfo{Kind: "nullable", Inner: &TypeInfo{Kind: "opaque", Label: "scraper.Browser"}},
+	}
+	uses := classifyFunctionWithLocalDependencies(root, func(symbol string) *FunctionAnalysis {
+		if symbol == "newBrowser" {
+			return helper
+		}
+		return nil
+	})
+	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
+		t.Fatalf("expected local browser helper to classify as subprocess, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_PureFunctionHasNoUses(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "Add",

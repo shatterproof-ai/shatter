@@ -94,6 +94,9 @@ func classifyFunction(fa *FunctionAnalysis) []ClassifiedUse {
 			uses = append(uses, use)
 		}
 	}
+	if use, ok := classifyReturnType(fa.ReturnType); ok {
+		uses = append(uses, use)
+	}
 	return uses
 }
 
@@ -162,6 +165,17 @@ func classifyParam(p ParamInfo) (ClassifiedUse, bool) {
 	}, true
 }
 
+func classifyReturnType(t TypeInfo) (ClassifiedUse, bool) {
+	if class, component, ok := typeInfoClass(t); ok {
+		return ClassifiedUse{
+			Class:     class,
+			Component: component,
+			Evidence:  fmt.Sprintf("return type %s", component),
+		}, true
+	}
+	return ClassifiedUse{}, false
+}
+
 // paramTypeClass maps a parameter type label (e.g. "sql.DB") to the
 // side-effect class implied by accepting that type. The map is
 // intentionally small and fails open — unknown types return ok=false so
@@ -175,8 +189,39 @@ func paramTypeClass(label string) (SideEffectClass, bool) {
 		return ClassDatabase, true
 	case "net.Conn", "net.Listener", "http.Client", "http.Request", "http.ResponseWriter":
 		return ClassNetwork, true
+	case "scraper.Browser", "rod.Browser", "launcher.Launcher":
+		return ClassSubprocess, true
 	}
 	return "", false
+}
+
+func typeInfoClass(t TypeInfo) (SideEffectClass, string, bool) {
+	if t.Label != "" {
+		if class, ok := paramTypeClass(t.Label); ok {
+			return class, t.Label, true
+		}
+	}
+	if t.Element != nil {
+		if class, component, ok := typeInfoClass(*t.Element); ok {
+			return class, component, true
+		}
+	}
+	if t.Inner != nil {
+		if class, component, ok := typeInfoClass(*t.Inner); ok {
+			return class, component, true
+		}
+	}
+	for _, field := range t.Fields {
+		if class, component, ok := typeInfoClass(field.Type); ok {
+			return class, component, true
+		}
+	}
+	for _, variant := range t.Variants {
+		if class, component, ok := typeInfoClass(variant); ok {
+			return class, component, true
+		}
+	}
+	return "", "", false
 }
 
 // classifyDependency maps an ExternalDependency to a side-effect class
@@ -184,7 +229,16 @@ func paramTypeClass(label string) (SideEffectClass, bool) {
 func classifyDependency(d ExternalDependency) (ClassifiedUse, bool) {
 	class, ok := moduleClass(d.SourceModule, d.Symbol)
 	if !ok {
-		return ClassifiedUse{}, false
+		var component string
+		class, component, ok = typeInfoClass(d.ReturnType)
+		if !ok {
+			return ClassifiedUse{}, false
+		}
+		return ClassifiedUse{
+			Class:     class,
+			Component: component,
+			Evidence:  fmt.Sprintf("dependency %s return type %s", d.Symbol, component),
+		}, true
 	}
 	component := d.Symbol
 	if component == "" {
