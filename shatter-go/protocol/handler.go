@@ -714,6 +714,16 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind, genericTypeArgs...)
 	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
 
+	cacheKey := file + "\x00" + *req.Function
+	if cachedAnalysis := h.cachedAnalyses[cacheKey]; cachedAnalysis != nil && !isAdapterOwned(cachedAnalysis) {
+		if decision, applied := h.evaluateExecutePolicy(file, *req.Function, cachedAnalysis); applied && !decision.Allow {
+			h.log.Debug("skipping prepare by execution policy", "file", file, "function", *req.Function, "reason", decision.Reason)
+			resp.Status = "prepare"
+			resp.PrepareID = prepareID
+			return finalizeResponse(resp, timing)
+		}
+	}
+
 	// Invalidate stale harness if the same target was prepared with different inputs.
 	if oldID, exists := h.preparedTargets[targetKey]; exists && oldID != prepareID {
 		h.log.Debug("invalidating stale prepared harness", "old_prepare_id", oldID, "new_prepare_id", prepareID)

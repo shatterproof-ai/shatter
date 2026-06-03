@@ -97,6 +97,39 @@ func classifyFunction(fa *FunctionAnalysis) []ClassifiedUse {
 	return uses
 }
 
+// classifyFunctionWithLocalDependencies expands policy classification through
+// cached same-package helper calls. This catches wrappers such as New ->
+// NewContext where only the helper directly touches a subprocess launcher.
+func classifyFunctionWithLocalDependencies(
+	fa *FunctionAnalysis,
+	lookupLocal func(string) *FunctionAnalysis,
+) []ClassifiedUse {
+	if lookupLocal == nil {
+		return classifyFunction(fa)
+	}
+	var uses []ClassifiedUse
+	seen := map[*FunctionAnalysis]bool{}
+	var walk func(*FunctionAnalysis)
+	walk = func(current *FunctionAnalysis) {
+		if current == nil {
+			return
+		}
+		if seen[current] {
+			return
+		}
+		seen[current] = true
+		uses = append(uses, classifyFunction(current)...)
+		for _, dep := range current.Dependencies {
+			child := lookupLocal(dep.Symbol)
+			if child != nil {
+				walk(child)
+			}
+		}
+	}
+	walk(fa)
+	return uses
+}
+
 // classifyParam inspects a single parameter for a dangerous opaque type.
 // Detection works off TypeInfo.Label (e.g. "sql.DB") and the optional
 // TypeName hint (e.g. "*sql.DB"). Returns ok=false for parameters that
@@ -181,7 +214,12 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		strings.HasPrefix(module, "golang.org/x/net"):
 		return ClassNetwork, true
 	case module == "os/exec",
-		module == "syscall":
+		module == "syscall",
+		strings.HasPrefix(module, "github.com/go-rod/rod"),
+		strings.HasPrefix(module, "github.com/go-rod/stealth"),
+		strings.HasPrefix(module, "github.com/playwright-community/playwright-go"),
+		strings.HasPrefix(module, "github.com/chromedp/chromedp"),
+		strings.HasPrefix(module, "github.com/tebeka/selenium"):
 		return ClassSubprocess, true
 	case module == "os":
 		if isProcessGlobalOsSymbol(symbol) {
@@ -275,8 +313,17 @@ func (h *Handler) evaluateExecutePolicy(file, function string, fa *FunctionAnaly
 		h.log.Warn("ignoring unknown policy.allow entry", "value", raw, "file", file, "function", function)
 	}
 	allowed := buildAllowedSet(overrides, logUnknown)
-	uses := classifyFunction(fa)
+	uses := h.classifyFunctionForPolicy(file, fa)
 	return evaluatePolicy(uses, allowed), true
+}
+
+func (h *Handler) classifyFunctionForPolicy(file string, fa *FunctionAnalysis) []ClassifiedUse {
+	return classifyFunctionWithLocalDependencies(fa, func(symbol string) *FunctionAnalysis {
+		if symbol == "" {
+			return nil
+		}
+		return h.cachedAnalyses[file+"\x00"+symbol]
+	})
 }
 
 // loadPolicyConfig invokes the injected loader or falls back to the
