@@ -755,22 +755,49 @@ fn execution_record_from_result(
 
 impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
     fn from(r: crate::orchestrator::ExploreResult) -> Self {
-        // Build ExecutionSummary entries from unique-path executions.
-        let new_path_executions: Vec<crate::explorer::ExecutionSummary> = r
-            .executions
-            .iter()
-            .map(|exec| crate::explorer::ExecutionSummary {
-                inputs: vec![], // Concolic explorer doesn't pair inputs with executions vec
-                return_value: exec.return_value.clone(),
-                thrown_error: exec
-                    .thrown_error
-                    .as_ref()
-                    .map(|e| format!("{}: {}", e.error_type, e.message)),
-                lines_executed: exec.lines_executed.clone(),
-                is_new_path: true,
-                error_intent: crate::explorer::classify_error_intent(exec),
-            })
-            .collect();
+        // Build ExecutionSummary entries from the first raw execution that
+        // reached each unique path so report consumers keep the inputs that
+        // discovered the path. Fall back to the path-only execution list for
+        // older synthetic results that have no raw input pairing.
+        let new_path_executions: Vec<crate::explorer::ExecutionSummary> = if r.raw_results.is_empty()
+        {
+            r.executions
+                .iter()
+                .map(|exec| crate::explorer::ExecutionSummary {
+                    inputs: vec![],
+                    return_value: exec.return_value.clone(),
+                    thrown_error: exec
+                        .thrown_error
+                        .as_ref()
+                        .map(|e| format!("{}: {}", e.error_type, e.message)),
+                    lines_executed: exec.lines_executed.clone(),
+                    is_new_path: true,
+                    error_intent: crate::explorer::classify_error_intent(exec),
+                })
+                .collect()
+        } else {
+            let mut seen_paths = std::collections::HashSet::new();
+            r.raw_results
+                .iter()
+                .filter_map(|(inputs, _mocks, exec)| {
+                    let path_hash = crate::orchestrator::hash_branch_path(&exec.branch_path);
+                    if !seen_paths.insert(path_hash) {
+                        return None;
+                    }
+                    Some(crate::explorer::ExecutionSummary {
+                        inputs: inputs.clone(),
+                        return_value: exec.return_value.clone(),
+                        thrown_error: exec
+                            .thrown_error
+                            .as_ref()
+                            .map(|e| format!("{}: {}", e.error_type, e.message)),
+                        lines_executed: exec.lines_executed.clone(),
+                        is_new_path: true,
+                        error_intent: crate::explorer::classify_error_intent(exec),
+                    })
+                })
+                .collect()
+        };
 
         // Compute lines covered from raw_results.
         let mut all_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -1305,6 +1332,97 @@ mod tests {
         assert!(
             !output.timed_out,
             "WorklistExhausted should not flag the observation as timed_out"
+        );
+    }
+
+    #[test]
+    fn observation_output_from_concolic_result_preserves_raw_input_witnesses() {
+        let true_path = vec![BranchDecision {
+            branch_id: 0,
+            line: 10,
+            taken: true,
+            constraint: SymConstraint::Unknown { hint: "x".into() },
+            conditions: None,
+        }];
+        let false_path = vec![BranchDecision {
+            branch_id: 0,
+            line: 10,
+            taken: false,
+            constraint: SymConstraint::Unknown { hint: "x".into() },
+            conditions: None,
+        }];
+        let make_result = |branch_path: Vec<BranchDecision>, value: i64| ExecuteResult {
+            return_value: Some(json!(value)),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![10],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+        let concolic = crate::orchestrator::ExploreResult {
+            function_name: "test".into(),
+            total_lines: 10,
+            executions: vec![],
+            unique_paths: 2,
+            total_executions: 3,
+            z3_generated: 0,
+            fuzz_generated: 0,
+            boundary_generated: 0,
+            drill_generated: 0,
+            termination_reason: crate::orchestrator::TerminationReason::WorklistExhausted,
+            raw_results: vec![
+                (
+                    vec![json!({"__shatter_native": true, "handle": "state-1"})],
+                    vec![],
+                    make_result(true_path.clone(), 1),
+                ),
+                (
+                    vec![json!({"__shatter_native": true, "handle": "state-2"})],
+                    vec![],
+                    make_result(true_path, 2),
+                ),
+                (
+                    vec![json!({"__shatter_native": true, "handle": "state-3"})],
+                    vec![],
+                    make_result(false_path, 3),
+                ),
+            ],
+            discoveries: vec![],
+            triage_skipped: 0,
+            triage_mispredictions: 0,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            pipeline_overlaps: 0,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            timed_out: false,
+            oracle_stats: None,
+        };
+
+        let output: ObservationOutput = concolic.into();
+
+        assert_eq!(output.new_path_executions.len(), 2);
+        assert_eq!(
+            output.new_path_executions[0].inputs,
+            vec![json!({"__shatter_native": true, "handle": "state-1"})]
+        );
+        assert_eq!(
+            output.new_path_executions[1].inputs,
+            vec![json!({"__shatter_native": true, "handle": "state-3"})]
         );
     }
 
