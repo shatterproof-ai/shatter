@@ -4941,6 +4941,9 @@ fn retryable_frontend_transport_failure_source(outcome: &PhasedOutcome) -> Optio
         {
             Some(error.to_string())
         }
+        PhasedOutcome::Failed(ScanError::Concolic(
+            crate::orchestrator::ExploreError::Frontend(error),
+        )) if retryable_frontend_transport_error(error) => Some(error.to_string()),
         _ => None,
     }
 }
@@ -7885,6 +7888,24 @@ mod tests {
         let attempts = std::fs::read_to_string(&counter_file)
             .expect("counter file should record execute attempts");
         assert_eq!(attempts, "3");
+    }
+
+    #[test]
+    fn concolic_frontend_transport_failure_is_retryable() {
+        let error = FrontendError::SubprocessExited {
+            binary: PathBuf::from("shatter-rust-custom"),
+            exit_status: None,
+            stderr_tail: String::new(),
+        };
+        let expected_source = error.to_string();
+        let outcome = PhasedOutcome::Failed(ScanError::Concolic(
+            crate::orchestrator::ExploreError::Frontend(error),
+        ));
+
+        assert_eq!(
+            retryable_frontend_transport_failure_source(&outcome).as_deref(),
+            Some(expected_source.as_str())
+        );
     }
 
     // ── dry-run plan tests ──────────────────────────────────────────
