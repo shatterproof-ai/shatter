@@ -819,6 +819,68 @@ pub struct ScanReport {
 // Report generation
 // ---------------------------------------------------------------------------
 
+fn recover_lines_executed(
+    exploration: &ObservationOutput,
+    inputs: &[serde_json::Value],
+    lines_executed: &[u32],
+) -> Vec<u32> {
+    if !lines_executed.is_empty() {
+        return lines_executed.to_vec();
+    }
+
+    exploration
+        .raw_results
+        .iter()
+        .find_map(|(raw_inputs, _mocks, result)| {
+            if raw_inputs == inputs && !result.lines_executed.is_empty() {
+                Some(result.lines_executed.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn recovered_lines_covered(exploration: &ObservationOutput) -> usize {
+    if exploration.lines_covered > 0 {
+        return exploration.lines_covered;
+    }
+
+    exploration
+        .raw_results
+        .iter()
+        .flat_map(|(_inputs, _mocks, result)| result.lines_executed.iter().copied())
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+}
+
+fn recovered_branches_covered(
+    exploration: &ObservationOutput,
+    metrics: &crate::coverage_metrics::CoverageMetrics,
+) -> usize {
+    let metrics_covered = metrics.total_branches.saturating_sub(metrics.uncovered);
+    let observed_covered = exploration
+        .discoveries
+        .iter()
+        .map(|(branch_id, _method)| *branch_id)
+        .chain(
+            exploration
+                .raw_results
+                .iter()
+                .flat_map(|(_inputs, _mocks, result)| {
+                    result.branch_path.iter().map(|decision| decision.branch_id)
+                }),
+        )
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    if metrics.total_branches == 0 {
+        observed_covered
+    } else {
+        metrics_covered.max(observed_covered.min(metrics.total_branches))
+    }
+}
+
 /// Build a [`FunctionReport`] from a scan's [`FunctionResult`].
 pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
     let exploration = &result.exploration;
@@ -830,7 +892,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
             inputs: exec.inputs.clone(),
             return_value: exec.return_value.clone(),
             thrown_error: exec.thrown_error.clone(),
-            lines_executed: exec.lines_executed.clone(),
+            lines_executed: recover_lines_executed(exploration, &exec.inputs, &exec.lines_executed),
         })
         .collect();
 
@@ -858,8 +920,9 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         .map(|(_, _mocks, r)| r.path_constraints.len())
         .sum();
 
+    let lines_covered = recovered_lines_covered(exploration);
     let coverage_pct = if exploration.total_lines > 0 {
-        (exploration.lines_covered as f64 / exploration.total_lines as f64 * 100.0).min(100.0)
+        (lines_covered as f64 / exploration.total_lines as f64 * 100.0).min(100.0)
     } else {
         0.0
     };
@@ -872,7 +935,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     // `exploration.unique_paths`, which is the count of distinct execution
     // paths through the function and is unrelated to per-branch coverage.
     let total_branches = result.coverage_metrics.total_branches;
-    let branches_covered = total_branches.saturating_sub(result.coverage_metrics.uncovered);
+    let branches_covered = recovered_branches_covered(exploration, &result.coverage_metrics);
 
     // str-fuhw: `result.function_name` may be a qualified ID
     // (`"<file>::<name>"`) on production paths. Strip to the bare display
@@ -917,7 +980,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
             solver_guided_inputs: 0,
         },
         iterations: exploration.iterations,
-        lines_covered: exploration.lines_covered,
+        lines_covered,
         total_lines: exploration.total_lines,
         mocks_used: result
             .mocks_used
@@ -2213,6 +2276,65 @@ mod tests {
             report.branch_count, report.branches_covered,
             "branch_count and branches_covered must be reported as distinct values"
         );
+    }
+
+    #[test]
+    fn function_report_recovers_scan_coverage_from_raw_observations() {
+        let mut func_result = make_function_result("scan_target", 5, 1, 0, 100, vec![]);
+        func_result.coverage_metrics = crate::coverage_metrics::CoverageMetrics {
+            total_branches: 3,
+            uncovered: 3,
+            ..Default::default()
+        };
+        func_result.exploration.lines_covered = 0;
+        func_result.exploration.new_path_executions[0].lines_executed = vec![];
+        let inputs = func_result.exploration.new_path_executions[0].inputs.clone();
+        func_result.exploration.raw_results = vec![(
+            inputs,
+            vec![],
+            crate::protocol::ExecuteResult {
+                return_value: Some(serde_json::json!("ok")),
+                branch_path: vec![
+                    crate::execution_record::BranchDecision {
+                        branch_id: 0,
+                        line: 41,
+                        taken: true,
+                        constraint: crate::execution_record::SymConstraint::Unknown {
+                            hint: "raw branch".to_string(),
+                        },
+                        conditions: None,
+                    },
+                    crate::execution_record::BranchDecision {
+                        branch_id: 2,
+                        line: 59,
+                        taken: false,
+                        constraint: crate::execution_record::SymConstraint::Unknown {
+                            hint: "raw branch".to_string(),
+                        },
+                        conditions: None,
+                    },
+                ],
+                lines_executed: vec![41, 59, 63],
+                ..Default::default()
+            },
+        )];
+
+        let report = build_function_report(&func_result, "src/scan_target.rs");
+
+        assert_eq!(
+            report.branches_covered, 2,
+            "report should not drop branch IDs present in raw scan observations"
+        );
+        assert_eq!(
+            report.lines_covered, 3,
+            "report should recover covered lines from raw scan observations"
+        );
+        assert_eq!(
+            report.discovered_inputs[0].lines_executed,
+            vec![41, 59, 63],
+            "per-input lines should be recovered when execution summaries are empty"
+        );
+        assert!(report.coverage_pct > 0.0);
     }
 
     #[test]
