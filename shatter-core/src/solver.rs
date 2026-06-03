@@ -877,6 +877,30 @@ fn concrete_value_matches_type(value: &ConcreteValue, ty: &TypeInfo) -> bool {
     }
 }
 
+fn validate_constraint_params(
+    constraints: &[SymExpr],
+    param_infos: &[ParamInfo],
+) -> Result<(), SolverError> {
+    if param_infos.is_empty() {
+        return Ok(());
+    }
+
+    let known: std::collections::HashSet<&str> =
+        param_infos.iter().map(|p| p.name.as_str()).collect();
+    for constraint in constraints {
+        for name in crate::sym_expr::extract_param_names(constraint) {
+            // Sub-path params (e.g. "config.timeout") won't match top-level names.
+            if !name.contains('.') && !known.contains(name.as_str()) {
+                return Err(SolverError::Unsupported(format!(
+                    "constraint references unknown param {name:?}, known params: {known:?}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Solve a list of path constraints, negating the constraint at `negate_index`
 /// to explore a new execution path.
 ///
@@ -902,26 +926,10 @@ pub fn solve_for_new_path(
         )));
     }
 
-    // Debug-only: verify constraint param names exist in param_infos when
-    // param_infos is non-empty. Unknown params get default Int sort in Z3,
-    // which silently produces wrong solutions for String/Bool params.
-    #[cfg(debug_assertions)]
-    if !param_infos.is_empty() {
-        let known: std::collections::HashSet<&str> =
-            param_infos.iter().map(|p| p.name.as_str()).collect();
-        for constraint in constraints {
-            for name in crate::sym_expr::extract_param_names(constraint) {
-                // Sub-path params (e.g. "config.timeout") won't match top-level names
-                if !name.contains('.') {
-                    debug_assert!(
-                        known.contains(name.as_str()),
-                        "constraint references unknown param {name:?}, \
-                         known params: {known:?}"
-                    );
-                }
-            }
-        }
-    }
+    // Verify constraint param names exist in param_infos when param_infos is
+    // non-empty. Unknown params get default Int sort in Z3, which silently
+    // produces wrong solutions for String/Bool params.
+    validate_constraint_params(constraints, param_infos)?;
 
     let mut cfg = Config::new();
     if let Some(ms) = solver_timeout_ms {
@@ -1470,6 +1478,33 @@ mod tests {
             result.is_err() || result.unwrap().is_err(),
             "out-of-bounds negate_index must fail"
         );
+    }
+
+    #[test]
+    fn unknown_param_constraint_returns_error() {
+        let constraints = vec![SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "owner_filter".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
+        }];
+        let param_infos = vec![ParamInfo {
+            name: "current".into(),
+            typ: TypeInfo::Int,
+            type_name: None,
+        }];
+
+        let result = solve_for_new_path(&constraints, 0, None, &param_infos);
+
+        match result {
+            Err(SolverError::Unsupported(message)) => {
+                assert!(message.contains("owner_filter"), "{message}");
+                assert!(message.contains("current"), "{message}");
+            }
+            other => panic!("expected unknown param to be unsupported, got {other:?}"),
+        }
     }
 
     #[test]
