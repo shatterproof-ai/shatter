@@ -187,6 +187,38 @@ func present() {}
 	}
 }
 
+func TestExecuteUnsupportedAdapterErrorIncludesOutcome(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+import "net/http"
+
+func Serve(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := reqJSON(1, "execute", fmt.Sprintf(`"file":"%s","function":"Serve","inputs":[]`, tmp))
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Fatalf("status = %q, want error (response: %+v)", resp.Status, resp)
+	}
+	if resp.Code != ErrNotSupported {
+		t.Fatalf("code = %q, want %s (response: %+v)", resp.Code, ErrNotSupported, resp)
+	}
+	if resp.Outcome == nil {
+		t.Fatalf("unsupported adapter error must include outcome; response: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusUnsupported {
+		t.Errorf("outcome.Status = %q, want unsupported (response: %+v)", resp.Outcome.Status, resp)
+	}
+	if resp.Performance == nil {
+		t.Fatalf("performance field must be present on unsupported adapter responses")
+	}
+}
+
 // TestNonCompletedOutcomeWireIncludesPerformance is the str-adfp wire-level
 // regression: serialized execute responses for unsupported/skipped_by_policy
 // MUST include a "performance" key, because the Rust core's ExecuteResponse

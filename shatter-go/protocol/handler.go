@@ -909,10 +909,20 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 
 	switch strategy.Kind {
 	case "unsupported":
+		reason := fmt.Sprintf("execution adapter not supported by Go frontend: %s", strategy.AdapterID)
 		resp.Status = "error"
 		resp.Code = ErrNotSupported
-		resp.Message = fmt.Sprintf("execution adapter not supported by Go frontend: %s", strategy.AdapterID)
-		return resp
+		resp.Message = reason
+		resp.Outcome = &InvocationOutcome{
+			Status:      OutcomeStatusUnsupported,
+			ShortReason: &reason,
+			ThrownError: &ErrorInfo{
+				ErrorType: "adapter_not_supported",
+				Message:   reason,
+			},
+		}
+		resp.Performance = &PerfMetrics{}
+		return finalizeResponse(resp, timing)
 	case "adapter":
 		finishExecute := timing.Start("execute.total")
 		result, err := ExecuteAdapterOwned(strategy.Hook, InvocationContext{
