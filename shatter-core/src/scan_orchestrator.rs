@@ -389,6 +389,10 @@ pub enum ScanError {
     Cycle(#[from] CallGraphError),
     #[error("frontend error: {0}")]
     Frontend(#[from] FrontendError),
+    #[error(
+        "frontend transport retry budget exhausted after {attempts} attempt(s): {message}"
+    )]
+    FrontendRetryExhausted { attempts: usize, message: String },
     #[error("stratum error: {0}")]
     Stratum(String),
 }
@@ -4233,7 +4237,7 @@ pub async fn parallel_scan_with_progress(
                             ScanProgressStatus::Started,
                         );
 
-                        let mut retried_frontend_transport = false;
+                        let mut frontend_transport_attempts = 1usize;
                         let result = loop {
                             let Some(fe) = frontend.as_mut() else {
                                 break PhasedOutcome::Failed(ScanError::Frontend(
@@ -4262,13 +4266,20 @@ pub async fn parallel_scan_with_progress(
                             )
                             .await;
 
-                            if retried_frontend_transport
-                                || !retryable_frontend_transport_failure(&result)
-                            {
+                            let Some(retry_source) =
+                                retryable_frontend_transport_failure_source(&result)
+                            else {
                                 break result;
+                            };
+
+                            if frontend_transport_attempts >= FRONTEND_TRANSPORT_ATTEMPT_LIMIT {
+                                break PhasedOutcome::Failed(ScanError::FrontendRetryExhausted {
+                                    attempts: frontend_transport_attempts,
+                                    message: retry_source,
+                                });
                             }
 
-                            retried_frontend_transport = true;
+                            frontend_transport_attempts += 1;
                             drop(frontend.take());
                             match Frontend::spawn(&pool.config).await {
                                 Ok(replacement) => {
@@ -4909,6 +4920,8 @@ enum PhasedOutcome {
     ExploreTimedOut(Duration),
 }
 
+const FRONTEND_TRANSPORT_ATTEMPT_LIMIT: usize = 3;
+
 fn retryable_frontend_transport_error(error: &FrontendError) -> bool {
     matches!(
         error,
@@ -4916,15 +4929,19 @@ fn retryable_frontend_transport_error(error: &FrontendError) -> bool {
     )
 }
 
-fn retryable_frontend_transport_failure(outcome: &PhasedOutcome) -> bool {
+fn retryable_frontend_transport_failure_source(outcome: &PhasedOutcome) -> Option<String> {
     match outcome {
-        PhasedOutcome::Failed(ScanError::Frontend(error)) => {
-            retryable_frontend_transport_error(error)
+        PhasedOutcome::Failed(ScanError::Frontend(error))
+            if retryable_frontend_transport_error(error) =>
+        {
+            Some(error.to_string())
         }
-        PhasedOutcome::Failed(ScanError::Explore(ExploreError::Frontend(error))) => {
-            retryable_frontend_transport_error(error)
+        PhasedOutcome::Failed(ScanError::Explore(ExploreError::Frontend(error)))
+            if retryable_frontend_transport_error(error) =>
+        {
+            Some(error.to_string())
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -7776,6 +7793,98 @@ mod tests {
             "no function should inherit the dead worker failure: {:?}",
             result.skipped
         );
+    }
+
+    #[tokio::test]
+    async fn parallel_scan_retries_repeated_execute_frontend_exits() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let flaky_path = manifest_dir.join("../protocol/execute-exits-twice-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![flaky_path.to_string_lossy().into_owned()];
+        fe_config.request_timeout = Duration::from_secs(10);
+        let counter_file = std::env::temp_dir().join(format!(
+            "shatter-execute-exits-twice-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&counter_file);
+        fe_config.env_vars.push((
+            "SHATTER_EXECUTE_EXIT_COUNTER".to_string(),
+            counter_file.to_string_lossy().into_owned(),
+        ));
+
+        let analyses = vec![FunctionAnalysis {
+            name: "fn_retry".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        }];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("fn_retry".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 1,
+            concolic: false,
+            seed: Some(42),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(30),
+            build_timeout: Duration::from_secs(30),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
+        };
+
+        let result = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("parallel_scan should retry repeated transient frontend exits");
+
+        assert_eq!(result.function_results.len(), 1);
+        assert!(
+            result.skipped.is_empty(),
+            "no function should fail after two retryable frontend exits: {:?}",
+            result.skipped
+        );
+        let attempts = std::fs::read_to_string(&counter_file)
+            .expect("counter file should record execute attempts");
+        assert_eq!(attempts, "3");
     }
 
     // ── dry-run plan tests ──────────────────────────────────────────
