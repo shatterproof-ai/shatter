@@ -29,6 +29,7 @@ use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, IsolationMode, ObservationOutput};
 use crate::fingerprint::FunctionSignature;
 use crate::frontend::{Frontend, FrontendConfig, FrontendError};
+use crate::input_gen::{PrefetchedValues, ValueSource};
 use crate::interesting_pool::{self, InterestingPool};
 use crate::mock_gen::mock_config_from_behavior_map;
 use crate::pipeline::{self, AnalyzeOutput};
@@ -2894,6 +2895,16 @@ async fn explore_with_scan_mode(
     user_inputs.extend(explore_config.candidate_inputs.clone());
 
     let max_iterations = explore_config.max_iterations.unwrap_or(100) as usize;
+    let generated_inputs = prefetch_concolic_generator_inputs(
+        frontend,
+        analysis,
+        explore_config,
+        &capabilities,
+        max_iterations,
+    )
+    .await;
+    user_inputs.extend(generated_inputs);
+
     let concolic_config = crate::orchestrator::ExploreConfig {
         max_iterations: Some(max_iterations),
         max_executions: Some(max_iterations * 5),
@@ -2931,6 +2942,84 @@ async fn explore_with_scan_mode(
     .await?;
     result.total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
     Ok(result.into())
+}
+
+async fn prefetch_concolic_generator_inputs(
+    frontend: &mut Frontend,
+    analysis: &FunctionAnalysis,
+    explore_config: &ExploreConfig,
+    capabilities: &crate::orchestrator::FrontendCapabilities,
+    max_iterations: usize,
+) -> Vec<Vec<serde_json::Value>> {
+    let has_generators = explore_config
+        .value_sources
+        .iter()
+        .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
+
+    if !has_generators || !capabilities.commands.contains("generate") {
+        return Vec::new();
+    }
+
+    let mut prefetched = match crate::input_gen::prefetch_custom_values(
+        &explore_config.value_sources,
+        frontend,
+        max_iterations,
+    )
+    .await
+    {
+        Ok(prefetched) => prefetched,
+        Err(err) => {
+            log::debug!(
+                "scan concolic generator prefetch failed for {}: {err}",
+                analysis.name
+            );
+            PrefetchedValues::new()
+        }
+    };
+
+    concolic_generator_inputs_from_prefetch(
+        analysis,
+        &explore_config.value_sources,
+        capabilities,
+        explore_config.seed,
+        max_iterations,
+        &mut prefetched,
+    )
+}
+
+fn concolic_generator_inputs_from_prefetch(
+    analysis: &FunctionAnalysis,
+    value_sources: &[ValueSource],
+    capabilities: &crate::orchestrator::FrontendCapabilities,
+    seed: Option<u64>,
+    max_iterations: usize,
+    prefetched: &mut PrefetchedValues,
+) -> Vec<Vec<serde_json::Value>> {
+    use rand::SeedableRng;
+
+    let has_generators = value_sources
+        .iter()
+        .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
+    if !has_generators {
+        return Vec::new();
+    }
+
+    let mut rng = match seed {
+        Some(seed) => rand::rngs::StdRng::seed_from_u64(seed),
+        None => rand::rngs::StdRng::from_os_rng(),
+    };
+
+    (0..max_iterations)
+        .map(|_| {
+            crate::input_gen::generate_inputs_with_custom(
+                &analysis.params,
+                value_sources,
+                prefetched,
+                &mut rng,
+                Some(capabilities),
+            )
+        })
+        .collect()
 }
 
 /// Execute a layer of function tasks in Function isolation mode.
@@ -8933,6 +9022,75 @@ defaults:
                 && param_name == "current"
                 && generator_file.as_path() == generator_path.as_path()
         ));
+    }
+
+    #[test]
+    fn concolic_generator_inputs_seed_custom_values() {
+        let generator_file = PathBuf::from("generators/pickpackit.rs");
+        let analysis = make_analysis_with_params(
+            "list_bundles",
+            vec![
+                ParamInfo {
+                    name: "state".into(),
+                    typ: TypeInfo::Unknown,
+                    type_name: Some("State".into()),
+                },
+                ParamInfo {
+                    name: "current".into(),
+                    typ: TypeInfo::Unknown,
+                    type_name: Some("CurrentAccount".into()),
+                },
+            ],
+            TypeInfo::Unknown,
+            vec![],
+        );
+        let value_sources = vec![
+            crate::input_gen::ValueSource::CustomGenerator {
+                generator_name: "State".into(),
+                param_name: None,
+                generator_file: generator_file.clone(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            crate::input_gen::ValueSource::CustomGenerator {
+                generator_name: "current".into(),
+                param_name: Some("current".into()),
+                generator_file: generator_file.clone(),
+                kind: crate::protocol::GeneratorKind::ParamName,
+            },
+        ];
+        let file_key = generator_file.display().to_string();
+        let mut prefetched = crate::input_gen::PrefetchedValues::new();
+        prefetched.insert(
+            file_key.clone(),
+            "State".into(),
+            vec![serde_json::json!({"__shatter_native": true, "handle": "state-1"})],
+        );
+        prefetched.insert(
+            file_key,
+            "current".into(),
+            vec![serde_json::json!({"__shatter_native": true, "handle": "current-1"})],
+        );
+        let capabilities =
+            crate::orchestrator::FrontendCapabilities::from_raw(&vec!["generate".to_string()]);
+
+        let inputs = concolic_generator_inputs_from_prefetch(
+            &analysis,
+            &value_sources,
+            &capabilities,
+            Some(42),
+            1,
+            &mut prefetched,
+        );
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(
+            inputs[0][0],
+            serde_json::json!({"__shatter_native": true, "handle": "state-1"})
+        );
+        assert_eq!(
+            inputs[0][1],
+            serde_json::json!({"__shatter_native": true, "handle": "current-1"})
+        );
     }
 
     // ── lazy worker spawn tests ──────────────────────────────────────
