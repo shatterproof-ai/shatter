@@ -6019,6 +6019,121 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
     }
 
     #[test]
+    fn execute_axum_handler_replays_native_custom_extractor_only_value() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+
+#[derive(Clone)]
+pub struct CurrentAccountLike {
+    pub id: u64,
+}
+
+impl<S> FromRequestParts<S> for CurrentAccountLike
+where
+    S: Send + Sync,
+{
+    type Rejection = &'static str;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(parts
+            .extensions
+            .get::<CurrentAccountLike>()
+            .cloned()
+            .ok_or("missing current account"))
+    }
+}
+
+pub async fn session(current: CurrentAccountLike) -> String {
+    format!("account:{}", current.id)
+}
+"#,
+        )
+        .expect("write source");
+
+        let current_generator = dir.path().join("current_gen.rs");
+        std::fs::write(
+            &current_generator,
+            r#"
+use crate::user_code::CurrentAccountLike;
+use shatter_rust::generators::GeneratorResult;
+
+pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResult {
+    let id = recipe
+        .as_ref()
+        .and_then(|v| v.get("id"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    GeneratorResult {
+        id: "current-account-like".to_string(),
+        value: Box::new(CurrentAccountLike { id }),
+        recipe: recipe.unwrap_or(serde_json::Value::Null),
+    }
+}
+"#,
+        )
+        .expect("write current generator");
+
+        let current_input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-current",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": current_generator,
+                "name": "CurrentAccountLikeGen",
+                "recipe": {"id": 42}
+            }
+        });
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::Unsupported,
+            type_name: "CurrentAccountLike".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "session",
+            &[current_input],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("account:42"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_replays_native_custom_extractor_only_value: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
     fn execute_axum_handler_replays_native_state_inside_request_runtime() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
