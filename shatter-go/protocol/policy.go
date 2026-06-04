@@ -94,6 +94,42 @@ func classifyFunction(fa *FunctionAnalysis) []ClassifiedUse {
 			uses = append(uses, use)
 		}
 	}
+	if use, ok := classifyReturnType(fa.ReturnType); ok {
+		uses = append(uses, use)
+	}
+	return uses
+}
+
+// classifyFunctionWithLocalDependencies expands policy classification through
+// cached same-package helper calls. This catches wrappers such as New ->
+// NewContext where only the helper directly touches a subprocess launcher.
+func classifyFunctionWithLocalDependencies(
+	fa *FunctionAnalysis,
+	lookupLocal func(string) *FunctionAnalysis,
+) []ClassifiedUse {
+	if lookupLocal == nil {
+		return classifyFunction(fa)
+	}
+	var uses []ClassifiedUse
+	seen := map[*FunctionAnalysis]bool{}
+	var walk func(*FunctionAnalysis)
+	walk = func(current *FunctionAnalysis) {
+		if current == nil {
+			return
+		}
+		if seen[current] {
+			return
+		}
+		seen[current] = true
+		uses = append(uses, classifyFunction(current)...)
+		for _, dep := range current.Dependencies {
+			child := lookupLocal(dep.Symbol)
+			if child != nil {
+				walk(child)
+			}
+		}
+	}
+	walk(fa)
 	return uses
 }
 
@@ -129,6 +165,17 @@ func classifyParam(p ParamInfo) (ClassifiedUse, bool) {
 	}, true
 }
 
+func classifyReturnType(t TypeInfo) (ClassifiedUse, bool) {
+	if class, component, ok := typeInfoClass(t); ok {
+		return ClassifiedUse{
+			Class:     class,
+			Component: component,
+			Evidence:  fmt.Sprintf("return type %s", component),
+		}, true
+	}
+	return ClassifiedUse{}, false
+}
+
 // paramTypeClass maps a parameter type label (e.g. "sql.DB") to the
 // side-effect class implied by accepting that type. The map is
 // intentionally small and fails open — unknown types return ok=false so
@@ -142,8 +189,39 @@ func paramTypeClass(label string) (SideEffectClass, bool) {
 		return ClassDatabase, true
 	case "net.Conn", "net.Listener", "http.Client", "http.Request", "http.ResponseWriter":
 		return ClassNetwork, true
+	case "Browser", "scraper.Browser", "rod.Browser", "launcher.Launcher":
+		return ClassSubprocess, true
 	}
 	return "", false
+}
+
+func typeInfoClass(t TypeInfo) (SideEffectClass, string, bool) {
+	if t.Label != "" {
+		if class, ok := paramTypeClass(t.Label); ok {
+			return class, t.Label, true
+		}
+	}
+	if t.Element != nil {
+		if class, component, ok := typeInfoClass(*t.Element); ok {
+			return class, component, true
+		}
+	}
+	if t.Inner != nil {
+		if class, component, ok := typeInfoClass(*t.Inner); ok {
+			return class, component, true
+		}
+	}
+	for _, field := range t.Fields {
+		if class, component, ok := typeInfoClass(field.Type); ok {
+			return class, component, true
+		}
+	}
+	for _, variant := range t.Variants {
+		if class, component, ok := typeInfoClass(variant); ok {
+			return class, component, true
+		}
+	}
+	return "", "", false
 }
 
 // classifyDependency maps an ExternalDependency to a side-effect class
@@ -151,7 +229,16 @@ func paramTypeClass(label string) (SideEffectClass, bool) {
 func classifyDependency(d ExternalDependency) (ClassifiedUse, bool) {
 	class, ok := moduleClass(d.SourceModule, d.Symbol)
 	if !ok {
-		return ClassifiedUse{}, false
+		var component string
+		class, component, ok = typeInfoClass(d.ReturnType)
+		if !ok {
+			return ClassifiedUse{}, false
+		}
+		return ClassifiedUse{
+			Class:     class,
+			Component: component,
+			Evidence:  fmt.Sprintf("dependency %s return type %s", d.Symbol, component),
+		}, true
 	}
 	component := d.Symbol
 	if component == "" {
@@ -181,7 +268,12 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		strings.HasPrefix(module, "golang.org/x/net"):
 		return ClassNetwork, true
 	case module == "os/exec",
-		module == "syscall":
+		module == "syscall",
+		strings.HasPrefix(module, "github.com/go-rod/rod"),
+		strings.HasPrefix(module, "github.com/go-rod/stealth"),
+		strings.HasPrefix(module, "github.com/playwright-community/playwright-go"),
+		strings.HasPrefix(module, "github.com/chromedp/chromedp"),
+		strings.HasPrefix(module, "github.com/tebeka/selenium"):
 		return ClassSubprocess, true
 	case module == "os":
 		if isProcessGlobalOsSymbol(symbol) {
@@ -275,8 +367,17 @@ func (h *Handler) evaluateExecutePolicy(file, function string, fa *FunctionAnaly
 		h.log.Warn("ignoring unknown policy.allow entry", "value", raw, "file", file, "function", function)
 	}
 	allowed := buildAllowedSet(overrides, logUnknown)
-	uses := classifyFunction(fa)
+	uses := h.classifyFunctionForPolicy(file, fa)
 	return evaluatePolicy(uses, allowed), true
+}
+
+func (h *Handler) classifyFunctionForPolicy(file string, fa *FunctionAnalysis) []ClassifiedUse {
+	return classifyFunctionWithLocalDependencies(fa, func(symbol string) *FunctionAnalysis {
+		if symbol == "" {
+			return nil
+		}
+		return h.cachedAnalyses[file+"\x00"+symbol]
+	})
 }
 
 // loadPolicyConfig invokes the injected loader or falls back to the

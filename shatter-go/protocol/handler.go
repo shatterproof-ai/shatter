@@ -528,6 +528,34 @@ func (h *Handler) finalizeAnalyzeFromCache(resp Response, req Request, cached []
 	return finalizeResponse(resp, timing)
 }
 
+func (h *Handler) cachedAnalysisForPolicy(file, function string, timing *frontendtiming.Collector) *FunctionAnalysis {
+	cacheKey := file + "\x00" + function
+	if cached := h.cachedAnalyses[cacheKey]; cached != nil {
+		return cached
+	}
+
+	finishAnalyze := timing.Start("policy.analyze")
+	functions, err := h.analyzeFile(file, "", timing)
+	finishAnalyze()
+	if err != nil {
+		h.log.Debug("policy analysis failed; proceeding without policy cache", "file", file, "function", function, "err", err)
+		return nil
+	}
+
+	var found *FunctionAnalysis
+	for i := range functions {
+		if functions[i].SourceFile == "" {
+			functions[i].SourceFile = file
+		}
+		key := file + "\x00" + functions[i].Name
+		h.cachedAnalyses[key] = &functions[i]
+		if functions[i].Name == function {
+			found = &functions[i]
+		}
+	}
+	return found
+}
+
 func isNotFound(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "function not found")
 }
@@ -714,6 +742,15 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind, genericTypeArgs...)
 	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
 
+	if cachedAnalysis := h.cachedAnalysisForPolicy(file, *req.Function, timing); cachedAnalysis != nil && !isAdapterOwned(cachedAnalysis) {
+		if decision, applied := h.evaluateExecutePolicy(file, *req.Function, cachedAnalysis); applied && !decision.Allow {
+			h.log.Debug("skipping prepare by execution policy", "file", file, "function", *req.Function, "reason", decision.Reason)
+			resp.Status = "prepare"
+			resp.PrepareID = prepareID
+			return finalizeResponse(resp, timing)
+		}
+	}
+
 	// Invalidate stale harness if the same target was prepared with different inputs.
 	if oldID, exists := h.preparedTargets[targetKey]; exists && oldID != prepareID {
 		h.log.Debug("invalidating stale prepared harness", "old_prepare_id", oldID, "new_prepare_id", prepareID)
@@ -818,8 +855,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 	// If the cached analysis reports an adapter invocation model, resolve the
 	// matching hook from the execution profile and dispatch through it instead
 	// of the instrumented subprocess harness.
-	cacheKey := file + "\x00" + *req.Function
-	cachedAnalysis := h.cachedAnalyses[cacheKey]
+	cachedAnalysis := h.cachedAnalysisForPolicy(file, *req.Function, timing)
 	if shouldForceDirectReceiverExecution(*req.Function, cachedAnalysis) {
 		receiverAnalysis := *cachedAnalysis
 		receiverAnalysis.InvocationModel = nil
@@ -873,10 +909,20 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 
 	switch strategy.Kind {
 	case "unsupported":
+		reason := fmt.Sprintf("execution adapter not supported by Go frontend: %s", strategy.AdapterID)
 		resp.Status = "error"
 		resp.Code = ErrNotSupported
-		resp.Message = fmt.Sprintf("execution adapter not supported by Go frontend: %s", strategy.AdapterID)
-		return resp
+		resp.Message = reason
+		resp.Outcome = &InvocationOutcome{
+			Status:      OutcomeStatusUnsupported,
+			ShortReason: &reason,
+			ThrownError: &ErrorInfo{
+				ErrorType: "adapter_not_supported",
+				Message:   reason,
+			},
+		}
+		resp.Performance = &PerfMetrics{}
+		return finalizeResponse(resp, timing)
 	case "adapter":
 		finishExecute := timing.Start("execute.total")
 		result, err := ExecuteAdapterOwned(strategy.Hook, InvocationContext{

@@ -1780,6 +1780,18 @@ func TestExecuteCapturesGoOSLevelSideEffects(t *testing.T) {
 	dir := t.TempDir()
 	tmp := filepath.Join(dir, "target.go")
 	outPath := filepath.Join(dir, "out.txt")
+	shatterDir := filepath.Join(dir, ".shatter")
+	if err := os.MkdirAll(shatterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `functions:
+  "target.go:osEffects":
+    policy:
+      allow: [network, process_global, unknown_high]
+`
+	if err := os.WriteFile(filepath.Join(shatterDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	src := `package main
 
 import (

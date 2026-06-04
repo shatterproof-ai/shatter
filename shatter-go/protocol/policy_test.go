@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,72 @@ func TestClassifyFunction_SubprocessDependencyIsClassified(t *testing.T) {
 	uses := classifyFunction(fa)
 	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
 		t.Fatalf("expected subprocess classification, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_BrowserAutomationDependencyIsClassified(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "LaunchesBrowser",
+		Dependencies: []ExternalDependency{
+			{Symbol: "New", SourceModule: "github.com/go-rod/rod/lib/launcher", Kind: "call"},
+		},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
+		t.Fatalf("expected browser launcher to classify as subprocess, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_BrowserReturnTypeIsClassified(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name:       "NewBrowser",
+		ReturnType: TypeInfo{Kind: "opaque", Label: "scraper.Browser"},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
+		t.Fatalf("expected browser return type to classify as subprocess, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_LocalBrowserConstructorReturnIsClassified(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "New",
+		ReturnType: TypeInfo{Kind: "object", Fields: []ObjectField{
+			{
+				Name: "_0",
+				Type: TypeInfo{
+					Kind:  "nullable",
+					Inner: &TypeInfo{Kind: "object", Label: "Browser"},
+				},
+			},
+			{Name: "_1", Type: TypeInfo{Kind: "complex", ComplexKind: "error"}},
+		}},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
+		t.Fatalf("expected local browser constructor return to classify as subprocess, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_LocalBrowserHelperIsClassified(t *testing.T) {
+	root := &FunctionAnalysis{
+		Name: "Scrape",
+		Dependencies: []ExternalDependency{
+			{Symbol: "newBrowser", SourceModule: "example.com/project", Kind: "call"},
+		},
+	}
+	helper := &FunctionAnalysis{
+		Name:       "newBrowser",
+		ReturnType: TypeInfo{Kind: "nullable", Inner: &TypeInfo{Kind: "opaque", Label: "scraper.Browser"}},
+	}
+	uses := classifyFunctionWithLocalDependencies(root, func(symbol string) *FunctionAnalysis {
+		if symbol == "newBrowser" {
+			return helper
+		}
+		return nil
+	})
+	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
+		t.Fatalf("expected local browser helper to classify as subprocess, got %+v", uses)
 	}
 }
 
@@ -129,9 +196,9 @@ func TestConfigLoad_MissingFileReturnsZero(t *testing.T) {
 func TestConfigLoad_MatchTargetHonoursSpecificity(t *testing.T) {
 	file := config.File{
 		Functions: map[string]config.FunctionConfig{
-			"*:*":             {Policy: &config.PolicyConfig{Allow: []string{"network"}}},
-			"user.go:UsesDB":  {Policy: &config.PolicyConfig{Allow: []string{"database"}}},
-			"*_test.go:*":     {Policy: &config.PolicyConfig{Allow: []string{"subprocess"}}},
+			"*:*":            {Policy: &config.PolicyConfig{Allow: []string{"network"}}},
+			"user.go:UsesDB": {Policy: &config.PolicyConfig{Allow: []string{"database"}}},
+			"*_test.go:*":    {Policy: &config.PolicyConfig{Allow: []string{"subprocess"}}},
 		},
 	}
 	entry := file.MatchTarget("user.go", "UsesDB")
@@ -238,6 +305,75 @@ func TestExecute_DefaultPolicy_SkipsDatabaseTarget(t *testing.T) {
 	}
 }
 
+func TestPrepare_DefaultPolicy_DoesNotBuildBrowserTarget(t *testing.T) {
+	file := "testdata/opaque.go"
+	function := "LaunchesBrowser"
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	handler.policyConfigLoader = func(string) (config.File, error) {
+		return config.File{}, nil
+	}
+	handler.cachedAnalyses[file+"\x00"+function] = &FunctionAnalysis{
+		Name: function,
+		Dependencies: []ExternalDependency{
+			{Symbol: "NewContext", SourceModule: "example.com/local", Kind: "call"},
+		},
+	}
+	handler.cachedAnalyses[file+"\x00"+"NewContext"] = &FunctionAnalysis{
+		Name: "NewContext",
+		Dependencies: []ExternalDependency{
+			{Symbol: "New", SourceModule: "github.com/go-rod/rod/lib/launcher", Kind: "call"},
+		},
+	}
+
+	resp := handler.handlePrepare(Response{ProtocolVersion: ProtocolVersion, ID: 1}, Request{
+		ProtocolVersion: ProtocolVersion,
+		ID:              1,
+		Command:         "prepare",
+		File:            file,
+		Function:        &function,
+	})
+
+	if resp.Status != "prepare" {
+		t.Fatalf("prepare status = %q, want prepare (full resp: %+v)", resp.Status, resp)
+	}
+	if resp.PrepareID == "" {
+		t.Fatalf("prepare_id must be populated for policy-skipped prepare")
+	}
+	if len(handler.preparedHarnesses) != 0 {
+		t.Fatalf("policy-skipped prepare must not build harnesses, got %d", len(handler.preparedHarnesses))
+	}
+}
+
+func TestPrepare_DefaultPolicy_AnalyzesMissingPolicyCache(t *testing.T) {
+	file := "testdata/opaque.go"
+	function := "AcceptsSqlDB"
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	handler.policyConfigLoader = func(string) (config.File, error) {
+		return config.File{}, nil
+	}
+
+	resp := handler.handlePrepare(Response{ProtocolVersion: ProtocolVersion, ID: 1}, Request{
+		ProtocolVersion: ProtocolVersion,
+		ID:              1,
+		Command:         "prepare",
+		File:            file,
+		Function:        &function,
+	})
+
+	if resp.Status != "prepare" {
+		t.Fatalf("prepare status = %q, want prepare (full resp: %+v)", resp.Status, resp)
+	}
+	if resp.PrepareID == "" {
+		t.Fatalf("prepare_id must be populated for policy-skipped prepare")
+	}
+	if len(handler.preparedHarnesses) != 0 {
+		t.Fatalf("policy-skipped prepare must not build harnesses, got %d", len(handler.preparedHarnesses))
+	}
+	if handler.cachedAnalyses[file+"\x00"+function] == nil {
+		t.Fatalf("expected prepare to populate policy analysis cache for %s", function)
+	}
+}
+
 // TestExecute_PolicyAllowOverride_RunsDatabaseTarget is the second
 // acceptance scenario: with policy.allow=[database] for the target, the
 // policy gate does not short-circuit — execution proceeds past the gate
@@ -245,7 +381,7 @@ func TestExecute_DefaultPolicy_SkipsDatabaseTarget(t *testing.T) {
 func TestExecute_PolicyAllowOverride_RunsDatabaseTarget(t *testing.T) {
 	override := config.File{
 		Functions: map[string]config.FunctionConfig{
-			"opaque.go:AcceptsSqlDB": {Policy: &config.PolicyConfig{Allow: []string{"database"}}},
+			"opaque.go:AcceptsSqlDB":          {Policy: &config.PolicyConfig{Allow: []string{"database"}}},
 			"testdata/opaque.go:AcceptsSqlDB": {Policy: &config.PolicyConfig{Allow: []string{"database"}}},
 		},
 	}
