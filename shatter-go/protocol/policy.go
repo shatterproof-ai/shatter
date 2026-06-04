@@ -189,7 +189,7 @@ func paramTypeClass(label string) (SideEffectClass, bool) {
 		return ClassDatabase, true
 	case "net.Conn", "net.Listener", "http.Client", "http.Request", "http.ResponseWriter":
 		return ClassNetwork, true
-	case "scraper.Browser", "rod.Browser", "launcher.Launcher":
+	case "Browser", "scraper.Browser", "rod.Browser", "launcher.Launcher":
 		return ClassSubprocess, true
 	}
 	return "", false

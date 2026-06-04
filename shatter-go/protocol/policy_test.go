@@ -70,6 +70,26 @@ func TestClassifyFunction_BrowserReturnTypeIsClassified(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_LocalBrowserConstructorReturnIsClassified(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "New",
+		ReturnType: TypeInfo{Kind: "object", Fields: []ObjectField{
+			{
+				Name: "_0",
+				Type: TypeInfo{
+					Kind:  "nullable",
+					Inner: &TypeInfo{Kind: "object", Label: "Browser"},
+				},
+			},
+			{Name: "_1", Type: TypeInfo{Kind: "complex", ComplexKind: "error"}},
+		}},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassSubprocess {
+		t.Fatalf("expected local browser constructor return to classify as subprocess, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_LocalBrowserHelperIsClassified(t *testing.T) {
 	root := &FunctionAnalysis{
 		Name: "Scrape",
