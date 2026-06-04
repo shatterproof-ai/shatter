@@ -187,6 +187,14 @@ const AXUM_EXTRACTOR_TYPES: &[&str] = &[
 /// falling through to Direct and failing during compilation.
 const AXUM_MIDDLEWARE_MARKER_TYPES: &[&str] = &["Request", "Next", "RequestParts"];
 
+/// Common scalar/container leaves that can appear in ordinary async helper
+/// parameters inside an Axum module but are not custom request extractors.
+const AXUM_CUSTOM_EXTRACTOR_EXCLUDED_TYPES: &[&str] = &[
+    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32",
+    "u64", "u128", "usize", "str", "String", "Vec", "Option", "Result", "HashMap", "BTreeMap",
+    "HashSet", "BTreeSet",
+];
+
 /// Emits `rust/framework/axum-handler` at High confidence when the function
 /// is async, the file imports `axum::`, AND the function has axum extractor
 /// types in its parameters. Requires both signals — no framework guesses from
@@ -219,7 +227,21 @@ impl AdapterRecognizer for AxumHandlerRecognizer {
             .filter_map(|p| p.type_name.as_deref())
             .filter(|tn| AXUM_MIDDLEWARE_MARKER_TYPES.contains(tn))
             .collect();
-        if extractor_params.is_empty() && middleware_markers.is_empty() {
+        let custom_extractor_params: Vec<&str> = analysis
+            .params
+            .iter()
+            .filter_map(|p| p.type_name.as_deref())
+            .filter(|tn| {
+                !tn.is_empty()
+                    && !AXUM_EXTRACTOR_TYPES.contains(tn)
+                    && !AXUM_MIDDLEWARE_MARKER_TYPES.contains(tn)
+                    && !AXUM_CUSTOM_EXTRACTOR_EXCLUDED_TYPES.contains(tn)
+            })
+            .collect();
+        if extractor_params.is_empty()
+            && middleware_markers.is_empty()
+            && custom_extractor_params.is_empty()
+        {
             return None;
         }
 
@@ -234,6 +256,12 @@ impl AdapterRecognizer for AxumHandlerRecognizer {
             reasons.push(format!(
                 "axum middleware shape (not executable): {}",
                 middleware_markers.join(", ")
+            ));
+        }
+        if !custom_extractor_params.is_empty() {
+            reasons.push(format!(
+                "params use custom axum extractors: {}",
+                custom_extractor_params.join(", ")
             ));
         }
 
@@ -673,9 +701,11 @@ mod tests {
     fn async_runtime_recognizer_ignores_sync_fn() {
         let analysis = stub_analysis();
         let recognizer = AsyncRuntimeRecognizer;
-        assert!(recognizer
-            .recognize(&analysis, &FileContext::default())
-            .is_none());
+        assert!(
+            recognizer
+                .recognize(&analysis, &FileContext::default())
+                .is_none()
+        );
     }
 
     // ── TokioRecognizer tests ──
@@ -729,9 +759,11 @@ mod tests {
     fn tokio_recognizer_none_without_evidence() {
         let mut analysis = stub_analysis();
         analysis.is_async = true;
-        assert!(TokioRecognizer
-            .recognize(&analysis, &FileContext::default())
-            .is_none());
+        assert!(
+            TokioRecognizer
+                .recognize(&analysis, &FileContext::default())
+                .is_none()
+        );
     }
 
     #[test]
@@ -768,15 +800,52 @@ mod tests {
         let mut analysis = stub_analysis();
         analysis.is_async = true;
         analysis.params = vec![param_with_type_name("body", "Json")];
-        assert!(AxumHandlerRecognizer
-            .recognize(&analysis, &FileContext::default())
-            .is_none());
+        assert!(
+            AxumHandlerRecognizer
+                .recognize(&analysis, &FileContext::default())
+                .is_none()
+        );
     }
 
     #[test]
     fn axum_recognizer_none_without_extractor_params() {
         let mut analysis = stub_analysis();
         analysis.is_async = true;
+        let ctx = FileContext {
+            use_paths: vec!["axum::Router".into()],
+            has_tokio_macro: false,
+        };
+        assert!(AxumHandlerRecognizer.recognize(&analysis, &ctx).is_none());
+    }
+
+    #[test]
+    fn axum_recognizer_high_for_custom_extractor_only_handler() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![param_with_type_name("current", "CurrentAccountLike")];
+        let ctx = FileContext {
+            use_paths: vec!["axum::extract::FromRequestParts".into()],
+            has_tokio_macro: false,
+        };
+        let hint = AxumHandlerRecognizer
+            .recognize(&analysis, &ctx)
+            .expect("custom extractor-only handler with axum import must match");
+        assert_eq!(hint.adapter.id, ADAPTER_ID_AXUM_HANDLER);
+        assert_eq!(hint.confidence, Confidence::High);
+        assert!(
+            hint.reasons
+                .iter()
+                .any(|r| r.contains("custom axum extractors") && r.contains("CurrentAccountLike")),
+            "reasons should list custom extractor params, got: {:?}",
+            hint.reasons
+        );
+    }
+
+    #[test]
+    fn axum_recognizer_ignores_plain_scalar_param_in_axum_module() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![param_with_type_name("name", "String")];
         let ctx = FileContext {
             use_paths: vec!["axum::Router".into()],
             has_tokio_macro: false,

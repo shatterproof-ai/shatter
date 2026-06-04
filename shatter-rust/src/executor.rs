@@ -4721,7 +4721,7 @@ fn generate_axum_harness(
         ));
     } else {
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).or_else(|| axum_recipe_field(\"path\").and_then(|v| v.as_str().map(str::to_string))).unwrap_or_else(|| \"{default_path}\".to_string());\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| \"{default_path}\".to_string());\n"
         ));
     }
 
@@ -6019,6 +6019,121 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
     }
 
     #[test]
+    fn execute_axum_handler_replays_native_custom_extractor_only_value() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+
+#[derive(Clone)]
+pub struct CurrentAccountLike {
+    pub id: u64,
+}
+
+impl<S> FromRequestParts<S> for CurrentAccountLike
+where
+    S: Send + Sync,
+{
+    type Rejection = &'static str;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(parts
+            .extensions
+            .get::<CurrentAccountLike>()
+            .cloned()
+            .ok_or("missing current account"))
+    }
+}
+
+pub async fn session(current: CurrentAccountLike) -> String {
+    format!("account:{}", current.id)
+}
+"#,
+        )
+        .expect("write source");
+
+        let current_generator = dir.path().join("current_gen.rs");
+        std::fs::write(
+            &current_generator,
+            r#"
+use crate::user_code::CurrentAccountLike;
+use shatter_rust::generators::GeneratorResult;
+
+pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResult {
+    let id = recipe
+        .as_ref()
+        .and_then(|v| v.get("id"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    GeneratorResult {
+        id: "current-account-like".to_string(),
+        value: Box::new(CurrentAccountLike { id }),
+        recipe: recipe.unwrap_or(serde_json::Value::Null),
+    }
+}
+"#,
+        )
+        .expect("write current generator");
+
+        let current_input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-current",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": current_generator,
+                "name": "CurrentAccountLikeGen",
+                "recipe": {"id": 42}
+            }
+        });
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::Unsupported,
+            type_name: "CurrentAccountLike".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "session",
+            &[current_input],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("account:42"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_replays_native_custom_extractor_only_value: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
     fn execute_axum_handler_replays_native_state_inside_request_runtime() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
@@ -7189,6 +7304,48 @@ pub struct Nested {
         assert!(
             recipe_path < generated_path,
             "native replay path recipe must win over generated Path input\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_ignores_recipe_path_without_path_extractor() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "struct CurrentAccountLike;\nasync fn session(_current: CurrentAccountLike) -> &'static str { \"ok\" }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::Unsupported,
+            type_name: "CurrentAccountLike".to_string(),
+        }];
+        let native_replays = vec![Some(NativeReplaySpec {
+            input_index: 0,
+            module_name: "__shatter_native_gen_0".to_string(),
+            function_name: "make_current_account".to_string(),
+            file_path: PathBuf::from("/tmp/current_account.rs"),
+            recipe: serde_json::json!({
+                "axum": {
+                    "path": "/test/workspace-id"
+                }
+            }),
+        })];
+        let harness = generate_axum_harness(
+            source,
+            "session",
+            &mappings,
+            &["CurrentAccountLike".to_string()],
+            &native_replays,
+            "[]",
+            &[(None, source)],
+        )
+        .unwrap();
+
+        assert!(
+            !harness.contains("axum_recipe_field(\"path\")"),
+            "custom-extractor-only harness must not let native recipe path miss the no-path route\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("unwrap_or_else(|| \"/test\".to_string())"),
+            "no-path handler should use the default /test route\n\nharness:\n{harness}"
         );
     }
 
