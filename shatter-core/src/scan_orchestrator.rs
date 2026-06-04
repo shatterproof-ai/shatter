@@ -4267,6 +4267,7 @@ pub async fn parallel_scan_with_progress(
                 // Each task decrements this counter after returning its worker so that
                 // `maybe_grow` can detect tasks still blocked on `checkout()`.
                 let tasks_remaining = Arc::new(AtomicUsize::new(expanded_tasks.len()));
+                let build_timeout_retry_claimed = Arc::new(AtomicBool::new(false));
                 let write_success_artifact = config.workers_per_fn <= 1;
 
                 // Each task checks out a worker, explores, then returns the worker.
@@ -4296,6 +4297,7 @@ pub async fn parallel_scan_with_progress(
                     let cache = config.cache.clone();
                     let progress_handler = progress_handler.clone();
                     let artifact_root = artifact_root.clone();
+                    let build_timeout_retry_claimed = Arc::clone(&build_timeout_retry_claimed);
                     let handle_func_name = func_name.clone();
                     let handle_progress_index = progress_index;
                     let lease = Arc::new(WorkerTaskLease::new(
@@ -4355,6 +4357,7 @@ pub async fn parallel_scan_with_progress(
 
                             if matches!(result, PhasedOutcome::BuildTimedOut(_))
                                 && !retried_build_timeout
+                                && claim_build_timeout_retry(&build_timeout_retry_claimed)
                             {
                                 retried_build_timeout = true;
                                 phase_build_timeout = build_timeout_retry_budget(build_timeout);
@@ -4993,6 +4996,12 @@ const BUILD_TIMEOUT_RETRY_FACTOR: u32 = 2;
 
 fn build_timeout_retry_budget(build_timeout: Duration) -> Duration {
     build_timeout.saturating_mul(BUILD_TIMEOUT_RETRY_FACTOR)
+}
+
+fn claim_build_timeout_retry(retry_claimed: &AtomicBool) -> bool {
+    retry_claimed
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 fn shared_pool_task_watchdog(build_timeout: Duration, timeout_per_fn: Duration) -> Duration {
@@ -5986,6 +5995,18 @@ mod tests {
             watchdog <= initial_build + retry_build + Duration::from_secs(25),
             "watchdog {watchdog:?} should retain only the small cleanup cushion"
         );
+    }
+
+    /// str-kuc0 regression: the cold-build retry is a scan-level cache-warm
+    /// opportunity, not a per-function doubled timeout. Otherwise a cluster
+    /// of build timeouts can consume the whole-corpus Kapow scan budget one
+    /// task watchdog interval at a time.
+    #[test]
+    fn build_timeout_retry_claim_is_single_use() {
+        let retry_claimed = AtomicBool::new(false);
+
+        assert!(claim_build_timeout_retry(&retry_claimed));
+        assert!(!claim_build_timeout_retry(&retry_claimed));
     }
 
     /// str-0x82: adapter-typed invocation models produce an execution profile
