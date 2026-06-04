@@ -4721,7 +4721,7 @@ fn generate_axum_harness(
         ));
     } else {
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).or_else(|| axum_recipe_field(\"path\").and_then(|v| v.as_str().map(str::to_string))).unwrap_or_else(|| \"{default_path}\".to_string());\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| \"{default_path}\".to_string());\n"
         ));
     }
 
@@ -7304,6 +7304,48 @@ pub struct Nested {
         assert!(
             recipe_path < generated_path,
             "native replay path recipe must win over generated Path input\n\nharness:\n{harness}"
+        );
+    }
+
+    #[test]
+    fn generate_axum_harness_ignores_recipe_path_without_path_extractor() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let source = "struct CurrentAccountLike;\nasync fn session(_current: CurrentAccountLike) -> &'static str { \"ok\" }";
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::Unsupported,
+            type_name: "CurrentAccountLike".to_string(),
+        }];
+        let native_replays = vec![Some(NativeReplaySpec {
+            input_index: 0,
+            module_name: "__shatter_native_gen_0".to_string(),
+            function_name: "make_current_account".to_string(),
+            file_path: PathBuf::from("/tmp/current_account.rs"),
+            recipe: serde_json::json!({
+                "axum": {
+                    "path": "/test/workspace-id"
+                }
+            }),
+        })];
+        let harness = generate_axum_harness(
+            source,
+            "session",
+            &mappings,
+            &["CurrentAccountLike".to_string()],
+            &native_replays,
+            "[]",
+            &[(None, source)],
+        )
+        .unwrap();
+
+        assert!(
+            !harness.contains("axum_recipe_field(\"path\")"),
+            "custom-extractor-only harness must not let native recipe path miss the no-path route\n\nharness:\n{harness}"
+        );
+        assert!(
+            harness.contains("unwrap_or_else(|| \"/test\".to_string())"),
+            "no-path handler should use the default /test route\n\nharness:\n{harness}"
         );
     }
 
