@@ -626,11 +626,13 @@ impl MetaStrategy {
             return None;
         }
 
-        if self.config.static_weights.is_none()
-            && self.config.adaptive
-            && let Some(candidate) = self.next_priority_user_provided(ctx)
-        {
-            return Some(candidate);
+        if self.config.static_weights.is_none() && self.config.adaptive {
+            if let Some(candidate) = self.next_priority_branch_guided(ctx) {
+                return Some(candidate);
+            }
+            if let Some(candidate) = self.next_priority_user_provided(ctx) {
+                return Some(candidate);
+            }
         }
 
         if self.config.static_weights.is_some() {
@@ -713,6 +715,21 @@ impl MetaStrategy {
     ) -> Option<(Vec<Value>, usize)> {
         let idx = self.states.iter().position(|state| {
             state.kind == RegisteredStrategyKind::UserProvided && !state.exhausted
+        })?;
+        self.try_next(idx, ctx).map(|inputs| (inputs, idx))
+    }
+
+    /// Drain ready branch-guided solver candidates before additional seed inputs.
+    ///
+    /// User/native seeds need first chance to create an executable observation.
+    /// Once feedback has queued a solver candidate, continuing to drain seed
+    /// inputs can consume small scan budgets before branch-guided follow-ups run.
+    fn next_priority_branch_guided(
+        &mut self,
+        ctx: &StrategyContext,
+    ) -> Option<(Vec<Value>, usize)> {
+        let idx = self.states.iter().position(|state| {
+            state.kind == RegisteredStrategyKind::Z3Solver && !state.exhausted
         })?;
         self.try_next(idx, ctx).map(|inputs| (inputs, idx))
     }
@@ -1650,6 +1667,72 @@ mod tests {
             );
             assert_eq!(candidate, expected, "seed {seed} skipped the user input");
         }
+    }
+
+    #[test]
+    fn concolic_meta_strategy_prioritizes_z3_after_first_user_seed_feedback() {
+        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+
+        let params = make_params(&[TypeInfo::Int]);
+        let mut meta = build_concolic_meta_strategy(
+            vec![vec![Value::from(5)], vec![Value::from(6)]],
+            vec![],
+            vec![],
+            &params,
+            vec![],
+            None,
+            MetaConfig::default(),
+        );
+        let ctx = StrategyContext {
+            params,
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let (first, first_idx) = meta
+            .next(&ctx, &mut rng)
+            .expect("first generated/native seed should run before fallbacks");
+        assert_eq!(first, vec![Value::from(5)]);
+
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "p0".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+        };
+        let result: ExecuteResult = serde_json::from_value(serde_json::json!({
+            "return_value": 0,
+            "branch_path": [{
+                "branch_id": 1,
+                "line": 10,
+                "taken": true,
+                "constraint": { "kind": "expr", "expr": constraint }
+            }],
+            "lines_executed": [10],
+            "path_constraints": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            }
+        }))
+        .expect("valid ExecuteResult JSON");
+
+        meta.feedback(&first, &result, true);
+        meta.record_outcome(first_idx, true);
+
+        let (_candidate, next_idx) = meta
+            .next(&ctx, &mut rng)
+            .expect("Z3 feedback should queue a branch-diversifying candidate");
+        assert_eq!(
+            meta.strategy_kind(next_idx),
+            RegisteredStrategyKind::Z3Solver,
+            "queued solver follow-ups should run before additional generated/native seeds"
+        );
     }
 
     #[test]
