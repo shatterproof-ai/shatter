@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
 
 /// Result returned by compiled-in (custom build) native generators.
@@ -142,7 +143,20 @@ impl NativeRegistry {
                 }
             })?;
 
-        let result = func(recipe);
+        let result = match catch_unwind(AssertUnwindSafe(|| func(recipe))) {
+            Ok(result) => result,
+            Err(payload) => {
+                let generator_label = if let Some(file) = file {
+                    format!("native generator {name:?} from {file:?}")
+                } else {
+                    format!("native generator {name:?}")
+                };
+                return Err(format!(
+                    "{generator_label} panicked: {}",
+                    panic_payload_message(payload.as_ref())
+                ));
+            }
+        };
         let handle_id = self.handles.store(result.value);
 
         let sentinel = serde_json::json!({
@@ -170,6 +184,16 @@ fn normalize_generator_file(file: &str) -> String {
     std::fs::canonicalize(file)
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| file.to_string())
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +248,20 @@ mod tests {
         let registry = NativeRegistry::new();
         let err = registry.generate(None, "Missing", None).unwrap_err();
         assert!(err.contains("not registered"));
+    }
+
+    #[test]
+    fn native_registry_generator_panic_returns_error() {
+        let mut registry = NativeRegistry::new();
+        registry.register(
+            "PanicGen",
+            Box::new(|_recipe| panic!("native generator fixture panic")),
+        );
+
+        let err = registry.generate(None, "PanicGen", None).unwrap_err();
+
+        assert!(err.contains("native generator \"PanicGen\" panicked"));
+        assert!(err.contains("native generator fixture panic"));
     }
 
     #[test]
