@@ -882,6 +882,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             new_path_executions,
             raw_results: r.raw_results,
             discoveries: r.discoveries,
+            solver_guided_inputs: r.z3_generated + r.boundary_generated + r.drill_generated,
             nondeterministic_fields: r.nondeterministic_fields,
             float_probe_results: r.float_probe_results,
             boundary_results: r.boundary_results,

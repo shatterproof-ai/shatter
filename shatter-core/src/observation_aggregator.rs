@@ -332,6 +332,7 @@ impl ObservationAggregator {
             new_path_executions: self.new_path_executions,
             raw_results: self.raw_results,
             discoveries: self.discoveries,
+            solver_guided_inputs: 0,
             nondeterministic_fields,
             float_probe_results,
             boundary_results,
