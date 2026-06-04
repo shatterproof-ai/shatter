@@ -626,6 +626,13 @@ impl MetaStrategy {
             return None;
         }
 
+        if self.config.static_weights.is_none()
+            && self.config.adaptive
+            && let Some(candidate) = self.next_priority_user_provided(ctx)
+        {
+            return Some(candidate);
+        }
+
         if self.config.static_weights.is_some() {
             self.next_static(ctx, rng)
         } else if self.config.adaptive {
@@ -693,6 +700,21 @@ impl MetaStrategy {
 
     fn all_exhausted(&self) -> bool {
         self.states.iter().all(|s| s.exhausted)
+    }
+
+    /// Drain deterministic user-provided seeds before adaptive scoring.
+    ///
+    /// Small-budget concolic scans can have only one execution slot. Generated
+    /// native/custom inputs live in the user-provided strategy, so letting the
+    /// adaptive weighted chooser run first can skip the only executable seed.
+    fn next_priority_user_provided(
+        &mut self,
+        ctx: &StrategyContext,
+    ) -> Option<(Vec<Value>, usize)> {
+        let idx = self.states.iter().position(|state| {
+            state.kind == RegisteredStrategyKind::UserProvided && !state.exhausted
+        })?;
+        self.try_next(idx, ctx).map(|inputs| (inputs, idx))
     }
 
     /// Try to get the next candidate from a specific strategy.
@@ -1594,6 +1616,40 @@ mod tests {
             RegisteredStrategyKind::Z3Solver.orchestrator_input_source(),
             crate::orchestrator::InputSource::Z3Solved
         );
+    }
+
+    #[test]
+    fn concolic_meta_strategy_drains_user_inputs_before_adaptive_fallbacks() {
+        let params = make_params(&[TypeInfo::Int]);
+        let expected = vec![Value::from(777)];
+
+        for seed in 0..32 {
+            let mut meta = build_concolic_meta_strategy(
+                vec![expected.clone()],
+                vec![vec![Value::from(-1)]],
+                vec![],
+                &params,
+                vec![],
+                None,
+                MetaConfig::default(),
+            );
+            let ctx = StrategyContext {
+                params: params.clone(),
+                literals: vec![],
+                capabilities: FrontendCapabilities::default(),
+            };
+            let mut rng = StdRng::seed_from_u64(seed);
+
+            let (candidate, strategy_idx) = meta
+                .next(&ctx, &mut rng)
+                .expect("seeded concolic strategy should produce a candidate");
+
+            assert_eq!(
+                strategy_idx, 0,
+                "seed {seed} selected a fallback strategy before user inputs"
+            );
+            assert_eq!(candidate, expected, "seed {seed} skipped the user input");
+        }
     }
 
     #[test]
