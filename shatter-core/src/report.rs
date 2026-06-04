@@ -885,7 +885,7 @@ fn recovered_branches_covered(
 pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
     let exploration = &result.exploration;
 
-    let discovered_inputs: Vec<DiscoveredInput> = exploration
+    let mut discovered_inputs: Vec<DiscoveredInput> = exploration
         .new_path_executions
         .iter()
         .map(|exec| DiscoveredInput {
@@ -913,6 +913,28 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
             }
         })
         .collect();
+
+    let mut seen_input_keys: std::collections::HashSet<String> = discovered_inputs
+        .iter()
+        .filter_map(|input| serde_json::to_string(&input.inputs).ok())
+        .collect();
+    for behavior in &result.behavior_map.behaviors {
+        let Ok(input_key) = serde_json::to_string(&behavior.input_args) else {
+            continue;
+        };
+        if !seen_input_keys.insert(input_key) {
+            continue;
+        }
+        discovered_inputs.push(DiscoveredInput {
+            inputs: behavior.input_args.clone(),
+            return_value: behavior.return_value.clone(),
+            thrown_error: behavior
+                .thrown_error
+                .as_ref()
+                .map(|e| format!("{}: {}", e.error_type, e.message)),
+            lines_executed: recover_lines_executed(exploration, &behavior.input_args, &[]),
+        });
+    }
 
     let total_constraints: usize = exploration
         .raw_results
@@ -3426,6 +3448,42 @@ mod tests {
             .iter()
             .find(|d| d.thrown_error.is_some());
         assert!(error_input.is_some());
+    }
+
+    #[test]
+    fn function_report_exports_behavior_representatives_as_discovered_inputs() {
+        let mut func_result = make_function_result("same_path_behaviors", 25, 1, 3, 5, vec![]);
+        func_result.behavior_map.behaviors.push(Behavior {
+            id: 1,
+            input_args: vec![serde_json::json!("same-path-new-behavior")],
+            return_value: Some(serde_json::json!({"status": 422})),
+            thrown_error: None,
+            branch_path: vec![],
+            side_effects: vec![],
+            dependency_trace: None,
+            mock_values: vec![],
+        });
+
+        let parallel_result = ParallelScanResult {
+            function_results: vec![func_result],
+            test_order: vec!["same_path_behaviors".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+
+        let file_map = HashMap::new();
+        let report = generate_report(&parallel_result, &file_map, None);
+        let func = &report.functions[0];
+
+        assert_eq!(func.behavior_clusters.len(), 2);
+        assert_eq!(func.discovered_inputs.len(), 2);
+        assert!(func.discovered_inputs.iter().any(|input| {
+            input.inputs == vec![serde_json::json!("same-path-new-behavior")]
+                && input.return_value == Some(serde_json::json!({"status": 422}))
+        }));
     }
 
     #[test]
