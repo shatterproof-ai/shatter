@@ -1039,15 +1039,30 @@ func hasNativeHandleField(named *types.Named) bool {
 	return false
 }
 
+// MaxTypeInfoDepth is the maximum struct-nesting depth expanded by
+// goTypeToTypeInfoRec. Beyond this depth the type is represented as
+// kind:"unknown" instead of being recursively expanded, preventing memory
+// blow-up on large generated type graphs (e.g. openapi3.T — str-eyta).
+// The planner's composite-literal synthesizer is already capped at
+// DefaultMaxCompositeDepth (3), so TypeInfo deeper than MaxTypeInfoDepth
+// is never used for synthesis.
+const MaxTypeInfoDepth = 8
+
 func goTypeToTypeInfo(t types.Type) TypeInfo {
-	return goTypeToTypeInfoRec(t, nil, make(map[types.Type]bool))
+	return goTypeToTypeInfoRec(t, nil, make(map[types.Type]bool), MaxTypeInfoDepth)
 }
 
 func goTypeToTypeInfoWithContext(t types.Type, fc *fileContext) TypeInfo {
-	return goTypeToTypeInfoRec(t, fc, make(map[types.Type]bool))
+	return goTypeToTypeInfoRec(t, fc, make(map[types.Type]bool), MaxTypeInfoDepth)
 }
 
-func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]bool) TypeInfo {
+func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]bool, depth int) TypeInfo {
+	// Depth guard: prevent unbounded expansion of large generated type graphs
+	// (e.g. openapi3.T). Types below the cap are represented as "unknown" so
+	// the planner surfaces an UnsatisfiedRequirement rather than spinning.
+	if depth <= 0 {
+		return TypeInfo{Kind: "unknown", Label: t.String()}
+	}
 	// Cycle detection: if we've already started resolving this type, return a
 	// stub to break the infinite recursion (e.g., type A struct { B *B } where
 	// B struct { A *A }).
@@ -1127,17 +1142,17 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 	case *types.Basic:
 		return basicTypeInfo(typ)
 	case *types.Slice:
-		elem := goTypeToTypeInfoRec(typ.Elem(), fc, visited)
+		elem := goTypeToTypeInfoRec(typ.Elem(), fc, visited, depth-1)
 		return TypeInfo{Kind: "array", Element: &elem}
 	case *types.Array:
-		elem := goTypeToTypeInfoRec(typ.Elem(), fc, visited)
+		elem := goTypeToTypeInfoRec(typ.Elem(), fc, visited, depth-1)
 		return TypeInfo{Kind: "array", Element: &elem}
 	case *types.Map:
-		return mapTypeInfoRec(typ, fc, visited)
+		return mapTypeInfoRec(typ, fc, visited, depth-1)
 	case *types.Struct:
-		return structTypeInfoRec(typ, fc, visited)
+		return structTypeInfoRec(typ, fc, visited, depth-1)
 	case *types.Pointer:
-		inner := goTypeToTypeInfoRec(typ.Elem(), fc, visited)
+		inner := goTypeToTypeInfoRec(typ.Elem(), fc, visited, depth-1)
 		return TypeInfo{Kind: "nullable", Inner: &inner}
 	case *types.Chan:
 		return TypeInfo{Kind: "opaque", Label: "chan " + typ.Elem().String()}
@@ -1242,12 +1257,12 @@ func basicTypeInfo(b *types.Basic) TypeInfo {
 }
 
 func mapTypeInfo(m *types.Map) TypeInfo {
-	return mapTypeInfoRec(m, nil, make(map[types.Type]bool))
+	return mapTypeInfoRec(m, nil, make(map[types.Type]bool), MaxTypeInfoDepth)
 }
 
-func mapTypeInfoRec(m *types.Map, fc *fileContext, visited map[types.Type]bool) TypeInfo {
-	keyType := goTypeToTypeInfoRec(m.Key(), fc, visited)
-	valType := goTypeToTypeInfoRec(m.Elem(), fc, visited)
+func mapTypeInfoRec(m *types.Map, fc *fileContext, visited map[types.Type]bool, depth int) TypeInfo {
+	keyType := goTypeToTypeInfoRec(m.Key(), fc, visited, depth)
+	valType := goTypeToTypeInfoRec(m.Elem(), fc, visited, depth)
 	return TypeInfo{
 		Kind: "object",
 		Fields: []ObjectField{
@@ -1258,16 +1273,16 @@ func mapTypeInfoRec(m *types.Map, fc *fileContext, visited map[types.Type]bool) 
 }
 
 func structTypeInfo(s *types.Struct) TypeInfo {
-	return structTypeInfoRec(s, nil, make(map[types.Type]bool))
+	return structTypeInfoRec(s, nil, make(map[types.Type]bool), MaxTypeInfoDepth)
 }
 
-func structTypeInfoRec(s *types.Struct, fc *fileContext, visited map[types.Type]bool) TypeInfo {
+func structTypeInfoRec(s *types.Struct, fc *fileContext, visited map[types.Type]bool, depth int) TypeInfo {
 	fields := make([]ObjectField, s.NumFields())
 	for i := 0; i < s.NumFields(); i++ {
 		f := s.Field(i)
 		fields[i] = ObjectField{
 			Name: f.Name(),
-			Type: goTypeToTypeInfoRec(f.Type(), fc, visited),
+			Type: goTypeToTypeInfoRec(f.Type(), fc, visited, depth),
 		}
 	}
 	return TypeInfo{Kind: "object", Fields: fields}
