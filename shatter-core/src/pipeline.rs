@@ -522,9 +522,10 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
         .collect();
     let all_constraints: Vec<SymConstraint> = unique_constraints.into_values().collect();
 
+    let observed_discoveries = observed_branch_discoveries(observe);
     let mut coverage_metrics = CoverageMetrics::from_exploration(
         analysis.branches.len(),
-        &observe.discoveries,
+        &observed_discoveries,
         &all_constraints,
     );
 
@@ -539,6 +540,32 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
         behavior_map,
         coverage_metrics,
     }
+}
+
+fn observed_branch_discoveries(
+    observe: &ObservationOutput,
+) -> Vec<(u32, crate::coverage_metrics::DiscoveryMethod)> {
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut discoveries = Vec::new();
+
+    for (branch_id, method) in &observe.discoveries {
+        if seen.insert(*branch_id) {
+            discoveries.push((*branch_id, *method));
+        }
+    }
+
+    for (_, _mocks, result) in &observe.raw_results {
+        for decision in &result.branch_path {
+            if seen.insert(decision.branch_id) {
+                discoveries.push((
+                    decision.branch_id,
+                    crate::coverage_metrics::DiscoveryMethod::Random,
+                ));
+            }
+        }
+    }
+
+    discoveries
 }
 
 /// Run the Specify stage: build a complete, validated specification from all
@@ -755,55 +782,76 @@ fn execution_record_from_result(
 
 impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
     fn from(r: crate::orchestrator::ExploreResult) -> Self {
+        fn executed_lines_from_result(exec: &ExecuteResult) -> Vec<u32> {
+            if !exec.lines_executed.is_empty() {
+                return exec.lines_executed.clone();
+            }
+
+            exec.branch_path
+                .iter()
+                .filter_map(|decision| (decision.line > 0).then_some(decision.line))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        }
+
         // Build ExecutionSummary entries from the first raw execution that
         // reached each unique path so report consumers keep the inputs that
         // discovered the path. Fall back to the path-only execution list for
         // older synthetic results that have no raw input pairing.
-        let new_path_executions: Vec<crate::explorer::ExecutionSummary> = if r.raw_results.is_empty()
-        {
-            r.executions
-                .iter()
-                .map(|exec| crate::explorer::ExecutionSummary {
-                    inputs: vec![],
-                    return_value: exec.return_value.clone(),
-                    thrown_error: exec
-                        .thrown_error
-                        .as_ref()
-                        .map(|e| format!("{}: {}", e.error_type, e.message)),
-                    lines_executed: exec.lines_executed.clone(),
-                    is_new_path: true,
-                    error_intent: crate::explorer::classify_error_intent(exec),
-                })
-                .collect()
-        } else {
-            let mut seen_paths = std::collections::HashSet::new();
-            r.raw_results
-                .iter()
-                .filter_map(|(inputs, _mocks, exec)| {
-                    let path_hash = crate::orchestrator::hash_branch_path(&exec.branch_path);
-                    if !seen_paths.insert(path_hash) {
-                        return None;
-                    }
-                    Some(crate::explorer::ExecutionSummary {
-                        inputs: inputs.clone(),
+        let new_path_executions: Vec<crate::explorer::ExecutionSummary> =
+            if r.raw_results.is_empty() {
+                r.executions
+                    .iter()
+                    .map(|exec| crate::explorer::ExecutionSummary {
+                        inputs: vec![],
                         return_value: exec.return_value.clone(),
                         thrown_error: exec
                             .thrown_error
                             .as_ref()
                             .map(|e| format!("{}: {}", e.error_type, e.message)),
-                        lines_executed: exec.lines_executed.clone(),
+                        lines_executed: executed_lines_from_result(exec),
                         is_new_path: true,
                         error_intent: crate::explorer::classify_error_intent(exec),
                     })
-                })
-                .collect()
-        };
+                    .collect()
+            } else {
+                let mut seen_paths = std::collections::HashSet::new();
+                r.raw_results
+                    .iter()
+                    .filter_map(|(inputs, _mocks, exec)| {
+                        let path_hash = crate::orchestrator::hash_branch_path(&exec.branch_path);
+                        if !seen_paths.insert(path_hash) {
+                            return None;
+                        }
+                        Some(crate::explorer::ExecutionSummary {
+                            inputs: inputs.clone(),
+                            return_value: exec.return_value.clone(),
+                            thrown_error: exec
+                                .thrown_error
+                                .as_ref()
+                                .map(|e| format!("{}: {}", e.error_type, e.message)),
+                            lines_executed: executed_lines_from_result(exec),
+                            is_new_path: true,
+                            error_intent: crate::explorer::classify_error_intent(exec),
+                        })
+                    })
+                    .collect()
+            };
 
         // Compute lines covered from raw_results.
         let mut all_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        for (_, _mocks, result) in &r.raw_results {
-            for &line in &result.lines_executed {
-                all_lines.insert(line);
+        if r.raw_results.is_empty() {
+            for result in &r.executions {
+                for line in executed_lines_from_result(result) {
+                    all_lines.insert(line);
+                }
+            }
+        } else {
+            for (_, _mocks, result) in &r.raw_results {
+                for line in executed_lines_from_result(result) {
+                    all_lines.insert(line);
+                }
             }
         }
 
@@ -946,7 +994,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let analysis = stub_analysis("classify", 2);
@@ -958,6 +1006,225 @@ mod tests {
         assert_eq!(output.coverage_metrics.random_found, 1);
         assert_eq!(output.coverage_metrics.uncovered, 1);
         assert_eq!(output.coverage_metrics.unknown_count, 1);
+    }
+
+    #[test]
+    fn analyze_counts_raw_branch_paths_without_discoveries() {
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 0,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "first runtime branch".into(),
+                },
+                conditions: None,
+            },
+            BranchDecision {
+                branch_id: 1,
+                line: 20,
+                taken: false,
+                constraint: SymConstraint::Unknown {
+                    hint: "second runtime branch".into(),
+                },
+                conditions: None,
+            },
+        ];
+        let exec_result = ExecuteResult {
+            return_value: Some(json!("covered")),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+
+        let observe = ObservationOutput {
+            function_name: "classify".into(),
+            iterations: 1,
+            unique_paths: 1,
+            lines_covered: 0,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![(vec![json!(5)], vec![], exec_result)],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            ..Default::default()
+        };
+
+        let analysis = stub_analysis("classify", 3);
+        let output = analyze(&observe, &analysis);
+
+        assert_eq!(output.coverage_metrics.total_branches, 3);
+        assert_eq!(output.coverage_metrics.random_found, 2);
+        assert_eq!(output.coverage_metrics.uncovered, 1);
+        assert_eq!(output.coverage_metrics.unknown_count, 2);
+    }
+
+    #[test]
+    fn explore_result_conversion_recovers_lines_from_branch_decisions() {
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 0,
+                line: 7,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "x > 0".into(),
+                },
+                conditions: None,
+            },
+            BranchDecision {
+                branch_id: 1,
+                line: 9,
+                taken: false,
+                constraint: SymConstraint::Unknown {
+                    hint: "x < 10".into(),
+                },
+                conditions: None,
+            },
+        ];
+        let exec_result = ExecuteResult {
+            return_value: Some(json!("covered")),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+        let result = crate::orchestrator::ExploreResult {
+            function_name: "classify".into(),
+            total_lines: 10,
+            executions: vec![exec_result],
+            unique_paths: 1,
+            total_executions: 1,
+            z3_generated: 0,
+            fuzz_generated: 0,
+            boundary_generated: 0,
+            drill_generated: 0,
+            termination_reason: crate::orchestrator::TerminationReason::MaxIterations,
+            raw_results: vec![],
+            discoveries: vec![],
+            triage_skipped: 0,
+            triage_mispredictions: 0,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            pipeline_overlaps: 0,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            timed_out: false,
+            oracle_stats: None,
+        };
+
+        let observe: ObservationOutput = result.into();
+
+        assert_eq!(observe.lines_covered, 2);
+        assert_eq!(observe.new_path_executions[0].lines_executed, vec![7, 9]);
+    }
+
+    #[test]
+    fn explore_result_conversion_recovers_raw_result_lines_from_branch_decisions() {
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 0,
+                line: 7,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "x > 0".into(),
+                },
+                conditions: None,
+            },
+            BranchDecision {
+                branch_id: 1,
+                line: 9,
+                taken: false,
+                constraint: SymConstraint::Unknown {
+                    hint: "x < 10".into(),
+                },
+                conditions: None,
+            },
+        ];
+        let exec_result = ExecuteResult {
+            return_value: Some(json!("covered")),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+        let result = crate::orchestrator::ExploreResult {
+            function_name: "classify".into(),
+            total_lines: 10,
+            executions: vec![],
+            unique_paths: 1,
+            total_executions: 1,
+            z3_generated: 0,
+            fuzz_generated: 0,
+            boundary_generated: 0,
+            drill_generated: 0,
+            termination_reason: crate::orchestrator::TerminationReason::MaxIterations,
+            raw_results: vec![(vec![json!(3)], vec![], exec_result)],
+            discoveries: vec![],
+            triage_skipped: 0,
+            triage_mispredictions: 0,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            pipeline_overlaps: 0,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            timed_out: false,
+            oracle_stats: None,
+        };
+
+        let observe: ObservationOutput = result.into();
+
+        assert_eq!(observe.lines_covered, 2);
+        assert_eq!(observe.new_path_executions[0].inputs, vec![json!(3)]);
+        assert_eq!(observe.new_path_executions[0].lines_executed, vec![7, 9]);
     }
 
     #[test]
@@ -980,7 +1247,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let analysis = stub_analysis("empty", 3);
@@ -1062,7 +1329,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let analysis = stub_analysis("dedup_test", 2);
@@ -1105,7 +1372,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let analysis = stub_analysis("nondet_fn", 0);
@@ -1138,7 +1405,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let analysis = stub_analysis("test_fn", 1);
         let stage = ObserveStageOutput {
@@ -1173,7 +1440,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let analysis = stub_analysis("roundtrip", 2);
         let output = analyze(&observe, &analysis);
@@ -1208,7 +1475,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let analysis = stub_analysis("stage_rt", 1);
         let analyze_out = analyze(&observe, &analysis);
@@ -1280,7 +1547,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         let analysis = stub_analysis("bounded", 1);
         let output = analyze(&observe, &analysis);
@@ -1544,7 +1811,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
         ObserveStageOutput {
             observation,
@@ -2082,7 +2349,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let analysis = stub_analysis(name, branch_count);
