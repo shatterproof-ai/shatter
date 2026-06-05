@@ -834,6 +834,15 @@ fn recover_lines_executed(
         .find_map(|(raw_inputs, _mocks, result)| {
             if raw_inputs == inputs && !result.lines_executed.is_empty() {
                 Some(result.lines_executed.clone())
+            } else if raw_inputs == inputs {
+                let branch_lines: Vec<u32> = result
+                    .branch_path
+                    .iter()
+                    .filter_map(|decision| (decision.line > 0).then_some(decision.line))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                (!branch_lines.is_empty()).then_some(branch_lines)
             } else {
                 None
             }
@@ -849,7 +858,17 @@ fn recovered_lines_covered(exploration: &ObservationOutput) -> usize {
     exploration
         .raw_results
         .iter()
-        .flat_map(|(_inputs, _mocks, result)| result.lines_executed.iter().copied())
+        .flat_map(|(_inputs, _mocks, result)| {
+            if result.lines_executed.is_empty() {
+                result
+                    .branch_path
+                    .iter()
+                    .filter_map(|decision| (decision.line > 0).then_some(decision.line))
+                    .collect::<Vec<_>>()
+            } else {
+                result.lines_executed.clone()
+            }
+        })
         .collect::<std::collections::HashSet<_>>()
         .len()
 }
@@ -2146,8 +2165,9 @@ pub enum ReportError {
 mod tests {
     use super::*;
     use crate::behavior::{Behavior, BehaviorMap};
-    use crate::execution_record::ErrorInfo;
+    use crate::execution_record::{BranchDecision, ErrorInfo, SymConstraint};
     use crate::explorer::{ExecutionSummary, ObservationOutput};
+    use crate::protocol::{ExecuteResult, PerformanceMetrics};
     use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, SkippedFunction};
     use std::collections::HashMap;
 
@@ -2242,6 +2262,81 @@ mod tests {
             },
             refactoring_recommendations: vec![],
         }
+    }
+
+    fn empty_perf() -> PerformanceMetrics {
+        PerformanceMetrics {
+            wall_time_ms: 0.0,
+            cpu_time_us: 0,
+            heap_used_bytes: 0,
+            heap_allocated_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn function_report_recovers_lines_from_raw_branch_decisions() {
+        let branch_path = vec![
+            BranchDecision {
+                branch_id: 0,
+                line: 7,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "x > 0".into(),
+                },
+                conditions: None,
+            },
+            BranchDecision {
+                branch_id: 1,
+                line: 9,
+                taken: false,
+                constraint: SymConstraint::Unknown {
+                    hint: "x < 10".into(),
+                },
+                conditions: None,
+            },
+        ];
+        let exec_result = ExecuteResult {
+            return_value: Some(serde_json::json!("covered")),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+
+        let mut func_result = make_function_result("src/lib.rs::covered", 1, 1, 0, 10, vec![]);
+        func_result.exploration.new_path_executions[0]
+            .lines_executed
+            .clear();
+        func_result.exploration.raw_results =
+            vec![(vec![serde_json::json!(0)], vec![], exec_result)];
+        func_result.exploration.lines_covered = 0;
+        func_result.coverage_metrics = crate::coverage_metrics::CoverageMetrics {
+            total_branches: 2,
+            z3_solved: 0,
+            random_found: 2,
+            user_provided: 0,
+            fuzz_found: 0,
+            uncovered: 0,
+            symexpr_count: 0,
+            unknown_count: 2,
+            mcdc_metrics: None,
+        };
+
+        let report = build_function_report(&func_result, "src/lib.rs");
+
+        assert_eq!(report.discovered_inputs[0].lines_executed, vec![7, 9]);
+        assert_eq!(report.lines_covered, 2);
+        assert_eq!(report.coverage_pct, 20.0);
     }
 
     /// str-9q1z regression: the standalone explore CLI report previously
@@ -4922,7 +5017,6 @@ mod proptests {
             prop_assert!(report.mock_execution_count.is_none());
         }
     }
-
 
     /// str-4mmd: `classify_failure_reason` handles edge cases.
     #[test]
