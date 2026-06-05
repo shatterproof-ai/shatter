@@ -28,7 +28,7 @@ pub const RUN_STATUS_TSV_FILENAME: &str = "run-status.tsv";
 /// Rows use `row_type` to distinguish the single run rollup row from file
 /// and target projection rows. Empty cells mean the JSON field is absent or
 /// not applicable for that row type.
-pub const RUN_STATUS_TSV_COLUMNS: [&str; 37] = [
+pub const RUN_STATUS_TSV_COLUMNS: [&str; 38] = [
     "schema_version",
     "scan_id",
     "command",
@@ -66,6 +66,7 @@ pub const RUN_STATUS_TSV_COLUMNS: [&str; 37] = [
     "unrepresented_unavailable_frontend_lines",
     "unrepresented_no_target_lines",
     "unrepresented_undiscovered_lines",
+    "source_set_hash",
 ];
 
 /// On-disk schema version for [`RunStatus`].
@@ -294,6 +295,9 @@ pub struct CommandIdentity {
     pub name: String,
     /// Stable hash of the scope/config used for the run.
     pub config_hash: String,
+    /// SHA-256 of sorted `"<path>:<content_hash>"` pairs for all selected
+    /// source files at run start (derived from the run manifest).
+    pub source_set_hash: String,
 }
 
 /// Link to an artifact with its content hash.
@@ -547,6 +551,7 @@ pub fn build_run_status(output_dir: &Path, input: &StatusExportInput<'_>) -> Run
         command: CommandIdentity {
             name: input.command.to_string(),
             config_hash: manifest.scope_hash.clone(),
+            source_set_hash: compute_manifest_source_set_hash(manifest),
         },
         manifest: StatusArtifact {
             kind: "manifest".to_string(),
@@ -720,6 +725,7 @@ fn base_tsv_row(status: &RunStatus, row_type: &'static str) -> BTreeMap<&'static
         ("scan_id", status.run.scan_id.clone()),
         ("command", status.command.name.clone()),
         ("config_hash", status.command.config_hash.clone()),
+        ("source_set_hash", status.command.source_set_hash.clone()),
         ("row_type", row_type.to_string()),
     ])
 }
@@ -1228,6 +1234,86 @@ fn now_ns() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
+}
+
+/// Compute source_set_hash from a RunManifest: SHA-256 of sorted
+/// `"<path>:<content_hash>"` pairs for all source files with a known hash.
+fn compute_manifest_source_set_hash(manifest: &RunManifest) -> String {
+    let mut pairs: Vec<String> = manifest
+        .source_files
+        .iter()
+        .filter_map(|f| {
+            f.content_hash
+                .as_ref()
+                .map(|h| format!("{}:{}", f.path, h))
+        })
+        .collect();
+    pairs.sort();
+    let combined = pairs.join("\n");
+    let mut hasher = Sha256::new();
+    hasher.update(combined.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Write a markdown run summary to `path`.
+///
+/// Renders a concise human-readable overview of the `RunStatus` for
+/// integration into artifact directories alongside `run-status.json`.
+pub fn write_run_summary_md(path: &Path, status: &RunStatus) -> Result<(), StatusExportError> {
+    let md = render_run_summary_md(status);
+    let tmp_path = path.with_extension("md.tmp");
+    std::fs::write(&tmp_path, md.as_bytes()).map_err(|source| StatusExportError::WriteTemp {
+        path: tmp_path.clone(),
+        source,
+    })?;
+    std::fs::rename(&tmp_path, path).map_err(|source| StatusExportError::Finalize {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Render a markdown run summary from a `RunStatus` (without writing to disk).
+#[must_use]
+pub fn render_run_summary_md(status: &RunStatus) -> String {
+    let d = &status.rollups.source_denominators;
+    let v = &status.rollups.validity;
+    let mut out = String::new();
+    out.push_str("# Run Summary\n\n");
+    out.push_str(&format!("**Scan ID:** `{}`  \n", status.run.scan_id));
+    out.push_str(&format!("**Command:** `{}`  \n", status.command.name));
+    out.push_str(&format!(
+        "**Config hash:** `{}`  \n",
+        status.command.config_hash
+    ));
+    out.push_str(&format!(
+        "**Source set hash:** `{}`  \n\n",
+        status.command.source_set_hash
+    ));
+    out.push_str("## Source\n\n");
+    out.push_str(&format!(
+        "- Selected files: {}\n",
+        d.selected_source_files
+    ));
+    out.push_str(&format!("- Selected lines: {}\n\n", d.selected_source_lines));
+    out.push_str("## Targets\n\n");
+    out.push_str(&format!("- Discovered: {}\n", d.discovered_targets));
+    out.push_str(&format!("- Attempted: {}\n", d.attempted_targets));
+    out.push_str(&format!("- Completed: {}\n", d.completed_targets));
+    out.push_str(&format!("- Failed: {}\n", d.failed_targets));
+    out.push_str(&format!("- Unsupported: {}\n\n", d.unsupported_targets));
+    out.push_str("## Validity\n\n");
+    out.push_str(&format!(
+        "**Report validity:** {}\n\n",
+        report_validity_wire(v.report_validity)
+    ));
+    if !v.reasons.is_empty() {
+        out.push_str("| Code | Detail |\n|------|--------|\n");
+        for reason in &v.reasons {
+            out.push_str(&format!("| {} | {} |\n", reason.code, reason.detail));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]

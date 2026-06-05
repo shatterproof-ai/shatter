@@ -1545,6 +1545,56 @@ pub(crate) enum CliCommand {
         #[arg(long, default_value_t = 30)]
         build_timeout: u64,
     },
+
+    /// List source files that would be selected for a scan, with details about
+    /// excluded, unsupported, and out-of-policy candidates.
+    ///
+    /// Walks the given directory (default: current directory) and classifies
+    /// every file into selected, excluded, unsupported, or candidate-outside-policy.
+    /// Outputs a manifest with stable config and source-set hashes suitable for
+    /// change tracking in CI.
+    #[command(name = "list-targets")]
+    ListTargets(ListTargetsArgs),
+}
+
+/// Arguments for `shatter list-targets`.
+#[derive(Args, Debug)]
+pub(crate) struct ListTargetsArgs {
+    /// Directory to inspect (default: current directory).
+    #[arg(default_value = ".")]
+    pub(crate) directory: PathBuf,
+
+    /// Glob patterns for files to include (e.g. "src/**/*.ts"). May be repeated.
+    #[arg(long)]
+    pub(crate) include: Vec<String>,
+
+    /// Glob patterns for files to exclude (e.g. "**/vendor/**"). May be repeated.
+    #[arg(long)]
+    pub(crate) exclude: Vec<String>,
+
+    /// Restrict to a single language: typescript, go, or rust.
+    #[arg(long)]
+    pub(crate) language: Option<String>,
+
+    /// Output format: text (default), json, or markdown.
+    #[arg(long, default_value = "text")]
+    pub(crate) format: ListTargetsFormat,
+
+    /// Write manifest to this file instead of stdout.
+    #[arg(long = "output", short = 'o', value_name = "PATH")]
+    pub(crate) output: Option<PathBuf>,
+}
+
+/// Output format for `shatter list-targets`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ListTargetsFormat {
+    /// Plain text (default).
+    #[default]
+    Text,
+    /// JSON manifest.
+    Json,
+    /// Markdown.
+    Markdown,
 }
 
 /// Sub-subcommands for `shatter nondeterminism`.
