@@ -1963,6 +1963,51 @@ func TestAnalyzeFile_InternalImportPackage(t *testing.T) {
 	}
 }
 
+// TestTypeInfoDepthCap verifies that goTypeToTypeInfoRec does not expand struct
+// nesting beyond MaxTypeInfoDepth, preventing memory blow-up on large generated
+// type graphs like openapi3.T (str-eyta). Without the cap the L1→L10 chain
+// would produce a TypeInfo tree of depth 10; with the cap anything below
+// MaxTypeInfoDepth is represented as kind:"unknown".
+func TestTypeInfoDepthCap(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("deep_type.go"), "ProcessDeep")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no results")
+	}
+	fn := results[0]
+	if len(fn.Params) == 0 {
+		t.Fatal("no params")
+	}
+	param := fn.Params[0]
+	if param.Type.Kind != "object" {
+		t.Fatalf("top-level param kind = %q, want object", param.Type.Kind)
+	}
+
+	// Walk the TypeInfo tree and compute the maximum depth reached by "object"
+	// nodes (structs). Beyond the cap, nodes must be "unknown" (not "object"),
+	// so the tree is bounded.
+	var maxObjectDepth func(ti TypeInfo, current int) int
+	maxObjectDepth = func(ti TypeInfo, current int) int {
+		best := current
+		for _, f := range ti.Fields {
+			if f.Type.Kind == "object" {
+				d := maxObjectDepth(f.Type, current+1)
+				if d > best {
+					best = d
+				}
+			}
+		}
+		return best
+	}
+
+	got := maxObjectDepth(param.Type, 1)
+	if got > MaxTypeInfoDepth {
+		t.Errorf("TypeInfo struct depth = %d, want <= MaxTypeInfoDepth (%d); depth cap not enforced", got, MaxTypeInfoDepth)
+	}
+}
+
 func funcNames(results []FunctionAnalysis) []string {
 	names := make([]string, len(results))
 	for i, r := range results {
