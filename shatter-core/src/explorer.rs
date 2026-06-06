@@ -1253,7 +1253,13 @@ pub async fn explore_function(
             let _input_gen_span = tracing::info_span!("input_gen").entered();
             match meta_strategy.next(&strategy_ctx, &mut rng) {
                 Some((v, idx)) => {
-                    let inputs = if use_generators {
+                    let strategy_kind = meta_strategy.strategy_kind(idx);
+                    let inputs = if use_generators
+                        && strategy_kind != crate::strategy::RegisteredStrategyKind::Z3Solver
+                    {
+                        if !custom_generator_values_available(&config.value_sources, &prefetched) {
+                            break;
+                        }
                         overlay_custom_inputs(
                             &analysis.params,
                             &config.value_sources,
@@ -1271,6 +1277,9 @@ pub async fn explore_function(
                     // Custom generators require an async frontend round-trip; they cannot
                     // be a standard InputStrategy, so they serve as the infinite fallback
                     // when MetaStrategy (finite strategies only) is exhausted.
+                    if !custom_generator_values_available(&config.value_sources, &prefetched) {
+                        break;
+                    }
                     let v = generate_inputs_with_custom(
                         &analysis.params,
                         &config.value_sources,
@@ -1701,6 +1710,29 @@ fn custom_generator_prefetch_budget(_max_iterations: Option<u32>) -> usize {
     1
 }
 
+fn custom_generator_values_available(
+    sources: &[ValueSource],
+    prefetched: &PrefetchedValues,
+) -> bool {
+    let mut required = HashMap::<(String, String), usize>::new();
+    for source in sources {
+        let ValueSource::CustomGenerator {
+            generator_name,
+            generator_file,
+            ..
+        } = source
+        else {
+            continue;
+        };
+        let key = (generator_file.display().to_string(), generator_name.clone());
+        *required.entry(key).or_default() += 1;
+    }
+
+    required
+        .into_iter()
+        .all(|((file, name), count)| prefetched.remaining(&file, &name) >= count)
+}
+
 fn candidate_fingerprint(inputs: &[serde_json::Value], mocks: &[MockConfig]) -> u64 {
     let payload = serde_json::json!({
         "inputs": inputs,
@@ -1891,7 +1923,17 @@ async fn explore_function_with_observer_pool(
                 let _input_gen_span = tracing::info_span!("input_gen").entered();
                 match meta_strategy.next(&strategy_ctx, &mut rng) {
                     Some((v, idx)) => {
-                        let inputs = if use_generators {
+                        let strategy_kind = meta_strategy.strategy_kind(idx);
+                        let inputs = if use_generators
+                            && strategy_kind != crate::strategy::RegisteredStrategyKind::Z3Solver
+                        {
+                            if !custom_generator_values_available(
+                                &config.value_sources,
+                                &prefetched,
+                            ) {
+                                producer_done = true;
+                                break;
+                            }
                             overlay_custom_inputs(
                                 &analysis.params,
                                 &config.value_sources,
@@ -1906,6 +1948,10 @@ async fn explore_function_with_observer_pool(
                         (inputs, Some(idx))
                     }
                     None if use_generators => {
+                        if !custom_generator_values_available(&config.value_sources, &prefetched) {
+                            producer_done = true;
+                            break;
+                        }
                         let v = generate_inputs_with_custom(
                             &analysis.params,
                             &config.value_sources,
@@ -2689,6 +2735,7 @@ mod tests {
     use crate::protocol::ExecuteResult;
     use crate::protocol::PerformanceMetrics;
     use crate::protocol::SetupLevel;
+    use std::path::PathBuf;
 
     /// Base command capabilities for test frontends.
     const BASE_CAPABILITIES: &[&str] = &["analyze", "execute", "instrument"];
@@ -4179,6 +4226,42 @@ mod tests {
     fn custom_generator_prefetch_budget_uses_single_seed() {
         assert_eq!(custom_generator_prefetch_budget(Some(5)), 1);
         assert_eq!(custom_generator_prefetch_budget(None), 1);
+    }
+
+    #[test]
+    fn custom_generator_values_available_requires_all_custom_slots() {
+        let generator_file = PathBuf::from("gen.rs");
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "State".into(),
+                param_name: None,
+                generator_file: generator_file.clone(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::CustomGenerator {
+                generator_name: "current".into(),
+                param_name: Some("current".into()),
+                generator_file: generator_file.clone(),
+                kind: crate::protocol::GeneratorKind::ParamName,
+            },
+        ];
+        let file_key = generator_file.display().to_string();
+        let mut prefetched = PrefetchedValues::new();
+        prefetched.insert(
+            file_key.clone(),
+            "State".into(),
+            vec![serde_json::json!({"__shatter_native": true})],
+        );
+
+        assert!(!custom_generator_values_available(&sources, &prefetched));
+
+        prefetched.insert(
+            file_key,
+            "current".into(),
+            vec![serde_json::json!({"__shatter_native": true})],
+        );
+
+        assert!(custom_generator_values_available(&sources, &prefetched));
     }
 
     #[test]

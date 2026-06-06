@@ -1147,6 +1147,14 @@ impl PrefetchedValues {
             .get(&(file.to_string(), name.to_string()))
             .is_some_and(|q| !q.is_empty())
     }
+
+    /// Count remaining queued values for a generator.
+    #[must_use]
+    pub fn remaining(&self, file: &str, name: &str) -> usize {
+        self.entries
+            .get(&(file.to_string(), name.to_string()))
+            .map_or(0, Vec::len)
+    }
 }
 
 /// Collect the set of unique Generate commands needed for the given value sources.
