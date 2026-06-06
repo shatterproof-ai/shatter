@@ -9441,6 +9441,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
+            solver_guided_inputs: 0,
             timed_out: false,
             oracle_stats: None,
         }

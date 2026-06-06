@@ -79,7 +79,7 @@ EOF
 
     generate)
       response=$(cat <<EOF
-{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"generate","value":42}
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"generate","value":42,"generator_id":"noop"}
 EOF
 )
       ;;
@@ -100,7 +100,7 @@ EOF
 
     generate)
       response=$(cat <<EOF
-{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"generate","value":42}
+{"protocol_version":"$PROTOCOL_VERSION","id":$id,"status":"generate","value":42,"generator_id":"noop"}
 EOF
 )
       ;;

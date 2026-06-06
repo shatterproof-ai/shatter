@@ -599,6 +599,7 @@ pub struct MetaStrategy {
     config: MetaConfig,
     /// Round-robin index (used when adaptive=false and no static_weights).
     rr_index: usize,
+    priority_z3_since_user_seed: bool,
 }
 
 impl MetaStrategy {
@@ -617,6 +618,7 @@ impl MetaStrategy {
             states,
             config,
             rr_index: 0,
+            priority_z3_since_user_seed: false,
         }
     }
 
@@ -634,10 +636,18 @@ impl MetaStrategy {
         }
 
         if self.config.static_weights.is_none() && self.config.adaptive {
-            if let Some(candidate) = self.next_priority_branch_guided(ctx) {
+            if !self.priority_z3_since_user_seed
+                && let Some(candidate) = self.next_priority_branch_guided(ctx)
+            {
+                self.priority_z3_since_user_seed = true;
                 return Some(candidate);
             }
             if let Some(candidate) = self.next_priority_user_provided(ctx) {
+                self.priority_z3_since_user_seed = false;
+                return Some(candidate);
+            }
+            if let Some(candidate) = self.next_priority_branch_guided(ctx) {
+                self.priority_z3_since_user_seed = true;
                 return Some(candidate);
             }
         }
@@ -1740,7 +1750,7 @@ mod tests {
         meta.feedback(&first, &result, true);
         meta.record_outcome(first_idx, true);
 
-        let (_candidate, next_idx) = meta
+        let (solver_candidate, next_idx) = meta
             .next(&ctx, &mut rng)
             .expect("Z3 feedback should queue a branch-diversifying candidate");
         assert_eq!(
@@ -1748,6 +1758,19 @@ mod tests {
             RegisteredStrategyKind::Z3Solver,
             "queued solver follow-ups should run before additional generated/native seeds"
         );
+
+        meta.feedback(&solver_candidate, &result, true);
+        meta.record_outcome(next_idx, true);
+
+        let (second_seed, after_solver_idx) = meta
+            .next(&ctx, &mut rng)
+            .expect("remaining user seed should not be starved by solver follow-ups");
+        assert_eq!(
+            meta.strategy_kind(after_solver_idx),
+            RegisteredStrategyKind::UserProvided,
+            "solver follow-ups should yield back to remaining user inputs"
+        );
+        assert_eq!(second_seed, vec![Value::from(6)]);
     }
 
     #[test]
