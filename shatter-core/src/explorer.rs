@@ -1697,8 +1697,8 @@ fn default_candidate_queue_capacity(observer_pool: usize, max_iterations: Option
     (pool * 4).min(budget_cap).max(1)
 }
 
-fn custom_generator_prefetch_budget(max_iterations: Option<u32>) -> usize {
-    max_iterations.unwrap_or(100) as usize
+fn custom_generator_prefetch_budget(_max_iterations: Option<u32>) -> usize {
+    1
 }
 
 fn candidate_fingerprint(inputs: &[serde_json::Value], mocks: &[MockConfig]) -> u64 {
