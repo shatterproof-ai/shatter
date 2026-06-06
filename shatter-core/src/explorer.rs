@@ -920,7 +920,7 @@ pub async fn explore_function(
         prefetch_custom_values(
             &config.value_sources,
             frontend,
-            config.max_iterations.unwrap_or(100) as usize,
+            custom_generator_prefetch_budget(config.max_iterations),
         )
         .instrument(tracing::info_span!("input_gen.prefetch"))
         .await
@@ -1697,6 +1697,10 @@ fn default_candidate_queue_capacity(observer_pool: usize, max_iterations: Option
     (pool * 4).min(budget_cap).max(1)
 }
 
+fn custom_generator_prefetch_budget(max_iterations: Option<u32>) -> usize {
+    max_iterations.unwrap_or(100) as usize
+}
+
 fn candidate_fingerprint(inputs: &[serde_json::Value], mocks: &[MockConfig]) -> u64 {
     let payload = serde_json::json!({
         "inputs": inputs,
@@ -1793,7 +1797,7 @@ async fn explore_function_with_observer_pool(
         prefetch_custom_values(
             &config.value_sources,
             frontend,
-            config.max_iterations.unwrap_or(100) as usize,
+            custom_generator_prefetch_budget(config.max_iterations),
         )
         .instrument(tracing::info_span!("input_gen.prefetch"))
         .await
@@ -4169,6 +4173,12 @@ mod tests {
         assert_eq!(default_candidate_queue_capacity(4, Some(3)), 3);
         assert_eq!(default_candidate_queue_capacity(0, None), 4);
         assert_eq!(default_candidate_queue_capacity(2, Some(0)), 1);
+    }
+
+    #[test]
+    fn custom_generator_prefetch_budget_uses_single_seed() {
+        assert_eq!(custom_generator_prefetch_budget(Some(5)), 1);
+        assert_eq!(custom_generator_prefetch_budget(None), 1);
     }
 
     #[test]
