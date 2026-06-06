@@ -2888,12 +2888,13 @@ async fn explore_with_scan_mode(
     let mut seed_inputs = crate::boundary_dict::generate_boundary_inputs(&analysis.params);
     seed_inputs.extend(explore_config.pool_seeds.clone());
     let max_iterations = explore_config.max_iterations.unwrap_or(100) as usize;
+    let max_executions = concolic_scan_max_executions(max_iterations);
     let generated_inputs = prefetch_concolic_generator_inputs(
         frontend,
         analysis,
         explore_config,
         &capabilities,
-        max_iterations,
+        max_executions,
     )
     .await;
     let user_inputs = concolic_scan_user_inputs(
@@ -2904,7 +2905,7 @@ async fn explore_with_scan_mode(
 
     let concolic_config = crate::orchestrator::ExploreConfig {
         max_iterations: Some(max_iterations),
-        max_executions: Some(max_iterations * 5),
+        max_executions: Some(max_executions),
         plateau_threshold: 20,
         mocks: explore_config.mocks.clone(),
         mock_params: explore_config.mock_params.clone(),
@@ -2950,6 +2951,10 @@ fn concolic_scan_user_inputs(
     user_inputs.extend(generated_inputs);
     user_inputs.extend(candidate_inputs);
     user_inputs
+}
+
+fn concolic_scan_max_executions(max_iterations: usize) -> usize {
+    max_iterations * 5
 }
 
 async fn prefetch_concolic_generator_inputs(
@@ -9177,6 +9182,17 @@ defaults:
             inputs,
             vec![explicit_user_seed, generated, fallback],
             "scan concolic mode must try native generator-backed inputs before synthesized fallbacks"
+        );
+    }
+
+    #[test]
+    fn concolic_scan_prefetches_generator_inputs_for_execution_budget() {
+        let max_iterations = 5;
+
+        assert_eq!(
+            concolic_scan_max_executions(max_iterations),
+            max_iterations * 5,
+            "scan concolic mode must prefetch enough native generator-backed inputs for every execution slot"
         );
     }
 
