@@ -9194,13 +9194,13 @@ defaults:
     }
 
     #[test]
-    fn concolic_scan_keeps_generator_execution_budget_to_iteration_budget() {
+    fn concolic_scan_uses_single_generator_backed_execution() {
         let max_iterations = 5;
 
         assert_eq!(
             concolic_scan_max_executions(max_iterations, true),
-            max_iterations,
-            "scan concolic mode must not run past native generator-backed inputs into synthesized fallbacks"
+            1,
+            "scan concolic mode should use one native generator-backed input before handing branch diversity to later feedback paths"
         );
     }
 
