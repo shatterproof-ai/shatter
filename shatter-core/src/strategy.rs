@@ -123,7 +123,8 @@ impl RegisteredStrategyKind {
         match self {
             Self::UserProvided => DiscoveryMethod::UserProvided,
             Self::BoundarySeeds => DiscoveryMethod::BoundarySearch,
-            Self::Literals | Self::PoolSeeds | Self::Random | Self::Z3Solver | Self::Fuzzer => {
+            Self::Z3Solver => DiscoveryMethod::Z3,
+            Self::Literals | Self::PoolSeeds | Self::Random | Self::Fuzzer => {
                 DiscoveryMethod::Random
             }
         }
@@ -728,9 +729,10 @@ impl MetaStrategy {
         &mut self,
         ctx: &StrategyContext,
     ) -> Option<(Vec<Value>, usize)> {
-        let idx = self.states.iter().position(|state| {
-            state.kind == RegisteredStrategyKind::Z3Solver && !state.exhausted
-        })?;
+        let idx = self
+            .states
+            .iter()
+            .position(|state| state.kind == RegisteredStrategyKind::Z3Solver && !state.exhausted)?;
         self.try_next(idx, ctx).map(|inputs| (inputs, idx))
     }
 
@@ -1632,6 +1634,11 @@ mod tests {
         assert_eq!(
             RegisteredStrategyKind::Z3Solver.orchestrator_input_source(),
             crate::orchestrator::InputSource::Z3Solved
+        );
+        assert_eq!(
+            RegisteredStrategyKind::Z3Solver.explorer_discovery_method(),
+            DiscoveryMethod::Z3,
+            "random scan reports need Z3 attribution for solver-guided follow-up inputs"
         );
     }
 
