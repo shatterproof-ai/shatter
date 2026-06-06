@@ -4223,8 +4223,8 @@ mod tests {
     }
 
     #[test]
-    fn custom_generator_prefetch_budget_uses_single_seed() {
-        assert_eq!(custom_generator_prefetch_budget(Some(5)), 1);
+    fn custom_generator_prefetch_budget_tracks_iteration_budget() {
+        assert_eq!(custom_generator_prefetch_budget(Some(5)), 5);
         assert_eq!(custom_generator_prefetch_budget(None), 1);
     }
 
