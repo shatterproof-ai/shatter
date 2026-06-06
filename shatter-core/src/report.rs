@@ -960,6 +960,22 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         .iter()
         .map(|(_, _mocks, r)| r.path_constraints.len())
         .sum();
+    let branch_guided_discoveries = exploration
+        .discoveries
+        .iter()
+        .filter(|(_, method)| {
+            matches!(
+                method,
+                crate::coverage_metrics::DiscoveryMethod::Z3
+                    | crate::coverage_metrics::DiscoveryMethod::McdcTarget
+                    | crate::coverage_metrics::DiscoveryMethod::Drilled
+                    | crate::coverage_metrics::DiscoveryMethod::BoundarySearch
+            )
+        })
+        .count();
+    let solver_guided_inputs = exploration
+        .solver_guided_inputs
+        .max(branch_guided_discoveries);
 
     let lines_covered = recovered_lines_covered(exploration);
     let coverage_pct = if exploration.total_lines > 0 {
@@ -1018,7 +1034,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         completion_reason,
         constraint_stats: ConstraintStats {
             total_constraints,
-            solver_guided_inputs: 0,
+            solver_guided_inputs,
         },
         iterations: exploration.iterations,
         lines_covered,
@@ -2452,6 +2468,35 @@ mod tests {
             "per-input lines should be recovered when execution summaries are empty"
         );
         assert!(report.coverage_pct > 0.0);
+    }
+
+    #[test]
+    fn solver_guided_inputs_report_branch_guided_discoveries() {
+        let mut func_result = make_function_result("branch_guided_target", 6, 2, 7, 12, vec![]);
+        func_result.exploration.discoveries = vec![
+            (0, crate::coverage_metrics::DiscoveryMethod::Random),
+            (1, crate::coverage_metrics::DiscoveryMethod::Z3),
+        ];
+
+        let report = build_function_report(&func_result, "src/branch_guided_target.rs");
+
+        assert_eq!(
+            report.constraint_stats.solver_guided_inputs, 1,
+            "Z3-discovered branches should be surfaced as solver-guided report inputs"
+        );
+    }
+
+    #[test]
+    fn solver_guided_inputs_report_generated_followups() {
+        let mut func_result = make_function_result("branch_guided_target", 6, 2, 7, 12, vec![]);
+        func_result.exploration.solver_guided_inputs = 3;
+
+        let report = build_function_report(&func_result, "src/branch_guided_target.rs");
+
+        assert_eq!(
+            report.constraint_stats.solver_guided_inputs, 3,
+            "generated solver follow-up inputs should be surfaced even when no new branch id is first attributed to Z3"
+        );
     }
 
     #[test]

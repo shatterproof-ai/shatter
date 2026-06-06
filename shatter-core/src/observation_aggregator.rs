@@ -94,6 +94,7 @@ pub struct ObservationAggregator {
     raw_results: Vec<(Vec<JsonValue>, Vec<MockConfig>, ExecuteResult)>,
     iterations: u32,
     last_discovery_iteration: u32,
+    solver_guided_inputs: usize,
     loop_buckets: LoopBuckets,
 }
 
@@ -110,6 +111,7 @@ impl ObservationAggregator {
             raw_results: Vec::new(),
             iterations: 0,
             last_discovery_iteration: 0,
+            solver_guided_inputs: 0,
             loop_buckets,
         }
     }
@@ -150,7 +152,8 @@ impl ObservationAggregator {
 
     /// Iterations elapsed since the last new path was aggregated.
     pub fn iters_since_new_discovery(&self) -> u32 {
-        self.iterations.saturating_sub(self.last_discovery_iteration)
+        self.iterations
+            .saturating_sub(self.last_discovery_iteration)
     }
 
     /// Read-only view of the aggregated raw results. Used by callers that
@@ -181,6 +184,9 @@ impl ObservationAggregator {
             result,
             discovery_method,
         } = event;
+        if matches!(discovery_method, DiscoveryMethod::Z3) {
+            self.solver_guided_inputs = self.solver_guided_inputs.saturating_add(1);
+        }
 
         for &line in &result.lines_executed {
             self.state.all_lines.insert(line);
@@ -193,7 +199,8 @@ impl ObservationAggregator {
         for decision in &result.branch_path {
             if self.state.seen_branch_ids.insert(decision.branch_id) {
                 new_branch_ids.push(decision.branch_id);
-                self.discoveries.push((decision.branch_id, discovery_method));
+                self.discoveries
+                    .push((decision.branch_id, discovery_method));
             }
         }
 
@@ -252,6 +259,10 @@ impl ObservationAggregator {
         is_new_path: bool,
         new_branch_ids: &[u32],
     ) -> AggregateOutcome {
+        if matches!(discovery_method, DiscoveryMethod::Z3) {
+            self.solver_guided_inputs = self.solver_guided_inputs.saturating_add(1);
+        }
+
         for &branch_id in new_branch_ids {
             self.discoveries.push((branch_id, discovery_method));
         }
@@ -332,6 +343,7 @@ impl ObservationAggregator {
             new_path_executions: self.new_path_executions,
             raw_results: self.raw_results,
             discoveries: self.discoveries,
+            solver_guided_inputs: self.solver_guided_inputs,
             nondeterministic_fields,
             float_probe_results,
             boundary_results,
@@ -473,6 +485,40 @@ mod tests {
         assert_eq!(output.discoveries.len(), 2);
         assert_eq!(output.raw_results.len(), 2);
         assert_eq!(output.new_path_executions.len(), 2);
+        assert_eq!(
+            output.solver_guided_inputs, 1,
+            "Z3-generated executions should be counted in reportable solver-guided input totals"
+        );
+    }
+
+    #[test]
+    fn record_post_observe_counts_z3_executions() {
+        let mut agg = ObservationAggregator::new(LoopBuckets::none());
+        agg.record_post_observe(
+            vec![serde_json::json!(5)],
+            vec![],
+            make_exec_result(&[(1, true)], &[10]),
+            DiscoveryMethod::Z3,
+            true,
+            &[1],
+        );
+
+        let output = agg.into_observation_output(
+            "fn".into(),
+            42,
+            false,
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            None,
+            ShrinkStats::default(),
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        assert_eq!(output.solver_guided_inputs, 1);
     }
 }
 

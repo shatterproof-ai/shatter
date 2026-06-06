@@ -123,7 +123,8 @@ impl RegisteredStrategyKind {
         match self {
             Self::UserProvided => DiscoveryMethod::UserProvided,
             Self::BoundarySeeds => DiscoveryMethod::BoundarySearch,
-            Self::Literals | Self::PoolSeeds | Self::Random | Self::Z3Solver | Self::Fuzzer => {
+            Self::Z3Solver => DiscoveryMethod::Z3,
+            Self::Literals | Self::PoolSeeds | Self::Random | Self::Fuzzer => {
                 DiscoveryMethod::Random
             }
         }
@@ -180,11 +181,13 @@ impl RegisteredStrategy {
 /// Build the random explorer's shared registered strategy set.
 ///
 /// Registration order is the scheduling seam:
-/// `[UserProvided, Literals, PoolSeeds, BoundarySeeds, Random?]`
+/// `[UserProvided, Literals, PoolSeeds, BoundarySeeds, Z3Solver, Random?]`
 ///
 /// Custom generators are an intentional special case handled by
 /// [`SpecialCandidatePath::ExplorerCustomGeneratorFallback`], so enabling that
-/// fallback suppresses the built-in random strategy here.
+/// fallback suppresses the built-in random strategy here. `Z3Solver` remains
+/// registered so generator-backed observations can queue branch-guided
+/// follow-up inputs before the next generator fallback.
 pub fn build_random_explorer_meta_strategy(
     params: &[ParamInfo],
     literals: &[LiteralValue],
@@ -213,6 +216,10 @@ pub fn build_random_explorer_meta_strategy(
         RegisteredStrategy::new(
             RegisteredStrategyKind::BoundarySeeds,
             Box::new(BoundarySeeds::new(params)),
+        ),
+        RegisteredStrategy::new(
+            RegisteredStrategyKind::Z3Solver,
+            Box::new(Z3SolverStrategy::new(None, params.to_vec(), vec![])),
         ),
     ];
     if !use_custom_generator_fallback {
@@ -592,6 +599,7 @@ pub struct MetaStrategy {
     config: MetaConfig,
     /// Round-robin index (used when adaptive=false and no static_weights).
     rr_index: usize,
+    priority_z3_since_user_seed: bool,
 }
 
 impl MetaStrategy {
@@ -610,6 +618,7 @@ impl MetaStrategy {
             states,
             config,
             rr_index: 0,
+            priority_z3_since_user_seed: false,
         }
     }
 
@@ -626,11 +635,21 @@ impl MetaStrategy {
             return None;
         }
 
-        if self.config.static_weights.is_none()
-            && self.config.adaptive
-            && let Some(candidate) = self.next_priority_user_provided(ctx)
-        {
-            return Some(candidate);
+        if self.config.static_weights.is_none() && self.config.adaptive {
+            if !self.priority_z3_since_user_seed
+                && let Some(candidate) = self.next_priority_branch_guided(ctx)
+            {
+                self.priority_z3_since_user_seed = true;
+                return Some(candidate);
+            }
+            if let Some(candidate) = self.next_priority_user_provided(ctx) {
+                self.priority_z3_since_user_seed = false;
+                return Some(candidate);
+            }
+            if let Some(candidate) = self.next_priority_branch_guided(ctx) {
+                self.priority_z3_since_user_seed = true;
+                return Some(candidate);
+            }
         }
 
         if self.config.static_weights.is_some() {
@@ -714,6 +733,22 @@ impl MetaStrategy {
         let idx = self.states.iter().position(|state| {
             state.kind == RegisteredStrategyKind::UserProvided && !state.exhausted
         })?;
+        self.try_next(idx, ctx).map(|inputs| (inputs, idx))
+    }
+
+    /// Drain ready branch-guided solver candidates before additional seed inputs.
+    ///
+    /// User/native seeds need first chance to create an executable observation.
+    /// Once feedback has queued a solver candidate, continuing to drain seed
+    /// inputs can consume small scan budgets before branch-guided follow-ups run.
+    fn next_priority_branch_guided(
+        &mut self,
+        ctx: &StrategyContext,
+    ) -> Option<(Vec<Value>, usize)> {
+        let idx = self
+            .states
+            .iter()
+            .position(|state| state.kind == RegisteredStrategyKind::Z3Solver && !state.exhausted)?;
         self.try_next(idx, ctx).map(|inputs| (inputs, idx))
     }
 
@@ -1550,6 +1585,7 @@ mod tests {
                 RegisteredStrategyKind::Literals,
                 RegisteredStrategyKind::PoolSeeds,
                 RegisteredStrategyKind::BoundarySeeds,
+                RegisteredStrategyKind::Z3Solver,
                 RegisteredStrategyKind::Random,
             ]
         );
@@ -1578,6 +1614,7 @@ mod tests {
                 RegisteredStrategyKind::Literals,
                 RegisteredStrategyKind::PoolSeeds,
                 RegisteredStrategyKind::BoundarySeeds,
+                RegisteredStrategyKind::Z3Solver,
             ]
         );
         assert_eq!(
@@ -1616,6 +1653,11 @@ mod tests {
             RegisteredStrategyKind::Z3Solver.orchestrator_input_source(),
             crate::orchestrator::InputSource::Z3Solved
         );
+        assert_eq!(
+            RegisteredStrategyKind::Z3Solver.explorer_discovery_method(),
+            DiscoveryMethod::Z3,
+            "random scan reports need Z3 attribution for solver-guided follow-up inputs"
+        );
     }
 
     #[test]
@@ -1650,6 +1692,85 @@ mod tests {
             );
             assert_eq!(candidate, expected, "seed {seed} skipped the user input");
         }
+    }
+
+    #[test]
+    fn concolic_meta_strategy_prioritizes_z3_after_first_user_seed_feedback() {
+        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+
+        let params = make_params(&[TypeInfo::Int]);
+        let mut meta = build_concolic_meta_strategy(
+            vec![vec![Value::from(5)], vec![Value::from(6)]],
+            vec![],
+            vec![],
+            &params,
+            vec![],
+            None,
+            MetaConfig::default(),
+        );
+        let ctx = StrategyContext {
+            params,
+            literals: vec![],
+            capabilities: FrontendCapabilities::default(),
+        };
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let (first, first_idx) = meta
+            .next(&ctx, &mut rng)
+            .expect("first generated/native seed should run before fallbacks");
+        assert_eq!(first, vec![Value::from(5)]);
+
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "p0".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+        };
+        let result: ExecuteResult = serde_json::from_value(serde_json::json!({
+            "return_value": 0,
+            "branch_path": [{
+                "branch_id": 1,
+                "line": 10,
+                "taken": true,
+                "constraint": { "kind": "expr", "expr": constraint }
+            }],
+            "lines_executed": [10],
+            "path_constraints": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            }
+        }))
+        .expect("valid ExecuteResult JSON");
+
+        meta.feedback(&first, &result, true);
+        meta.record_outcome(first_idx, true);
+
+        let (solver_candidate, next_idx) = meta
+            .next(&ctx, &mut rng)
+            .expect("Z3 feedback should queue a branch-diversifying candidate");
+        assert_eq!(
+            meta.strategy_kind(next_idx),
+            RegisteredStrategyKind::Z3Solver,
+            "queued solver follow-ups should run before additional generated/native seeds"
+        );
+
+        meta.feedback(&solver_candidate, &result, true);
+        meta.record_outcome(next_idx, true);
+
+        let (second_seed, after_solver_idx) = meta
+            .next(&ctx, &mut rng)
+            .expect("remaining user seed should not be starved by solver follow-ups");
+        assert_eq!(
+            meta.strategy_kind(after_solver_idx),
+            RegisteredStrategyKind::UserProvided,
+            "solver follow-ups should yield back to remaining user inputs"
+        );
+        assert_eq!(second_seed, vec![Value::from(6)]);
     }
 
     #[test]
