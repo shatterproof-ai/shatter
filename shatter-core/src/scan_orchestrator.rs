@@ -2888,7 +2888,11 @@ async fn explore_with_scan_mode(
     let mut seed_inputs = crate::boundary_dict::generate_boundary_inputs(&analysis.params);
     seed_inputs.extend(explore_config.pool_seeds.clone());
     let max_iterations = explore_config.max_iterations.unwrap_or(100) as usize;
-    let max_executions = concolic_scan_max_executions(max_iterations);
+    let has_custom_generators = explore_config
+        .value_sources
+        .iter()
+        .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
+    let max_executions = concolic_scan_max_executions(max_iterations, has_custom_generators);
     let generated_inputs = prefetch_concolic_generator_inputs(
         frontend,
         analysis,
@@ -2953,8 +2957,12 @@ fn concolic_scan_user_inputs(
     user_inputs
 }
 
-fn concolic_scan_max_executions(max_iterations: usize) -> usize {
-    max_iterations * 5
+fn concolic_scan_max_executions(max_iterations: usize, has_custom_generators: bool) -> usize {
+    if has_custom_generators {
+        max_iterations
+    } else {
+        max_iterations * 5
+    }
 }
 
 async fn prefetch_concolic_generator_inputs(
@@ -9186,13 +9194,24 @@ defaults:
     }
 
     #[test]
-    fn concolic_scan_prefetches_generator_inputs_for_execution_budget() {
+    fn concolic_scan_keeps_generator_execution_budget_to_iteration_budget() {
         let max_iterations = 5;
 
         assert_eq!(
-            concolic_scan_max_executions(max_iterations),
+            concolic_scan_max_executions(max_iterations, true),
+            max_iterations,
+            "scan concolic mode must not run past native generator-backed inputs into synthesized fallbacks"
+        );
+    }
+
+    #[test]
+    fn concolic_scan_retains_expanded_execution_budget_without_generators() {
+        let max_iterations = 5;
+
+        assert_eq!(
+            concolic_scan_max_executions(max_iterations, false),
             max_iterations * 5,
-            "scan concolic mode must prefetch enough native generator-backed inputs for every execution slot"
+            "scan concolic mode should keep the expanded solver budget for ordinary JSON-compatible targets"
         );
     }
 
