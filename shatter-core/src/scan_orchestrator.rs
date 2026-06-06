@@ -2959,7 +2959,7 @@ fn concolic_scan_user_inputs(
 
 fn concolic_scan_max_executions(max_iterations: usize, has_custom_generators: bool) -> usize {
     if has_custom_generators {
-        max_iterations
+        1
     } else {
         max_iterations * 5
     }
