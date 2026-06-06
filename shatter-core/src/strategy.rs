@@ -181,11 +181,13 @@ impl RegisteredStrategy {
 /// Build the random explorer's shared registered strategy set.
 ///
 /// Registration order is the scheduling seam:
-/// `[UserProvided, Literals, PoolSeeds, BoundarySeeds, Random?]`
+/// `[UserProvided, Literals, PoolSeeds, BoundarySeeds, Z3Solver, Random?]`
 ///
 /// Custom generators are an intentional special case handled by
 /// [`SpecialCandidatePath::ExplorerCustomGeneratorFallback`], so enabling that
-/// fallback suppresses the built-in random strategy here.
+/// fallback suppresses the built-in random strategy here. `Z3Solver` remains
+/// registered so generator-backed observations can queue branch-guided
+/// follow-up inputs before the next generator fallback.
 pub fn build_random_explorer_meta_strategy(
     params: &[ParamInfo],
     literals: &[LiteralValue],
@@ -214,6 +216,10 @@ pub fn build_random_explorer_meta_strategy(
         RegisteredStrategy::new(
             RegisteredStrategyKind::BoundarySeeds,
             Box::new(BoundarySeeds::new(params)),
+        ),
+        RegisteredStrategy::new(
+            RegisteredStrategyKind::Z3Solver,
+            Box::new(Z3SolverStrategy::new(None, params.to_vec(), vec![])),
         ),
     ];
     if !use_custom_generator_fallback {
@@ -1569,6 +1575,7 @@ mod tests {
                 RegisteredStrategyKind::Literals,
                 RegisteredStrategyKind::PoolSeeds,
                 RegisteredStrategyKind::BoundarySeeds,
+                RegisteredStrategyKind::Z3Solver,
                 RegisteredStrategyKind::Random,
             ]
         );
@@ -1597,6 +1604,7 @@ mod tests {
                 RegisteredStrategyKind::Literals,
                 RegisteredStrategyKind::PoolSeeds,
                 RegisteredStrategyKind::BoundarySeeds,
+                RegisteredStrategyKind::Z3Solver,
             ]
         );
         assert_eq!(

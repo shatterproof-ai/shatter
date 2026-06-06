@@ -1096,12 +1096,13 @@ pub async fn explore_function(
     // async frontend round-trip) remain a fallback path outside the strategy.
     //
     // Strategy set for the random path:
-    //   [UserProvided, Literals, PoolSeeds, BoundarySeeds, Random]
+    //   [UserProvided, Literals, PoolSeeds, BoundarySeeds, Z3Solver, Random]
     //
     // user_seeds and candidate_inputs are combined into a single UserProvidedStrategy since
     // they share the same semantics (pre-specified inputs executed with highest priority).
     // When custom generators are enabled, RandomStrategy is excluded so that MetaStrategy
-    // exhausts after finite seeds; the custom generator then serves as the infinite fallback.
+    // can fall back to the async generator whenever the reactive Z3Solver has no queued
+    // branch-guided input.
     let mut meta_strategy = build_random_explorer_meta_strategy(
         &analysis.params,
         &analysis.literals,
