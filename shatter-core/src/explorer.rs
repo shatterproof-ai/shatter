@@ -920,7 +920,7 @@ pub async fn explore_function(
         prefetch_custom_values(
             &config.value_sources,
             frontend,
-            custom_generator_prefetch_budget(config.max_iterations),
+            custom_generator_prefetch_budget(&config.value_sources, config.max_iterations),
         )
         .instrument(tracing::info_span!("input_gen.prefetch"))
         .await
@@ -1706,8 +1706,31 @@ fn default_candidate_queue_capacity(observer_pool: usize, max_iterations: Option
     (pool * 4).min(budget_cap).max(1)
 }
 
-fn custom_generator_prefetch_budget(_max_iterations: Option<u32>) -> usize {
-    1
+const DEFAULT_CUSTOM_GENERATOR_PREFETCH_ITERATIONS: usize = 1;
+
+fn custom_generator_prefetch_budget(sources: &[ValueSource], max_iterations: Option<u32>) -> usize {
+    let iterations = max_iterations
+        .map(|budget| budget.max(1) as usize)
+        .unwrap_or(DEFAULT_CUSTOM_GENERATOR_PREFETCH_ITERATIONS);
+    iterations.saturating_mul(max_custom_generator_slots_per_generator(sources).max(1))
+}
+
+fn max_custom_generator_slots_per_generator(sources: &[ValueSource]) -> usize {
+    let mut slots_by_generator = HashMap::<(String, String), usize>::new();
+    for source in sources {
+        let ValueSource::CustomGenerator {
+            generator_name,
+            generator_file,
+            ..
+        } = source
+        else {
+            continue;
+        };
+        let key = (generator_file.display().to_string(), generator_name.clone());
+        *slots_by_generator.entry(key).or_default() += 1;
+    }
+
+    slots_by_generator.into_values().max().unwrap_or(0)
 }
 
 fn custom_generator_values_available(
@@ -1829,7 +1852,7 @@ async fn explore_function_with_observer_pool(
         prefetch_custom_values(
             &config.value_sources,
             frontend,
-            custom_generator_prefetch_budget(config.max_iterations),
+            custom_generator_prefetch_budget(&config.value_sources, config.max_iterations),
         )
         .instrument(tracing::info_span!("input_gen.prefetch"))
         .await
@@ -4224,8 +4247,26 @@ mod tests {
 
     #[test]
     fn custom_generator_prefetch_budget_tracks_iteration_budget() {
-        assert_eq!(custom_generator_prefetch_budget(Some(5)), 5);
-        assert_eq!(custom_generator_prefetch_budget(None), 1);
+        let generator_file = PathBuf::from("gen.rs");
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "account".to_string(),
+                param_name: None,
+                generator_file: generator_file.clone(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+            ValueSource::CustomGenerator {
+                generator_name: "account".to_string(),
+                param_name: None,
+                generator_file,
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+        ];
+
+        assert_eq!(custom_generator_prefetch_budget(&sources, Some(5)), 10);
+        assert_eq!(custom_generator_prefetch_budget(&sources, None), 2);
+        assert_eq!(custom_generator_prefetch_budget(&[], Some(5)), 5);
     }
 
     #[test]
