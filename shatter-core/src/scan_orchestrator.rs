@@ -2887,23 +2887,29 @@ async fn explore_with_scan_mode(
 
     let mut seed_inputs = crate::boundary_dict::generate_boundary_inputs(&analysis.params);
     seed_inputs.extend(explore_config.pool_seeds.clone());
-    let mut user_inputs = explore_config.user_seeds.clone();
-    user_inputs.extend(explore_config.candidate_inputs.clone());
-
     let max_iterations = explore_config.max_iterations.unwrap_or(100) as usize;
+    let has_custom_generators = explore_config
+        .value_sources
+        .iter()
+        .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
+    let max_executions = concolic_scan_max_executions(max_iterations, has_custom_generators);
     let generated_inputs = prefetch_concolic_generator_inputs(
         frontend,
         analysis,
         explore_config,
         &capabilities,
-        max_iterations,
+        max_executions,
     )
     .await;
-    user_inputs.extend(generated_inputs);
+    let user_inputs = concolic_scan_user_inputs(
+        explore_config.user_seeds.clone(),
+        generated_inputs,
+        explore_config.candidate_inputs.clone(),
+    );
 
     let concolic_config = crate::orchestrator::ExploreConfig {
         max_iterations: Some(max_iterations),
-        max_executions: Some(max_iterations * 5),
+        max_executions: Some(max_executions),
         plateau_threshold: 20,
         mocks: explore_config.mocks.clone(),
         mock_params: explore_config.mock_params.clone(),
@@ -2938,6 +2944,25 @@ async fn explore_with_scan_mode(
     .await?;
     result.total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
     Ok(result.into())
+}
+
+fn concolic_scan_user_inputs(
+    user_seeds: Vec<Vec<serde_json::Value>>,
+    generated_inputs: Vec<Vec<serde_json::Value>>,
+    candidate_inputs: Vec<Vec<serde_json::Value>>,
+) -> Vec<Vec<serde_json::Value>> {
+    let mut user_inputs = user_seeds;
+    user_inputs.extend(generated_inputs);
+    user_inputs.extend(candidate_inputs);
+    user_inputs
+}
+
+fn concolic_scan_max_executions(max_iterations: usize, has_custom_generators: bool) -> usize {
+    if has_custom_generators {
+        max_iterations
+    } else {
+        max_iterations * 5
+    }
 }
 
 async fn prefetch_concolic_generator_inputs(
@@ -9146,6 +9171,47 @@ defaults:
         assert_eq!(
             inputs[0][1],
             serde_json::json!({"__shatter_native": true, "handle": "current-1"})
+        );
+    }
+
+    #[test]
+    fn concolic_scan_user_inputs_prioritize_generated_values_before_fallbacks() {
+        let explicit_user_seed = vec![serde_json::json!("explicit")];
+        let generated = vec![serde_json::json!({"__shatter_native": true, "handle": "state"})];
+        let fallback = vec![serde_json::json!("fallback")];
+
+        let inputs = concolic_scan_user_inputs(
+            vec![explicit_user_seed.clone()],
+            vec![generated.clone()],
+            vec![fallback.clone()],
+        );
+
+        assert_eq!(
+            inputs,
+            vec![explicit_user_seed, generated, fallback],
+            "scan concolic mode must try native generator-backed inputs before synthesized fallbacks"
+        );
+    }
+
+    #[test]
+    fn concolic_scan_keeps_generator_execution_budget_to_iteration_budget() {
+        let max_iterations = 5;
+
+        assert_eq!(
+            concolic_scan_max_executions(max_iterations, true),
+            max_iterations,
+            "scan concolic mode must not run past native generator-backed inputs into synthesized fallbacks"
+        );
+    }
+
+    #[test]
+    fn concolic_scan_retains_expanded_execution_budget_without_generators() {
+        let max_iterations = 5;
+
+        assert_eq!(
+            concolic_scan_max_executions(max_iterations, false),
+            max_iterations * 5,
+            "scan concolic mode should keep the expanded solver budget for ordinary JSON-compatible targets"
         );
     }
 
