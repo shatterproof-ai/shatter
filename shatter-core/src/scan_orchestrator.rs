@@ -3351,6 +3351,28 @@ struct ExploreTask {
     known_targets: KnownTargets,
 }
 
+fn same_file_serial_limiters(
+    tasks: &[ExploreTask],
+) -> HashMap<String, Arc<tokio::sync::Semaphore>> {
+    same_file_serial_limiters_for_paths(tasks.iter().map(|task| task.file_path.as_str()))
+}
+
+fn same_file_serial_limiters_for_paths<'a>(
+    file_paths: impl IntoIterator<Item = &'a str>,
+) -> HashMap<String, Arc<tokio::sync::Semaphore>> {
+    let mut counts = HashMap::<String, usize>::new();
+    for file_path in file_paths {
+        *counts.entry(file_path.to_string()).or_default() += 1;
+    }
+
+    counts
+        .into_iter()
+        .filter_map(|(file_path, count)| {
+            (count > 1).then(|| (file_path, Arc::new(tokio::sync::Semaphore::new(1))))
+        })
+        .collect()
+}
+
 /// Merge outcomes for replicas of the same function into one outcome per function.
 ///
 /// When `workers_per_fn > 1`, multiple `FunctionOutcome::Success` entries may
@@ -4299,6 +4321,7 @@ pub async fn parallel_scan_with_progress(
                 // Behavior map storage is deferred to after all handles join so that
                 // replicas for the same function can be merged first.
                 let mut handles = Vec::new();
+                let file_limiters = same_file_serial_limiters(&expanded_tasks);
 
                 for ExploreTask {
                     func_name,
@@ -4325,12 +4348,18 @@ pub async fn parallel_scan_with_progress(
                     let build_timeout_retry_claimed = Arc::clone(&build_timeout_retry_claimed);
                     let handle_func_name = func_name.clone();
                     let handle_progress_index = progress_index;
+                    let file_limiter = file_limiters.get(&file_path).cloned();
                     let lease = Arc::new(WorkerTaskLease::new(
                         Arc::clone(&pool),
                         Arc::clone(&tasks_remaining),
                     ));
                     let handle_lease = Arc::clone(&lease);
                     let handle = tokio::spawn(async move {
+                        let _same_file_permit = match file_limiter {
+                            Some(limiter) => limiter.acquire_owned().await.ok(),
+                            None => None,
+                        };
+
                         // str-poyv: emit `started` only after we actually
                         // acquire a worker from the pool. Emitting on spawn
                         // (before checkout) made every queued task fire
@@ -6032,6 +6061,20 @@ mod tests {
 
         assert!(claim_build_timeout_retry(&retry_claimed));
         assert!(!claim_build_timeout_retry(&retry_claimed));
+    }
+
+    #[test]
+    fn same_file_serial_limiters_only_cover_duplicate_paths() {
+        let limiters = same_file_serial_limiters_for_paths([
+            "src/handlers/bundles.rs",
+            "src/handlers/items.rs",
+            "src/handlers/bundles.rs",
+            "src/handlers/trips.rs",
+        ]);
+
+        assert!(limiters.contains_key("src/handlers/bundles.rs"));
+        assert!(!limiters.contains_key("src/handlers/items.rs"));
+        assert!(!limiters.contains_key("src/handlers/trips.rs"));
     }
 
     /// str-0x82: adapter-typed invocation models produce an execution profile

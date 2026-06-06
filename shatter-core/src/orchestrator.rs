@@ -29,7 +29,6 @@ use std::collections::HashMap;
 use crate::auto_mock::MockParam;
 use crate::boundary_search;
 use crate::coverage_metrics::DiscoveryMethod;
-use crate::oracle::{ConditionId, FailedCondition, InputVector, OracleContext, OracleSlotMap, OracleStats};
 use crate::drilling;
 use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
 use crate::explorer::{apply_live_first_overrides, update_live_first_states};
@@ -39,6 +38,9 @@ use crate::genetic_fitness::{FitnessContext, FitnessWeights};
 use crate::input_gen;
 use crate::mcdc::McdcTable;
 use crate::mock_value_space::LiveFirstState;
+use crate::oracle::{
+    ConditionId, FailedCondition, InputVector, OracleContext, OracleSlotMap, OracleStats,
+};
 use crate::protocol::{Command, ExecuteResult, MockConfig, ResponseResult, SetupContextStack};
 use crate::solver::{self, ConcreteValue, SolveResult};
 use crate::strategy::{
@@ -1075,7 +1077,11 @@ pub(crate) fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
             if matches!(kind, ComplexKind::GoUint) {
                 let n: u64 = match repr.as_ref() {
                     ConcreteValue::Int(i) => {
-                        if *i < 0 { 0 } else { *i as u64 }
+                        if *i < 0 {
+                            0
+                        } else {
+                            *i as u64
+                        }
                     }
                     _ => 0,
                 };
@@ -1118,6 +1124,12 @@ pub(crate) fn overlay_solved_values(
             if idx < result.len() {
                 result[idx] = concrete_to_json(value);
             }
+        } else if let Some((param_name, path)) = solved_object_path(var_name)
+            && let Some(idx) = param_names.iter().position(|n| n == param_name)
+            && idx < result.len()
+            && !path.is_empty()
+        {
+            overlay_json_path(&mut result[idx], &path, concrete_to_json(value));
         } else if param_names.len() == 1 && base_inputs.len() == 1 && !var_name.contains('.') {
             // Single-param function with a simple (non-derived) variable name:
             // the solver variable likely refers to the param. Skip derived names
@@ -1127,6 +1139,71 @@ pub(crate) fn overlay_solved_values(
     }
 
     result
+}
+
+fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
+    let mut parts = var_name.split('.').map(str::trim);
+    let param = parts.next()?.trim();
+    if param.is_empty() {
+        return None;
+    }
+    let path: Vec<String> = parts
+        .filter(|part| !part.is_empty())
+        .filter(|part| !part.contains('(') && !part.contains(')'))
+        .map(json_field_name)
+        .collect();
+    if path.is_empty() {
+        None
+    } else {
+        Some((param, path))
+    }
+}
+
+fn json_field_name(field: &str) -> String {
+    let mut out = String::with_capacity(field.len());
+    let mut uppercase_next = false;
+    for ch in field.chars() {
+        if ch == '_' {
+            uppercase_next = true;
+            continue;
+        }
+        if uppercase_next {
+            out.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn overlay_json_path(target: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
+    if path.is_empty() {
+        *target = value;
+        return;
+    }
+    if !target.is_object() {
+        *target = serde_json::json!({});
+    }
+    let mut current = target;
+    for segment in &path[..path.len() - 1] {
+        if !current.is_object() {
+            *current = serde_json::json!({});
+        }
+        let object = current
+            .as_object_mut()
+            .expect("target was normalized to object");
+        current = object
+            .entry(segment.clone())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    if !current.is_object() {
+        *current = serde_json::json!({});
+    }
+    let object = current
+        .as_object_mut()
+        .expect("target was normalized to object");
+    object.insert(path[path.len() - 1].clone(), value);
 }
 
 /// Result of trying to observe a single worklist entry.
@@ -3717,6 +3794,45 @@ mod tests {
 
         let result = overlay_solved_values(&base, &solved, &param_names);
         assert_eq!(result, base);
+    }
+
+    #[test]
+    fn overlay_nested_payload_field_from_rust_symbol() {
+        let base = vec![serde_json::Value::Null];
+        let mut solved = HashMap::new();
+        solved.insert(
+            "payload . label . as_deref ()".to_string(),
+            ConcreteValue::Str("branch label".into()),
+        );
+        let param_names = vec!["payload".to_string()];
+
+        let result = overlay_solved_values(&base, &solved, &param_names);
+        assert_eq!(
+            result,
+            vec![serde_json::json!({
+                "label": "branch label",
+            })]
+        );
+    }
+
+    #[test]
+    fn overlay_nested_payload_field_uses_json_field_name() {
+        let base = vec![serde_json::json!({ "label": "existing" })];
+        let mut solved = HashMap::new();
+        solved.insert(
+            "payload . owner_person_id".to_string(),
+            ConcreteValue::Str("person-id".into()),
+        );
+        let param_names = vec!["payload".to_string()];
+
+        let result = overlay_solved_values(&base, &solved, &param_names);
+        assert_eq!(
+            result,
+            vec![serde_json::json!({
+                "label": "existing",
+                "ownerPersonId": "person-id",
+            })]
+        );
     }
 
     // -- WorklistEntry ordering tests --
