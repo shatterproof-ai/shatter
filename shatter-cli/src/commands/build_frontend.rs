@@ -567,15 +567,17 @@ mod tests {
     #[test]
     fn collect_native_generators_includes_function_level_entries() {
         let shatter_dir = Path::new(".shatter");
-        let mut defaults = DefaultsConfig::default();
-        defaults.generators = Some(HashMap::from([(
-            "State".to_string(),
-            "generators/default.rs".to_string(),
-        )]));
-        defaults.param_generators = Some(HashMap::from([(
-            "current".to_string(),
-            "generators/current.rs".to_string(),
-        )]));
+        let defaults = DefaultsConfig {
+            generators: Some(HashMap::from([(
+                "State".to_string(),
+                "generators/default.rs".to_string(),
+            )])),
+            param_generators: Some(HashMap::from([(
+                "current".to_string(),
+                "generators/current.rs".to_string(),
+            )])),
+            ..DefaultsConfig::default()
+        };
         let function_config = FunctionConfig {
             param_generators: Some(HashMap::from([(
                 "current".to_string(),
@@ -593,15 +595,15 @@ mod tests {
 
         assert!(generators.iter().any(|generator| {
             generator.name == "State"
-                && generator.path == PathBuf::from(".shatter/generators/default.rs")
+                && generator.path == Path::new(".shatter/generators/default.rs")
         }));
         assert!(generators.iter().any(|generator| {
             generator.name == "current"
-                && generator.path == PathBuf::from(".shatter/generators/current.rs")
+                && generator.path == Path::new(".shatter/generators/current.rs")
         }));
         assert!(generators.iter().any(|generator| {
             generator.name == "current"
-                && generator.path == PathBuf::from(".shatter/generators/bundle.rs")
+                && generator.path == Path::new(".shatter/generators/bundle.rs")
         }));
     }
 }

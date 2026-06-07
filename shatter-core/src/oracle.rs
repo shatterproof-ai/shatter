@@ -514,8 +514,10 @@ mod tests {
         // Wait for the failure to resolve.
         for _ in 0..200 {
             std::thread::sleep(std::time::Duration::from_millis(10));
-            if let Some(OracleSlot::Pending(h)) = map.slots.get(&1) {
-                if h.is_finished() { break; }
+            if let Some(OracleSlot::Pending(h)) = map.slots.get(&1)
+                && h.is_finished()
+            {
+                break;
             }
         }
         // Next poll processes the failure; since query_count already hit

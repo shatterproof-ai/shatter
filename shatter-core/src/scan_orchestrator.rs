@@ -9216,7 +9216,7 @@ defaults:
             vec![serde_json::json!({"__shatter_native": true, "handle": "current-1"})],
         );
         let capabilities =
-            crate::orchestrator::FrontendCapabilities::from_raw(&vec!["generate".to_string()]);
+            crate::orchestrator::FrontendCapabilities::from_raw(&["generate".to_string()]);
 
         let inputs = concolic_generator_inputs_from_prefetch(
             &analysis,
