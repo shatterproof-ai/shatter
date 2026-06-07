@@ -460,6 +460,128 @@ func main() {
 	}
 }
 
+// TestWrapper_StructWithTimeFieldPreservesLargeInteger is the str-hhly
+// regression. Normalizing a nested date marker must not round unrelated JSON
+// number lexemes before the final typed json.Unmarshal.
+func TestWrapper_StructWithTimeFieldPreservesLargeInteger(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package structtimeint
+
+import "time"
+
+func SeedAfterDate(cfg struct {
+	Now time.Time
+	Seed uint64
+}) uint64 {
+	return cfg.Seed
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "structtimeint.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write structtimeint.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/structtimeint\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/structtimeint:SeedAfterDate",
+			SymbolName: "SeedAfterDate",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "cfg", GoType: "struct{ Now time.Time; Seed uint64 }"},
+			},
+			HasResult:    true,
+			ResultGoType: "uint64",
+			ResultCount:  1,
+			Imports:      []string{"time"},
+		},
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "structtimeint", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	const runnerSrc = `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	structtimeint "example.com/structtimeint"
+)
+
+func main() {
+	got, err := structtimeint.ShatterInvoke(
+		structtimeint.PlanDescriptor{TargetID: "example.com/structtimeint:SeedAfterDate"},
+		[]json.RawMessage{json.RawMessage(` + "`" + `{"Now":{"__complex_type":"date","value":2147483647000},"Seed":18446744073709551615}` + "`" + `)},
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ShatterInvoke error: %v\n", err)
+		os.Exit(1)
+	}
+	seed, ok := got.(uint64)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "result type %T, want uint64\n", got)
+		os.Exit(1)
+	}
+	if seed != 18446744073709551615 {
+		fmt.Fprintf(os.Stderr, "got %d, want 18446744073709551615\n", seed)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	runnerMod := "module example.com/structtimeintrunner\n\ngo 1.23.0\n\nrequire example.com/structtimeint v0.0.0\n\nreplace example.com/structtimeint => " + modDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\nwrapper:\n%s", err, buildErr.String(), got)
+	}
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want %q\nstderr: %s", got, "ok", runErr.String())
+	}
+}
+
 // TestWrapper_DurationParam_RejectsInvalidObject pins the error contract:
 // a JSON object that does not carry the duration tag must surface the
 // integer-decode error rather than silently producing a zero value.
