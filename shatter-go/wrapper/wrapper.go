@@ -34,9 +34,10 @@ import (
 // form (`[]T`); the call site must expand it with `args...` so the wrapper
 // passes through to the target's variadic call shape (str-jeen.48).
 type WrapperParam struct {
-	Name       string
-	GoType     string // concrete Go type string, e.g. "int", "*Counter", "string"
-	IsVariadic bool
+	Name                       string
+	GoType                     string // concrete Go type string, e.g. "int", "*Counter", "string"
+	IsVariadic                 bool
+	NeedsMapInputNormalization bool
 	// RuntimeValueExpr, when non-empty, carries a Go-source expression
 	// (e.g. `context.Background()`, `httptest.NewRecorder()`) that the
 	// wrapper substitutes for the parameter's value instead of decoding
@@ -88,7 +89,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v4"
+const generatorVersion = "gen-v5"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -150,6 +151,10 @@ func targetSignature(t WrapperTarget) string {
 		b.WriteByte('/')
 		if p.IsVariadic {
 			b.WriteByte('v')
+		}
+		b.WriteByte('/')
+		if p.NeedsMapInputNormalization {
+			b.WriteByte('m')
 		}
 		b.WriteByte('/')
 		b.WriteString(p.RuntimeValueExpr)
@@ -417,7 +422,7 @@ func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {
 }
 
 func wrapperParamNeedsMapInputNormalizer(p WrapperParam) bool {
-	return p.RuntimeValueExpr == "" && strings.Contains(p.GoType, "map[")
+	return p.RuntimeValueExpr == "" && (p.NeedsMapInputNormalization || strings.Contains(p.GoType, "map["))
 }
 
 func writeMapInputNormalizer(b *strings.Builder) {
@@ -917,10 +922,16 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath s
 		if isVariadic {
 			goType = "[]" + elemType
 		}
+		needsMapInputNormalization := wrapperExprTypeContainsMap(fieldType, info)
 		if len(field.Names) == 0 {
 			// Unnamed parameter (e.g. `func F(int, string)`): a single
 			// field with no names represents one positional parameter.
-			params = append(params, WrapperParam{Name: syntheticParamName(index), GoType: goType, IsVariadic: isVariadic})
+			params = append(params, WrapperParam{
+				Name:                       syntheticParamName(index),
+				GoType:                     goType,
+				IsVariadic:                 isVariadic,
+				NeedsMapInputNormalization: needsMapInputNormalization,
+			})
 			index++
 			continue
 		}
@@ -932,11 +943,57 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath s
 				// substitute a stable synthetic name.
 				localName = syntheticParamName(index)
 			}
-			params = append(params, WrapperParam{Name: localName, GoType: goType, IsVariadic: isVariadic})
+			params = append(params, WrapperParam{
+				Name:                       localName,
+				GoType:                     goType,
+				IsVariadic:                 isVariadic,
+				NeedsMapInputNormalization: needsMapInputNormalization,
+			})
 			index++
 		}
 	}
 	return params
+}
+
+func wrapperExprTypeContainsMap(expr ast.Expr, info *types.Info) bool {
+	if expr == nil || info == nil {
+		return false
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Type == nil {
+		return false
+	}
+	return wrapperTypeContainsMap(tv.Type, make(map[types.Type]struct{}))
+}
+
+func wrapperTypeContainsMap(typ types.Type, seen map[types.Type]struct{}) bool {
+	if typ == nil {
+		return false
+	}
+	if _, ok := seen[typ]; ok {
+		return false
+	}
+	seen[typ] = struct{}{}
+
+	switch t := typ.(type) {
+	case *types.Map:
+		return true
+	case *types.Pointer:
+		return wrapperTypeContainsMap(t.Elem(), seen)
+	case *types.Slice:
+		return wrapperTypeContainsMap(t.Elem(), seen)
+	case *types.Array:
+		return wrapperTypeContainsMap(t.Elem(), seen)
+	case *types.Named:
+		return wrapperTypeContainsMap(t.Underlying(), seen)
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if wrapperTypeContainsMap(t.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractWrapperTypeParams(fn *ast.FuncDecl) []TypeParamInfo {
