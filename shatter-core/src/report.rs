@@ -2229,7 +2229,9 @@ mod tests {
     use crate::behavior::{Behavior, BehaviorMap};
     use crate::execution_record::{BranchDecision, ErrorInfo, SymConstraint};
     use crate::explorer::{ExecutionSummary, ObservationOutput};
-    use crate::protocol::{ExecuteResult, PerformanceMetrics};
+    use crate::protocol::{
+        ExecuteResult, InvocationOutcome, OutcomeStatus, PerformanceMetrics,
+    };
     use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, SkippedFunction};
     use std::collections::HashMap;
 
@@ -3549,6 +3551,68 @@ mod tests {
             md.contains("Completion reason"),
             "markdown should surface the completion reason: {md}",
         );
+    }
+
+    #[test]
+    fn report_marks_policy_skips_as_non_behavioral_with_reason() {
+        let reason = "skipped: side effect class=network (component=net.SplitHostPort)";
+        let mut policy_skipped = make_function_result("ValidateLoopbackAddr", 1, 0, 0, 8, vec![]);
+        policy_skipped.exploration.raw_results.push((
+            vec![serde_json::json!("192.168.1.42")],
+            vec![],
+            ExecuteResult {
+                return_value: None,
+                thrown_error: None,
+                outcome: Some(InvocationOutcome {
+                    status: OutcomeStatus::SkippedByPolicy,
+                    short_reason: Some(reason.to_string()),
+                    return_value: None,
+                    thrown_error: None,
+                    side_effects: vec![],
+                }),
+                ..Default::default()
+            },
+        ));
+
+        let parallel_result = ParallelScanResult {
+            function_results: vec![policy_skipped],
+            test_order: vec!["ValidateLoopbackAddr".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        let mut file_map = HashMap::new();
+        file_map.insert(
+            "ValidateLoopbackAddr".into(),
+            "internal/runtime/store.go".into(),
+        );
+
+        let report = generate_report(&parallel_result, &file_map, None);
+        let func = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "ValidateLoopbackAddr")
+            .expect("function should be in report");
+
+        assert_eq!(
+            func.completion_outcome,
+            CompletionOutcome::SkippedByPolicy,
+            "policy skips must not count as behavioral null-return successes",
+        );
+        assert_eq!(report.codebase.completed_with_behavior, 0);
+        assert_eq!(report.codebase.completed_skipped_by_policy, 1);
+
+        let input = func
+            .discovered_inputs
+            .iter()
+            .find(|d| d.inputs == vec![serde_json::json!("192.168.1.42")])
+            .expect("policy-skipped input should remain visible");
+        assert_eq!(input.return_value, None);
+        assert_eq!(input.thrown_error, None);
+        assert_eq!(input.outcome_status.as_deref(), Some("skipped_by_policy"));
+        assert_eq!(input.outcome_reason.as_deref(), Some(reason));
     }
 
     /// str-jeen.50 regression: a function whose every recorded outcome
