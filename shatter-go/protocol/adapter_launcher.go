@@ -71,6 +71,9 @@ func prepareAdapterLauncher(file, function, adapterID string) (*preparedLauncher
 	if err != nil {
 		return nil, fmt.Errorf("harness runtime: %w", err)
 	}
+	if pkg.Name == "main" && !ast.IsExported(function) {
+		return nil, fmt.Errorf("unexported package main HTTP handler %q cannot be invoked through import-based adapter launcher", function)
+	}
 	mainSource, err := generateAdapterLauncherMain(adapterID, packageImportPathForBuild(pkg, modulePath), function)
 	if err != nil {
 		return nil, err
@@ -125,16 +128,26 @@ func writeImportablePackageOverlay(pkg *packages.Package, generatedDir, hash str
 	if len(files) == 0 {
 		return "", fmt.Errorf("package has no Go files")
 	}
+	packageDir := filepath.Dir(files[0])
+	testPackageNames, err := importableTestFilePackages(packageDir, pkg.Name, packageName)
+	if err != nil {
+		return "", err
+	}
+	for sourcePath := range testPackageNames {
+		files = append(files, sourcePath)
+	}
+	files = uniqueFilePaths(files)
 
 	overlaysDir := filepath.Join(generatedDir, hash, "adapter-overlays")
 	builder := overlay.NewBuilder(overlaysDir, hash)
 	rewrittenDir := filepath.Join(generatedDir, hash, "adapter-importable")
 	for _, sourcePath := range files {
-		if strings.HasSuffix(sourcePath, "_test.go") {
-			continue
-		}
 		rewrittenPath := filepath.Join(rewrittenDir, filepath.Base(sourcePath))
-		if err := rewritePackageFile(sourcePath, rewrittenPath, packageName); err != nil {
+		targetPackageName := packageName
+		if testPackageName, ok := testPackageNames[sourcePath]; ok {
+			targetPackageName = testPackageName
+		}
+		if err := rewritePackageFile(sourcePath, rewrittenPath, targetPackageName); err != nil {
 			return "", fmt.Errorf("rewrite package file %q: %w", sourcePath, err)
 		}
 		if err := builder.Add(sourcePath, rewrittenPath); err != nil {
@@ -147,6 +160,44 @@ func writeImportablePackageOverlay(pkg *packages.Package, generatedDir, hash str
 		return "", fmt.Errorf("write overlay manifest: %w", err)
 	}
 	return overlayPath, nil
+}
+
+func importableTestFilePackages(packageDir, packageName, importablePackageName string) (map[string]string, error) {
+	matches, err := filepath.Glob(filepath.Join(packageDir, "*_test.go"))
+	if err != nil {
+		return nil, fmt.Errorf("glob package test files: %w", err)
+	}
+	testPackages := make(map[string]string, len(matches))
+	fset := token.NewFileSet()
+	for _, match := range matches {
+		file, err := parser.ParseFile(fset, match, nil, parser.PackageClauseOnly)
+		if err != nil {
+			return nil, fmt.Errorf("parse test file package %q: %w", match, err)
+		}
+		if file.Name == nil {
+			continue
+		}
+		switch file.Name.Name {
+		case packageName:
+			testPackages[match] = importablePackageName
+		case packageName + "_test":
+			testPackages[match] = importablePackageName + "_test"
+		}
+	}
+	return testPackages, nil
+}
+
+func uniqueFilePaths(files []string) []string {
+	seen := make(map[string]struct{}, len(files))
+	unique := make([]string, 0, len(files))
+	for _, file := range files {
+		if _, ok := seen[file]; ok {
+			continue
+		}
+		seen[file] = struct{}{}
+		unique = append(unique, file)
+	}
+	return unique
 }
 
 func importablePackageName(name string) string {

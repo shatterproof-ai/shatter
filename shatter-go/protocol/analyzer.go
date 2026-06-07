@@ -341,6 +341,9 @@ func AnalyzeFileWithLoaderAndTiming(filePath string, functionName string, ldr *g
 			if results[i].InvocationModel != nil {
 				continue
 			}
+			if isUnexportedPackageMainFunction(file, results[i].Name) {
+				continue
+			}
 			if isReceiverQualifiedFunctionName(results[i].Name) {
 				continue
 			}
@@ -630,11 +633,15 @@ func analyzeFuncWithContext(fset *token.FileSet, fn *ast.FuncDecl, info *types.I
 	// Adapter recognition: check if this function is a known handler pattern
 	// and populate InvocationModel so the execute path dispatches through
 	// an adapter hook instead of fabricating plain arguments.
-	if model := recognizeHTTPHandler(fn, info); model != nil {
+	if model := recognizeHTTPHandler(fn, info); model != nil && !isUnexportedPackageMainFunction(file, fn.Name.Name) {
 		analysis.InvocationModel = model
 	}
 
 	return analysis
+}
+
+func isUnexportedPackageMainFunction(file *ast.File, name string) bool {
+	return file.Name != nil && file.Name.Name == "main" && !ast.IsExported(name)
 }
 
 func paramNameSet(params []ParamInfo) map[string]bool {

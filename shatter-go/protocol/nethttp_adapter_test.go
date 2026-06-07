@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -73,6 +74,20 @@ func TestAnalyze_HTTPHandler_SetsInvocationModel(t *testing.T) {
 	}
 	if len(fn.InvocationModel.SyntheticParams) != 4 {
 		t.Fatalf("expected 4 synthetic params, got %d", len(fn.InvocationModel.SyntheticParams))
+	}
+}
+
+func TestAnalyze_HTTPHandlerPackageMainUnexported_NoInvocationModel(t *testing.T) {
+	file := testFilePath(t, "http_main_project/handler.go")
+	functions, err := AnalyzeFile(file, "unexportedMainHandler")
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if len(functions) != 1 {
+		t.Fatalf("expected 1 function, got %d", len(functions))
+	}
+	if functions[0].InvocationModel != nil {
+		t.Fatalf("expected nil InvocationModel for unexported package-main handler, got %+v", functions[0].InvocationModel)
 	}
 }
 
@@ -148,6 +163,68 @@ func TestExecuteAdapterViaLauncher_HTTPHandler(t *testing.T) {
 	}
 	if httpResp.Body != "hello" {
 		t.Fatalf("expected body 'hello', got %q", httpResp.Body)
+	}
+}
+
+func TestExecuteAdapterViaLauncher_HTTPHandlerPackageMain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	file := testFilePath(t, "http_main_project/handler.go")
+	methodJSON, _ := json.Marshal("GET")
+	pathJSON, _ := json.Marshal("/hello")
+	headersJSON, _ := json.Marshal(map[string]string{})
+	bodyJSON, _ := json.Marshal("")
+
+	result, err := executeAdapterViaLauncher(HTTPHandlerAdapterID, InvocationContext{
+		File:         file,
+		FunctionName: "MainHelloHandler",
+		Inputs:       []json.RawMessage{methodJSON, pathJSON, headersJSON, bodyJSON},
+		Capture:      true,
+	})
+	if err != nil {
+		t.Fatalf("execute package-main adapter via launcher: %v", err)
+	}
+
+	var httpResp struct {
+		Status  int                 `json:"status"`
+		Headers map[string][]string `json:"headers"`
+		Body    string              `json:"body"`
+	}
+	if err := json.Unmarshal(result.ReturnValue, &httpResp); err != nil {
+		t.Fatalf("unmarshal return value: %v (raw: %s)", err, result.ReturnValue)
+	}
+	if httpResp.Status != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d", http.StatusAccepted, httpResp.Status)
+	}
+	if httpResp.Body != "main hello" {
+		t.Fatalf("expected body 'main hello', got %q", httpResp.Body)
+	}
+}
+
+func TestExecuteAdapterViaLauncher_HTTPHandlerPackageMainUnexportedUnsupported(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	file := testFilePath(t, "http_main_project/handler.go")
+	methodJSON, _ := json.Marshal("GET")
+	pathJSON, _ := json.Marshal("/hello")
+	headersJSON, _ := json.Marshal(map[string]string{})
+	bodyJSON, _ := json.Marshal("")
+
+	_, err := executeAdapterViaLauncher(HTTPHandlerAdapterID, InvocationContext{
+		File:         file,
+		FunctionName: "unexportedMainHandler",
+		Inputs:       []json.RawMessage{methodJSON, pathJSON, headersJSON, bodyJSON},
+		Capture:      true,
+	})
+	if err == nil {
+		t.Fatal("expected unexported package-main handler to be unsupported")
+	}
+	if !strings.Contains(err.Error(), "unexported package main HTTP handler") {
+		t.Fatalf("expected unexported package-main unsupported error, got %v", err)
 	}
 }
 
