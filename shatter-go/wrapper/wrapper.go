@@ -90,7 +90,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v6"
+const generatorVersion = "gen-v7"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -276,6 +276,10 @@ func GenerateWrapper(
 		filteredExtra = appendStringIfMissing(filteredExtra, "time")
 		sort.Strings(filteredExtra)
 	}
+	needsMapNormalizer := wrapperNeedsMapInputNormalizer(sorted)
+	if needsMapNormalizer || needsTimeNormalizer {
+		needsStrings = true
+	}
 	if needsStrings {
 		b.WriteString("\t\"strings\"\n")
 	}
@@ -294,7 +298,7 @@ func GenerateWrapper(
 	b.WriteString("\tReceiverKind string `json:\"receiver_kind\"`\n")
 	b.WriteString("\tGenericTypeArgs []string `json:\"generic_type_args,omitempty\"`\n")
 	b.WriteString("}\n\n")
-	if wrapperNeedsMapInputNormalizer(sorted) {
+	if needsMapNormalizer {
 		writeMapInputNormalizer(&b)
 	}
 	if needsTimeNormalizer {
@@ -461,7 +465,9 @@ func wrapperParamNeedsTimeInputNormalizer(p WrapperParam) bool {
 func writeMapInputNormalizer(b *strings.Builder) {
 	b.WriteString("func shatterNormalizeMapInput(raw json.RawMessage) json.RawMessage {\n")
 	b.WriteString("\tvar decoded any\n")
-	b.WriteString("\tif err := json.Unmarshal(raw, &decoded); err != nil {\n")
+	b.WriteString("\tdec := json.NewDecoder(strings.NewReader(string(raw)))\n")
+	b.WriteString("\tdec.UseNumber()\n")
+	b.WriteString("\tif err := dec.Decode(&decoded); err != nil {\n")
 	b.WriteString("\t\treturn raw\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tnormalized, changed := shatterNormalizeMapValue(decoded)\n")
@@ -520,7 +526,9 @@ func writeMapInputNormalizer(b *strings.Builder) {
 func writeTimeInputNormalizer(b *strings.Builder) {
 	b.WriteString("func shatterNormalizeTimeInput(raw json.RawMessage) json.RawMessage {\n")
 	b.WriteString("\tvar decoded any\n")
-	b.WriteString("\tif err := json.Unmarshal(raw, &decoded); err != nil {\n")
+	b.WriteString("\tdec := json.NewDecoder(strings.NewReader(string(raw)))\n")
+	b.WriteString("\tdec.UseNumber()\n")
+	b.WriteString("\tif err := dec.Decode(&decoded); err != nil {\n")
 	b.WriteString("\t\treturn raw\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tnormalized, changed := shatterNormalizeTimeValue(decoded)\n")
@@ -566,10 +574,18 @@ func writeTimeInputNormalizer(b *strings.Builder) {
 	b.WriteString("\t\treturn \"\", false\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\tms, ok := value[\"value\"].(float64)\n")
+	b.WriteString("\tif ok {\n")
+	b.WriteString("\t\treturn time.UnixMilli(int64(ms)).UTC().Format(time.RFC3339Nano), true\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tn, ok := value[\"value\"].(json.Number)\n")
 	b.WriteString("\tif !ok {\n")
 	b.WriteString("\t\treturn \"\", false\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\treturn time.UnixMilli(int64(ms)).UTC().Format(time.RFC3339Nano), true\n")
+	b.WriteString("\tmsInt, err := n.Int64()\n")
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\t\treturn \"\", false\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn time.UnixMilli(msInt).UTC().Format(time.RFC3339Nano), true\n")
 	b.WriteString("}\n\n")
 }
 
