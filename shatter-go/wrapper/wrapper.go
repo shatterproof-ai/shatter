@@ -88,7 +88,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v3"
+const generatorVersion = "gen-v4"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -279,6 +279,9 @@ func GenerateWrapper(
 	b.WriteString("\tReceiverKind string `json:\"receiver_kind\"`\n")
 	b.WriteString("\tGenericTypeArgs []string `json:\"generic_type_args,omitempty\"`\n")
 	b.WriteString("}\n\n")
+	if wrapperNeedsMapInputNormalizer(sorted) {
+		writeMapInputNormalizer(&b)
+	}
 
 	// str-jeen.77: use _shatterInputs instead of inputs so that target
 	// functions whose parameters are named "inputs" do not shadow the outer
@@ -389,11 +392,91 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 		}
 		fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
 		fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, i)
-		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, i, p.Name)
+		inputExpr := fmt.Sprintf("_shatterInputs[%d]", i)
+		if wrapperParamNeedsMapInputNormalizer(p) {
+			inputVar := fmt.Sprintf("_shatterMapInput%d", i)
+			fmt.Fprintf(b, "%s\t%s := shatterNormalizeMapInput(_shatterInputs[%d])\n", indent, inputVar, i)
+			inputExpr = inputVar
+		}
+		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(%s, &%s); _e != nil {\n", indent, inputExpr, p.Name)
 		fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
 		fmt.Fprintf(b, "%s\t}\n", indent)
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
+}
+
+func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {
+	for _, t := range targets {
+		for _, p := range t.Parameters {
+			if wrapperParamNeedsMapInputNormalizer(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wrapperParamNeedsMapInputNormalizer(p WrapperParam) bool {
+	return p.RuntimeValueExpr == "" && strings.Contains(p.GoType, "map[")
+}
+
+func writeMapInputNormalizer(b *strings.Builder) {
+	b.WriteString("func shatterNormalizeMapInput(raw json.RawMessage) json.RawMessage {\n")
+	b.WriteString("\tvar decoded any\n")
+	b.WriteString("\tif err := json.Unmarshal(raw, &decoded); err != nil {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tnormalized, changed := shatterNormalizeMapValue(decoded)\n")
+	b.WriteString("\tif !changed {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tout, err := json.Marshal(normalized)\n")
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn out\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterNormalizeMapValue(value any) (any, bool) {\n")
+	b.WriteString("\tswitch typed := value.(type) {\n")
+	b.WriteString("\tcase map[string]any:\n")
+	b.WriteString("\t\tif len(typed) == 2 {\n")
+	b.WriteString("\t\t\tkey, hasKey := typed[\"_key\"]\n")
+	b.WriteString("\t\t\tmapValue, hasValue := typed[\"_value\"]\n")
+	b.WriteString("\t\t\tif hasKey && hasValue {\n")
+	b.WriteString("\t\t\t\tnormalizedValue, _ := shatterNormalizeMapValue(mapValue)\n")
+	b.WriteString("\t\t\t\treturn map[string]any{shatterMapKeyString(key): normalizedValue}, true\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tchanged := false\n")
+	b.WriteString("\t\tnormalized := make(map[string]any, len(typed))\n")
+	b.WriteString("\t\tfor key, mapValue := range typed {\n")
+	b.WriteString("\t\t\tnormalizedValue, valueChanged := shatterNormalizeMapValue(mapValue)\n")
+	b.WriteString("\t\t\tchanged = changed || valueChanged\n")
+	b.WriteString("\t\t\tnormalized[key] = normalizedValue\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn normalized, changed\n")
+	b.WriteString("\tcase []any:\n")
+	b.WriteString("\t\tchanged := false\n")
+	b.WriteString("\t\tnormalized := make([]any, len(typed))\n")
+	b.WriteString("\t\tfor i, item := range typed {\n")
+	b.WriteString("\t\t\tnormalizedItem, itemChanged := shatterNormalizeMapValue(item)\n")
+	b.WriteString("\t\t\tchanged = changed || itemChanged\n")
+	b.WriteString("\t\t\tnormalized[i] = normalizedItem\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn normalized, changed\n")
+	b.WriteString("\tdefault:\n")
+	b.WriteString("\t\treturn value, false\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterMapKeyString(value any) string {\n")
+	b.WriteString("\tif value == nil {\n")
+	b.WriteString("\t\treturn \"null\"\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif key, ok := value.(string); ok {\n")
+	b.WriteString("\t\treturn key\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn fmt.Sprint(value)\n")
+	b.WriteString("}\n\n")
 }
 
 // constructorCallExpr builds the argument expression string for a constructor
