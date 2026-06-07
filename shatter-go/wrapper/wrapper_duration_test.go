@@ -340,6 +340,126 @@ func main() {
 	}
 }
 
+// TestWrapper_StructWithTimeFieldAcceptsDateMarker is the str-e07l
+// regression. A typed parameter containing a time.Time field must accept the
+// core's complex date marker before json.Unmarshal reaches time.Time's string
+// decoder.
+func TestWrapper_StructWithTimeFieldAcceptsDateMarker(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package structtime
+
+import "time"
+
+func UnixMillis(cfg struct{ Now time.Time }) int64 {
+	return cfg.Now.UnixMilli()
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "structtime.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write structtime.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/structtime\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/structtime:UnixMillis",
+			SymbolName: "UnixMillis",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{Name: "cfg", GoType: "struct{ Now time.Time }"},
+			},
+			HasResult:    true,
+			ResultGoType: "int64",
+			ResultCount:  1,
+			Imports:      []string{"time"},
+		},
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "structtime", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	const runnerSrc = `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	structtime "example.com/structtime"
+)
+
+func main() {
+	got, err := structtime.ShatterInvoke(
+		structtime.PlanDescriptor{TargetID: "example.com/structtime:UnixMillis"},
+		[]json.RawMessage{json.RawMessage(` + "`" + `{"Now":{"__complex_type":"date","value":2147483647000}}` + "`" + `)},
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ShatterInvoke error: %v\n", err)
+		os.Exit(1)
+	}
+	millis, ok := got.(int64)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "result type %T, want int64\n", got)
+		os.Exit(1)
+	}
+	if millis != 2147483647000 {
+		fmt.Fprintf(os.Stderr, "got %d, want 2147483647000\n", millis)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	runnerMod := "module example.com/structtimerunner\n\ngo 1.23.0\n\nrequire example.com/structtime v0.0.0\n\nreplace example.com/structtime => " + modDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\nwrapper:\n%s", err, buildErr.String(), got)
+	}
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want %q\nstderr: %s", got, "ok", runErr.String())
+	}
+}
+
 // TestWrapper_DurationParam_RejectsInvalidObject pins the error contract:
 // a JSON object that does not carry the duration tag must surface the
 // integer-decode error rather than silently producing a zero value.
