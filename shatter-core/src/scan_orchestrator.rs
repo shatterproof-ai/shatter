@@ -583,6 +583,24 @@ fn scan_artifact_path(root: &Path, current: usize, function_name: &str) -> PathB
     ))
 }
 
+fn prepare_fresh_scan_artifact_root(scan_root: &Path) {
+    let functions_dir = scan_root.join("functions");
+    if !functions_dir.exists() {
+        return;
+    }
+    let result = if functions_dir.is_dir() {
+        std::fs::remove_dir_all(&functions_dir)
+    } else {
+        std::fs::remove_file(&functions_dir)
+    };
+    if let Err(e) = result {
+        log::warn!(
+            "failed to clean stale scan function artifacts at {}: {e}",
+            functions_dir.display()
+        );
+    }
+}
+
 fn write_scan_artifact_json(
     root: &Path,
     current: usize,
@@ -3685,6 +3703,9 @@ pub async fn parallel_scan_with_progress(
     let artifact_root: Option<Arc<PathBuf>> = write_artifacts
         .then(|| Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id)));
     let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
+    if write_artifacts && config.resume_path.is_none() {
+        prepare_fresh_scan_artifact_root(&scan_root_dir);
+    }
     let mut summary = new_scan_summary(&scan_id, total_functions);
     // Gating closure used by every summary write in this function so that
     // `--no-cache --no-seeds + -o <external>` runs leave nothing under
@@ -10948,6 +10969,27 @@ defaults:
         assert_eq!(value["status"], "skipped");
         assert_eq!(value["reason"], "resumed from checkpoint");
         assert_eq!(value["category"], "expected");
+    }
+
+    #[test]
+    fn fresh_scan_artifact_root_drops_stale_function_artifacts_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scan_root = dir.path().join("scan-results").join("scan-id");
+        let functions_dir = scan_root.join("functions");
+        std::fs::create_dir_all(&functions_dir).expect("functions dir");
+        std::fs::write(functions_dir.join("00099_stale.json"), "{}").expect("stale artifact");
+        std::fs::write(scan_root.join("checkpoint.json"), "{}").expect("checkpoint");
+
+        prepare_fresh_scan_artifact_root(&scan_root);
+
+        assert!(
+            !functions_dir.join("00099_stale.json").exists(),
+            "fresh scan attempts must not expose stale per-function artifacts"
+        );
+        assert!(
+            scan_root.join("checkpoint.json").exists(),
+            "fresh artifact cleanup must not delete checkpoint/resume state"
+        );
     }
 
     #[test]
