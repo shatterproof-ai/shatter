@@ -2977,7 +2977,7 @@ fn concolic_scan_user_inputs(
 
 fn concolic_scan_max_executions(max_iterations: usize, has_custom_generators: bool) -> usize {
     if has_custom_generators {
-        1
+        max_iterations
     } else {
         max_iterations * 5
     }
@@ -9258,13 +9258,13 @@ defaults:
     }
 
     #[test]
-    fn concolic_scan_uses_single_generator_backed_execution() {
+    fn concolic_scan_custom_generators_use_iteration_budget() {
         let max_iterations = 5;
 
         assert_eq!(
             concolic_scan_max_executions(max_iterations, true),
-            1,
-            "scan concolic mode should use one native generator-backed input before handing branch diversity to later feedback paths"
+            max_iterations,
+            "scan concolic mode should execute each prefetched native generator-backed input up to the user's iteration budget"
         );
     }
 
