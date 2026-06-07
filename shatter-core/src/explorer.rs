@@ -1706,10 +1706,7 @@ fn default_candidate_queue_capacity(observer_pool: usize, max_iterations: Option
     (pool * 4).min(budget_cap).max(1)
 }
 
-fn custom_generator_prefetch_budget(
-    sources: &[ValueSource],
-    max_iterations: Option<u32>,
-) -> usize {
+fn custom_generator_prefetch_budget(sources: &[ValueSource], max_iterations: Option<u32>) -> usize {
     let slots_per_input_vector = max_custom_generator_slots_per_generator(sources);
     if slots_per_input_vector == 0 {
         return 1;
