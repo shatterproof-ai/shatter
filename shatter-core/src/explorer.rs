@@ -1708,9 +1708,14 @@ fn default_candidate_queue_capacity(observer_pool: usize, max_iterations: Option
 
 fn custom_generator_prefetch_budget(
     sources: &[ValueSource],
-    _max_iterations: Option<u32>,
+    max_iterations: Option<u32>,
 ) -> usize {
-    max_custom_generator_slots_per_generator(sources).max(1)
+    let slots_per_input_vector = max_custom_generator_slots_per_generator(sources);
+    if slots_per_input_vector == 0 {
+        return 1;
+    }
+    let input_vectors = max_iterations.unwrap_or(1).max(1) as usize;
+    slots_per_input_vector * input_vectors
 }
 
 fn max_custom_generator_slots_per_generator(sources: &[ValueSource]) -> usize {
@@ -4244,7 +4249,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_generator_prefetch_budget_covers_one_input_vector() {
+    fn custom_generator_prefetch_budget_scales_with_iteration_budget() {
         let generator_file = PathBuf::from("gen.rs");
         let sources = vec![
             ValueSource::CustomGenerator {
@@ -4262,7 +4267,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(custom_generator_prefetch_budget(&sources, Some(5)), 2);
+        assert_eq!(custom_generator_prefetch_budget(&sources, Some(5)), 10);
         assert_eq!(custom_generator_prefetch_budget(&sources, None), 2);
         assert_eq!(custom_generator_prefetch_budget(&[], Some(5)), 1);
     }
