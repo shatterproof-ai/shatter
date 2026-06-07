@@ -684,6 +684,137 @@ func main() {
 	}
 }
 
+func TestGeneratedWrapperOmitsFuncFieldsInsideStruct(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package funcfielddecode
+
+type Request struct {
+	Name string
+	Callback func()
+	Nested NestedRequest
+}
+
+type NestedRequest struct {
+	Handle func(string) error
+	Count int
+}
+
+func Describe(req *Request) string {
+	if req == nil {
+		return "nil"
+	}
+	if req.Callback != nil || req.Nested.Handle != nil {
+		return "callback"
+	}
+	return req.Name
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "funcfielddecode.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write funcfielddecode.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/funcfielddecode\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  modDir,
+		Env:  append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("load package: %v", err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatalf("package load reported errors")
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loaded %d packages, want 1", len(pkgs))
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "funcfielddecode", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	runnerSrc := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	funcfielddecode "example.com/funcfielddecode"
+)
+
+func main() {
+	input := json.RawMessage(` + "`" + `{"Name":"ok","Callback":true,"Nested":{"Handle":{"kind":"invalid"},"Count":3}}` + "`" + `)
+	got, err := funcfielddecode.ShatterInvoke(funcfielddecode.PlanDescriptor{TargetID: "example.com/funcfielddecode:Describe"}, []json.RawMessage{input})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if got != "ok" {
+		fmt.Fprintf(os.Stderr, "got %v, want ok\n", got)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write runner main.go: %v", err)
+	}
+	runnerMod := "module example.com/funcfielddecode-runner\n\ngo 1.23.0\n\nrequire example.com/funcfielddecode v0.0.0\n\nreplace example.com/funcfielddecode => " + modDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		src, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, buildErr.String(), src)
+	}
+
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want ok\nstderr: %s", got, runErr.String())
+	}
+}
+
 func TestBuildWrapperTargetsDetectsTimeFieldInsideNamedStruct(t *testing.T) {
 	const targetSrc = `package namedtime
 

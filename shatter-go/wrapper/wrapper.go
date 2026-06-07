@@ -39,6 +39,7 @@ type WrapperParam struct {
 	IsVariadic                  bool
 	NeedsMapInputNormalization  bool
 	NeedsTimeInputNormalization bool
+	NeedsFuncInputNormalization bool
 	// RuntimeValueExpr, when non-empty, carries a Go-source expression
 	// (e.g. `context.Background()`, `httptest.NewRecorder()`) that the
 	// wrapper substitutes for the parameter's value instead of decoding
@@ -90,7 +91,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v7"
+const generatorVersion = "gen-v8"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -160,6 +161,10 @@ func targetSignature(t WrapperTarget) string {
 		b.WriteByte('/')
 		if p.NeedsTimeInputNormalization {
 			b.WriteByte('t')
+		}
+		b.WriteByte('/')
+		if p.NeedsFuncInputNormalization {
+			b.WriteByte('f')
 		}
 		b.WriteByte('/')
 		b.WriteString(p.RuntimeValueExpr)
@@ -277,7 +282,12 @@ func GenerateWrapper(
 		sort.Strings(filteredExtra)
 	}
 	needsMapNormalizer := wrapperNeedsMapInputNormalizer(sorted)
-	if needsMapNormalizer || needsTimeNormalizer {
+	needsFuncNormalizer := wrapperNeedsFuncInputNormalizer(sorted)
+	if needsFuncNormalizer {
+		filteredExtra = appendStringIfMissing(filteredExtra, "reflect")
+		sort.Strings(filteredExtra)
+	}
+	if needsMapNormalizer || needsTimeNormalizer || needsFuncNormalizer {
 		needsStrings = true
 	}
 	if needsStrings {
@@ -303,6 +313,9 @@ func GenerateWrapper(
 	}
 	if needsTimeNormalizer {
 		writeTimeInputNormalizer(&b)
+	}
+	if needsFuncNormalizer {
+		writeFuncInputNormalizer(&b)
 	}
 
 	// str-jeen.77: use _shatterInputs instead of inputs so that target
@@ -425,6 +438,11 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 			fmt.Fprintf(b, "%s\t%s := shatterNormalizeTimeInput(%s)\n", indent, inputVar, inputExpr)
 			inputExpr = inputVar
 		}
+		if wrapperParamNeedsFuncInputNormalizer(p) {
+			inputVar := fmt.Sprintf("_shatterFuncInput%d", i)
+			fmt.Fprintf(b, "%s\t%s := shatterNormalizeFuncInput(%s, %s)\n", indent, inputVar, inputExpr, p.Name)
+			inputExpr = inputVar
+		}
 		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(%s, &%s); _e != nil {\n", indent, inputExpr, p.Name)
 		fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
 		fmt.Fprintf(b, "%s\t}\n", indent)
@@ -460,6 +478,21 @@ func wrapperNeedsTimeInputNormalizer(targets []WrapperTarget) bool {
 
 func wrapperParamNeedsTimeInputNormalizer(p WrapperParam) bool {
 	return p.RuntimeValueExpr == "" && (p.NeedsTimeInputNormalization || strings.Contains(p.GoType, "time.Time"))
+}
+
+func wrapperNeedsFuncInputNormalizer(targets []WrapperTarget) bool {
+	for _, t := range targets {
+		for _, p := range t.Parameters {
+			if wrapperParamNeedsFuncInputNormalizer(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wrapperParamNeedsFuncInputNormalizer(p WrapperParam) bool {
+	return p.RuntimeValueExpr == "" && p.NeedsFuncInputNormalization
 }
 
 func writeMapInputNormalizer(b *strings.Builder) {
@@ -586,6 +619,147 @@ func writeTimeInputNormalizer(b *strings.Builder) {
 	b.WriteString("\t\treturn \"\", false\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn time.UnixMilli(msInt).UTC().Format(time.RFC3339Nano), true\n")
+	b.WriteString("}\n\n")
+}
+
+func writeFuncInputNormalizer(b *strings.Builder) {
+	b.WriteString("func shatterNormalizeFuncInput(raw json.RawMessage, sample any) json.RawMessage {\n")
+	b.WriteString("\tvar decoded any\n")
+	b.WriteString("\tdec := json.NewDecoder(strings.NewReader(string(raw)))\n")
+	b.WriteString("\tdec.UseNumber()\n")
+	b.WriteString("\tif err := dec.Decode(&decoded); err != nil {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\ttyp := reflect.TypeOf(sample)\n")
+	b.WriteString("\tif typ == nil {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tnormalized, changed := shatterNormalizeFuncValue(decoded, typ)\n")
+	b.WriteString("\tif !changed {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tout, err := json.Marshal(normalized)\n")
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn out\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterNormalizeFuncValue(value any, typ reflect.Type) (any, bool) {\n")
+	b.WriteString("\tif typ == nil {\n")
+	b.WriteString("\t\treturn value, false\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tfor typ.Kind() == reflect.Pointer {\n")
+	b.WriteString("\t\ttyp = typ.Elem()\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tswitch typ.Kind() {\n")
+	b.WriteString("\tcase reflect.Func:\n")
+	b.WriteString("\t\treturn nil, value != nil\n")
+	b.WriteString("\tcase reflect.Struct:\n")
+	b.WriteString("\t\tobject, ok := value.(map[string]any)\n")
+	b.WriteString("\t\tif !ok {\n")
+	b.WriteString("\t\t\treturn value, false\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tvar normalized map[string]any\n")
+	b.WriteString("\t\tchanged := false\n")
+	b.WriteString("\t\tfor i := 0; i < typ.NumField(); i++ {\n")
+	b.WriteString("\t\t\tfield := typ.Field(i)\n")
+	b.WriteString("\t\t\tif field.PkgPath != \"\" {\n")
+	b.WriteString("\t\t\t\tcontinue\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\tnames := shatterJSONFieldNames(field)\n")
+	b.WriteString("\t\t\tif len(names) == 0 {\n")
+	b.WriteString("\t\t\t\tcontinue\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\tif shatterFuncFieldType(field.Type) {\n")
+	b.WriteString("\t\t\t\tfor _, name := range names {\n")
+	b.WriteString("\t\t\t\t\tif _, ok := object[name]; ok {\n")
+	b.WriteString("\t\t\t\t\t\tif normalized == nil {\n")
+	b.WriteString("\t\t\t\t\t\t\tnormalized = shatterCopyObject(object)\n")
+	b.WriteString("\t\t\t\t\t\t}\n")
+	b.WriteString("\t\t\t\t\t\tdelete(normalized, name)\n")
+	b.WriteString("\t\t\t\t\t\tchanged = true\n")
+	b.WriteString("\t\t\t\t\t}\n")
+	b.WriteString("\t\t\t\t}\n")
+	b.WriteString("\t\t\t\tcontinue\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\tfor _, name := range names {\n")
+	b.WriteString("\t\t\t\tfieldValue, ok := object[name]\n")
+	b.WriteString("\t\t\t\tif !ok {\n")
+	b.WriteString("\t\t\t\t\tcontinue\n")
+	b.WriteString("\t\t\t\t}\n")
+	b.WriteString("\t\t\t\tnormalizedValue, valueChanged := shatterNormalizeFuncValue(fieldValue, field.Type)\n")
+	b.WriteString("\t\t\t\tif valueChanged {\n")
+	b.WriteString("\t\t\t\t\tif normalized == nil {\n")
+	b.WriteString("\t\t\t\t\t\tnormalized = shatterCopyObject(object)\n")
+	b.WriteString("\t\t\t\t\t}\n")
+	b.WriteString("\t\t\t\t\tnormalized[name] = normalizedValue\n")
+	b.WriteString("\t\t\t\t\tchanged = true\n")
+	b.WriteString("\t\t\t\t}\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tif !changed {\n")
+	b.WriteString("\t\t\treturn value, false\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn normalized, true\n")
+	b.WriteString("\tcase reflect.Slice, reflect.Array:\n")
+	b.WriteString("\t\titems, ok := value.([]any)\n")
+	b.WriteString("\t\tif !ok {\n")
+	b.WriteString("\t\t\treturn value, false\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tchanged := false\n")
+	b.WriteString("\t\tnormalized := make([]any, len(items))\n")
+	b.WriteString("\t\tfor i, item := range items {\n")
+	b.WriteString("\t\t\tnormalizedItem, itemChanged := shatterNormalizeFuncValue(item, typ.Elem())\n")
+	b.WriteString("\t\t\tchanged = changed || itemChanged\n")
+	b.WriteString("\t\t\tnormalized[i] = normalizedItem\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn normalized, changed\n")
+	b.WriteString("\tcase reflect.Map:\n")
+	b.WriteString("\t\tobject, ok := value.(map[string]any)\n")
+	b.WriteString("\t\tif !ok {\n")
+	b.WriteString("\t\t\treturn value, false\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tchanged := false\n")
+	b.WriteString("\t\tnormalized := make(map[string]any, len(object))\n")
+	b.WriteString("\t\tfor key, mapValue := range object {\n")
+	b.WriteString("\t\t\tnormalizedValue, valueChanged := shatterNormalizeFuncValue(mapValue, typ.Elem())\n")
+	b.WriteString("\t\t\tchanged = changed || valueChanged\n")
+	b.WriteString("\t\t\tnormalized[key] = normalizedValue\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn normalized, changed\n")
+	b.WriteString("\tdefault:\n")
+	b.WriteString("\t\treturn value, false\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterFuncFieldType(typ reflect.Type) bool {\n")
+	b.WriteString("\tfor typ.Kind() == reflect.Pointer {\n")
+	b.WriteString("\t\ttyp = typ.Elem()\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn typ.Kind() == reflect.Func\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterJSONFieldNames(field reflect.StructField) []string {\n")
+	b.WriteString("\ttag := field.Tag.Get(\"json\")\n")
+	b.WriteString("\tif tag == \"-\" {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tname := tag\n")
+	b.WriteString("\tif comma := strings.IndexByte(name, ','); comma >= 0 {\n")
+	b.WriteString("\t\tname = name[:comma]\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif name == \"\" {\n")
+	b.WriteString("\t\treturn []string{field.Name}\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif name == field.Name {\n")
+	b.WriteString("\t\treturn []string{name}\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn []string{name, field.Name}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterCopyObject(object map[string]any) map[string]any {\n")
+	b.WriteString("\tcopy := make(map[string]any, len(object))\n")
+	b.WriteString("\tfor key, value := range object {\n")
+	b.WriteString("\t\tcopy[key] = value\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn copy\n")
 	b.WriteString("}\n\n")
 }
 
@@ -1038,6 +1212,7 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath s
 		}
 		needsMapInputNormalization := wrapperExprTypeContainsMap(fieldType, info)
 		needsTimeInputNormalization := wrapperExprTypeContainsTime(fieldType, info)
+		needsFuncInputNormalization := wrapperExprTypeContainsFunc(fieldType, info)
 		if len(field.Names) == 0 {
 			// Unnamed parameter (e.g. `func F(int, string)`): a single
 			// field with no names represents one positional parameter.
@@ -1047,6 +1222,7 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath s
 				IsVariadic:                  isVariadic,
 				NeedsMapInputNormalization:  needsMapInputNormalization,
 				NeedsTimeInputNormalization: needsTimeInputNormalization,
+				NeedsFuncInputNormalization: needsFuncInputNormalization,
 			})
 			index++
 			continue
@@ -1065,6 +1241,7 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath s
 				IsVariadic:                  isVariadic,
 				NeedsMapInputNormalization:  needsMapInputNormalization,
 				NeedsTimeInputNormalization: needsTimeInputNormalization,
+				NeedsFuncInputNormalization: needsFuncInputNormalization,
 			})
 			index++
 		}
@@ -1150,6 +1327,49 @@ func wrapperTypeContainsTime(typ types.Type, seen map[types.Type]struct{}) bool 
 	case *types.Struct:
 		for i := 0; i < t.NumFields(); i++ {
 			if wrapperTypeContainsTime(t.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wrapperExprTypeContainsFunc(expr ast.Expr, info *types.Info) bool {
+	if expr == nil || info == nil {
+		return false
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Type == nil {
+		return false
+	}
+	return wrapperTypeContainsFunc(tv.Type, make(map[types.Type]struct{}))
+}
+
+func wrapperTypeContainsFunc(typ types.Type, seen map[types.Type]struct{}) bool {
+	if typ == nil {
+		return false
+	}
+	if _, ok := seen[typ]; ok {
+		return false
+	}
+	seen[typ] = struct{}{}
+
+	switch t := typ.(type) {
+	case *types.Signature:
+		return true
+	case *types.Pointer:
+		return wrapperTypeContainsFunc(t.Elem(), seen)
+	case *types.Slice:
+		return wrapperTypeContainsFunc(t.Elem(), seen)
+	case *types.Array:
+		return wrapperTypeContainsFunc(t.Elem(), seen)
+	case *types.Map:
+		return wrapperTypeContainsFunc(t.Elem(), seen)
+	case *types.Named:
+		return wrapperTypeContainsFunc(t.Underlying(), seen)
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if wrapperTypeContainsFunc(t.Field(i).Type(), seen) {
 				return true
 			}
 		}
