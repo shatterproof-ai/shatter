@@ -900,6 +900,35 @@ fn recovered_branches_covered(
     }
 }
 
+fn has_native_replay_input(inputs: &[serde_json::Value]) -> bool {
+    inputs.iter().any(|input| {
+        input
+            .as_object()
+            .is_some_and(|obj| obj.contains_key("__shatter_replay"))
+    })
+}
+
+fn execute_result_lines(result: &crate::protocol::ExecuteResult) -> Vec<u32> {
+    if !result.lines_executed.is_empty() {
+        return result.lines_executed.clone();
+    }
+
+    result
+        .branch_path
+        .iter()
+        .filter_map(|decision| (decision.line > 0).then_some(decision.line))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn execute_result_error(result: &crate::protocol::ExecuteResult) -> Option<String> {
+    result
+        .thrown_error
+        .as_ref()
+        .map(|e| format!("{}: {}", e.error_type, e.message))
+}
+
 /// Build a [`FunctionReport`] from a scan's [`FunctionResult`].
 pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
     let exploration = &result.exploration;
@@ -952,6 +981,23 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
                 .as_ref()
                 .map(|e| format!("{}: {}", e.error_type, e.message)),
             lines_executed: recover_lines_executed(exploration, &behavior.input_args, &[]),
+        });
+    }
+    for (raw_inputs, _mocks, raw_result) in &exploration.raw_results {
+        if !has_native_replay_input(raw_inputs) {
+            continue;
+        }
+        let Ok(input_key) = serde_json::to_string(raw_inputs) else {
+            continue;
+        };
+        if !seen_input_keys.insert(input_key) {
+            continue;
+        }
+        discovered_inputs.push(DiscoveredInput {
+            inputs: raw_inputs.clone(),
+            return_value: raw_result.return_value.clone(),
+            thrown_error: execute_result_error(raw_result),
+            lines_executed: execute_result_lines(raw_result),
         });
     }
 
@@ -2289,6 +2335,41 @@ mod tests {
         }
     }
 
+    fn execute_result_with_status(status: u16) -> ExecuteResult {
+        ExecuteResult {
+            return_value: Some(serde_json::json!({ "status": status })),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![42],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        }
+    }
+
+    fn native_replay_input(account_id: &str) -> Vec<serde_json::Value> {
+        vec![serde_json::json!({
+            "__shatter_native": true,
+            "__shatter_replay": {
+                "language": "rust",
+                "file": ".shatter/generators/pickpackit.rs",
+                "name": "current",
+                "recipe": {
+                    "account_id": account_id
+                }
+            },
+            "handle": account_id
+        })]
+    }
+
     #[test]
     fn function_report_recovers_lines_from_raw_branch_decisions() {
         let branch_path = vec![
@@ -2353,6 +2434,48 @@ mod tests {
         assert_eq!(report.discovered_inputs[0].lines_executed, vec![7, 9]);
         assert_eq!(report.lines_covered, 2);
         assert_eq!(report.coverage_pct, 20.0);
+    }
+
+    #[test]
+    fn function_report_exports_native_generator_raw_executions_as_inputs() {
+        let mut func_result = make_function_result("native_variants", 3, 1, 1, 3, vec![]);
+        func_result.exploration.new_path_executions[0].inputs = native_replay_input("account-a");
+        func_result.exploration.new_path_executions[0].return_value =
+            Some(serde_json::json!({ "status": 200 }));
+        func_result.behavior_map.behaviors[0].input_args = native_replay_input("account-a");
+        func_result.behavior_map.behaviors[0].return_value =
+            Some(serde_json::json!({ "status": 200 }));
+        func_result.exploration.raw_results = vec![
+            (
+                native_replay_input("account-a"),
+                vec![],
+                execute_result_with_status(200),
+            ),
+            (
+                native_replay_input("account-b"),
+                vec![],
+                execute_result_with_status(200),
+            ),
+            (
+                native_replay_input("account-c"),
+                vec![],
+                execute_result_with_status(200),
+            ),
+        ];
+
+        let report = build_function_report(&func_result, "src/lib.rs");
+
+        assert_eq!(
+            report.discovered_inputs.len(),
+            3,
+            "native generator-backed executions should stay visible as report test inputs even when they share one path"
+        );
+        assert!(
+            report
+                .discovered_inputs
+                .iter()
+                .any(|input| input.inputs == native_replay_input("account-c"))
+        );
     }
 
     /// str-9q1z regression: the standalone explore CLI report previously
