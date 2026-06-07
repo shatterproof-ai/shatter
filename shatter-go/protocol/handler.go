@@ -934,9 +934,16 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		})
 		finishExecute()
 		if err != nil {
+			outcome := failureOutcome(err)
 			resp.Status = "error"
-			resp.Code = ErrInternalError
+			if outcome.Status == OutcomeStatusUnsupported {
+				resp.Code = ErrNotSupported
+			} else {
+				resp.Code = ErrInternalError
+			}
 			resp.Message = err.Error()
+			resp.Outcome = outcome
+			resp.Performance = &PerfMetrics{}
 			return resp
 		}
 		return mapExecuteResult(resp, result, timing)
@@ -1095,6 +1102,10 @@ func failureOutcome(err error) *InvocationOutcome {
 	errInfo := &ErrorInfo{ErrorType: "executor_error", Message: msg}
 	var status OutcomeStatus
 	switch {
+	case strings.Contains(msg, "unexported package main HTTP handler"):
+		status = OutcomeStatusUnsupported
+		reason = "unexported command-package HTTP handler cannot be invoked through import-based adapter launcher"
+		errInfo.ErrorType = "adapter_target_not_supported"
 	case strings.Contains(msg, "receiver planning"):
 		status = OutcomeStatusUnsupported
 		reason = "method invocation requires receiver planning (Phase E)"

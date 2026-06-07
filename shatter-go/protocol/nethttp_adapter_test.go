@@ -189,6 +189,31 @@ func TestExecuteAdapterViaLauncher_HTTPHandlerPackageMain(t *testing.T) {
 	}
 }
 
+func TestExecuteAdapterViaLauncher_HTTPHandlerPackageMainUnexportedUnsupported(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	file := testFilePath(t, "http_main_project/handler.go")
+	methodJSON, _ := json.Marshal("GET")
+	pathJSON, _ := json.Marshal("/hello")
+	headersJSON, _ := json.Marshal(map[string]string{})
+	bodyJSON, _ := json.Marshal("")
+
+	_, err := executeAdapterViaLauncher(HTTPHandlerAdapterID, InvocationContext{
+		File:         file,
+		FunctionName: "unexportedMainHandler",
+		Inputs:       []json.RawMessage{methodJSON, pathJSON, headersJSON, bodyJSON},
+		Capture:      true,
+	})
+	if err == nil {
+		t.Fatal("expected unexported package-main handler to be unsupported")
+	}
+	if !strings.Contains(err.Error(), "unexported package main HTTP handler") {
+		t.Fatalf("expected unexported package-main unsupported error, got %v", err)
+	}
+}
+
 func TestGenerateHTTPAdapterLauncherRejectsReceiverMethod(t *testing.T) {
 	_, err := generateAdapterLauncherMain(HTTPHandlerAdapterID, "example.com/app", "(*Server).Handle")
 	if err == nil {

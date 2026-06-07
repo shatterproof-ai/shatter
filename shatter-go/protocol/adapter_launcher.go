@@ -71,6 +71,9 @@ func prepareAdapterLauncher(file, function, adapterID string) (*preparedLauncher
 	if err != nil {
 		return nil, fmt.Errorf("harness runtime: %w", err)
 	}
+	if pkg.Name == "main" && !ast.IsExported(function) {
+		return nil, fmt.Errorf("unexported package main HTTP handler %q cannot be invoked through import-based adapter launcher", function)
+	}
 	mainSource, err := generateAdapterLauncherMain(adapterID, packageImportPathForBuild(pkg, modulePath), function)
 	if err != nil {
 		return nil, err
