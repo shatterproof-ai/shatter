@@ -1126,6 +1126,156 @@ func SafeDivide(a, b int) (int, error) {
 	}
 }
 
+func TestGeneratedWrapperPropagatesTargetErrorReturns(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package errret
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func Validate(s string) error {
+	if s == "bad" {
+		return fmt.Errorf("invalid value: %s", s)
+	}
+	return nil
+}
+
+func Parse(s string) (int, error) {
+	return strconv.Atoi(s)
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "errret.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write errret.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/errret\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: modDir,
+		Env: append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(pkgs))
+	}
+	for _, e := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", e)
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "errret", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	runnerSrc := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+
+	errret "example.com/errret"
+)
+
+func requireErr(label string, err error, want string) {
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "%s: got nil error\n", label)
+		os.Exit(1)
+	}
+	if !strings.Contains(err.Error(), want) {
+		fmt.Fprintf(os.Stderr, "%s: got error %q, want substring %q\n", label, err.Error(), want)
+		os.Exit(1)
+	}
+}
+
+func main() {
+	bad := json.RawMessage(` + "`" + `"bad"` + "`" + `)
+	if _, err := errret.ShatterInvoke(errret.PlanDescriptor{TargetID: "example.com/errret:Validate"}, []json.RawMessage{bad}); err != nil {
+		requireErr("Validate", err, "invalid value: bad")
+	} else {
+		requireErr("Validate", nil, "invalid value: bad")
+	}
+
+	if _, err := errret.ShatterInvoke(errret.PlanDescriptor{TargetID: "example.com/errret:Parse"}, []json.RawMessage{bad}); err != nil {
+		requireErr("Parse bad", err, "invalid syntax")
+	} else {
+		requireErr("Parse bad", nil, "invalid syntax")
+	}
+
+	good := json.RawMessage(` + "`" + `"42"` + "`" + `)
+	got, err := errret.ShatterInvoke(errret.PlanDescriptor{TargetID: "example.com/errret:Parse"}, []json.RawMessage{good})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Parse good: unexpected error: %v\n", err)
+		os.Exit(1)
+	}
+	if got != 42 {
+		fmt.Fprintf(os.Stderr, "Parse good: got %v, want 42\n", got)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write runner main.go: %v", err)
+	}
+	runnerMod := "module example.com/errret-runner\n\ngo 1.23.0\n\nrequire example.com/errret v0.0.0\n\nreplace example.com/errret => " + modDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		src, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, buildErr.String(), src)
+	}
+
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want ok\nstderr: %s", got, runErr.String())
+	}
+}
+
 // TestGeneratedWrapperCompilesErrorReturningConstructor is the str-jeen.78
 // regression: when a constructor returns (T, error) or (*T, error), the
 // generated wrapper must use the two-assignment form (_recv, _ := NewT())

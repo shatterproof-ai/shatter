@@ -69,13 +69,16 @@ type WrapperTarget struct {
 	TypeParams    []TypeParamInfo
 	HasResult     bool
 	ResultGoType  string // Go type string for the first return value
-	ResultCount   int    // total number of return values (0 when HasResult is false)
+	ResultGoTypes []string
+	ResultCount   int // total number of return values (0 when HasResult is false)
 	// Imports lists the import paths required by qualified type names that the
 	// generated wrapper source actually references. Today that means parameter
 	// types such as `context.Context`, `*pgx.Conn`, or `gqlerror.Error`; result
 	// types are tracked in ResultGoType for metadata, but the generated source
 	// does not name them and must not import result-only packages.
-	// Cross-ref: str-jeen.33 and str-iylc.
+	// Result type names are tracked for call-shape decisions such as
+	// conventional trailing error propagation, but result-only package imports
+	// are still intentionally omitted. Cross-ref: str-jeen.33 and str-iylc.
 	Imports []string
 }
 
@@ -92,7 +95,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v9"
+const generatorVersion = "gen-v10"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -185,6 +188,8 @@ func targetSignature(t WrapperTarget) string {
 	b.WriteString(t.ResultGoType)
 	b.WriteByte('/')
 	fmt.Fprintf(&b, "%d", t.ResultCount)
+	b.WriteByte('/')
+	b.WriteString(strings.Join(t.ResultGoTypes, ","))
 	return b.String()
 }
 
@@ -1070,17 +1075,52 @@ func writeCall(b *strings.Builder, t WrapperTarget, recvExpr string, typeArgs []
 	}
 
 	if t.HasResult {
-		if t.ResultCount > 1 {
+		switch {
+		case wrapperTargetReturnsOnlyError(t):
+			fmt.Fprintf(b, "%s_invokeErr := %s\n", indent, callExpr)
+			fmt.Fprintf(b, "%sreturn nil, _invokeErr\n", indent)
+		case wrapperTargetHasTrailingError(t):
+			blanks := ""
+			if t.ResultCount > 2 {
+				blanks = strings.Repeat(", _", t.ResultCount-2)
+			}
+			fmt.Fprintf(b, "%s_result%s, _invokeErr := %s\n", indent, blanks, callExpr)
+			fmt.Fprintf(b, "%sif _invokeErr != nil {\n", indent)
+			fmt.Fprintf(b, "%s\treturn nil, _invokeErr\n", indent)
+			fmt.Fprintf(b, "%s}\n", indent)
+			fmt.Fprintf(b, "%sreturn _result, nil\n", indent)
+		case t.ResultCount > 1:
 			blanks := strings.Repeat(", _", t.ResultCount-1)
 			fmt.Fprintf(b, "%s_result%s := %s\n", indent, blanks, callExpr)
-		} else {
+			fmt.Fprintf(b, "%sreturn _result, nil\n", indent)
+		default:
 			fmt.Fprintf(b, "%s_result := %s\n", indent, callExpr)
+			fmt.Fprintf(b, "%sreturn _result, nil\n", indent)
 		}
-		fmt.Fprintf(b, "%sreturn _result, nil\n", indent)
 	} else {
 		fmt.Fprintf(b, "%s%s\n", indent, callExpr)
 		fmt.Fprintf(b, "%sreturn nil, nil\n", indent)
 	}
+}
+
+func wrapperTargetReturnsOnlyError(t WrapperTarget) bool {
+	resultTypes := wrapperTargetResultTypes(t)
+	return len(resultTypes) == 1 && resultTypes[0] == "error"
+}
+
+func wrapperTargetHasTrailingError(t WrapperTarget) bool {
+	resultTypes := wrapperTargetResultTypes(t)
+	return len(resultTypes) > 1 && resultTypes[len(resultTypes)-1] == "error"
+}
+
+func wrapperTargetResultTypes(t WrapperTarget) []string {
+	if len(t.ResultGoTypes) == t.ResultCount {
+		return t.ResultGoTypes
+	}
+	if t.ResultCount == 1 && t.ResultGoType != "" {
+		return []string{t.ResultGoType}
+	}
+	return nil
 }
 
 // BuildWrapperTargets extracts a WrapperTarget for every function in pkg
@@ -1180,15 +1220,21 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 
 	hasResult := false
 	var resultGoType string
+	var resultGoTypes []string
 	resultCount := 0
 	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
 		hasResult = true
 		resultGoType = wrapperGoType(fn.Type.Results.List[0].Type, pkg.TypesInfo, pkg.Name, pkgTypesPath, nil)
 		for _, field := range fn.Type.Results.List {
+			goType := wrapperGoType(field.Type, pkg.TypesInfo, pkg.Name, pkgTypesPath, nil)
 			if len(field.Names) == 0 {
 				resultCount++
+				resultGoTypes = append(resultGoTypes, goType)
 			} else {
 				resultCount += len(field.Names)
+				for range field.Names {
+					resultGoTypes = append(resultGoTypes, goType)
+				}
 			}
 		}
 	}
@@ -1209,6 +1255,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		TypeParams:    typeParams,
 		HasResult:     hasResult,
 		ResultGoType:  resultGoType,
+		ResultGoTypes: resultGoTypes,
 		ResultCount:   resultCount,
 		Imports:       imports,
 	}
