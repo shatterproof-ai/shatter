@@ -114,13 +114,17 @@ function collectReactImports(sourceFile: ts.SourceFile): ReactImportContext {
     hasReactImport = true;
 
     const namedBindings = stmt.importClause?.namedBindings;
-    if (namedBindings && ts.isNamedImports(namedBindings)) {
-      for (const element of namedBindings.elements) {
-        const name = element.name.text;
-        allReactImports.add(name);
-        if (BUILTIN_REACT_HOOKS.has(name)) {
-          importedBuiltinHooks.add(name);
+    if (namedBindings) {
+      if (ts.isNamedImports(namedBindings)) {
+        for (const element of namedBindings.elements) {
+          const name = element.name.text;
+          allReactImports.add(name);
+          if (BUILTIN_REACT_HOOKS.has(name)) {
+            importedBuiltinHooks.add(name);
+          }
         }
+      } else if (ts.isNamespaceImport(namedBindings)) {
+        allReactImports.add(namedBindings.name.text);
       }
     }
 
