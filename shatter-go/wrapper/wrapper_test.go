@@ -815,6 +815,149 @@ func main() {
 	}
 }
 
+func TestGeneratedWrapperOmitsCompiledModuleFieldsInsideStruct(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	wazeroDir := t.TempDir()
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const wazeroSrc = `package wazero
+
+type CompiledModule interface {
+	Name() string
+}
+`
+	if err := os.WriteFile(filepath.Join(wazeroDir, "wazero.go"), []byte(wazeroSrc), 0o644); err != nil {
+		t.Fatalf("write wazero.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wazeroDir, "go.mod"), []byte("module github.com/tetratelabs/wazero\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write wazero go.mod: %v", err)
+	}
+
+	const targetSrc = `package compiledmoduledecode
+
+import "github.com/tetratelabs/wazero"
+
+type CompiledModule struct {
+	compiled wazero.CompiledModule
+}
+
+type Fixture struct {
+	Name string
+	Module *CompiledModule
+}
+
+func Describe(f Fixture) string {
+	if f.Module != nil {
+		return "module"
+	}
+	return f.Name
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "compiledmoduledecode.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write compiledmoduledecode.go: %v", err)
+	}
+	targetMod := "module example.com/compiledmoduledecode\n\ngo 1.23.0\n\nrequire github.com/tetratelabs/wazero v0.0.0\n\nreplace github.com/tetratelabs/wazero => " + wazeroDir + "\n"
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte(targetMod), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  modDir,
+		Env:  append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("load package: %v", err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatalf("package load reported errors")
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loaded %d packages, want 1", len(pkgs))
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "compiledmoduledecode", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	runnerSrc := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	compiledmoduledecode "example.com/compiledmoduledecode"
+)
+
+func main() {
+	input := json.RawMessage(` + "`" + `{"Name":"ok","Module":"not-json-decodable"}` + "`" + `)
+	got, err := compiledmoduledecode.ShatterInvoke(compiledmoduledecode.PlanDescriptor{TargetID: "example.com/compiledmoduledecode:Describe"}, []json.RawMessage{input})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if got != "ok" {
+		fmt.Fprintf(os.Stderr, "got %v, want ok\n", got)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write runner main.go: %v", err)
+	}
+	runnerMod := "module example.com/compiledmoduledecode-runner\n\ngo 1.23.0\n\nrequire (\n\texample.com/compiledmoduledecode v0.0.0\n\tgithub.com/tetratelabs/wazero v0.0.0\n)\n\nreplace example.com/compiledmoduledecode => " + modDir + "\nreplace github.com/tetratelabs/wazero => " + wazeroDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		src, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, buildErr.String(), src)
+	}
+
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want ok\nstderr: %s", got, runErr.String())
+	}
+}
+
 func TestBuildWrapperTargetsDetectsTimeFieldInsideNamedStruct(t *testing.T) {
 	const targetSrc = `package namedtime
 
