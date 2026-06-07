@@ -192,7 +192,7 @@ const AXUM_MIDDLEWARE_MARKER_TYPES: &[&str] = &["Request", "Next", "RequestParts
 const AXUM_CUSTOM_EXTRACTOR_EXCLUDED_TYPES: &[&str] = &[
     "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32",
     "u64", "u128", "usize", "str", "String", "Vec", "Option", "Result", "HashMap", "BTreeMap",
-    "HashSet", "BTreeSet",
+    "HashSet", "BTreeSet", "PgPool", "Pool", "Uuid",
 ];
 
 /// Emits `rust/framework/axum-handler` at High confidence when the function
@@ -848,6 +848,25 @@ mod tests {
         analysis.params = vec![param_with_type_name("name", "String")];
         let ctx = FileContext {
             use_paths: vec!["axum::Router".into()],
+            has_tokio_macro: false,
+        };
+        assert!(AxumHandlerRecognizer.recognize(&analysis, &ctx).is_none());
+    }
+
+    #[test]
+    fn axum_recognizer_ignores_sqlx_pgpool_helper_in_axum_module() {
+        let mut analysis = stub_analysis();
+        analysis.is_async = true;
+        analysis.params = vec![
+            param_with_type_name("pool", "PgPool"),
+            param_with_type_name("workspace_id", "Uuid"),
+        ];
+        let ctx = FileContext {
+            use_paths: vec![
+                "axum::extract::State".into(),
+                "sqlx::PgPool".into(),
+                "uuid::Uuid".into(),
+            ],
             has_tokio_macro: false,
         };
         assert!(AxumHandlerRecognizer.recognize(&analysis, &ctx).is_none());

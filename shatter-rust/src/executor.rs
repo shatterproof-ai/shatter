@@ -266,14 +266,11 @@ fn native_replay_specs(inputs: &[Value]) -> Result<Vec<Option<NativeReplaySpec>>
                 "native replay language `{language}` not supported for Rust input {idx}"
             )));
         }
-        let file = replay
-            .get("file")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ExecuteError::NonExecutable(format!(
-                    "native replay generator file missing for input {idx}"
-                ))
-            })?;
+        let file = replay.get("file").and_then(Value::as_str).ok_or_else(|| {
+            ExecuteError::NonExecutable(format!(
+                "native replay generator file missing for input {idx}"
+            ))
+        })?;
         let file_path = PathBuf::from(file);
         if !file_path.exists() {
             return Err(ExecuteError::FileError(format!(
@@ -281,16 +278,13 @@ fn native_replay_specs(inputs: &[Value]) -> Result<Vec<Option<NativeReplaySpec>>
                 file_path.display()
             )));
         }
-        let file_path = std::fs::canonicalize(&file_path)
-            .unwrap_or_else(|_| to_absolute(file_path));
-        let function_name = replay
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ExecuteError::NonExecutable(format!(
-                    "native replay generator name missing for input {idx}"
-                ))
-            })?;
+        let file_path =
+            std::fs::canonicalize(&file_path).unwrap_or_else(|_| to_absolute(file_path));
+        let function_name = replay.get("name").and_then(Value::as_str).ok_or_else(|| {
+            ExecuteError::NonExecutable(format!(
+                "native replay generator name missing for input {idx}"
+            ))
+        })?;
         if !is_rust_identifier(function_name) {
             return Err(ExecuteError::NonExecutable(format!(
                 "native replay generator name is not a Rust identifier for input {idx}: {function_name}"
@@ -462,7 +456,10 @@ impl BridgeSourceBackup {
                 Err(e) => return Err(e),
             }
         }
-        Ok(Self { entries, restored: AtomicBool::new(false) })
+        Ok(Self {
+            entries,
+            restored: AtomicBool::new(false),
+        })
     }
 
     /// Restore every tracked path. Errors from individual restores are
@@ -545,7 +542,11 @@ impl PersistentHarness {
     ///
     /// On timeout, kills the subprocess and returns a timeout `ExecuteResult`.
     /// On subprocess crash (channel disconnected), returns `OutputParseError`.
-    fn execute(&mut self, inputs: &[Value], timeout_ms: u64) -> Result<ExecuteResult, ExecuteError> {
+    fn execute(
+        &mut self,
+        inputs: &[Value],
+        timeout_ms: u64,
+    ) -> Result<ExecuteResult, ExecuteError> {
         // Serialize request as {"inputs":[...]} newline
         let req = serde_json::json!({"inputs": inputs});
         let mut req_bytes = serde_json::to_vec(&req)
@@ -701,7 +702,12 @@ fn find_crate_root(file_path: &str) -> Option<PathBuf> {
 
 /// Content-addressed stable directory for a crate-backed dispatch harness.
 /// The directory path is deterministic: same file+source+mocks+native replays → same path.
-fn stable_crate_harness_dir(file_path: &str, src_hash: u64, mocks_hash: u64, native_replay_hash: u64) -> PathBuf {
+fn stable_crate_harness_dir(
+    file_path: &str,
+    src_hash: u64,
+    mocks_hash: u64,
+    native_replay_hash: u64,
+) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     file_path.hash(&mut h);
@@ -763,7 +769,10 @@ fn generate_cargo_toml_with_user_deps(
         .filter(|line| {
             // Extract the dep name: everything before the first '=', ' ', or '.'
             let key = line.split(['=', ' ', '.']).next().unwrap_or("").trim();
-            key != "serde" && key != "serde_json" && key != "libc" && key != "shatter-rust-runtime"
+            key != "serde"
+                && key != "serde_json"
+                && key != "libc"
+                && key != "shatter-rust-runtime"
                 && (!needs_shatter_rust || key != "shatter-rust")
                 && (!needs_tokio || key != "tokio")
                 && !axum_keys.contains(&key)
@@ -788,7 +797,10 @@ fn generate_cargo_toml_with_user_deps(
         ""
     };
     let shatter_rust_dep = if needs_shatter_rust {
-        let shatter_rust_path = shatter_rust_crate_path().display().to_string().replace('\\', "/");
+        let shatter_rust_path = shatter_rust_crate_path()
+            .display()
+            .to_string()
+            .replace('\\', "/");
         format!("shatter-rust = {{ path = \"{shatter_rust_path}\" }}\n")
     } else {
         String::new()
@@ -853,9 +865,7 @@ fn to_absolute(p: PathBuf) -> PathBuf {
     if p.is_absolute() {
         p
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&p))
-            .unwrap_or(p)
+        std::env::current_dir().map(|cwd| cwd.join(&p)).unwrap_or(p)
     }
 }
 
@@ -1277,9 +1287,7 @@ fn extract_root_type_name(ty: &str) -> &str {
     };
     let s = s.trim();
     // Take up to first `<` or space (get the root name only)
-    let end = s
-        .find(['<', ' '])
-        .unwrap_or(s.len());
+    let end = s.find(['<', ' ']).unwrap_or(s.len());
     let root = &s[..end];
     if root.is_empty() { s } else { root }
 }
@@ -1402,7 +1410,10 @@ fn generate_cargo_toml(
         ""
     };
     let shatter_rust_dep = if needs_shatter_rust {
-        let shatter_rust_path = shatter_rust_crate_path().display().to_string().replace('\\', "/");
+        let shatter_rust_path = shatter_rust_crate_path()
+            .display()
+            .to_string()
+            .replace('\\', "/");
         format!("shatter-rust = {{ path = \"{shatter_rust_path}\" }}\n")
     } else {
         String::new()
@@ -1447,7 +1458,11 @@ fn is_raw_pointer_or_extern_type(ty: &str) -> bool {
     // works regardless of whether the source had `*const`, `* const`, etc.
     let collapsed: String = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
     let t = collapsed.as_str();
-    if t.contains("*const ") || t.contains("*mut ") || t.contains("* const ") || t.contains("* mut ") {
+    if t.contains("*const ")
+        || t.contains("*mut ")
+        || t.contains("* const ")
+        || t.contains("* mut ")
+    {
         return true;
     }
     if t.starts_with("fn(") || t.contains(" fn(") {
@@ -1489,12 +1504,10 @@ fn crate_bridge_serde_bound_failure_reason(build_error: &str) -> Option<&'static
         );
     }
 
-    let to_value_bound = build_error.contains("serde_json::to_value")
-        && build_error.contains("Serialize");
+    let to_value_bound =
+        build_error.contains("serde_json::to_value") && build_error.contains("Serialize");
     if to_value_bound {
-        return Some(
-            "return type is not JSON-harness compatible and may not implement Serialize",
-        );
+        return Some("return type is not JSON-harness compatible and may not implement Serialize");
     }
 
     None
@@ -1523,6 +1536,41 @@ struct OwnedTypeMapping {
     /// Whether the function call needs a slice borrow (e.g., `&name_owned` vs
     /// a more complex conversion for `&[&str]`)
     needs_slice_conversion: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrateBridgeRuntimeParam {
+    SqlxPgPoolRef,
+}
+
+fn classify_crate_bridge_runtime_param(ty: &str) -> Option<CrateBridgeRuntimeParam> {
+    let parsed: syn::Type = syn::parse_str(ty).ok()?;
+    let syn::Type::Reference(type_ref) = parsed else {
+        return None;
+    };
+    if type_ref.mutability.is_some() {
+        return None;
+    }
+    let syn::Type::Path(type_path) = &*type_ref.elem else {
+        return None;
+    };
+    let segments = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    let is_pgpool = match segments.as_slice() {
+        [name] => name == "PgPool",
+        [root, name] => root == "sqlx" && name == "PgPool",
+        [root, module, name] => root == "sqlx" && module == "postgres" && name == "PgPool",
+        _ => false,
+    };
+    if is_pgpool {
+        Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+    } else {
+        None
+    }
 }
 
 /// Classification of an Axum extractor wrapper type seen on a function parameter.
@@ -1571,15 +1619,13 @@ fn classify_axum_extractor(ty: &str) -> Option<AxumExtractor> {
     let name = seg.ident.to_string();
     let inner_type = || -> Option<String> {
         match &seg.arguments {
-            syn::PathArguments::AngleBracketed(args) => {
-                args.args.iter().find_map(|a| match a {
-                    syn::GenericArgument::Type(t) => {
-                        use quote::ToTokens;
-                        Some(t.to_token_stream().to_string())
-                    }
-                    _ => None,
-                })
-            }
+            syn::PathArguments::AngleBracketed(args) => args.args.iter().find_map(|a| match a {
+                syn::GenericArgument::Type(t) => {
+                    use quote::ToTokens;
+                    Some(t.to_token_stream().to_string())
+                }
+                _ => None,
+            }),
             _ => None,
         }
     };
@@ -1718,8 +1764,8 @@ fn axum_json_default_for_type(
     match bare_name.as_str() {
         "String" => return Value::String(String::new()),
         "bool" => return Value::Bool(false),
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
-        | "i128" | "isize" => return serde_json::json!(0),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "isize" => return serde_json::json!(0),
         "f32" | "f64" => return serde_json::json!(0.0),
         "Uuid" => return Value::String("00000000-0000-0000-0000-000000000001".to_string()),
         "NaiveDate" => return Value::String("1970-01-01".to_string()),
@@ -1933,7 +1979,9 @@ fn axum_state_unsupported_reason(param_types: &[String]) -> Option<String> {
 /// would otherwise fail for `axum::Json<T>` and project error types that
 /// don't implement `Serialize`.
 fn is_axum_handler_shape(param_types: &[String]) -> bool {
-    param_types.iter().any(|ty| classify_axum_extractor(ty).is_some())
+    param_types
+        .iter()
+        .any(|ty| classify_axum_extractor(ty).is_some())
 }
 
 /// True if a return type is, or wraps, an Axum response wrapper.
@@ -1960,8 +2008,18 @@ fn is_axum_return_shape(return_type: &str) -> bool {
         }
     }
 
-    syn::parse_str::<syn::Type>(return_type)
-        .is_ok_and(|ty| contains_axum_wrapper(&ty))
+    syn::parse_str::<syn::Type>(return_type).is_ok_and(|ty| contains_axum_wrapper(&ty))
+}
+
+fn is_result_return_shape(return_type: &str) -> bool {
+    let Ok(syn::Type::Path(type_path)) = syn::parse_str::<syn::Type>(return_type) else {
+        return false;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident.to_string().ends_with("Result"))
 }
 
 fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
@@ -2063,8 +2121,9 @@ fn generate_harness(
     for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
         let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
         if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
-            let recipe_json = serde_json::to_string(&spec.recipe)
-                .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize native replay recipe: {e}")))?;
+            let recipe_json = serde_json::to_string(&spec.recipe).map_err(|e| {
+                ExecuteError::InstrumentError(format!("cannot serialize native replay recipe: {e}"))
+            })?;
             let recipe_literal = rust_string_literal(&recipe_json);
             h.push_str(&format!(
                 "        let __recipe_{i}: serde_json::Value = serde_json::from_str({recipe_literal}).unwrap();\n"
@@ -2086,9 +2145,13 @@ fn generate_harness(
             // extractor constructor. The wrapper types themselves are not
             // `DeserializeOwned` so `from_value::<Path<T>>` would not compile.
             let inner = match &ext {
-                AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
+                AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => {
+                    t.clone()
+                }
                 AxumExtractor::State(_) => unreachable!("State handled above"),
-                AxumExtractor::Multipart => unreachable!("Multipart handled by axum request synthesis"),
+                AxumExtractor::Multipart => {
+                    unreachable!("Multipart handled by axum request synthesis")
+                }
             };
             let ctor = axum_extractor_constructor(&ext);
             h.push_str(&format!(
@@ -2152,13 +2215,19 @@ fn generate_harness(
     // Redirect stdout/stderr to temp files for console_output capture.
     h.push_str("        let __capture_dir = std::env::temp_dir();\n");
     h.push_str("        let __pid = std::process::id();\n");
-    h.push_str("        let __stdout_path = __capture_dir.join(format!(\"shatter-{__pid}-stdout\"));\n");
-    h.push_str("        let __stderr_path = __capture_dir.join(format!(\"shatter-{__pid}-stderr\"));\n");
+    h.push_str(
+        "        let __stdout_path = __capture_dir.join(format!(\"shatter-{__pid}-stdout\"));\n",
+    );
+    h.push_str(
+        "        let __stderr_path = __capture_dir.join(format!(\"shatter-{__pid}-stderr\"));\n",
+    );
     h.push_str("        let __stdout_file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&__stdout_path);\n");
     h.push_str("        let __stderr_file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&__stderr_path);\n");
     h.push_str("        let __orig_stdout = unsafe { libc::dup(1) };\n");
     h.push_str("        let __orig_stderr = unsafe { libc::dup(2) };\n");
-    h.push_str("        if let (Ok(ref __sf), Ok(ref __ef)) = (&__stdout_file, &__stderr_file) {\n");
+    h.push_str(
+        "        if let (Ok(ref __sf), Ok(ref __ef)) = (&__stdout_file, &__stderr_file) {\n",
+    );
     h.push_str("            use std::os::unix::io::AsRawFd;\n");
     h.push_str("            unsafe { libc::dup2(__sf.as_raw_fd(), 1); }\n");
     h.push_str("            unsafe { libc::dup2(__ef.as_raw_fd(), 2); }\n");
@@ -2174,9 +2243,7 @@ fn generate_harness(
         h.push_str("        }));\n\n");
     } else {
         h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
-        h.push_str(&format!(
-            "            user_code::{function_name}({args})\n"
-        ));
+        h.push_str(&format!("            user_code::{function_name}({args})\n"));
         h.push_str("        }));\n\n");
     }
 
@@ -2209,7 +2276,9 @@ fn generate_harness(
     // wrapper path can't synthesize an HTTP roundtrip, so we drop the return
     // value (callers should use the Axum harness adapter for response capture).
     let axum_shape = is_axum_handler_shape(param_types)
-        || return_type.as_ref().is_some_and(|ty| is_axum_return_shape(ty));
+        || return_type
+            .as_ref()
+            .is_some_and(|ty| is_axum_return_shape(ty));
     h.push_str("        let (ret_val, err_val) = match result {\n");
     if return_type.is_some() && !axum_shape {
         h.push_str("            Ok(ref v) => (Some(serde_json::to_value(v).unwrap_or(Value::Null)), None),\n");
@@ -2319,13 +2388,19 @@ fn generate_dispatch_harness(
     // Redirect stdout/stderr for console capture.
     h.push_str("        let __capture_dir = std::env::temp_dir();\n");
     h.push_str("        let __pid = std::process::id();\n");
-    h.push_str("        let __stdout_path = __capture_dir.join(format!(\"shatter-{__pid}-stdout\"));\n");
-    h.push_str("        let __stderr_path = __capture_dir.join(format!(\"shatter-{__pid}-stderr\"));\n");
+    h.push_str(
+        "        let __stdout_path = __capture_dir.join(format!(\"shatter-{__pid}-stdout\"));\n",
+    );
+    h.push_str(
+        "        let __stderr_path = __capture_dir.join(format!(\"shatter-{__pid}-stderr\"));\n",
+    );
     h.push_str("        let __stdout_file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&__stdout_path);\n");
     h.push_str("        let __stderr_file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&__stderr_path);\n");
     h.push_str("        let __orig_stdout = unsafe { libc::dup(1) };\n");
     h.push_str("        let __orig_stderr = unsafe { libc::dup(2) };\n");
-    h.push_str("        if let (Ok(ref __sf), Ok(ref __ef)) = (&__stdout_file, &__stderr_file) {\n");
+    h.push_str(
+        "        if let (Ok(ref __sf), Ok(ref __ef)) = (&__stdout_file, &__stderr_file) {\n",
+    );
     h.push_str("            use std::os::unix::io::AsRawFd;\n");
     h.push_str("            unsafe { libc::dup2(__sf.as_raw_fd(), 1); }\n");
     h.push_str("            unsafe { libc::dup2(__ef.as_raw_fd(), 2); }\n");
@@ -2338,7 +2413,10 @@ fn generate_dispatch_harness(
         let param_names = &fn_info.param_names;
         let param_types = &fn_info.param_types;
         let return_type = &fn_info.return_type;
-        h.push_str(&format!("            {:?} => 'shatter_arm: {{\n", fn_name.as_str()));
+        h.push_str(&format!(
+            "            {:?} => 'shatter_arm: {{\n",
+            fn_name.as_str()
+        ));
         // Axum `State<T>` short-circuits with a clear "not supported" before
         // emitting any uncompilable `from_value::<State<T>>` code.
         if let Some(reason) = axum_state_unsupported_reason(param_types) {
@@ -2350,7 +2428,9 @@ fn generate_dispatch_harness(
             continue;
         }
         let axum_shape = is_axum_handler_shape(param_types)
-            || return_type.as_ref().is_some_and(|ty| is_axum_return_shape(ty));
+            || return_type
+                .as_ref()
+                .is_some_and(|ty| is_axum_return_shape(ty));
         // Deserialize each parameter.
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean_name = name.strip_prefix("mut ").unwrap_or(name).trim();
@@ -2375,9 +2455,13 @@ fn generate_dispatch_harness(
                 h.push_str("                };\n");
             } else if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
-                    AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
+                    AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => {
+                        t.clone()
+                    }
                     AxumExtractor::State(_) => unreachable!("State handled above"),
-                    AxumExtractor::Multipart => unreachable!("Multipart handled by axum request synthesis"),
+                    AxumExtractor::Multipart => {
+                        unreachable!("Multipart handled by axum request synthesis")
+                    }
                 };
                 let ctor = axum_extractor_constructor(&ext);
                 h.push_str(&format!(
@@ -2437,7 +2521,9 @@ fn generate_dispatch_harness(
         let args = arg_list.join(", ");
         // Call with timing + panic recovery via runtime helper.
         if fn_info.is_async {
-            h.push_str("                let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+            h.push_str(
+                "                let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n",
+            );
             h.push_str("                let (result, wt) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
             h.push_str(&format!(
                 "                    __tokio_rt.block_on(user_code::{fn_name}({args}))\n"
@@ -2553,8 +2639,7 @@ fn build_and_spawn_harness(
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
 
-    let cargo_toml =
-        generate_cargo_toml(runtime_path, needs_tokio, needs_axum, needs_shatter_rust);
+    let cargo_toml = generate_cargo_toml(runtime_path, needs_tokio, needs_axum, needs_shatter_rust);
     std::fs::write(harness_dir.join("Cargo.toml"), &cargo_toml)?;
     std::fs::write(src_dir.join("main.rs"), harness_source)?;
 
@@ -2573,19 +2658,13 @@ fn build_and_spawn_harness(
     }
 
     // Use a persistent target dir for dep caching, shared across harnesses.
-    let target_dir = standalone_target_dir()
-        .unwrap_or_else(|| harness_dir.join("target"));
+    let target_dir = standalone_target_dir().unwrap_or_else(|| harness_dir.join("target"));
     if let Some(parent) = target_dir.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
     // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
-    cargo_check_before_build(
-        harness_dir,
-        &target_dir,
-        release,
-        timing.as_deref_mut(),
-    )?;
+    cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
 
     let build_start = Instant::now();
     let build_output = if let Some(t) = timing {
@@ -2607,7 +2686,9 @@ fn build_and_spawn_harness(
     };
 
     if build_start.elapsed() > build_timeout {
-        return Err(ExecuteError::CompilationFailed("build timed out".to_string()));
+        return Err(ExecuteError::CompilationFailed(
+            "build timed out".to_string(),
+        ));
     }
     if !build_output.status.success() {
         return Err(ExecuteError::CompilationFailed(
@@ -2616,11 +2697,17 @@ fn build_and_spawn_harness(
     }
 
     // Locate binary
-    let binary_name = if cfg!(windows) { "shatter-exec-temp.exe" } else { "shatter-exec-temp" };
+    let binary_name = if cfg!(windows) {
+        "shatter-exec-temp.exe"
+    } else {
+        "shatter-exec-temp"
+    };
     let profile_dir = if release { "release" } else { "debug" };
     let binary_path = target_dir.join(profile_dir).join(binary_name);
     if !binary_path.exists() {
-        return Err(ExecuteError::CompilationFailed("compiled binary not found".to_string()));
+        return Err(ExecuteError::CompilationFailed(
+            "compiled binary not found".to_string(),
+        ));
     }
 
     // Spawn the subprocess with stdin/stdout pipes
@@ -2632,12 +2719,14 @@ fn build_and_spawn_harness(
         .spawn()
         .map_err(ExecuteError::IoError)?;
 
-    let stdin = child.stdin.take().ok_or_else(|| {
-        ExecuteError::IoError(io::Error::other("no stdin pipe"))
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        ExecuteError::IoError(io::Error::other("no stdout pipe"))
-    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdin pipe")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdout pipe")))?;
 
     // Reader thread: forwards JSON response lines from subprocess stdout to a channel.
     let (tx, rx) = mpsc::channel();
@@ -2681,8 +2770,8 @@ fn build_and_spawn_crate_harness(
 
     let release = harness_release_mode();
     let profile_dir = if release { "release" } else { "debug" };
-    let package_name = extract_crate_name(cargo_toml_content)
-        .unwrap_or_else(|| "shatter-exec-temp".to_string());
+    let package_name =
+        extract_crate_name(cargo_toml_content).unwrap_or_else(|| "shatter-exec-temp".to_string());
     let binary_name = cargo_binary_name(&package_name);
     let target_dir = crate_bridge_target_dir(harness_dir);
     let cargo_binary_path = target_dir.join(profile_dir).join(&binary_name);
@@ -2708,12 +2797,7 @@ fn build_and_spawn_crate_harness(
         std::fs::write(&main_rs_path, harness_source)?;
 
         // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
-        cargo_check_before_build(
-            harness_dir,
-            &target_dir,
-            release,
-            timing.as_deref_mut(),
-        )?;
+        cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
 
         let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
             .ok()
@@ -2735,7 +2819,9 @@ fn build_and_spawn_crate_harness(
                     .current_dir(harness_dir)
                     .env("CARGO_TARGET_DIR", &target_dir)
                     .output()
-                    .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
+                    .map_err(|e| {
+                        ExecuteError::CompilationFailed(format!("failed to run cargo: {e}"))
+                    })
             })?
         } else {
             Command::new("cargo")
@@ -2747,7 +2833,9 @@ fn build_and_spawn_crate_harness(
         };
 
         if build_start.elapsed() > build_timeout {
-            return Err(ExecuteError::CompilationFailed("build timed out".to_string()));
+            return Err(ExecuteError::CompilationFailed(
+                "build timed out".to_string(),
+            ));
         }
         if !build_output.status.success() {
             return Err(ExecuteError::CompilationFailed(
@@ -2758,7 +2846,9 @@ fn build_and_spawn_crate_harness(
     }
 
     if !binary_path.exists() {
-        return Err(ExecuteError::CompilationFailed("compiled binary not found".to_string()));
+        return Err(ExecuteError::CompilationFailed(
+            "compiled binary not found".to_string(),
+        ));
     }
 
     let mut child = Command::new(&binary_path)
@@ -2769,12 +2859,14 @@ fn build_and_spawn_crate_harness(
         .spawn()
         .map_err(ExecuteError::IoError)?;
 
-    let stdin = child.stdin.take().ok_or_else(|| {
-        ExecuteError::IoError(io::Error::other("no stdin pipe"))
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        ExecuteError::IoError(io::Error::other("no stdout pipe"))
-    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdin pipe")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdout pipe")))?;
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -2813,7 +2905,11 @@ fn stable_crate_bridge_dir(crate_root: &Path, wrapper_hash: u64, mh: u64) -> Pat
     mh.hash(&mut h);
     let key = h.finish();
     harness_cache_root()
-        .map(|c| c.join("rust").join("crate-bridge").join(format!("{key:016x}")))
+        .map(|c| {
+            c.join("rust")
+                .join("crate-bridge")
+                .join(format!("{key:016x}"))
+        })
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-crate-bridge-{key:016x}")))
 }
 
@@ -2882,10 +2978,7 @@ fn crate_bridge_driver_package_name(prefix: &str, harness_dir: &Path) -> String 
 /// without ever touching the original files (str-ja70).
 ///
 /// Returns the staging crate root path.
-fn create_crate_staging_copy(
-    crate_root: &Path,
-    staging_root: &Path,
-) -> io::Result<PathBuf> {
+fn create_crate_staging_copy(crate_root: &Path, staging_root: &Path) -> io::Result<PathBuf> {
     let staging_crate = staging_root.join("crate-shadow");
     // Copy src/ tree recursively.
     let src_dir = crate_root.join("src");
@@ -2897,8 +2990,7 @@ fn create_crate_staging_copy(
     if cargo_toml_path.exists() {
         let content = std::fs::read_to_string(&cargo_toml_path)?;
         let ws_pkg = if has_workspace_inheritance(&content) {
-            find_workspace_root(crate_root)
-                .and_then(|ws| extract_workspace_package_section(&ws))
+            find_workspace_root(crate_root).and_then(|ws| extract_workspace_package_section(&ws))
         } else {
             None
         };
@@ -2938,7 +3030,9 @@ fn copy_compile_time_assets(crate_root: &Path, staging_crate: &Path) -> io::Resu
     if !src_dir.is_dir() {
         return Ok(());
     }
-    let crate_root_canon = crate_root.canonicalize().unwrap_or_else(|_| crate_root.to_path_buf());
+    let crate_root_canon = crate_root
+        .canonicalize()
+        .unwrap_or_else(|_| crate_root.to_path_buf());
 
     let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut copy_asset = |abs: &Path| -> io::Result<()> {
@@ -3051,7 +3145,10 @@ fn find_compile_time_asset_paths(content: &str) -> Vec<AssetRef> {
             let after_paren = after_paren.trim_start();
             // sqlx::migrate!() with no arg defaults to "./migrations".
             if after_paren.starts_with(')') && matches!(base, AssetBase::Manifest) {
-                out.push(AssetRef { path: "migrations".to_string(), base });
+                out.push(AssetRef {
+                    path: "migrations".to_string(),
+                    base,
+                });
                 continue;
             }
             // Otherwise look for a double-quoted string literal.
@@ -3062,7 +3159,10 @@ fn find_compile_time_asset_paths(content: &str) -> Vec<AssetRef> {
             if let Some(end) = body.find('"') {
                 let path = &body[..end];
                 if !path.is_empty() {
-                    out.push(AssetRef { path: path.to_string(), base });
+                    out.push(AssetRef {
+                        path: path.to_string(),
+                        base,
+                    });
                 }
             }
         }
@@ -3131,7 +3231,11 @@ fn extract_workspace_package_section(workspace_root: &Path) -> Option<String> {
             }
         }
     }
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Check whether a Cargo.toml manifest uses `*.workspace = true` inheritance.
@@ -3146,7 +3250,11 @@ fn has_workspace_inheritance(content: &str) -> bool {
 /// based on `crate_root`, and inject `[workspace]` to prevent workspace
 /// auto-discovery from the staging location. When `ws_pkg_fields` is provided,
 /// includes a `[workspace.package]` section so inherited fields resolve.
-fn resolve_cargo_toml_paths(content: &str, crate_root: &Path, ws_pkg_fields: Option<&str>) -> String {
+fn resolve_cargo_toml_paths(
+    content: &str,
+    crate_root: &Path,
+    ws_pkg_fields: Option<&str>,
+) -> String {
     let mut result = String::with_capacity(content.len() + 256);
     let mut has_workspace = false;
     // Track whether we are inside a dependency section where `path = "..."`
@@ -3167,35 +3275,34 @@ fn resolve_cargo_toml_paths(content: &str, crate_root: &Path, ws_pkg_fields: Opt
         // Resolve relative path deps: `path = "..."` or `path = '...'`
         // Only inside [dependencies], [dev-dependencies], [build-dependencies],
         // or inline dep tables — NOT in [lib], [[bin]], etc.
-        if in_dep_section
-            && let Some(idx) = trimmed.find("path") {
-                let after_path = trimmed[idx + 4..].trim();
-                if let Some(rest) = after_path.strip_prefix('=') {
-                    let rest = rest.trim();
-                    let (quote, path_val) = if let Some(s) = rest.strip_prefix('"') {
-                        ('"', s.split('"').next().unwrap_or(""))
-                    } else if let Some(s) = rest.strip_prefix('\'') {
-                        ('\'', s.split('\'').next().unwrap_or(""))
-                    } else {
-                        // Not a quoted path, pass through.
-                        result.push_str(line);
-                        result.push('\n');
-                        continue;
-                    };
-                    let dep_path = Path::new(path_val);
-                    if dep_path.is_relative() && !path_val.is_empty() {
-                        let abs = crate_root.join(dep_path);
-                        let abs_str = abs.display().to_string().replace('\\', "/");
-                        let new_line = line.replacen(
-                            &format!("{quote}{path_val}{quote}"),
-                            &format!("{quote}{abs_str}{quote}"),
-                            1,
-                        );
-                        result.push_str(&new_line);
-                        result.push('\n');
-                        continue;
-                    }
+        if in_dep_section && let Some(idx) = trimmed.find("path") {
+            let after_path = trimmed[idx + 4..].trim();
+            if let Some(rest) = after_path.strip_prefix('=') {
+                let rest = rest.trim();
+                let (quote, path_val) = if let Some(s) = rest.strip_prefix('"') {
+                    ('"', s.split('"').next().unwrap_or(""))
+                } else if let Some(s) = rest.strip_prefix('\'') {
+                    ('\'', s.split('\'').next().unwrap_or(""))
+                } else {
+                    // Not a quoted path, pass through.
+                    result.push_str(line);
+                    result.push('\n');
+                    continue;
+                };
+                let dep_path = Path::new(path_val);
+                if dep_path.is_relative() && !path_val.is_empty() {
+                    let abs = crate_root.join(dep_path);
+                    let abs_str = abs.display().to_string().replace('\\', "/");
+                    let new_line = line.replacen(
+                        &format!("{quote}{path_val}{quote}"),
+                        &format!("{quote}{abs_str}{quote}"),
+                        1,
+                    );
+                    result.push_str(&new_line);
+                    result.push('\n');
+                    continue;
                 }
+            }
         }
         result.push_str(line);
         result.push('\n');
@@ -3243,11 +3350,18 @@ fn find_lib_rs(crate_root: &Path) -> Option<PathBuf> {
         }
     }
     let default = crate_root.join("src").join("lib.rs");
-    if default.exists() { Some(default) } else { None }
+    if default.exists() {
+        Some(default)
+    } else {
+        None
+    }
 }
 
 /// Append crate_bridge-only declarations to lib.rs if not already present.
-fn inject_lib_module_declaration(lib_rs_path: &Path, crate_alias: &str) -> Result<(), ExecuteError> {
+fn inject_lib_module_declaration(
+    lib_rs_path: &Path,
+    crate_alias: &str,
+) -> Result<(), ExecuteError> {
     const MARKER: &str = "pub mod __shatter;";
     const SHATTER_RUST_ALIAS: &str = "extern crate self as shatter_rust;";
     const GENERATORS_MARKER: &str = "pub mod generators {";
@@ -3303,8 +3417,9 @@ fn inject_crate_bridge_feature(
     runtime_path: &Path,
 ) -> Result<(), ExecuteError> {
     const FEATURE_MARKER: &str = "shatter-crate-bridge";
-    let content = std::fs::read_to_string(cargo_toml_path)
-        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot read Cargo.toml: {e}"))))?;
+    let content = std::fs::read_to_string(cargo_toml_path).map_err(|e| {
+        ExecuteError::IoError(io::Error::other(format!("cannot read Cargo.toml: {e}")))
+    })?;
 
     let needs_feature = !content.contains(FEATURE_MARKER);
     let needs_serde_json = !content.contains("serde_json");
@@ -3331,7 +3446,8 @@ fn inject_crate_bridge_feature(
     if !deps_to_add.is_empty() {
         if let Some(pos) = new_content.find("[dependencies]") {
             let insert_at = pos + "[dependencies]".len();
-            let insert_at = new_content[insert_at..].find('\n')
+            let insert_at = new_content[insert_at..]
+                .find('\n')
                 .map(|n| insert_at + n + 1)
                 .unwrap_or(new_content.len());
             new_content.insert_str(insert_at, &deps_to_add);
@@ -3343,10 +3459,16 @@ fn inject_crate_bridge_feature(
 
     if needs_feature {
         let mut feature_deps = Vec::new();
-        if needs_serde_json { feature_deps.push("\"dep:serde_json\""); }
-        if needs_runtime { feature_deps.push("\"dep:shatter-rust-runtime\""); }
+        if needs_serde_json {
+            feature_deps.push("\"dep:serde_json\"");
+        }
+        if needs_runtime {
+            feature_deps.push("\"dep:shatter-rust-runtime\"");
+        }
         let dep_list = feature_deps.join(", ");
-        new_content.push_str(&format!("\n[features]\nshatter-crate-bridge = [{dep_list}]\n"));
+        new_content.push_str(&format!(
+            "\n[features]\nshatter-crate-bridge = [{dep_list}]\n"
+        ));
     }
 
     std::fs::write(cargo_toml_path, new_content).map_err(ExecuteError::IoError)
@@ -3407,11 +3529,38 @@ fn generate_crate_bridge_wrapper(
             continue;
         }
         let axum_shape = is_axum_handler_shape(param_types)
-            || return_type.as_ref().is_some_and(|ty| is_axum_return_shape(ty));
+            || return_type
+                .as_ref()
+                .is_some_and(|ty| is_axum_return_shape(ty));
+        if fn_info.is_async {
+            w.push_str("    let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+        }
 
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean = name.strip_prefix("mut ").unwrap_or(name).trim();
-            if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
+            if let Some(runtime_param) = classify_crate_bridge_runtime_param(ty) {
+                match runtime_param {
+                    CrateBridgeRuntimeParam::SqlxPgPoolRef => {
+                        w.push_str("    let __shatter_database_url = match std::env::var(\"DATABASE_URL\") {\n");
+                        w.push_str("        Ok(value) => value,\n");
+                        w.push_str("        Err(__err) => return serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"runtime_error\", \"message\": format!(\"DATABASE_URL is required for sqlx::PgPool input: {}\", __err)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}),\n");
+                        w.push_str("    };\n");
+                        if fn_info.is_async {
+                            w.push_str("    let __shatter_tokio_guard = __tokio_rt.enter();\n");
+                        }
+                        w.push_str(&format!(
+                            "    let __shatter_pgpool_{i} = match sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_lazy(&__shatter_database_url) {{\n"
+                        ));
+                        w.push_str("        Ok(pool) => pool,\n");
+                        w.push_str("        Err(__err) => return serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"runtime_error\", \"message\": format!(\"failed to construct sqlx::PgPool from DATABASE_URL: {}\", __err)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}),\n");
+                        w.push_str("    };\n");
+                        if fn_info.is_async {
+                            w.push_str("    drop(__shatter_tokio_guard);\n");
+                        }
+                        w.push_str(&format!("    let {clean} = &__shatter_pgpool_{i};\n"));
+                    }
+                }
+            } else if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
                 let recipe_json =
                     serde_json::to_string(&spec.recipe).unwrap_or_else(|_| "null".to_string());
                 let recipe_literal = rust_string_literal(&recipe_json);
@@ -3432,9 +3581,13 @@ fn generate_crate_bridge_wrapper(
                 w.push_str("    };\n");
             } else if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
-                    AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
+                    AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => {
+                        t.clone()
+                    }
                     AxumExtractor::State(_) => unreachable!("State handled above"),
-                    AxumExtractor::Multipart => unreachable!("Multipart handled by axum request synthesis"),
+                    AxumExtractor::Multipart => {
+                        unreachable!("Multipart handled by axum request synthesis")
+                    }
                 };
                 let ctor = axum_extractor_constructor(&ext);
                 w.push_str(&format!(
@@ -3473,14 +3626,22 @@ fn generate_crate_bridge_wrapper(
             }
         }
 
-        let arg_list: Vec<String> = param_names.iter().zip(param_types.iter()).map(|(n, ty)| {
-            let clean = n.strip_prefix("mut ").unwrap_or(n).trim();
-            if let Some(mapping) = owned_type_for_ref(ty) {
-                if mapping.needs_slice_conversion { format!("&{clean}_refs") } else { format!("&{clean}_owned") }
-            } else {
-                clean.to_string()
-            }
-        }).collect();
+        let arg_list: Vec<String> = param_names
+            .iter()
+            .zip(param_types.iter())
+            .map(|(n, ty)| {
+                let clean = n.strip_prefix("mut ").unwrap_or(n).trim();
+                if let Some(mapping) = owned_type_for_ref(ty) {
+                    if mapping.needs_slice_conversion {
+                        format!("&{clean}_refs")
+                    } else {
+                        format!("&{clean}_owned")
+                    }
+                } else {
+                    clean.to_string()
+                }
+            })
+            .collect();
         let args = arg_list.join(", ");
 
         // Snapshot static mut before call.
@@ -3493,12 +3654,17 @@ fn generate_crate_bridge_wrapper(
         w.push_str("    shatter_rust_runtime::reset();\n");
         w.push_str("    let start = std::time::Instant::now();\n");
         if fn_info.is_async {
-            w.push_str("    let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
-            w.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
-            w.push_str(&format!("        __tokio_rt.block_on(super::{fn_name}({args}))\n"));
+            w.push_str(
+                "    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n",
+            );
+            w.push_str(&format!(
+                "        __tokio_rt.block_on(super::{fn_name}({args}))\n"
+            ));
             w.push_str("    }));\n");
         } else {
-            w.push_str("    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n");
+            w.push_str(
+                "    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n",
+            );
             w.push_str(&format!("        super::{fn_name}({args})\n"));
             w.push_str("    }));\n");
         }
@@ -3507,7 +3673,14 @@ fn generate_crate_bridge_wrapper(
         w.push_str("    let mut exec_result: Value = serde_json::from_str(&runtime_json).unwrap_or(Value::Object(Default::default()));\n");
         w.push_str("    let obj = exec_result.as_object_mut().unwrap();\n");
 
-        if return_type.is_some() && !axum_shape {
+        let result_return_shape = return_type
+            .as_ref()
+            .is_some_and(|ty| is_result_return_shape(ty));
+        if return_type.is_some() && result_return_shape && !axum_shape {
+            w.push_str("    match result {\n");
+            w.push_str("        Ok(Ok(ref ret_val)) => { obj.insert(\"return_value\".into(), serde_json::to_value(ret_val).unwrap_or(Value::Null)); }\n");
+            w.push_str("        Ok(Err(ref err_val)) => { obj.insert(\"return_value\".into(), Value::Null); obj.insert(\"thrown_error\".into(), serde_json::json!({\"error_type\": \"runtime_error\", \"message\": format!(\"{:?}\", err_val)})); }\n");
+        } else if return_type.is_some() && !axum_shape {
             w.push_str("    match result {\n");
             w.push_str("        Ok(ref ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(ret_val).unwrap_or(Value::Null)); }\n");
         } else if return_type.is_some() {
@@ -3530,7 +3703,9 @@ fn generate_crate_bridge_wrapper(
         // Thrown error side effect.
         w.push_str("    if let Err(ref panic_info) = result {\n");
         w.push_str("        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() { s.to_string() } else if let Some(s) = panic_info.downcast_ref::<String>() { s.clone() } else { format!(\"{:?}\", panic_info) };\n");
-        w.push_str("        let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
+        w.push_str(
+            "        let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n",
+        );
         w.push_str("        if let Some(__arr) = __se.as_array_mut() { __arr.push(serde_json::json!({\"kind\": \"thrown_error\", \"error_type\": \"runtime_error\", \"message\": msg, \"stack\": null})); }\n");
         w.push_str("    }\n");
 
@@ -3551,8 +3726,12 @@ fn generate_crate_bridge_wrapper(
                 w.push_str("        }\n");
                 w.push_str("    }\n");
             }
-            w.push_str("    let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
-            w.push_str("    if let Some(__arr) = __se.as_array_mut() { __arr.extend(__global_se); }\n");
+            w.push_str(
+                "    let __se = obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n",
+            );
+            w.push_str(
+                "    if let Some(__arr) = __se.as_array_mut() { __arr.extend(__global_se); }\n",
+            );
             w.push_str("    drop(obj);\n");
         } else {
             w.push_str("    obj.entry(\"side_effects\").or_insert(serde_json::json!([]));\n");
@@ -3569,7 +3748,9 @@ fn generate_crate_bridge_wrapper(
     w.push_str("pub fn shatter_run_harness() {\n");
     w.push_str("    use std::io::BufRead;\n");
     w.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
-    w.push_str("    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n");
+    w.push_str(
+        "    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n",
+    );
     w.push_str("    for mock in &mocks {\n");
     w.push_str("        if let (Some(symbol), Some(return_values)) = (\n");
     w.push_str("            mock.get(\"symbol\").and_then(|s| s.as_str()),\n");
@@ -3594,7 +3775,10 @@ fn generate_crate_bridge_wrapper(
     w.push_str("        let exec_result = match function_name {\n");
     for fn_info in fns {
         let fn_name = &fn_info.name;
-        w.push_str(&format!("            {:?} => shatter_wrap_{fn_name}(inputs),\n", fn_name.as_str()));
+        w.push_str(&format!(
+            "            {:?} => shatter_wrap_{fn_name}(inputs),\n",
+            fn_name.as_str()
+        ));
     }
     w.push_str("            unknown => serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"not_supported\", \"message\": format!(\"function not in crate_bridge dispatch table: {}\", unknown)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}),\n");
     w.push_str("        };\n");
@@ -3618,9 +3802,7 @@ fn strip_shatter_wrapper(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
     while let Some(b) = rest.find(SHATTER_WRAPPER_BEGIN) {
-        out.push_str(
-            rest[..b].trim_end_matches(['\n', '\r', ' ', '\t']),
-        );
+        out.push_str(rest[..b].trim_end_matches(['\n', '\r', ' ', '\t']));
         let after_begin = b + SHATTER_WRAPPER_BEGIN.len();
         if let Some(e_rel) = rest[after_begin..].find(SHATTER_WRAPPER_END) {
             let after_end = after_begin + e_rel + SHATTER_WRAPPER_END.len();
@@ -3662,7 +3844,9 @@ fn generate_in_module_wrapper(
     w.push_str(SHATTER_WRAPPER_BEGIN);
     w.push('\n');
     w.push_str("#[cfg(feature = \"shatter-crate-bridge\")]\n");
-    w.push_str("#[allow(non_snake_case, dead_code, unused_imports, unused_variables, clippy::all)]\n");
+    w.push_str(
+        "#[allow(non_snake_case, dead_code, unused_imports, unused_variables, clippy::all)]\n",
+    );
     w.push_str("mod __shatter_inner {\n");
     w.push_str(&body);
     w.push_str("\n#[no_mangle]\n");
@@ -3689,7 +3873,7 @@ fn generate_crate_bridge_root_stub() -> String {
      pub fn shatter_run_harness() {\n\
          unsafe { shatter_crate_bridge_entry(); }\n\
      }\n"
-        .to_string()
+    .to_string()
 }
 
 /// Generate the stable driver binary `main.rs`.
@@ -3822,7 +4006,9 @@ fn build_and_spawn_crate_bridge_harness(
                     .current_dir(harness_dir)
                     .env("CARGO_TARGET_DIR", &target_dir)
                     .output()
-                    .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))
+                    .map_err(|e| {
+                        ExecuteError::CompilationFailed(format!("failed to run cargo: {e}"))
+                    })
             })?
         } else {
             Command::new("cargo")
@@ -3834,7 +4020,9 @@ fn build_and_spawn_crate_bridge_harness(
         };
 
         if build_start.elapsed() > build_timeout {
-            return Err(ExecuteError::CompilationFailed("build timed out".to_string()));
+            return Err(ExecuteError::CompilationFailed(
+                "build timed out".to_string(),
+            ));
         }
         if !build_output.status.success() {
             return Err(ExecuteError::CompilationFailed(
@@ -3845,7 +4033,9 @@ fn build_and_spawn_crate_bridge_harness(
     }
 
     if !binary_path.exists() {
-        return Err(ExecuteError::CompilationFailed("compiled crate-bridge binary not found".to_string()));
+        return Err(ExecuteError::CompilationFailed(
+            "compiled crate-bridge binary not found".to_string(),
+        ));
     }
 
     let mut child = Command::new(&binary_path)
@@ -3856,8 +4046,14 @@ fn build_and_spawn_crate_bridge_harness(
         .spawn()
         .map_err(ExecuteError::IoError)?;
 
-    let stdin = child.stdin.take().ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdin pipe")))?;
-    let stdout = child.stdout.take().ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdout pipe")))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdin pipe")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ExecuteError::IoError(io::Error::other("no stdout pipe")))?;
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -3866,7 +4062,9 @@ fn build_and_spawn_crate_bridge_harness(
         for line in reader.lines() {
             match line {
                 Ok(l) if !l.is_empty() => {
-                    if tx.send(l).is_err() { break; }
+                    if tx.send(l).is_err() {
+                        break;
+                    }
                 }
                 _ => break,
             }
@@ -3904,8 +4102,8 @@ fn execute_function_crate_bridge(
     // otherwise be resolved by Cargo relative to the harness Cargo.toml, which
     // lives in the per-project harness cache and contains no such subdir. See
     // str-iqqo.
-    let crate_root_buf = std::fs::canonicalize(crate_root)
-        .unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
+    let crate_root_buf =
+        std::fs::canonicalize(crate_root).unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
     let crate_root = crate_root_buf.as_path();
     let raw_source = std::fs::read_to_string(file_path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read {file_path}: {e}")))?;
@@ -3971,7 +4169,12 @@ fn execute_function_crate_bridge(
     // In-module wrapper appended to the target file so it sees module-local
     // imports and private items (str-31j.3). The crate-root `__shatter.rs` is
     // a small FFI stub that forwards to the in-module entry symbol.
-    let in_module_wrapper = generate_in_module_wrapper(&compatible_fns, &mocks_json, &static_mut_names, &native_replays);
+    let in_module_wrapper = generate_in_module_wrapper(
+        &compatible_fns,
+        &mocks_json,
+        &static_mut_names,
+        &native_replays,
+    );
     let root_stub = generate_crate_bridge_root_stub();
     let wrapper_hash = source_hash(&format!("{in_module_wrapper}{root_stub}"));
 
@@ -3987,10 +4190,15 @@ fn execute_function_crate_bridge(
         if let Some(entry) = map.get_mut(&key)
             && entry.compatible_functions.contains(function_name)
         {
-            let result = entry.harness.execute_dispatch(function_name, inputs, timeout_ms)?;
-            if result.thrown_error.as_ref()
+            let result = entry
+                .harness
+                .execute_dispatch(function_name, inputs, timeout_ms)?;
+            if result
+                .thrown_error
+                .as_ref()
                 .and_then(|e| e.get("error_type"))
-                .and_then(|v| v.as_str()) == Some("timeout")
+                .and_then(|v| v.as_str())
+                == Some("timeout")
             {
                 map.remove(&key);
             }
@@ -4004,13 +4212,16 @@ fn execute_function_crate_bridge(
     let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
 
-    let crate_name = extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
+    let crate_name =
+        extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
     let runtime_path = find_runtime_crate_path()?;
 
     // Verify the user crate is a library before doing any I/O.
-    let _lib_rs = find_lib_rs(crate_root).ok_or_else(|| ExecuteError::NonExecutable(
-        "crate_bridge: cannot find lib.rs — only library crates are supported".to_string(),
-    ))?;
+    let _lib_rs = find_lib_rs(crate_root).ok_or_else(|| {
+        ExecuteError::NonExecutable(
+            "crate_bridge: cannot find lib.rs — only library crates are supported".to_string(),
+        )
+    })?;
 
     let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
     std::fs::create_dir_all(&harness_dir)?;
@@ -4018,18 +4229,18 @@ fn execute_function_crate_bridge(
     // Create an isolated staging copy of the user crate. All mutations
     // (instrumented source, wrapper module, Cargo.toml feature injection)
     // happen inside this copy, leaving the original tree untouched (str-ja70).
-    let staging_crate = create_crate_staging_copy(crate_root, &harness_dir)
-        .map_err(|e| ExecuteError::IoError(
-            io::Error::other(format!("cannot create staging copy: {e}"))
-        ))?;
+    let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
+        ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
+    })?;
 
     // Map `file_path` from original crate to staging copy.
-    let rel_file = Path::new(file_path).strip_prefix(crate_root)
+    let rel_file = Path::new(file_path)
+        .strip_prefix(crate_root)
         .unwrap_or(Path::new(file_path));
     let staging_file = staging_crate.join(rel_file);
-    let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| ExecuteError::NonExecutable(
-        "crate_bridge: cannot find lib.rs in staging copy".to_string(),
-    ))?;
+    let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| {
+        ExecuteError::NonExecutable("crate_bridge: cannot find lib.rs in staging copy".to_string())
+    })?;
     let staging_shatter_mod = staging_crate.join("src").join("__shatter.rs");
     let staging_cargo_toml = staging_crate.join("Cargo.toml");
 
@@ -4040,15 +4251,20 @@ fn execute_function_crate_bridge(
     }
     target_contents.push_str(&in_module_wrapper);
     if let Some(parent) = staging_file.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot create staging directories: {e}"))))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ExecuteError::IoError(io::Error::other(format!(
+                "cannot create staging directories: {e}"
+            )))
+        })?;
     }
-    std::fs::write(&staging_file, &target_contents)
-        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot write instrumented source to staging: {e}"))))?;
+    std::fs::write(&staging_file, &target_contents).map_err(|e| {
+        ExecuteError::IoError(io::Error::other(format!(
+            "cannot write instrumented source to staging: {e}"
+        )))
+    })?;
 
     // Write the FFI stub at staging crate root.
-    std::fs::write(&staging_shatter_mod, &root_stub)
-        .map_err(ExecuteError::IoError)?;
+    std::fs::write(&staging_shatter_mod, &root_stub).map_err(ExecuteError::IoError)?;
 
     // Inject mod declaration into staging lib.rs (idempotent).
     inject_lib_module_declaration(&staging_lib_rs, &crate_name.replace('-', "_"))?;
@@ -4060,15 +4276,24 @@ fn execute_function_crate_bridge(
     let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
     let driver_package_name =
         crate_bridge_driver_package_name("shatter-crate-bridge-exec", &harness_dir);
-    let driver_cargo_toml =
-        generate_crate_bridge_cargo_toml(&driver_package_name, &crate_name, &staging_crate, needs_tokio);
+    let driver_cargo_toml = generate_crate_bridge_cargo_toml(
+        &driver_package_name,
+        &crate_name,
+        &staging_crate,
+        needs_tokio,
+    );
 
     // Shadow `timing` as mutable so we can `take()` it inside the branch.
     let mut timing = timing;
 
     let harness_result = if let Some(t) = timing.take() {
         t.record("execute.build", |t| {
-            build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, Some(t))
+            build_and_spawn_crate_bridge_harness(
+                &driver_source,
+                &driver_cargo_toml,
+                &harness_dir,
+                Some(t),
+            )
         })
     } else {
         build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)
@@ -4092,16 +4317,23 @@ fn execute_function_crate_bridge(
 
     let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
 
-    let timed_out = result.thrown_error.as_ref()
+    let timed_out = result
+        .thrown_error
+        .as_ref()
         .and_then(|e| e.get("error_type"))
-        .and_then(|v| v.as_str()) == Some("timeout");
+        .and_then(|v| v.as_str())
+        == Some("timeout");
 
     if !timed_out {
-        let compatible_set: HashSet<String> = compatible_fns.iter().map(|f| f.name.clone()).collect();
-        bridge_cache.lock().unwrap().insert(key, CrateBridgeHarnessEntry {
-            harness,
-            compatible_functions: compatible_set,
-        });
+        let compatible_set: HashSet<String> =
+            compatible_fns.iter().map(|f| f.name.clone()).collect();
+        bridge_cache.lock().unwrap().insert(
+            key,
+            CrateBridgeHarnessEntry {
+                harness,
+                compatible_functions: compatible_set,
+            },
+        );
     } else {
         let _ = std::fs::remove_dir_all(&harness_dir);
     }
@@ -4144,8 +4376,16 @@ fn execute_function_crate_backed(
         let mut map = crate_cache.lock().unwrap();
         if let Some(entry) = map.get_mut(&key) {
             if entry.compatible_functions.contains(function_name) {
-                let result = entry.harness.execute_dispatch(function_name, inputs, timeout_ms)?;
-                if result.thrown_error.as_ref().and_then(|e| e.get("error_type")).and_then(|v| v.as_str()) == Some("timeout") {
+                let result = entry
+                    .harness
+                    .execute_dispatch(function_name, inputs, timeout_ms)?;
+                if result
+                    .thrown_error
+                    .as_ref()
+                    .and_then(|e| e.get("error_type"))
+                    .and_then(|v| v.as_str())
+                    == Some("timeout")
+                {
                     map.remove(&key);
                 }
                 return Ok(result);
@@ -4189,7 +4429,8 @@ fn execute_function_crate_backed(
         )));
     }
 
-    let expected_inputs = compatible_fns.iter()
+    let expected_inputs = compatible_fns
+        .iter()
         .find(|f| f.name == function_name)
         .map(|f| f.param_names.len())
         .unwrap_or(0);
@@ -4210,9 +4451,8 @@ fn execute_function_crate_backed(
             .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?
     };
 
-    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
-        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
-    })?;
+    let mocks_json = serde_json::to_string(mocks)
+        .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
 
     let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
     let harness_source = generate_dispatch_harness(
@@ -4224,19 +4464,28 @@ fn execute_function_crate_backed(
     )?;
 
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
-    let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
-        .unwrap_or_default();
+    let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path).unwrap_or_default();
 
     let runtime_path = find_runtime_crate_path()?;
-    let cargo_toml_content =
-        generate_cargo_toml_with_user_deps(&user_cargo_toml, &runtime_path, needs_tokio, false, false);
+    let cargo_toml_content = generate_cargo_toml_with_user_deps(
+        &user_cargo_toml,
+        &runtime_path,
+        needs_tokio,
+        false,
+        false,
+    );
 
     let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh, native_replay_hash);
     std::fs::create_dir_all(&harness_dir)?;
 
     let mut harness = if let Some(timing) = timing {
         timing.record("execute.build", |timing| {
-            build_and_spawn_crate_harness(&harness_source, &cargo_toml_content, &harness_dir, Some(timing))
+            build_and_spawn_crate_harness(
+                &harness_source,
+                &cargo_toml_content,
+                &harness_dir,
+                Some(timing),
+            )
         })?
     } else {
         build_and_spawn_crate_harness(&harness_source, &cargo_toml_content, &harness_dir, None)?
@@ -4244,16 +4493,23 @@ fn execute_function_crate_backed(
 
     let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
 
-    let timed_out = result.thrown_error.as_ref()
+    let timed_out = result
+        .thrown_error
+        .as_ref()
         .and_then(|e| e.get("error_type"))
-        .and_then(|v| v.as_str()) == Some("timeout");
+        .and_then(|v| v.as_str())
+        == Some("timeout");
 
     if !timed_out {
-        let compatible_set: HashSet<String> = compatible_fns.iter().map(|f| f.name.clone()).collect();
-        crate_cache.lock().unwrap().insert(key, CrateHarnessEntry {
-            harness,
-            compatible_functions: compatible_set,
-        });
+        let compatible_set: HashSet<String> =
+            compatible_fns.iter().map(|f| f.name.clone()).collect();
+        crate_cache.lock().unwrap().insert(
+            key,
+            CrateHarnessEntry {
+                harness,
+                compatible_functions: compatible_set,
+            },
+        );
     } else {
         let _ = std::fs::remove_dir_all(&harness_dir);
     }
@@ -4281,7 +4537,9 @@ pub fn prepare_harness(
     // We send one request so the harness is fully initialised and cached.
     let path = Path::new(file_path);
     if !path.exists() {
-        return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
+        return Err(ExecuteError::FileError(format!(
+            "file not found: {file_path}"
+        )));
     }
 
     let source = std::fs::read_to_string(path)
@@ -4293,15 +4551,22 @@ pub fn prepare_harness(
     if harness_mode == Some("crate_bridge") {
         let crate_root = find_crate_root(file_path).ok_or_else(|| {
             ExecuteError::NonExecutable(
-                "crate_bridge mode requires the target file to be inside a Cargo.toml crate".to_string(),
+                "crate_bridge mode requires the target file to be inside a Cargo.toml crate"
+                    .to_string(),
             )
         })?;
         // Build the bridge harness by executing with default inputs.
         let ctx = extract_fn_context(&source, function_name)?;
         let dummy_inputs: Vec<Value> = ctx.sig.param_names.iter().map(|_| Value::Null).collect();
         match execute_function_crate_bridge(
-            file_path, function_name, &dummy_inputs, mocks,
-            timeout_ms, None, bridge_cache, &crate_root,
+            file_path,
+            function_name,
+            &dummy_inputs,
+            mocks,
+            timeout_ms,
+            None,
+            bridge_cache,
+            &crate_root,
         ) {
             Ok(_) => {}
             Err(err) if is_input_dependent_prepare_error(&err) => return Ok(()),
@@ -4314,8 +4579,14 @@ pub fn prepare_harness(
         let ctx = extract_fn_context(&source, function_name)?;
         let dummy_inputs: Vec<Value> = ctx.sig.param_names.iter().map(|_| Value::Null).collect();
         let result = execute_function_crate_backed(
-            file_path, function_name, &dummy_inputs, mocks,
-            timeout_ms, None, crate_cache, &crate_root,
+            file_path,
+            function_name,
+            &dummy_inputs,
+            mocks,
+            timeout_ms,
+            None,
+            crate_cache,
+            &crate_root,
         );
         match result {
             Ok(_) => {}
@@ -4348,8 +4619,15 @@ pub fn prepare_harness(
 
     let dummy_inputs: Vec<Value> = sig.param_names.iter().map(|_| Value::Null).collect();
     let _ = execute_function(
-        file_path, function_name, &dummy_inputs, mocks,
-        timeout_ms, harness_mode, cache, crate_cache, bridge_cache,
+        file_path,
+        function_name,
+        &dummy_inputs,
+        mocks,
+        timeout_ms,
+        harness_mode,
+        cache,
+        crate_cache,
+        bridge_cache,
     )?;
     Ok(())
 }
@@ -4386,7 +4664,18 @@ pub fn execute_function(
     crate_cache: &CrateHarnessCache,
     bridge_cache: &CrateBridgeHarnessCache,
 ) -> Result<ExecuteResult, ExecuteError> {
-    execute_function_with_timing(file_path, function_name, inputs, mocks, timeout_ms, harness_mode, None, cache, crate_cache, bridge_cache)
+    execute_function_with_timing(
+        file_path,
+        function_name,
+        inputs,
+        mocks,
+        timeout_ms,
+        harness_mode,
+        None,
+        cache,
+        crate_cache,
+        bridge_cache,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4404,14 +4693,17 @@ pub fn execute_function_with_timing(
 ) -> Result<ExecuteResult, ExecuteError> {
     let path = Path::new(file_path);
     if !path.exists() {
-        return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
+        return Err(ExecuteError::FileError(format!(
+            "file not found: {file_path}"
+        )));
     }
 
     // Explicit opt-in to crate_bridge mode: inject wrapper into the library crate.
     if harness_mode == Some("crate_bridge") {
         let crate_root = find_crate_root(file_path).ok_or_else(|| {
             ExecuteError::NonExecutable(
-                "crate_bridge mode requires the target file to be inside a Cargo.toml crate".to_string(),
+                "crate_bridge mode requires the target file to be inside a Cargo.toml crate"
+                    .to_string(),
             )
         })?;
         return execute_function_crate_bridge(
@@ -4488,7 +4780,13 @@ pub fn execute_function_with_timing(
         if let Some(harness) = map.get_mut(&key) {
             let result = harness.execute(inputs, timeout_ms)?;
             // If the harness timed out it killed itself; remove from cache.
-            if result.thrown_error.as_ref().and_then(|e| e.get("error_type")).and_then(|v| v.as_str()) == Some("timeout") {
+            if result
+                .thrown_error
+                .as_ref()
+                .and_then(|e| e.get("error_type"))
+                .and_then(|v| v.as_str())
+                == Some("timeout")
+            {
                 map.remove(&key);
             }
             return Ok(result);
@@ -4507,7 +4805,9 @@ pub fn execute_function_with_timing(
     };
 
     let ctx = if let Some(timing) = timing.as_deref_mut() {
-        timing.record("execute.extract_signature", |_| extract_fn_context(&source, function_name))?
+        timing.record("execute.extract_signature", |_| {
+            extract_fn_context(&source, function_name)
+        })?
     } else {
         extract_fn_context(&source, function_name)?
     };
@@ -4535,9 +4835,8 @@ pub fn execute_function_with_timing(
 
     let runtime_path = find_runtime_crate_path()?;
 
-    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
-        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
-    })?;
+    let mocks_json = serde_json::to_string(mocks)
+        .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
 
     let harness_source = if let Some(timing) = timing.as_deref_mut() {
         timing.record("execute.generate_harness", |_| {
@@ -4598,9 +4897,12 @@ pub fn execute_function_with_timing(
     let result = harness.execute(inputs, timeout_ms)?;
 
     // Cache the harness unless it timed out (killed itself).
-    let timed_out = result.thrown_error.as_ref()
+    let timed_out = result
+        .thrown_error
+        .as_ref()
         .and_then(|e| e.get("error_type"))
-        .and_then(|v| v.as_str()) == Some("timeout");
+        .and_then(|v| v.as_str())
+        == Some("timeout");
     if !timed_out {
         cache.lock().unwrap().insert(key, harness);
     } else {
@@ -4825,9 +5127,7 @@ fn generate_axum_harness(
             })
             .unwrap_or(Value::Null);
         let default_body_json = serde_json::to_string(&default_body_json).map_err(|e| {
-            ExecuteError::InstrumentError(format!(
-                "cannot serialize default axum JSON body: {e}"
-            ))
+            ExecuteError::InstrumentError(format!("cannot serialize default axum JSON body: {e}"))
         })?;
         let default_body_json_literal = rust_string_literal(&default_body_json);
         h.push_str(&format!(
@@ -4889,7 +5189,11 @@ fn generate_axum_harness(
                     "cannot determine axum state type for input {idx}"
                 ))
             })?;
-        if native_replays.get(idx).and_then(|spec| spec.as_ref()).is_none() {
+        if native_replays
+            .get(idx)
+            .and_then(|spec| spec.as_ref())
+            .is_none()
+        {
             h.push_str(&format!(
                 "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":\"axum State<{state_type}> requires native replay input {idx}\"}})), 0.0, vec![]);\n"
             ));
@@ -4997,11 +5301,15 @@ fn generate_axum_harness(
 
     h.push_str("                let response = app.oneshot(request).await.unwrap();\n");
     h.push_str("                let status = response.status().as_u16();\n");
-    h.push_str("                let headers: serde_json::Map<String, Value> = response.headers().iter()\n");
+    h.push_str(
+        "                let headers: serde_json::Map<String, Value> = response.headers().iter()\n",
+    );
     h.push_str("                    .map(|(k, v)| (k.to_string(), Value::String(v.to_str().unwrap_or(\"\").to_string())))\n");
     h.push_str("                    .collect();\n");
     h.push_str("                let body_bytes = response.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();\n");
-    h.push_str("                let body_str = String::from_utf8_lossy(&body_bytes).to_string();\n");
+    h.push_str(
+        "                let body_str = String::from_utf8_lossy(&body_bytes).to_string();\n",
+    );
     h.push_str("                let body_value = serde_json::from_str::<Value>(&body_str).unwrap_or(Value::String(body_str));\n");
     h.push_str("                serde_json::json!({\n");
     h.push_str("                    \"status\": status,\n");
@@ -5072,7 +5380,10 @@ fn module_path_for_crate_file(crate_root: &Path, file_path: &Path) -> Option<Str
 
 fn module_file_for_module_path(crate_root: &Path, module_path: &str) -> Option<PathBuf> {
     let mut path = crate_root.join("src");
-    for segment in module_path.split("::").filter(|segment| !segment.is_empty()) {
+    for segment in module_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+    {
         path.push(segment);
     }
     let mod_rs = path.join("mod.rs");
@@ -5223,8 +5534,14 @@ fn generate_axum_crate_driver_cargo_toml(
     for (name, line) in [
         ("serde_json", r#"serde_json = "1""#),
         ("tokio", r#"tokio = { version = "1", features = ["full"] }"#),
-        ("axum", r#"axum = { version = "0.8", features = ["json", "multipart"] }"#),
-        ("tower", r#"tower = { version = "0.5", features = ["util"] }"#),
+        (
+            "axum",
+            r#"axum = { version = "0.8", features = ["json", "multipart"] }"#,
+        ),
+        (
+            "tower",
+            r#"tower = { version = "0.5", features = ["util"] }"#,
+        ),
         ("http", r#"http = "1""#),
         ("http-body-util", r#"http-body-util = "0.1""#),
         ("async-trait", r#"async-trait = "0.1""#),
@@ -5325,8 +5642,8 @@ fn execute_axum_handler_crate_backed(
     cache: &HarnessCache,
     crate_root: &Path,
 ) -> Result<ExecuteResult, ExecuteError> {
-    let crate_root_buf = std::fs::canonicalize(crate_root)
-        .unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
+    let crate_root_buf =
+        std::fs::canonicalize(crate_root).unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
     let crate_root = crate_root_buf.as_path();
     let path = Path::new(file_path);
     let source_path =
@@ -5340,7 +5657,8 @@ fn execute_axum_handler_crate_backed(
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
     let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
-    let crate_name = extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
+    let crate_name =
+        extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
     let crate_alias = crate_name.replace('-', "_");
     let module_path = module_path_for_crate_file(crate_root, &source_path).ok_or_else(|| {
         ExecuteError::NonExecutable(format!(
@@ -5356,9 +5674,8 @@ fn execute_axum_handler_crate_backed(
         &module_path,
     );
 
-    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
-        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
-    })?;
+    let mocks_json = serde_json::to_string(mocks)
+        .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
     let instr_result = instrument::instrument_source(&source, Some(function_name))
         .map_err(|e| ExecuteError::InstrumentError(e.to_string()))?;
     let type_sources = crate_rust_type_sources(crate_root);
@@ -5426,8 +5743,7 @@ fn execute_axum_handler_crate_backed(
     })?;
     inject_crate_bridge_feature(&staging_crate.join("Cargo.toml"), &runtime_path)?;
 
-    let driver_package_name =
-        crate_bridge_driver_package_name("shatter-exec-temp", &harness_dir);
+    let driver_package_name = crate_bridge_driver_package_name("shatter-exec-temp", &harness_dir);
     let driver_cargo_toml = generate_axum_crate_driver_cargo_toml(
         &driver_package_name,
         &crate_name,
@@ -5480,7 +5796,9 @@ pub fn execute_axum_handler(
 ) -> Result<ExecuteResult, ExecuteError> {
     let path = Path::new(file_path);
     if !path.exists() {
-        return Err(ExecuteError::FileError(format!("file not found: {file_path}")));
+        return Err(ExecuteError::FileError(format!(
+            "file not found: {file_path}"
+        )));
     }
     if let Some(crate_root) = find_crate_root(file_path) {
         return execute_axum_handler_crate_backed(
@@ -5511,7 +5829,13 @@ pub fn execute_axum_handler(
         let mut map = cache.lock().unwrap();
         if let Some(harness) = map.get_mut(&key) {
             let result = harness.execute(inputs, timeout_ms)?;
-            if result.thrown_error.as_ref().and_then(|e| e.get("error_type")).and_then(|v| v.as_str()) == Some("timeout") {
+            if result
+                .thrown_error
+                .as_ref()
+                .and_then(|e| e.get("error_type"))
+                .and_then(|v| v.as_str())
+                == Some("timeout")
+            {
                 map.remove(&key);
             }
             return Ok(result);
@@ -5528,9 +5852,8 @@ pub fn execute_axum_handler(
 
     let runtime_path = find_runtime_crate_path()?;
 
-    let mocks_json = serde_json::to_string(mocks).map_err(|e| {
-        ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}"))
-    })?;
+    let mocks_json = serde_json::to_string(mocks)
+        .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
 
     let harness_source = generate_axum_harness(
         &instr_result.source,
@@ -5557,9 +5880,12 @@ pub fn execute_axum_handler(
 
     let result = harness.execute(inputs, timeout_ms)?;
 
-    let timed_out = result.thrown_error.as_ref()
+    let timed_out = result
+        .thrown_error
+        .as_ref()
         .and_then(|e| e.get("error_type"))
-        .and_then(|v| v.as_str()) == Some("timeout");
+        .and_then(|v| v.as_str())
+        == Some("timeout");
     if !timed_out {
         cache.lock().unwrap().insert(key, harness);
     } else {
@@ -5650,7 +5976,12 @@ mod tests {
 
     #[test]
     fn generate_cargo_toml_includes_runtime_dep() {
-        let toml = generate_cargo_toml(Path::new("/home/user/shatter-rust-runtime"), false, false, false);
+        let toml = generate_cargo_toml(
+            Path::new("/home/user/shatter-rust-runtime"),
+            false,
+            false,
+            false,
+        );
         assert!(toml.contains("[workspace]"));
         assert!(toml.contains("shatter-rust-runtime"));
         assert!(toml.contains("/home/user/shatter-rust-runtime"));
@@ -5679,9 +6010,18 @@ mod tests {
 
     #[test]
     fn generate_harness_void_function() {
-        let harness =
-            generate_harness("fn noop() {}", "noop", &[], &[], None, "[]", &[], &[], false)
-                .unwrap();
+        let harness = generate_harness(
+            "fn noop() {}",
+            "noop",
+            &[],
+            &[],
+            None,
+            "[]",
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
         assert!(harness.contains("user_code::noop()"));
         assert!(harness.contains("Ok(())"));
         assert!(harness.contains("run_harness_loop"));
@@ -5998,10 +6338,7 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200))
                 );
                 assert_eq!(
@@ -6210,10 +6547,7 @@ pub fn RuntimeAwareState(_recipe: Option<serde_json::Value>) -> GeneratorResult 
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200))
                 );
                 assert_eq!(
@@ -6314,10 +6648,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200))
                 );
                 assert_eq!(
@@ -6418,7 +6749,11 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
         let result = execute_axum_handler(
             &source_file.to_string_lossy(),
             "handler",
-            &[state_input, serde_json::Value::Null, serde_json::Value::Null],
+            &[
+                state_input,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            ],
             &[],
             30_000,
             &mappings,
@@ -6430,10 +6765,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200)),
                     "short native recipe path must not produce a router-level 404: {result:?}"
                 );
@@ -6483,10 +6815,7 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200))
                 );
                 assert_eq!(
@@ -6552,10 +6881,7 @@ pub async fn create(Json(payload): Json<Payload>) -> String {
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200)),
                     "null Json<T> input should produce a valid request body, got {result:?}"
                 );
@@ -6615,10 +6941,7 @@ pub async fn maybe(Json(payload): Json<Option<String>>) -> String {
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200)),
                     "null Json<Option<T>> should be sent as literal JSON null, got {result:?}"
                 );
@@ -6684,10 +7007,7 @@ pub async fn upload(mut multipart: Multipart) -> String {
         match result {
             Ok(result) => {
                 assert_eq!(
-                    result
-                        .return_value
-                        .as_ref()
-                        .and_then(|v| v.get("status")),
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
                     Some(&serde_json::json!(200))
                 );
                 let body = result
@@ -6874,8 +7194,7 @@ pub struct Nested {
         // Regression: str-q8do — wrapper used to call
         // `serde_json::from_value::<Path<Uuid>>(...)`, which doesn't compile
         // because `Path<T>` isn't `DeserializeOwned`.
-        let source =
-            "use axum::extract::Path;\nasync fn h(Path(id): Path<u64>) -> String { id.to_string() }";
+        let source = "use axum::extract::Path;\nasync fn h(Path(id): Path<u64>) -> String { id.to_string() }";
         let harness = generate_harness(
             source,
             "h",
@@ -7269,7 +7588,9 @@ pub struct Nested {
             "tuple Path extractor must mount the same number of route segments as tuple fields\n\nharness:\n{harness}"
         );
         assert!(
-            harness.contains("00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002"),
+            harness.contains(
+                "00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002"
+            ),
             "null tuple Path input must fall back to parseable default UUID path segments\n\nharness:\n{harness}"
         );
     }
@@ -7353,7 +7674,8 @@ pub struct Nested {
     fn generate_axum_harness_json_body_defaults_to_post() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
-        let source = "use axum::extract::Json;\nasync fn handler(Json(b): Json<String>) -> String { b }";
+        let source =
+            "use axum::extract::Json;\nasync fn handler(Json(b): Json<String>) -> String { b }";
         let mappings = vec![AxumExtractorMapping {
             param_index: 0,
             kind: AxumExtractorKind::JsonBody,
@@ -7379,7 +7701,8 @@ pub struct Nested {
     fn generate_axum_harness_no_body_defaults_to_get() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
-        let source = "use axum::extract::Query;\nasync fn handler(Query(q): Query<String>) -> String { q }";
+        let source =
+            "use axum::extract::Query;\nasync fn handler(Query(q): Query<String>) -> String { q }";
         let mappings = vec![AxumExtractorMapping {
             param_index: 0,
             kind: AxumExtractorKind::QueryParams,
@@ -7405,7 +7728,8 @@ pub struct Nested {
     fn generate_axum_harness_with_state_uses_with_state() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
-        let source = "use axum::extract::State;\nasync fn handler(State(s): State<String>) -> String { s }";
+        let source =
+            "use axum::extract::State;\nasync fn handler(State(s): State<String>) -> String { s }";
         let mappings = vec![AxumExtractorMapping {
             param_index: 0,
             kind: AxumExtractorKind::AppState,
@@ -7494,7 +7818,8 @@ pub struct Nested {
             "crate Axum harness must mount the public re-export target:\n{harness}"
         );
         assert!(
-            !harness.contains("routing::any(pickpackit_api::handlers::workspaces::update_workspace)"),
+            !harness
+                .contains("routing::any(pickpackit_api::handlers::workspaces::update_workspace)"),
             "crate Axum harness must not use the private child module path:\n{harness}"
         );
     }
@@ -7504,7 +7829,11 @@ pub struct Nested {
         let dir = tempfile::tempdir().expect("tempdir");
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).expect("src dir");
-        let binary = dir.path().join("target").join("debug").join("shatter-exec-temp");
+        let binary = dir
+            .path()
+            .join("target")
+            .join("debug")
+            .join("shatter-exec-temp");
         std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("target dir");
         std::fs::write(&binary, "binary").expect("binary");
         let main_rs = src.join("main.rs");
@@ -7619,7 +7948,8 @@ pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
     fn generate_axum_harness_captures_http_response() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
-        let source = "use axum::extract::Json;\nasync fn handler(Json(b): Json<String>) -> String { b }";
+        let source =
+            "use axum::extract::Json;\nasync fn handler(Json(b): Json<String>) -> String { b }";
         let mappings = vec![AxumExtractorMapping {
             param_index: 0,
             kind: AxumExtractorKind::JsonBody,
@@ -7814,6 +8144,27 @@ fn main() {
         assert!(owned_type_for_ref("String").is_none());
     }
 
+    #[test]
+    fn crate_bridge_runtime_param_classifies_pgpool_refs() {
+        assert_eq!(
+            classify_crate_bridge_runtime_param("&PgPool"),
+            Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+        );
+        assert_eq!(
+            classify_crate_bridge_runtime_param("& sqlx :: PgPool"),
+            Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+        );
+        assert_eq!(
+            classify_crate_bridge_runtime_param("& sqlx :: postgres :: PgPool"),
+            Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+        );
+        assert_eq!(classify_crate_bridge_runtime_param("&mut PgPool"), None);
+        assert_eq!(
+            classify_crate_bridge_runtime_param("& sqlx :: Pool < sqlx :: Postgres >"),
+            None
+        );
+    }
+
     /// Reproduction test for str-jxap: `&str` parameters must deserialize
     /// to `String` then borrow, because `serde_json::from_value::<&str>()`
     /// fails (requires borrowing from the deserializer, not from a `Value`).
@@ -7855,7 +8206,17 @@ fn main() {
         let cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let crate_cache = std::sync::Mutex::new(std::collections::HashMap::new());
         let bridge_cache = std::sync::Mutex::new(std::collections::HashMap::new());
-        let result = execute_function("/nonexistent/file.rs", "f", &[], &[], 5000, None, &cache, &crate_cache, &bridge_cache);
+        let result = execute_function(
+            "/nonexistent/file.rs",
+            "f",
+            &[],
+            &[],
+            5000,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
         assert!(result.is_err());
         if let Err(ExecuteError::FileError(msg)) = result {
             assert!(msg.contains("not found"));
@@ -8017,12 +8378,16 @@ fn sum_to(n: i32) -> i32 {
             msg.contains("generic type parameters [T]"),
             "expected generic params message, got: {msg}"
         );
-        assert!(msg.contains("crate_bridge"), "should suggest crate_bridge: {msg}");
+        assert!(
+            msg.contains("crate_bridge"),
+            "should suggest crate_bridge: {msg}"
+        );
     }
 
     #[test]
     fn compat_trait_object_detected() {
-        let source = "trait Db { fn get(&self) -> i32; }\nfn query(db: &dyn Db) -> i32 { db.get() }";
+        let source =
+            "trait Db { fn get(&self) -> i32; }\nfn query(db: &dyn Db) -> i32 { db.get() }";
         let ctx = extract_fn_context(source, "query").unwrap();
         let err = check_bin_only_compatibility("query", &ctx, false).unwrap_err();
         let msg = err.to_string();
@@ -8030,7 +8395,10 @@ fn sum_to(n: i32) -> i32 {
             msg.contains("trait object"),
             "expected trait object message, got: {msg}"
         );
-        assert!(msg.contains("crate_bridge"), "should suggest crate_bridge: {msg}");
+        assert!(
+            msg.contains("crate_bridge"),
+            "should suggest crate_bridge: {msg}"
+        );
     }
 
     #[test]
@@ -8043,7 +8411,10 @@ fn sum_to(n: i32) -> i32 {
             msg.contains("external type") && msg.contains("PgConnection"),
             "expected external type message, got: {msg}"
         );
-        assert!(msg.contains("crate_bridge"), "should suggest crate_bridge: {msg}");
+        assert!(
+            msg.contains("crate_bridge"),
+            "should suggest crate_bridge: {msg}"
+        );
     }
 
     #[test]
@@ -8064,8 +8435,14 @@ fn sum_to(n: i32) -> i32 {
         let ctx = extract_fn_context(source, "dispatch").unwrap();
         let err = check_bin_only_compatibility("dispatch", &ctx, false).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("generic type parameters"), "should list generics: {msg}");
-        assert!(msg.contains("trait object"), "should list trait object: {msg}");
+        assert!(
+            msg.contains("generic type parameters"),
+            "should list generics: {msg}"
+        );
+        assert!(
+            msg.contains("trait object"),
+            "should list trait object: {msg}"
+        );
     }
 
     #[test]
@@ -8084,7 +8461,8 @@ fn sum_to(n: i32) -> i32 {
 
     #[test]
     fn compat_local_struct_passes() {
-        let source = "struct Point { x: f64, y: f64 }\nfn origin() -> Point { Point { x: 0.0, y: 0.0 } }";
+        let source =
+            "struct Point { x: f64, y: f64 }\nfn origin() -> Point { Point { x: 0.0, y: 0.0 } }";
         let ctx = extract_fn_context(source, "origin").unwrap();
         assert!(check_bin_only_compatibility("origin", &ctx, false).is_ok());
     }
@@ -8310,8 +8688,14 @@ static mut TOTAL: f64 = 0.0;
 fn increment() { unsafe { COUNTER += 1; } }
 "#;
         let names = extract_static_mut_items(source);
-        assert!(names.contains(&"COUNTER".to_string()), "expected COUNTER in {names:?}");
-        assert!(names.contains(&"TOTAL".to_string()), "expected TOTAL in {names:?}");
+        assert!(
+            names.contains(&"COUNTER".to_string()),
+            "expected COUNTER in {names:?}"
+        );
+        assert!(
+            names.contains(&"TOTAL".to_string()),
+            "expected TOTAL in {names:?}"
+        );
     }
 
     #[test]
@@ -8380,7 +8764,8 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             "harness must emit global_state_change\n\nharness:\n{harness}"
         );
         assert!(
-            harness.contains("\"variable\":\"COUNTER\"") || harness.contains("\"variable\" : \"COUNTER\""),
+            harness.contains("\"variable\":\"COUNTER\"")
+                || harness.contains("\"variable\" : \"COUNTER\""),
             "harness must name the variable COUNTER\n\nharness:\n{harness}"
         );
     }
@@ -8498,9 +8883,15 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // Restore before assertions so the var is cleared even on panic.
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
 
-        assert!(target.is_some(), "expected Some when SHATTER_HARNESS_CACHE is set");
+        assert!(
+            target.is_some(),
+            "expected Some when SHATTER_HARNESS_CACHE is set"
+        );
         let target = target.unwrap();
-        assert!(target.is_absolute(), "standalone_target_dir must be absolute, got {target:?}");
+        assert!(
+            target.is_absolute(),
+            "standalone_target_dir must be absolute, got {target:?}"
+        );
         assert!(
             target.starts_with(&cache_root),
             "target dir {target:?} should be under cache root {cache_str}"
@@ -8622,7 +9013,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     fn compute_prepare_id_is_16_hex_chars() {
         let id = compute_prepare_id("/tmp/test.rs", "add", &[]);
         assert_eq!(id.len(), 16, "prepare_id must be 16 hex chars, got: {id}");
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "must be hex: {id}");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "must be hex: {id}"
+        );
     }
 
     #[test]
@@ -8689,7 +9083,10 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         let examples_src = examples_root.join("rust/src/arithmetic.rs");
         if examples_src.exists() {
             let root = find_crate_root(&examples_src.to_string_lossy());
-            assert!(root.is_some(), "should find crate root for examples/rust/src");
+            assert!(
+                root.is_some(),
+                "should find crate root for examples/rust/src"
+            );
             let root = root.unwrap();
             assert!(root.join("Cargo.toml").exists());
         }
@@ -8702,14 +9099,20 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         assert!(deps.contains("regex"), "should include regex dep");
         assert!(deps.contains("serde_json"), "should include serde_json dep");
         assert!(!deps.contains("criterion"), "should not include dev-deps");
-        assert!(!deps.contains("[package]"), "should not include package section");
+        assert!(
+            !deps.contains("[package]"),
+            "should not include package section"
+        );
     }
 
     #[test]
     fn extract_dependencies_section_empty() {
         let toml = "[package]\nname = \"foo\"\n";
         let deps = extract_dependencies_section(toml);
-        assert!(deps.is_empty(), "should be empty when no [dependencies] section");
+        assert!(
+            deps.is_empty(),
+            "should be empty when no [dependencies] section"
+        );
     }
 
     #[test]
@@ -8723,9 +9126,16 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     fn generate_cargo_toml_includes_user_deps() {
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false, false);
-        assert!(result.contains("[workspace]"), "must opt generated harness out of parent workspaces");
-        assert!(result.contains("shatter-rust-runtime"), "must include runtime");
+        let result =
+            generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false, false);
+        assert!(
+            result.contains("[workspace]"),
+            "must opt generated harness out of parent workspaces"
+        );
+        assert!(
+            result.contains("shatter-rust-runtime"),
+            "must include runtime"
+        );
         assert!(result.contains("regex"), "must include forwarded user dep");
         assert!(result.contains("serde"), "must include serde");
     }
@@ -8735,10 +9145,14 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // User crate already declares serde_json and serde — must not produce duplicate keys.
         let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\nserde_json = \"1\"\nserde = { version = \"1\", features = [\"derive\"] }\n";
         let runtime_path = std::path::Path::new("/fake/runtime");
-        let result = generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false, false);
+        let result =
+            generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false, false);
         assert!(result.contains("regex"), "must include forwarded user dep");
         let serde_json_count = result.matches("serde_json").count();
-        assert_eq!(serde_json_count, 1, "serde_json must appear exactly once, got:\n{result}");
+        assert_eq!(
+            serde_json_count, 1,
+            "serde_json must appear exactly once, got:\n{result}"
+        );
     }
 
     // ─── crate-backed integration tests ──────────────────────────────────────
@@ -8786,10 +9200,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // Verifies: crate-backed file routes to the bin_only harness and returns
         // the correct result.
         let dir = std::env::temp_dir().join("shatter-test-crate-basic");
-        let src_file = write_test_crate(
-            &dir,
-            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
-        );
+        let src_file = write_test_crate(&dir, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
@@ -8819,9 +9230,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
                 );
             }
             // cargo not available in this CI environment — skip
-            Err(ExecuteError::CompilationFailed(msg))
-                if cargo_build_unavailable(&msg) =>
-            {
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!("skipping crate_backed_execute_basic: cargo unavailable ({msg})");
             }
             Err(e) => panic!("unexpected error: {e:?}"),
@@ -8834,10 +9243,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // Verifies: the second call hits the in-memory cache (no recompilation)
         // and returns the correct result.
         let dir = std::env::temp_dir().join("shatter-test-crate-cache");
-        let src_file = write_test_crate(
-            &dir,
-            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
-        );
+        let src_file = write_test_crate(&dir, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
@@ -8878,17 +9284,33 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
         match (first, second) {
             (Ok(r1), Ok(r2)) => {
-                assert_eq!(r1.return_value, Some(serde_json::json!(30)), "add(10, 20) should return 30");
-                assert_eq!(r2.return_value, Some(serde_json::json!(0)), "add(-1, 1) should return 0");
+                assert_eq!(
+                    r1.return_value,
+                    Some(serde_json::json!(30)),
+                    "add(10, 20) should return 30"
+                );
+                assert_eq!(
+                    r2.return_value,
+                    Some(serde_json::json!(0)),
+                    "add(-1, 1) should return 0"
+                );
                 // The cache should have exactly one entry (same key for both calls).
-                assert_eq!(cache_size_after_first, 1, "one cache entry after first call");
-                assert_eq!(cache_size_after_second, 1, "still one entry after second call (cache hit)");
+                assert_eq!(
+                    cache_size_after_first, 1,
+                    "one cache entry after first call"
+                );
+                assert_eq!(
+                    cache_size_after_second, 1,
+                    "still one entry after second call (cache hit)"
+                );
             }
             (Err(ExecuteError::CompilationFailed(msg)), _)
             | (_, Err(ExecuteError::CompilationFailed(msg)))
                 if cargo_build_unavailable(&msg) =>
             {
-                eprintln!("skipping crate_backed_second_call_reuses_cache: cargo unavailable ({msg})");
+                eprintln!(
+                    "skipping crate_backed_second_call_reuses_cache: cargo unavailable ({msg})"
+                );
             }
             (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e:?}"),
         }
@@ -8940,8 +9362,16 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
 
         match (add_result, double_result) {
             (Ok(r1), Ok(r2)) => {
-                assert_eq!(r1.return_value, Some(serde_json::json!(10)), "add(4, 6) should return 10");
-                assert_eq!(r2.return_value, Some(serde_json::json!(14)), "double(7) should return 14");
+                assert_eq!(
+                    r1.return_value,
+                    Some(serde_json::json!(10)),
+                    "add(4, 6) should return 10"
+                );
+                assert_eq!(
+                    r2.return_value,
+                    Some(serde_json::json!(14)),
+                    "double(7) should return 14"
+                );
                 // Both functions share one dispatch binary → one cache entry.
                 assert_eq!(cache_size, 1, "both functions share one crate cache entry");
             }
@@ -8949,7 +9379,9 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             | (_, Err(ExecuteError::CompilationFailed(msg)))
                 if cargo_build_unavailable(&msg) =>
             {
-                eprintln!("skipping crate_backed_multiple_functions_same_binary: cargo unavailable ({msg})");
+                eprintln!(
+                    "skipping crate_backed_multiple_functions_same_binary: cargo unavailable ({msg})"
+                );
             }
             (Err(e), _) | (_, Err(e)) => panic!("unexpected error: {e:?}"),
         }
@@ -8960,10 +9392,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // Request execution of a function that does not exist in the crate file.
         // Verifies: returns NonExecutable immediately (no compilation attempted).
         let dir = std::env::temp_dir().join("shatter-test-crate-notfound");
-        let src_file = write_test_crate(
-            &dir,
-            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
-        );
+        let src_file = write_test_crate(&dir, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
@@ -9088,12 +9517,30 @@ fn enabled(config: Config) -> bool {
     #[test]
     fn crate_bridge_wrapper_contains_all_functions() {
         let fns = vec![
-            CompatFn { name: "foo".to_string(), param_names: vec!["x".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()), is_async: false },
-            CompatFn { name: "bar".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
+            CompatFn {
+                name: "foo".to_string(),
+                param_names: vec!["x".to_string()],
+                param_types: vec!["i32".to_string()],
+                return_type: Some("i32".to_string()),
+                is_async: false,
+            },
+            CompatFn {
+                name: "bar".to_string(),
+                param_names: vec![],
+                param_types: vec![],
+                return_type: None,
+                is_async: false,
+            },
         ];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
-        assert!(wrapper.contains("shatter_wrap_foo"), "wrapper must contain shatter_wrap_foo");
-        assert!(wrapper.contains("shatter_wrap_bar"), "wrapper must contain shatter_wrap_bar");
+        assert!(
+            wrapper.contains("shatter_wrap_foo"),
+            "wrapper must contain shatter_wrap_foo"
+        );
+        assert!(
+            wrapper.contains("shatter_wrap_bar"),
+            "wrapper must contain shatter_wrap_bar"
+        );
     }
 
     #[test]
@@ -9120,32 +9567,67 @@ fn enabled(config: Config) -> bool {
 
     #[test]
     fn crate_bridge_wrapper_uses_super_prefix() {
-        let fns = vec![
-            CompatFn { name: "my_fn".to_string(), param_names: vec!["n".to_string()], param_types: vec!["i32".to_string()], return_type: Some("i32".to_string()), is_async: false },
-        ];
+        let fns = vec![CompatFn {
+            name: "my_fn".to_string(),
+            param_names: vec!["n".to_string()],
+            param_types: vec!["i32".to_string()],
+            return_type: Some("i32".to_string()),
+            is_async: false,
+        }];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
-        assert!(wrapper.contains("super::my_fn"), "wrapper must call super::my_fn, not bare my_fn");
+        assert!(
+            wrapper.contains("super::my_fn"),
+            "wrapper must call super::my_fn, not bare my_fn"
+        );
     }
 
     #[test]
     fn crate_bridge_wrapper_has_run_harness_entry_point() {
-        let fns = vec![
-            CompatFn { name: "calc".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
-        ];
+        let fns = vec![CompatFn {
+            name: "calc".to_string(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: None,
+            is_async: false,
+        }];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
-        assert!(wrapper.contains("pub fn shatter_run_harness()"), "wrapper must export shatter_run_harness");
-        assert!(wrapper.contains("shatter_wrap_calc"), "dispatch in run_harness must call wrapper");
+        assert!(
+            wrapper.contains("pub fn shatter_run_harness()"),
+            "wrapper must export shatter_run_harness"
+        );
+        assert!(
+            wrapper.contains("shatter_wrap_calc"),
+            "dispatch in run_harness must call wrapper"
+        );
     }
 
     #[test]
     fn crate_bridge_wrapper_dispatch_includes_function_names() {
         let fns = vec![
-            CompatFn { name: "alpha".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
-            CompatFn { name: "beta".to_string(), param_names: vec![], param_types: vec![], return_type: None, is_async: false },
+            CompatFn {
+                name: "alpha".to_string(),
+                param_names: vec![],
+                param_types: vec![],
+                return_type: None,
+                is_async: false,
+            },
+            CompatFn {
+                name: "beta".to_string(),
+                param_names: vec![],
+                param_types: vec![],
+                return_type: None,
+                is_async: false,
+            },
         ];
         let wrapper = generate_crate_bridge_wrapper(&fns, "[]", &[], &[]);
-        assert!(wrapper.contains("\"alpha\""), "dispatch must match on \"alpha\"");
-        assert!(wrapper.contains("\"beta\""), "dispatch must match on \"beta\"");
+        assert!(
+            wrapper.contains("\"alpha\""),
+            "dispatch must match on \"alpha\""
+        );
+        assert!(
+            wrapper.contains("\"beta\""),
+            "dispatch must match on \"beta\""
+        );
     }
 
     #[test]
@@ -9153,8 +9635,14 @@ fn enabled(config: Config) -> bool {
         let bin1 = generate_crate_bridge_bin("my_crate");
         let bin2 = generate_crate_bridge_bin("my_crate");
         assert_eq!(bin1, bin2, "driver bin must be deterministic");
-        assert!(bin1.contains("shatter_run_harness"), "must call shatter_run_harness");
-        assert!(bin1.contains("my_crate"), "must reference the user crate name");
+        assert!(
+            bin1.contains("shatter_run_harness"),
+            "must call shatter_run_harness"
+        );
+        assert!(
+            bin1.contains("my_crate"),
+            "must reference the user crate name"
+        );
     }
 
     #[test]
@@ -9169,10 +9657,22 @@ fn enabled(config: Config) -> bool {
             toml.contains(r#"name = "shatter-crate-bridge-exec-0123456789abcdef""#),
             "driver package name must be caller-controlled so shared target dirs do not overwrite binaries"
         );
-        assert!(toml.contains("shatter-crate-bridge"), "Cargo.toml must activate the shatter-crate-bridge feature");
-        assert!(toml.contains("[workspace]"), "must opt out of parent workspace");
-        assert!(toml.contains("debug = 0"), "dev builds should not emit throwaway debug info");
-        assert!(toml.contains("incremental = false"), "dev builds should avoid per-driver incremental state");
+        assert!(
+            toml.contains("shatter-crate-bridge"),
+            "Cargo.toml must activate the shatter-crate-bridge feature"
+        );
+        assert!(
+            toml.contains("[workspace]"),
+            "must opt out of parent workspace"
+        );
+        assert!(
+            toml.contains("debug = 0"),
+            "dev builds should not emit throwaway debug info"
+        );
+        assert!(
+            toml.contains("incremental = false"),
+            "dev builds should avoid per-driver incremental state"
+        );
     }
 
     #[test]
@@ -9190,11 +9690,19 @@ fn enabled(config: Config) -> bool {
             "Axum crate driver package name must be caller-controlled so shared target dirs do not overwrite binaries"
         );
         assert!(
-            toml.contains(r#"my_crate = { path = "/some/path", features = ["shatter-crate-bridge"] }"#),
+            toml.contains(
+                r#"my_crate = { path = "/some/path", features = ["shatter-crate-bridge"] }"#
+            ),
             "Axum crate driver must activate the staged crate feature so instrumented modules can see shatter-rust-runtime\n\n{toml}"
         );
-        assert!(toml.contains("debug = 0"), "dev builds should not emit throwaway debug info");
-        assert!(toml.contains("incremental = false"), "dev builds should avoid per-driver incremental state");
+        assert!(
+            toml.contains("debug = 0"),
+            "dev builds should not emit throwaway debug info"
+        );
+        assert!(
+            toml.contains("incremental = false"),
+            "dev builds should avoid per-driver incremental state"
+        );
     }
 
     #[test]
@@ -9207,7 +9715,10 @@ fn enabled(config: Config) -> bool {
         inject_lib_module_declaration(&lib_rs, "test_crate").unwrap();
 
         let content = std::fs::read_to_string(&lib_rs).unwrap();
-        assert!(content.contains("pub mod __shatter;"), "must contain mod declaration");
+        assert!(
+            content.contains("pub mod __shatter;"),
+            "must contain mod declaration"
+        );
         assert!(
             content.contains("extern crate self as test_crate;"),
             "must expose a crate self-alias for native generator imports"
@@ -9217,10 +9728,14 @@ fn enabled(config: Config) -> bool {
             "must expose the shatter_rust alias expected by native generator files"
         );
         assert!(
-            content.contains("pub mod generators") && content.contains("pub struct GeneratorResult"),
+            content.contains("pub mod generators")
+                && content.contains("pub struct GeneratorResult"),
             "must expose the native generator result shim"
         );
-        assert!(content.contains("shatter-crate-bridge"), "must be feature-gated");
+        assert!(
+            content.contains("shatter-crate-bridge"),
+            "must be feature-gated"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9237,10 +9752,18 @@ fn enabled(config: Config) -> bool {
 
         let content = std::fs::read_to_string(&lib_rs).unwrap();
         let count = content.matches("pub mod __shatter;").count();
-        assert_eq!(count, 1, "declaration must appear exactly once, got {count}");
+        assert_eq!(
+            count, 1,
+            "declaration must appear exactly once, got {count}"
+        );
         let alias_count = content.matches("extern crate self as test_crate;").count();
-        assert_eq!(alias_count, 1, "crate alias must appear exactly once, got {alias_count}");
-        let shatter_rust_alias_count = content.matches("extern crate self as shatter_rust;").count();
+        assert_eq!(
+            alias_count, 1,
+            "crate alias must appear exactly once, got {alias_count}"
+        );
+        let shatter_rust_alias_count = content
+            .matches("extern crate self as shatter_rust;")
+            .count();
         assert_eq!(
             shatter_rust_alias_count, 1,
             "shatter_rust alias must appear exactly once, got {shatter_rust_alias_count}"
@@ -9268,13 +9791,22 @@ fn enabled(config: Config) -> bool {
         inject_crate_bridge_feature(&toml_path, std::path::Path::new("/fake/runtime")).unwrap();
 
         let content = std::fs::read_to_string(&toml_path).unwrap();
-        assert!(content.contains("shatter-crate-bridge"), "must add feature to Cargo.toml");
-        assert!(content.contains("serde_json"), "must add serde_json optional dep");
+        assert!(
+            content.contains("shatter-crate-bridge"),
+            "must add feature to Cargo.toml"
+        );
+        assert!(
+            content.contains("serde_json"),
+            "must add serde_json optional dep"
+        );
         assert!(
             !content.contains("shatter-rust ="),
             "must not add the frontend crate as a staged user-crate dependency"
         );
-        assert!(content.contains("shatter-rust-runtime"), "must add runtime optional dep");
+        assert!(
+            content.contains("shatter-rust-runtime"),
+            "must add runtime optional dep"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9357,7 +9889,8 @@ fn enabled(config: Config) -> bool {
         std::fs::write(
             src.join("lib.rs"),
             "fn secret_add(a: i32, b: i32) -> i32 { a + b }\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
@@ -9386,10 +9919,10 @@ fn enabled(config: Config) -> bool {
                     "secret_add(3, 4) should return 7"
                 );
             }
-            Err(ExecuteError::CompilationFailed(msg))
-                if cargo_build_unavailable(&msg) =>
-            {
-                eprintln!("skipping crate_bridge_executes_private_function: cargo unavailable ({msg})");
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_bridge_executes_private_function: cargo unavailable ({msg})"
+                );
             }
             Err(e) => panic!("unexpected error: {e:?}"),
         }
@@ -9434,10 +9967,160 @@ fn enabled(config: Config) -> bool {
                     "crate_bridge should report executed source lines for instrumented branches"
                 );
             }
-            Err(ExecuteError::CompilationFailed(msg))
-                if cargo_build_unavailable(&msg) =>
-            {
-                eprintln!("skipping crate_bridge_reports_executed_branch_lines: cargo unavailable ({msg})");
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_bridge_reports_executed_branch_lines: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_bridge_supplies_sqlx_pgpool_reference() {
+        let dir = std::env::temp_dir().join("shatter-test-bridge-pgpool");
+        let src_file = write_test_crate(
+            &dir,
+            r#"
+mod sqlx {
+    #[derive(Debug)]
+    pub struct Pool {
+        pub database_url: String,
+    }
+
+    pub type PgPool = Pool;
+
+    pub mod postgres {
+        use super::Pool;
+
+        pub struct PgPoolOptions;
+
+        impl PgPoolOptions {
+            pub fn new() -> Self {
+                Self
+            }
+
+            pub fn max_connections(self, _max: u32) -> Self {
+                self
+            }
+
+            pub fn connect_lazy(self, database_url: &str) -> Result<Pool, String> {
+                Ok(Pool {
+                    database_url: database_url.to_string(),
+                })
+            }
+        }
+    }
+}
+
+use sqlx::PgPool;
+
+fn workspace_label(pool: &PgPool, workspace_id: String) -> String {
+    format!("{workspace_id}:{}", pool.database_url)
+}
+"#,
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let old_database_url = std::env::var("DATABASE_URL").ok();
+        unsafe {
+            std::env::set_var("DATABASE_URL", "postgres://example.test/db");
+        }
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "workspace_label",
+            &[serde_json::Value::Null, serde_json::json!("workspace-1")],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match old_database_url {
+            Some(value) => unsafe { std::env::set_var("DATABASE_URL", value) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!("workspace-1:postgres://example.test/db")),
+                    "crate_bridge should synthesize &PgPool from DATABASE_URL and deserialize the JSON input"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_bridge_supplies_sqlx_pgpool_reference: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_bridge_result_alias_does_not_require_error_serialize() {
+        let dir = std::env::temp_dir().join("shatter-test-bridge-result-alias");
+        let src_file = write_test_crate(
+            &dir,
+            r#"
+#[derive(Debug)]
+struct ApiError {
+    message: String,
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+fn task_names(include: bool) -> ApiResult<Vec<String>> {
+    if include {
+        Ok(vec!["pack".to_string()])
+    } else {
+        Err(ApiError {
+            message: "missing".to_string(),
+        })
+    }
+}
+"#,
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "task_names",
+            &[serde_json::json!(true)],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!(["pack"])),
+                    "crate_bridge should serialize Ok(T) without requiring the error type to Serialize"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_bridge_result_alias_does_not_require_error_serialize: cargo unavailable ({msg})"
+                );
             }
             Err(e) => panic!("unexpected error: {e:?}"),
         }
@@ -9462,10 +10145,7 @@ fn enabled(config: Config) -> bool {
             src.join("lib.rs"),
             "pub mod auth;\n\n#[derive(serde::Serialize, serde::Deserialize, Clone)]\npub struct Config { pub token: String }\n",
         ).unwrap();
-        std::fs::write(
-            src.join("auth").join("mod.rs"),
-            "pub mod middleware;\n",
-        ).unwrap();
+        std::fs::write(src.join("auth").join("mod.rs"), "pub mod middleware;\n").unwrap();
         let target = src.join("auth").join("middleware.rs");
         std::fs::write(
             &target,
@@ -9507,15 +10187,16 @@ fn enabled(config: Config) -> bool {
                 );
             }
             Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("No such file") || msg.contains("spurious network error")
+                if msg.contains("No such file")
+                    || msg.contains("spurious network error")
                     || msg.contains("download of config.json failed")
                     || msg.contains("Could not resolve host") =>
             {
                 eprintln!("skipping nested_module_public: cargo unavailable ({msg})");
             }
-            Err(e) => panic!(
-                "expected nested-module public wrapper to compile and execute, got: {e:?}"
-            ),
+            Err(e) => {
+                panic!("expected nested-module public wrapper to compile and execute, got: {e:?}")
+            }
         }
     }
 
@@ -9551,7 +10232,8 @@ fn enabled(config: Config) -> bool {
                 // Acceptable: classified unsupported up-front (no broken codegen).
             }
             Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("No such file") || msg.contains("spurious network error")
+                if msg.contains("No such file")
+                    || msg.contains("spurious network error")
                     || msg.contains("download of config.json failed")
                     || msg.contains("Could not resolve host") =>
             {
@@ -9652,7 +10334,9 @@ fn enabled(config: Config) -> bool {
                     || msg.contains("download of config.json failed")
                     || msg.contains("Could not resolve host") =>
             {
-                eprintln!("skipping unsupported classification assertion: cargo unavailable ({msg})");
+                eprintln!(
+                    "skipping unsupported classification assertion: cargo unavailable ({msg})"
+                );
             }
             other => panic!(
                 "expected unsupported sibling to be classified NonExecutable, got: {other:?}"
@@ -9674,7 +10358,10 @@ fn enabled(config: Config) -> bool {
 
         backup.restore();
         let after = std::fs::read(&file).unwrap();
-        assert_eq!(after, original, "modified file must be restored byte-for-byte");
+        assert_eq!(
+            after, original,
+            "modified file must be restored byte-for-byte"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9690,7 +10377,10 @@ fn enabled(config: Config) -> bool {
         assert!(created.exists());
 
         backup.restore();
-        assert!(!created.exists(), "files absent at snapshot must be removed on restore");
+        assert!(
+            !created.exists(),
+            "files absent at snapshot must be removed on restore"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9836,9 +10526,18 @@ fn enabled(config: Config) -> bool {
         let staging_crate = create_crate_staging_copy(&dir, &staging_root).unwrap();
 
         // Staging copy must exist with the expected structure.
-        assert!(staging_crate.join("src/lib.rs").exists(), "staging must have src/lib.rs");
-        assert!(staging_crate.join("src/app.rs").exists(), "staging must have src/app.rs");
-        assert!(staging_crate.join("Cargo.toml").exists(), "staging must have Cargo.toml");
+        assert!(
+            staging_crate.join("src/lib.rs").exists(),
+            "staging must have src/lib.rs"
+        );
+        assert!(
+            staging_crate.join("src/app.rs").exists(),
+            "staging must have src/app.rs"
+        );
+        assert!(
+            staging_crate.join("Cargo.toml").exists(),
+            "staging must have Cargo.toml"
+        );
 
         // Mutate the staging copy to simulate instrumentation.
         std::fs::write(staging_crate.join("src/app.rs"), "// mutated by shatter\n").unwrap();
@@ -9846,15 +10545,18 @@ fn enabled(config: Config) -> bool {
 
         // Original files must be byte-for-byte unchanged.
         assert_eq!(
-            std::fs::read(dir.join("Cargo.toml")).unwrap(), orig_cargo,
+            std::fs::read(dir.join("Cargo.toml")).unwrap(),
+            orig_cargo,
             "Cargo.toml must be byte-for-byte unchanged after staging copy + mutation",
         );
         assert_eq!(
-            std::fs::read(dir.join("src/lib.rs")).unwrap(), orig_lib,
+            std::fs::read(dir.join("src/lib.rs")).unwrap(),
+            orig_lib,
             "lib.rs must be byte-for-byte unchanged after staging copy + mutation",
         );
         assert_eq!(
-            std::fs::read(dir.join("src/app.rs")).unwrap(), orig_app,
+            std::fs::read(dir.join("src/app.rs")).unwrap(),
+            orig_app,
             "src/app.rs must be byte-for-byte unchanged after staging copy + mutation",
         );
         assert!(
@@ -9902,7 +10604,8 @@ other = { path = '/abs/path' }
         let result = resolve_cargo_toml_paths(input, crate_root, None);
         // Must not double-inject [workspace].
         assert_eq!(
-            result.matches("[workspace]").count(), 1,
+            result.matches("[workspace]").count(),
+            1,
             "must not duplicate [workspace]: {result}",
         );
     }
@@ -9938,9 +10641,13 @@ runtime = { path = "../runtime" }
     #[test]
     fn has_workspace_inheritance_detects_dotted_fields() {
         assert!(has_workspace_inheritance("edition.workspace = true\n"));
-        assert!(has_workspace_inheritance("[package]\nedition.workspace = true\n"));
+        assert!(has_workspace_inheritance(
+            "[package]\nedition.workspace = true\n"
+        ));
         assert!(has_workspace_inheritance("rust-version.workspace = true\n"));
-        assert!(!has_workspace_inheritance("[package]\nedition = \"2021\"\n"));
+        assert!(!has_workspace_inheritance(
+            "[package]\nedition = \"2021\"\n"
+        ));
         assert!(!has_workspace_inheritance(""));
     }
 
@@ -9991,22 +10698,30 @@ edition.workspace = true
         let member_root = ws_root.join("api");
         std::fs::create_dir_all(member_root.join("src")).unwrap();
 
-        std::fs::write(ws_root.join("Cargo.toml"), r#"[workspace]
+        std::fs::write(
+            ws_root.join("Cargo.toml"),
+            r#"[workspace]
 members = ["api"]
 
 [workspace.package]
 edition = "2021"
 rust-version = "1.70"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        std::fs::write(member_root.join("Cargo.toml"), r#"[package]
+        std::fs::write(
+            member_root.join("Cargo.toml"),
+            r#"[package]
 name = "api"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         std::fs::write(member_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
 
@@ -10044,11 +10759,15 @@ rust-version.workspace = true
         let crate_root = unique_tmp_dir("standalone-n374");
         std::fs::create_dir_all(crate_root.join("src")).unwrap();
 
-        std::fs::write(crate_root.join("Cargo.toml"), r#"[package]
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
 name = "standalone"
 version = "0.1.0"
 edition = "2021"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         std::fs::write(crate_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
 
@@ -10076,9 +10795,11 @@ edition = "2021"
         let crate_root = unique_tmp_dir("staging-nested-src");
         std::fs::create_dir_all(crate_root.join("api/src")).unwrap();
 
-        let cargo_toml = "[package]\nname = \"fixture-jx3r\"\nversion = \"0.0.1\"\nedition = \"2021\"\n";
+        let cargo_toml =
+            "[package]\nname = \"fixture-jx3r\"\nversion = \"0.0.1\"\nedition = \"2021\"\n";
         let lib_rs = "pub mod nested;\n";
-        let nested_rs = "pub fn greet(n: i32) -> &'static str { if n > 0 { \"pos\" } else { \"non-pos\" } }\n";
+        let nested_rs =
+            "pub fn greet(n: i32) -> &'static str { if n > 0 { \"pos\" } else { \"non-pos\" } }\n";
         std::fs::write(crate_root.join("Cargo.toml"), cargo_toml).unwrap();
         std::fs::create_dir_all(crate_root.join("src")).unwrap();
         std::fs::write(crate_root.join("src/lib.rs"), lib_rs).unwrap();
@@ -10090,8 +10811,10 @@ edition = "2021"
         let staging_crate = create_crate_staging_copy(&crate_root, &staging_root).unwrap();
 
         // The staging copy has src/ but NOT api/src/.
-        assert!(!staging_crate.join("api/src").exists(),
-            "staging copy should not have api/src before fix");
+        assert!(
+            !staging_crate.join("api/src").exists(),
+            "staging copy should not have api/src before fix"
+        );
 
         // Simulate the instrumented write path (post-fix): create parent dirs
         // then write.
@@ -10102,7 +10825,10 @@ edition = "2021"
         }
         std::fs::write(&staging_file, "// instrumented\n").unwrap();
 
-        assert!(staging_file.exists(), "nested staging file must exist after write");
+        assert!(
+            staging_file.exists(),
+            "nested staging file must exist after write"
+        );
 
         // Original must be unchanged.
         assert_eq!(
@@ -10129,11 +10855,24 @@ edition = "2021"
             let x = "include_str!(\"not a macro\")";
         "#;
         let refs = find_compile_time_asset_paths(src);
-        let paths: Vec<(&str, AssetBase)> = refs.iter().map(|r| (r.path.as_str(), r.base)).collect();
-        assert!(paths.contains(&("../fixtures/dev.json", AssetBase::File)), "include_str path missing: {paths:?}");
-        assert!(paths.contains(&("blob.bin", AssetBase::File)), "include_bytes path missing: {paths:?}");
-        assert!(paths.contains(&("./migrations", AssetBase::Manifest)), "sqlx::migrate path missing: {paths:?}");
-        assert!(paths.contains(&("migrations", AssetBase::Manifest)), "sqlx::migrate!() default missing: {paths:?}");
+        let paths: Vec<(&str, AssetBase)> =
+            refs.iter().map(|r| (r.path.as_str(), r.base)).collect();
+        assert!(
+            paths.contains(&("../fixtures/dev.json", AssetBase::File)),
+            "include_str path missing: {paths:?}"
+        );
+        assert!(
+            paths.contains(&("blob.bin", AssetBase::File)),
+            "include_bytes path missing: {paths:?}"
+        );
+        assert!(
+            paths.contains(&("./migrations", AssetBase::Manifest)),
+            "sqlx::migrate path missing: {paths:?}"
+        );
+        assert!(
+            paths.contains(&("migrations", AssetBase::Manifest)),
+            "sqlx::migrate!() default missing: {paths:?}"
+        );
     }
 
     #[test]
@@ -10143,24 +10882,44 @@ edition = "2021"
         std::fs::create_dir_all(crate_root.join("fixtures")).unwrap();
         std::fs::create_dir_all(crate_root.join("migrations")).unwrap();
 
-        std::fs::write(crate_root.join("Cargo.toml"),
-            "[package]\nname = \"gc0r-fix\"\nversion = \"0.0.1\"\nedition = \"2021\"\n").unwrap();
-        std::fs::write(crate_root.join("src/lib.rs"),
-            "pub mod seed;\npub mod migrations;\n").unwrap();
-        std::fs::write(crate_root.join("src/seed.rs"),
-            "pub const DEV_FIXTURE: &str = include_str!(\"../fixtures/dev.json\");\n").unwrap();
-        std::fs::write(crate_root.join("src/migrations.rs"),
-            "pub fn run() { sqlx::migrate!(\"./migrations\"); }\n").unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"gc0r-fix\"\nversion = \"0.0.1\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub mod seed;\npub mod migrations;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/seed.rs"),
+            "pub const DEV_FIXTURE: &str = include_str!(\"../fixtures/dev.json\");\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/migrations.rs"),
+            "pub fn run() { sqlx::migrate!(\"./migrations\"); }\n",
+        )
+        .unwrap();
         std::fs::write(crate_root.join("fixtures/dev.json"), "{\"k\":1}\n").unwrap();
-        std::fs::write(crate_root.join("migrations/0001_init.sql"), "CREATE TABLE t (id INT);\n").unwrap();
+        std::fs::write(
+            crate_root.join("migrations/0001_init.sql"),
+            "CREATE TABLE t (id INT);\n",
+        )
+        .unwrap();
 
         let staging_root = unique_tmp_dir("staging-gc0r-dest");
         let staging_crate = create_crate_staging_copy(&crate_root, &staging_root).unwrap();
 
-        assert!(staging_crate.join("fixtures/dev.json").exists(),
-            "fixtures/dev.json must be copied for include_str!");
-        assert!(staging_crate.join("migrations/0001_init.sql").exists(),
-            "migrations/ must be copied for sqlx::migrate!");
+        assert!(
+            staging_crate.join("fixtures/dev.json").exists(),
+            "fixtures/dev.json must be copied for include_str!"
+        );
+        assert!(
+            staging_crate.join("migrations/0001_init.sql").exists(),
+            "migrations/ must be copied for sqlx::migrate!"
+        );
 
         // Original tree must not be mutated.
         assert!(crate_root.join("fixtures/dev.json").exists());
@@ -10178,17 +10937,25 @@ edition = "2021"
         let outside = crate_root.parent().unwrap().join("outside-gc0r.txt");
         std::fs::write(&outside, "external\n").unwrap();
 
-        std::fs::write(crate_root.join("Cargo.toml"),
-            "[package]\nname = \"gc0r-esc\"\nversion = \"0.0.1\"\nedition = \"2021\"\n").unwrap();
-        std::fs::write(crate_root.join("src/lib.rs"),
-            "pub const E: &str = include_str!(\"../outside-gc0r.txt\");\n").unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            "[package]\nname = \"gc0r-esc\"\nversion = \"0.0.1\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub const E: &str = include_str!(\"../outside-gc0r.txt\");\n",
+        )
+        .unwrap();
 
         let staging_root = unique_tmp_dir("staging-gc0r-escape-dest");
         // Must not error — escaping paths are skipped silently.
         let staging_crate = create_crate_staging_copy(&crate_root, &staging_root).unwrap();
         assert!(staging_crate.join("src/lib.rs").exists());
-        assert!(!staging_crate.join("outside-gc0r.txt").exists(),
-            "escaping asset must not appear in staging");
+        assert!(
+            !staging_crate.join("outside-gc0r.txt").exists(),
+            "escaping asset must not appear in staging"
+        );
 
         let _ = std::fs::remove_dir_all(&crate_root);
         let _ = std::fs::remove_dir_all(&staging_root);
