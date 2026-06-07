@@ -549,6 +549,187 @@ func main() {
 	}
 }
 
+func TestGeneratedWrapperNormalizesSentinelMapInputInsideStruct(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	const targetSrc = `package nestedmapdecode
+
+type Entry struct {
+	Count int
+}
+
+type Request struct {
+	Entries map[string]Entry
+	Groups []map[string]Entry
+}
+
+func SumRequest(req Request) int {
+	total := 0
+	for _, entry := range req.Entries {
+		total += entry.Count
+	}
+	for _, group := range req.Groups {
+		for _, entry := range group {
+			total += entry.Count
+		}
+	}
+	return total
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "nestedmapdecode.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write nestedmapdecode.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/nestedmapdecode\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  modDir,
+		Env:  append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("load package: %v", err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatalf("package load reported errors")
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loaded %d packages, want 1", len(pkgs))
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "nestedmapdecode", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	runnerSrc := `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	nestedmapdecode "example.com/nestedmapdecode"
+)
+
+func main() {
+	input := json.RawMessage(` + "`" + `{"Entries":{"_key":"root","_value":{"Count":7}},"Groups":[{"_key":"child","_value":{"Count":3}}]}` + "`" + `)
+	got, err := nestedmapdecode.ShatterInvoke(nestedmapdecode.PlanDescriptor{TargetID: "example.com/nestedmapdecode:SumRequest"}, []json.RawMessage{input})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if got != 10 {
+		fmt.Fprintf(os.Stderr, "got %v, want 10\n", got)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write runner main.go: %v", err)
+	}
+	runnerMod := "module example.com/nestedmapdecode-runner\n\ngo 1.23.0\n\nrequire example.com/nestedmapdecode v0.0.0\n\nreplace example.com/nestedmapdecode => " + modDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		src, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\ngenerated wrapper:\n%s", err, buildErr.String(), src)
+	}
+
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want ok\nstderr: %s", got, runErr.String())
+	}
+}
+
+func TestGeneratedWrapperPreservesKeyValueStructWithoutMap(t *testing.T) {
+	const targetSrc = `package keyvalue
+
+type Payload struct {
+	Key string ` + "`json:\"_key\"`" + `
+	Value int ` + "`json:\"_value\"`" + `
+}
+
+func Echo(payload Payload) int {
+	if payload.Key == "alpha" {
+		return payload.Value
+	}
+	return 0
+}
+`
+	modDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modDir, "keyvalue.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write keyvalue.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/keyvalue\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  modDir,
+		Env:  append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("load package: %v", err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatalf("package load reported errors")
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loaded %d packages, want 1", len(pkgs))
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	out := wrapper.GenerateWrapper("keyvalue", targets, nil)
+	if strings.Contains(out, "shatterNormalizeMapInput") {
+		t.Fatalf("wrapper should not normalize _key/_value-only structs without maps; source:\n%s", out)
+	}
+}
+
 // TestGeneratedWrapperCompilesMutliReturn verifies that functions returning
 // multiple values (e.g. (int, error)) produce compilable wrapper code.
 // Regression for the "assignment mismatch: 1 variable but F returns 2 values" build error.
