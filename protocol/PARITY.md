@@ -195,28 +195,6 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ---
 
-### `side-effect-thrown-error-placement`
-
-**Description:** TypeScript and Rust emit thrown errors/panics as a `{ kind: "thrown_error", error_type, message, stack }` entry inside the `side_effects` array AND via the top-level `thrown_error` response field. Go now reports thrown errors via both placements as well.
-
-**Affected frontends:** go
-
-**Affected commands:** execute (side_effects field)
-
-**Status:** resolved
-
-**Resolved at:** 2026-05-07
-
-**Owner:** Ketan Gangatirkar
-
-**Tracking issue:** str-1hlk.14
-
-**Resolution condition:** Go executor emits `thrown_error` entries inside the `side_effects` array in addition to the top-level `thrown_error` field.
-
-**Resolution:** Add `thrown_error` side effect emission to Go executor, mirroring TypeScript/Rust behavior. The top-level field can be retained for backwards compatibility.
-
----
-
 ### `go-side-effects-partial`
 
 **Description:** Go captures all canonical side-effect kinds at the protocol level. For `file_write`, `network_request`, and `environment_read`, capture is limited to high-confidence stdlib package-level calls rewritten by the overlay AST instrumentation: `os.WriteFile`, `os.Getenv`, `os.LookupEnv`, and `net/http.Get`/`Post`/`PostForm`. Lower-level syscall/raw socket/custom client surfaces and uninstrumented dependencies are accepted permanent limits of the current source-overlay interception mechanism.
@@ -294,28 +272,6 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 **Resolution condition:** Go and Rust frontends emit `preflight_failed` for equivalent missing-dependency or missing-toolchain conditions (missing `go.sum` / module cache for Go; missing toolchain or target dir for Rust).
 
 **Resolution:** Add an environment preflight in the Go and Rust frontends that emits `preflight_failed` for the equivalent conditions.
-
----
-
-### `loop-body-states-typescript-only`
-
-**Description:** TypeScript, Go, and Rust now emit `loop_body_states` in execute responses for supported loop executions. Go reconstructs loop_id, zero-based iteration snapshots, and simple identifier-local symbolic snapshots for counted-loop accumulators from cached `LoopInfo`, source AST flow, and observed runtime `scope_events`; Rust records loop body entry directly in its runtime. Rust currently emits empty `locals` maps because its runtime hook has no source-level symbolic environment.
-
-**Affected frontends:** go, rust
-
-**Affected commands:** execute
-
-**Status:** resolved
-
-**Resolved at:** 2026-05-07
-
-**Owner:** Ketan Gangatirkar
-
-**Tracking issue:** str-1hlk.19
-
-**Resolution condition:** Go and Rust execute paths populate `loop_body_states` with the same `loop_id` and zero-based `iteration` contract as TypeScript, or the reconstruction logic moves into a shared core-side postprocessor.
-
-**Resolution:** Go direct execute emits loop_body_states from LoopInfo plus scope_events; Rust instrumented execute emits loop_body_states from runtime loop_enter hooks. Both use the same loop_id and zero-based iteration contract. Go also emits symbolic locals for a narrow counted-loop accumulator slice.
 
 ---
 
