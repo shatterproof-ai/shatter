@@ -125,14 +125,17 @@ func writeImportablePackageOverlay(pkg *packages.Package, generatedDir, hash str
 	if len(files) == 0 {
 		return "", fmt.Errorf("package has no Go files")
 	}
+	packageDir := filepath.Dir(files[0])
+	samePackageTests, err := samePackageTestFiles(packageDir, pkg.Name)
+	if err != nil {
+		return "", err
+	}
+	files = uniqueFilePaths(append(files, samePackageTests...))
 
 	overlaysDir := filepath.Join(generatedDir, hash, "adapter-overlays")
 	builder := overlay.NewBuilder(overlaysDir, hash)
 	rewrittenDir := filepath.Join(generatedDir, hash, "adapter-importable")
 	for _, sourcePath := range files {
-		if strings.HasSuffix(sourcePath, "_test.go") {
-			continue
-		}
 		rewrittenPath := filepath.Join(rewrittenDir, filepath.Base(sourcePath))
 		if err := rewritePackageFile(sourcePath, rewrittenPath, packageName); err != nil {
 			return "", fmt.Errorf("rewrite package file %q: %w", sourcePath, err)
@@ -147,6 +150,38 @@ func writeImportablePackageOverlay(pkg *packages.Package, generatedDir, hash str
 		return "", fmt.Errorf("write overlay manifest: %w", err)
 	}
 	return overlayPath, nil
+}
+
+func samePackageTestFiles(packageDir, packageName string) ([]string, error) {
+	matches, err := filepath.Glob(filepath.Join(packageDir, "*_test.go"))
+	if err != nil {
+		return nil, fmt.Errorf("glob package test files: %w", err)
+	}
+	files := make([]string, 0, len(matches))
+	fset := token.NewFileSet()
+	for _, match := range matches {
+		file, err := parser.ParseFile(fset, match, nil, parser.PackageClauseOnly)
+		if err != nil {
+			return nil, fmt.Errorf("parse test file package %q: %w", match, err)
+		}
+		if file.Name != nil && file.Name.Name == packageName {
+			files = append(files, match)
+		}
+	}
+	return files, nil
+}
+
+func uniqueFilePaths(files []string) []string {
+	seen := make(map[string]struct{}, len(files))
+	unique := make([]string, 0, len(files))
+	for _, file := range files {
+		if _, ok := seen[file]; ok {
+			continue
+		}
+		seen[file] = struct{}{}
+		unique = append(unique, file)
+	}
+	return unique
 }
 
 func importablePackageName(name string) string {
