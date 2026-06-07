@@ -106,26 +106,14 @@ fn language_from_path(file_path: &str) -> Option<String> {
 fn classify_failure_reason(reason: &str) -> (String, String, String) {
     // str-7v73: phased timeout messages distinguish build from explore.
     if reason.starts_with("timed out during build") {
-        return (
-            "build_timeout".into(),
-            reason.into(),
-            "build".into(),
-        );
+        return ("build_timeout".into(), reason.into(), "build".into());
     }
     if reason.starts_with("timed out") {
-        return (
-            "timeout".into(),
-            reason.into(),
-            "exploration".into(),
-        );
+        return ("timeout".into(), reason.into(), "exploration".into());
     }
 
     if let Some(rest) = reason.strip_prefix("error: exploration error: frontend error: ") {
-        return (
-            "frontend_error".into(),
-            rest.into(),
-            "frontend".into(),
-        );
+        return ("frontend_error".into(), rest.into(), "frontend".into());
     }
 
     if let Some(rest) = reason.strip_prefix("error: exploration error: ") {
@@ -145,19 +133,11 @@ fn classify_failure_reason(reason: &str) -> (String, String, String) {
     }
 
     if reason == "no analysis found" {
-        return (
-            "build_error".into(),
-            reason.into(),
-            "analysis".into(),
-        );
+        return ("build_error".into(), reason.into(), "analysis".into());
     }
 
     // Fallback for unrecognized patterns.
-    (
-        "unknown".into(),
-        reason.into(),
-        "scan".into(),
-    )
+    ("unknown".into(), reason.into(), "scan".into())
 }
 
 /// Partition a flat skipped-function list into the structured `failed`
@@ -193,8 +173,7 @@ fn split_skipped_into_failed(
         match s.category {
             SkipCategory::Error => {
                 let language = language_from_path(&file_path);
-                let (error_type, error_message, failed_at) =
-                    classify_failure_reason(&s.reason);
+                let (error_type, error_message, failed_at) = classify_failure_reason(&s.reason);
                 failed_out.push(FailedFunctionReport {
                     function_name: display_name.to_string(),
                     display_name: display_name.to_string(),
@@ -246,6 +225,12 @@ pub struct DiscoveredInput {
     pub thrown_error: Option<String>,
     /// Lines executed during this call.
     pub lines_executed: Vec<u32>,
+    /// Structured invocation outcome status, when the frontend reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_status: Option<String>,
+    /// Human-readable reason for a non-completed invocation outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_reason: Option<String>,
 }
 
 /// Constraint solving statistics for a function.
@@ -328,6 +313,10 @@ pub enum CompletionOutcome {
     /// `"unknown receiver kind"` sentinel — the target was never
     /// dispatched cleanly. str-jeen.50.
     DispatchFailed,
+    /// Every recorded input was skipped by the frontend policy before
+    /// target execution. These rows are completed at the scan-orchestrator
+    /// layer but must not count as observed behavior.
+    SkippedByPolicy,
 }
 
 /// Sentinel substring emitted by the Go launcher wrapper's default switch
@@ -345,6 +334,7 @@ impl CompletionOutcome {
             CompletionOutcome::Behavioral => "behavioral",
             CompletionOutcome::ErrorOnly => "error_only",
             CompletionOutcome::DispatchFailed => "dispatch_failed",
+            CompletionOutcome::SkippedByPolicy => "skipped_by_policy",
         }
     }
 
@@ -355,6 +345,13 @@ impl CompletionOutcome {
     fn from_discovered_inputs(inputs: &[DiscoveredInput]) -> Self {
         if inputs.is_empty() {
             return CompletionOutcome::Behavioral;
+        }
+        if inputs.iter().all(|d| {
+            d.outcome_status
+                .as_deref()
+                .is_some_and(|status| status == "skipped_by_policy")
+        }) {
+            return CompletionOutcome::SkippedByPolicy;
         }
         if !inputs.iter().all(|d| d.thrown_error.is_some()) {
             return CompletionOutcome::Behavioral;
@@ -530,6 +527,12 @@ pub struct CodebaseReport {
     /// the field and decode to `0`.
     #[serde(default)]
     pub completed_dispatch_failed: usize,
+    /// Subset of [`Self::completed_functions`] whose every recorded
+    /// invocation reported `outcome.status == "skipped_by_policy"`.
+    /// These functions were attempted but never executed target behavior
+    /// because a frontend policy gate rejected each input.
+    #[serde(default)]
+    pub completed_skipped_by_policy: usize,
     /// Number of functions that were attempted and failed (timeouts,
     /// runtime errors, build failures). Each entry has a corresponding
     /// row in [`Self::failed`].
@@ -929,6 +932,44 @@ fn execute_result_error(result: &crate::protocol::ExecuteResult) -> Option<Strin
         .map(|e| format!("{}: {}", e.error_type, e.message))
 }
 
+fn outcome_status_wire(status: crate::protocol::OutcomeStatus) -> &'static str {
+    match status {
+        crate::protocol::OutcomeStatus::Completed => "completed",
+        crate::protocol::OutcomeStatus::CompletedWithFindings => "completed_with_findings",
+        crate::protocol::OutcomeStatus::Unsupported => "unsupported",
+        crate::protocol::OutcomeStatus::BuildFailed => "build_failed",
+        crate::protocol::OutcomeStatus::RuntimeFailed => "runtime_failed",
+        crate::protocol::OutcomeStatus::TimedOut => "timed_out",
+        crate::protocol::OutcomeStatus::SkippedByPolicy => "skipped_by_policy",
+        crate::protocol::OutcomeStatus::PreflightFailed => "preflight_failed",
+    }
+}
+
+fn execute_result_outcome_status(result: &crate::protocol::ExecuteResult) -> Option<String> {
+    result
+        .outcome
+        .as_ref()
+        .map(|outcome| outcome_status_wire(outcome.status).to_string())
+}
+
+fn execute_result_outcome_reason(result: &crate::protocol::ExecuteResult) -> Option<String> {
+    result
+        .outcome
+        .as_ref()
+        .and_then(|outcome| outcome.short_reason.clone())
+}
+
+fn raw_result_for_inputs<'a>(
+    exploration: &'a crate::explorer::ObservationOutput,
+    inputs: &[serde_json::Value],
+) -> Option<&'a crate::protocol::ExecuteResult> {
+    exploration
+        .raw_results
+        .iter()
+        .find(|(raw_inputs, _mocks, _result)| raw_inputs == inputs)
+        .map(|(_inputs, _mocks, result)| result)
+}
+
 /// Build a [`FunctionReport`] from a scan's [`FunctionResult`].
 pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) -> FunctionReport {
     let exploration = &result.exploration;
@@ -936,11 +977,20 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
     let mut discovered_inputs: Vec<DiscoveredInput> = exploration
         .new_path_executions
         .iter()
-        .map(|exec| DiscoveredInput {
-            inputs: exec.inputs.clone(),
-            return_value: exec.return_value.clone(),
-            thrown_error: exec.thrown_error.clone(),
-            lines_executed: recover_lines_executed(exploration, &exec.inputs, &exec.lines_executed),
+        .map(|exec| {
+            let raw_result = raw_result_for_inputs(exploration, &exec.inputs);
+            DiscoveredInput {
+                inputs: exec.inputs.clone(),
+                return_value: exec.return_value.clone(),
+                thrown_error: exec.thrown_error.clone(),
+                lines_executed: recover_lines_executed(
+                    exploration,
+                    &exec.inputs,
+                    &exec.lines_executed,
+                ),
+                outcome_status: raw_result.and_then(execute_result_outcome_status),
+                outcome_reason: raw_result.and_then(execute_result_outcome_reason),
+            }
         })
         .collect();
 
@@ -973,6 +1023,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         if !seen_input_keys.insert(input_key) {
             continue;
         }
+        let raw_result = raw_result_for_inputs(exploration, &behavior.input_args);
         discovered_inputs.push(DiscoveredInput {
             inputs: behavior.input_args.clone(),
             return_value: behavior.return_value.clone(),
@@ -981,10 +1032,16 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
                 .as_ref()
                 .map(|e| format!("{}: {}", e.error_type, e.message)),
             lines_executed: recover_lines_executed(exploration, &behavior.input_args, &[]),
+            outcome_status: raw_result.and_then(execute_result_outcome_status),
+            outcome_reason: raw_result.and_then(execute_result_outcome_reason),
         });
     }
     for (raw_inputs, _mocks, raw_result) in &exploration.raw_results {
-        if !has_native_replay_input(raw_inputs) {
+        let is_native_replay = has_native_replay_input(raw_inputs);
+        let is_policy_skip = raw_result.outcome.as_ref().is_some_and(|outcome| {
+            outcome.status == crate::protocol::OutcomeStatus::SkippedByPolicy
+        });
+        if !is_native_replay && !is_policy_skip {
             continue;
         }
         let Ok(input_key) = serde_json::to_string(raw_inputs) else {
@@ -998,6 +1055,8 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
             return_value: raw_result.return_value.clone(),
             thrown_error: execute_result_error(raw_result),
             lines_executed: execute_result_lines(raw_result),
+            outcome_status: execute_result_outcome_status(raw_result),
+            outcome_reason: execute_result_outcome_reason(raw_result),
         });
     }
 
@@ -1060,10 +1119,14 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
             )),
         )
     } else {
-        (
-            CompletionOutcome::from_discovered_inputs(&discovered_inputs),
-            None,
-        )
+        let outcome = CompletionOutcome::from_discovered_inputs(&discovered_inputs);
+        let reason = match outcome {
+            CompletionOutcome::SkippedByPolicy => discovered_inputs
+                .iter()
+                .find_map(|input| input.outcome_reason.clone()),
+            _ => None,
+        };
+        (outcome, reason)
     };
     FunctionReport {
         function_name: display_name.to_string(),
@@ -1163,21 +1226,24 @@ fn display_names_for_order(test_order: &[String]) -> Vec<String> {
 }
 
 /// Split per-function completion outcomes into `(behavioral_count,
-/// error_only_count, dispatch_failed_count)` totals (str-jeen.53,
-/// extended in str-jeen.50). The three counts always sum to
+/// error_only_count, dispatch_failed_count, skipped_by_policy_count)`
+/// totals (str-jeen.53, extended in str-jeen.50 and str-0vko). The
+/// four counts always sum to
 /// `functions.len()`.
-fn split_completion_outcomes(functions: &[FunctionReport]) -> (usize, usize, usize) {
+fn split_completion_outcomes(functions: &[FunctionReport]) -> (usize, usize, usize, usize) {
     let mut behavioral = 0usize;
     let mut error_only = 0usize;
     let mut dispatch_failed = 0usize;
+    let mut skipped_by_policy = 0usize;
     for func in functions {
         match func.completion_outcome {
             CompletionOutcome::Behavioral => behavioral += 1,
             CompletionOutcome::ErrorOnly => error_only += 1,
             CompletionOutcome::DispatchFailed => dispatch_failed += 1,
+            CompletionOutcome::SkippedByPolicy => skipped_by_policy += 1,
         }
     }
-    (behavioral, error_only, dispatch_failed)
+    (behavioral, error_only, dispatch_failed, skipped_by_policy)
 }
 
 /// Build a [`CumulativeReport`] from batch state.
@@ -1235,8 +1301,12 @@ pub fn generate_report(
     };
     let productionish_source_lines = source_set.production_ish.line_count;
 
-    let (completed_with_behavior, completed_error_only, completed_dispatch_failed) =
-        split_completion_outcomes(&functions);
+    let (
+        completed_with_behavior,
+        completed_error_only,
+        completed_dispatch_failed,
+        completed_skipped_by_policy,
+    ) = split_completion_outcomes(&functions);
 
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
@@ -1247,6 +1317,7 @@ pub fn generate_report(
             completed_with_behavior,
             completed_error_only,
             completed_dispatch_failed,
+            completed_skipped_by_policy,
             failed_functions: counts.failed,
             skipped_functions_count: counts.expected_skipped + counts.unsupported,
             unsupported_functions: counts.unsupported,
@@ -1306,8 +1377,12 @@ pub fn generate_report_from_scan(
     };
     let productionish_source_lines = source_set.production_ish.line_count;
 
-    let (completed_with_behavior, completed_error_only, completed_dispatch_failed) =
-        split_completion_outcomes(&functions);
+    let (
+        completed_with_behavior,
+        completed_error_only,
+        completed_dispatch_failed,
+        completed_skipped_by_policy,
+    ) = split_completion_outcomes(&functions);
 
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
@@ -1318,6 +1393,7 @@ pub fn generate_report_from_scan(
             completed_with_behavior,
             completed_error_only,
             completed_dispatch_failed,
+            completed_skipped_by_policy,
             failed_functions: counts.failed,
             skipped_functions_count: counts.expected_skipped + counts.unsupported,
             unsupported_functions: counts.unsupported,
@@ -1553,6 +1629,13 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
                 out,
                 "  - **dispatch-failed (unknown receiver kind):** {}",
                 cb.completed_dispatch_failed,
+            );
+        }
+        if cb.completed_skipped_by_policy > 0 {
+            let _ = writeln!(
+                out,
+                "  - **skipped by policy:** {}",
+                cb.completed_skipped_by_policy,
             );
         }
     }
@@ -2229,9 +2312,7 @@ mod tests {
     use crate::behavior::{Behavior, BehaviorMap};
     use crate::execution_record::{BranchDecision, ErrorInfo, SymConstraint};
     use crate::explorer::{ExecutionSummary, ObservationOutput};
-    use crate::protocol::{
-        ExecuteResult, InvocationOutcome, OutcomeStatus, PerformanceMetrics,
-    };
+    use crate::protocol::{ExecuteResult, InvocationOutcome, OutcomeStatus, PerformanceMetrics};
     use crate::scan_orchestrator::{FunctionResult, ParallelScanResult, SkippedFunction};
     use std::collections::HashMap;
 
@@ -2546,7 +2627,9 @@ mod tests {
         };
         func_result.exploration.lines_covered = 0;
         func_result.exploration.new_path_executions[0].lines_executed = vec![];
-        let inputs = func_result.exploration.new_path_executions[0].inputs.clone();
+        let inputs = func_result.exploration.new_path_executions[0]
+            .inputs
+            .clone();
         func_result.exploration.raw_results = vec![(
             inputs,
             vec![],
@@ -3457,10 +3540,15 @@ mod tests {
         assert_eq!(cb.completed_with_behavior, 1);
         assert_eq!(cb.completed_error_only, 1);
         assert_eq!(cb.completed_dispatch_failed, 0);
+        assert_eq!(cb.completed_skipped_by_policy, 0);
         assert_eq!(
-            cb.completed_with_behavior + cb.completed_error_only + cb.completed_dispatch_failed,
+            cb.completed_with_behavior
+                + cb.completed_error_only
+                + cb.completed_dispatch_failed
+                + cb.completed_skipped_by_policy,
             cb.completed_functions,
             "completed_with_behavior + completed_error_only + completed_dispatch_failed \
+             + completed_skipped_by_policy \
              must equal completed_functions",
         );
 
@@ -3541,6 +3629,7 @@ mod tests {
         );
         assert_eq!(report.codebase.completed_with_behavior, 0);
         assert_eq!(report.codebase.completed_dispatch_failed, 1);
+        assert_eq!(report.codebase.completed_skipped_by_policy, 0);
 
         let json = serde_json::to_string(&report).expect("serialize report");
         assert!(json.contains("\"completion_outcome\":\"dispatch_failed\""));
@@ -3635,12 +3724,16 @@ mod tests {
                 return_value: None,
                 thrown_error: Some(unknown.to_string()),
                 lines_executed: vec![],
+                outcome_status: None,
+                outcome_reason: None,
             },
             DiscoveredInput {
                 inputs: vec![serde_json::json!(-1)],
                 return_value: None,
                 thrown_error: Some(unknown.to_string()),
                 lines_executed: vec![],
+                outcome_status: None,
+                outcome_reason: None,
             },
         ];
         assert_eq!(
@@ -3657,12 +3750,16 @@ mod tests {
                 return_value: None,
                 thrown_error: Some(unknown.to_string()),
                 lines_executed: vec![],
+                outcome_status: None,
+                outcome_reason: None,
             },
             DiscoveredInput {
                 inputs: vec![serde_json::json!(2)],
                 return_value: None,
                 thrown_error: Some(real_panic.to_string()),
                 lines_executed: vec![],
+                outcome_status: None,
+                outcome_reason: None,
             },
         ];
         assert_eq!(
@@ -3677,6 +3774,8 @@ mod tests {
             return_value: None,
             thrown_error: Some(real_panic.to_string()),
             lines_executed: vec![],
+            outcome_status: None,
+            outcome_reason: None,
         }];
         assert_eq!(
             CompletionOutcome::from_discovered_inputs(&all_real),
@@ -3692,12 +3791,16 @@ mod tests {
                 return_value: Some(serde_json::json!("ok")),
                 thrown_error: None,
                 lines_executed: vec![1],
+                outcome_status: None,
+                outcome_reason: None,
             },
             DiscoveredInput {
                 inputs: vec![serde_json::json!(2)],
                 return_value: None,
                 thrown_error: Some(unknown.to_string()),
                 lines_executed: vec![],
+                outcome_status: None,
+                outcome_reason: None,
             },
         ];
         assert_eq!(
@@ -4407,14 +4510,9 @@ mod tests {
     fn progress_event_with_language_phase_round_trips() {
         // str-4oa1: mixed-language progress events carry language and
         // phase-local counters alongside global counters.
-        let event = ProgressEvent::with_qualified_status(
-            "src/lib.rs::process",
-            3,
-            24,
-            1500,
-            "started",
-        )
-        .with_language_phase("rust", 1, 2);
+        let event =
+            ProgressEvent::with_qualified_status("src/lib.rs::process", 3, 24, 1500, "started")
+                .with_language_phase("rust", 1, 2);
         let json = serde_json::to_string(&event).expect("serialize");
         let deserialized: ProgressEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(event, deserialized);
@@ -4430,13 +4528,8 @@ mod tests {
     fn progress_event_single_language_omits_phase_fields() {
         // str-4oa1: single-language scans must not emit language/phase
         // fields — backward compatibility with existing consumers.
-        let event = ProgressEvent::with_qualified_status(
-            "src/lib.rs::process",
-            1,
-            5,
-            100,
-            "started",
-        );
+        let event =
+            ProgressEvent::with_qualified_status("src/lib.rs::process", 1, 5, 100, "started");
         let json = event.to_json().expect("serialize");
         assert!(
             !json.contains("language"),
@@ -4465,7 +4558,7 @@ mod tests {
             events.push(
                 ProgressEvent::with_qualified_status(
                     &format!("src/lib.rs::fn{i}"),
-                    i,          // global_current = offset(0) + phase_current
+                    i, // global_current = offset(0) + phase_current
                     global_total,
                     i as u64 * 100,
                     "started",
@@ -4479,7 +4572,7 @@ mod tests {
             events.push(
                 ProgressEvent::with_qualified_status(
                     &format!("src/app.ts::fn{i}"),
-                    2 + i,      // global_current = offset(2) + phase_current
+                    2 + i, // global_current = offset(2) + phase_current
                     global_total,
                     (2 + i) as u64 * 100,
                     "started",
@@ -4518,8 +4611,10 @@ mod tests {
         }
 
         // Phase totals must match their language group size.
-        let rust_events: Vec<&ProgressEvent> =
-            events.iter().filter(|e| e.language.as_deref() == Some("rust")).collect();
+        let rust_events: Vec<&ProgressEvent> = events
+            .iter()
+            .filter(|e| e.language.as_deref() == Some("rust"))
+            .collect();
         let ts_events: Vec<&ProgressEvent> = events
             .iter()
             .filter(|e| e.language.as_deref() == Some("typescript"))
@@ -4891,10 +4986,7 @@ mod tests {
         };
 
         let mut file_map = HashMap::new();
-        file_map.insert(
-            "src/lib.rs::healthy".to_string(),
-            "src/lib.rs".to_string(),
-        );
+        file_map.insert("src/lib.rs::healthy".to_string(), "src/lib.rs".to_string());
         file_map.insert(
             "src/catalog.rs::pickpackit_catalog".to_string(),
             "src/catalog.rs".to_string(),
@@ -4952,7 +5044,10 @@ mod tests {
         assert_eq!(timeout.function_name, "pickpackit_catalog");
         assert_eq!(timeout.language.as_deref(), Some("rust"));
         assert_eq!(timeout.error_type.as_deref(), Some("timeout"));
-        assert_eq!(timeout.error_message.as_deref(), Some("timed out after 20s"));
+        assert_eq!(
+            timeout.error_message.as_deref(),
+            Some("timed out after 20s")
+        );
         assert_eq!(timeout.failed_at.as_deref(), Some("exploration"));
 
         // Frontend error chain.
@@ -5276,22 +5371,19 @@ mod proptests {
     #[test]
     fn classify_failure_reason_phased_timeout() {
         // Build-phase timeout → build_timeout
-        let (et, em, fa) =
-            super::classify_failure_reason("timed out during build after 30s");
+        let (et, em, fa) = super::classify_failure_reason("timed out during build after 30s");
         assert_eq!(et, "build_timeout");
         assert_eq!(em, "timed out during build after 30s");
         assert_eq!(fa, "build");
 
         // Exploration-phase timeout → timeout (unchanged)
-        let (et, em, fa) =
-            super::classify_failure_reason("timed out during execution after 180s");
+        let (et, em, fa) = super::classify_failure_reason("timed out during execution after 180s");
         assert_eq!(et, "timeout");
         assert_eq!(em, "timed out during execution after 180s");
         assert_eq!(fa, "exploration");
 
         // Legacy format (total budget) → timeout
-        let (et, em, fa) =
-            super::classify_failure_reason("timed out (total scan budget exceeded)");
+        let (et, em, fa) = super::classify_failure_reason("timed out (total scan budget exceeded)");
         assert_eq!(et, "timeout");
         assert_eq!(em, "timed out (total scan budget exceeded)");
         assert_eq!(fa, "exploration");
@@ -5300,9 +5392,18 @@ mod proptests {
     /// str-4mmd: language detection from file paths.
     #[test]
     fn language_from_path_coverage() {
-        assert_eq!(super::language_from_path("src/foo.ts"), Some("typescript".into()));
-        assert_eq!(super::language_from_path("src/bar.tsx"), Some("typescript".into()));
-        assert_eq!(super::language_from_path("pkg/handler.go"), Some("go".into()));
+        assert_eq!(
+            super::language_from_path("src/foo.ts"),
+            Some("typescript".into())
+        );
+        assert_eq!(
+            super::language_from_path("src/bar.tsx"),
+            Some("typescript".into())
+        );
+        assert_eq!(
+            super::language_from_path("pkg/handler.go"),
+            Some("go".into())
+        );
         assert_eq!(super::language_from_path("src/lib.rs"), Some("rust".into()));
         assert_eq!(super::language_from_path("Makefile"), None);
         assert_eq!(super::language_from_path(""), None);
