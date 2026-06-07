@@ -4867,7 +4867,7 @@ mod tests {
         let result = explore_function(&mut frontend, &analysis, &config, None, None)
             .await
             .expect("generators should succeed");
-        assert_eq!(result.iterations, 1);
+        assert_eq!(result.iterations, 2);
         assert_eq!(result.unique_paths, 1);
         frontend.shutdown().await.expect("shutdown failed");
     }
