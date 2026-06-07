@@ -44,6 +44,77 @@ func add(a int, b int) int { return a + b }
 	}
 }
 
+func TestExecutePropagatesTargetReturnedError(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "target.go")
+	src := `package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func Validate(s string) error {
+	if s == "bad" {
+		return fmt.Errorf("invalid value: %s", s)
+	}
+	return nil
+}
+
+func Parse(s string) (int, error) {
+	return strconv.Atoi(s)
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	validateReq := reqJSON(1, "execute", fmt.Sprintf(`"file":"%s","function":"Validate","inputs":["bad"]`, tmp))
+	validateResp := sendRecv(t, validateReq)
+	assertFunctionErrorOutcome(t, validateResp, "invalid value: bad")
+
+	parseBadReq := reqJSON(2, "execute", fmt.Sprintf(`"file":"%s","function":"Parse","inputs":["bad"]`, tmp))
+	parseBadResp := sendRecv(t, parseBadReq)
+	assertFunctionErrorOutcome(t, parseBadResp, "invalid syntax")
+
+	parseGoodReq := reqJSON(3, "execute", fmt.Sprintf(`"file":"%s","function":"Parse","inputs":["42"]`, tmp))
+	parseGoodResp := sendRecv(t, parseGoodReq)
+	if parseGoodResp.Status != "execute" {
+		t.Fatalf("Parse good status = %q, want execute (message: %s)", parseGoodResp.Status, parseGoodResp.Message)
+	}
+	if parseGoodResp.Outcome == nil || parseGoodResp.Outcome.Status != OutcomeStatusCompleted {
+		t.Fatalf("Parse good outcome = %+v, want completed", parseGoodResp.Outcome)
+	}
+	var got int
+	if err := json.Unmarshal(parseGoodResp.ReturnValue, &got); err != nil {
+		t.Fatalf("Parse good return value: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("Parse good return value = %d, want 42", got)
+	}
+}
+
+func assertFunctionErrorOutcome(t *testing.T, resp Response, wantMessage string) {
+	t.Helper()
+	if resp.Status != "execute" {
+		t.Fatalf("status = %q, want execute (message: %s)", resp.Status, resp.Message)
+	}
+	if resp.Outcome == nil {
+		t.Fatalf("response missing outcome: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusRuntimeFailed {
+		t.Fatalf("outcome.Status = %q, want runtime_failed (response: %+v)", resp.Outcome.Status, resp)
+	}
+	if resp.Outcome.ThrownError == nil {
+		t.Fatalf("response missing thrown_error: %+v", resp)
+	}
+	if resp.Outcome.ThrownError.ErrorType != "function_error" {
+		t.Fatalf("thrown_error type = %q, want function_error", resp.Outcome.ThrownError.ErrorType)
+	}
+	if !strings.Contains(resp.Outcome.ThrownError.Message, wantMessage) {
+		t.Fatalf("thrown_error message = %q, want substring %q", resp.Outcome.ThrownError.Message, wantMessage)
+	}
+}
+
 // TestExecuteEmitsBuildFailedOutcome verifies A2: a target whose source fails
 // to compile produces an InvocationOutcome with status=build_failed and a
 // non-empty short_reason.
