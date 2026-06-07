@@ -77,6 +77,20 @@ func TestAnalyze_HTTPHandler_SetsInvocationModel(t *testing.T) {
 	}
 }
 
+func TestAnalyze_HTTPHandlerPackageMainUnexported_NoInvocationModel(t *testing.T) {
+	file := testFilePath(t, "http_main_project/handler.go")
+	functions, err := AnalyzeFile(file, "unexportedMainHandler")
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if len(functions) != 1 {
+		t.Fatalf("expected 1 function, got %d", len(functions))
+	}
+	if functions[0].InvocationModel != nil {
+		t.Fatalf("expected nil InvocationModel for unexported package-main handler, got %+v", functions[0].InvocationModel)
+	}
+}
+
 func TestAnalyze_NonHandler_NoInvocationModel(t *testing.T) {
 	file := testFilePath(t, "httphandler.go")
 	functions, err := AnalyzeFile(file, "NotAHandler")
