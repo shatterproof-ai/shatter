@@ -1525,6 +1525,65 @@ struct OwnedTypeMapping {
     needs_slice_conversion: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrateBridgeRuntimeParam {
+    SqlxPgPoolRef,
+}
+
+fn classify_crate_bridge_runtime_param(ty: &str) -> Option<CrateBridgeRuntimeParam> {
+    let parsed: syn::Type = syn::parse_str(ty).ok()?;
+    let syn::Type::Reference(type_ref) = parsed else {
+        return None;
+    };
+    if type_ref.mutability.is_some() {
+        return None;
+    }
+    let syn::Type::Path(type_path) = &*type_ref.elem else {
+        return None;
+    };
+    let segments = type_path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    let is_pgpool = match segments.as_slice() {
+        [name] => name == "PgPool",
+        [root, name] => root == "sqlx" && name == "PgPool",
+        [root, module, name] => root == "sqlx" && module == "postgres" && name == "PgPool",
+        _ => false,
+    };
+    if is_pgpool {
+        Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+    } else {
+        None
+    }
+}
+
+fn crate_bridge_json_input_count(param_types: &[String]) -> usize {
+    param_types
+        .iter()
+        .filter(|ty| classify_crate_bridge_runtime_param(ty).is_none())
+        .count()
+}
+
+fn align_crate_bridge_native_replays(
+    param_types: &[String],
+    input_replays: &[Option<NativeReplaySpec>],
+) -> Vec<Option<NativeReplaySpec>> {
+    let mut aligned = Vec::with_capacity(param_types.len());
+    let mut input_index = 0;
+    for ty in param_types {
+        if classify_crate_bridge_runtime_param(ty).is_some() {
+            aligned.push(None);
+        } else {
+            aligned.push(input_replays.get(input_index).cloned().unwrap_or(None));
+            input_index += 1;
+        }
+    }
+    aligned
+}
+
 /// Classification of an Axum extractor wrapper type seen on a function parameter.
 ///
 /// The wrapper-generation paths (`generate_harness`, `generate_dispatch_harness`,
@@ -3409,9 +3468,26 @@ fn generate_crate_bridge_wrapper(
         let axum_shape = is_axum_handler_shape(param_types)
             || return_type.as_ref().is_some_and(|ty| is_axum_return_shape(ty));
 
+        let mut json_input_index = 0usize;
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
             let clean = name.strip_prefix("mut ").unwrap_or(name).trim();
-            if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
+            if let Some(runtime_param) = classify_crate_bridge_runtime_param(ty) {
+                match runtime_param {
+                    CrateBridgeRuntimeParam::SqlxPgPoolRef => {
+                        w.push_str("    let __shatter_database_url = match std::env::var(\"DATABASE_URL\") {\n");
+                        w.push_str("        Ok(value) => value,\n");
+                        w.push_str("        Err(__err) => return serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"runtime_error\", \"message\": format!(\"DATABASE_URL is required for sqlx::PgPool input: {}\", __err)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}),\n");
+                        w.push_str("    };\n");
+                        w.push_str(&format!(
+                            "    let __shatter_pgpool_{i} = match sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_lazy(&__shatter_database_url) {{\n"
+                        ));
+                        w.push_str("        Ok(pool) => pool,\n");
+                        w.push_str("        Err(__err) => return serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"runtime_error\", \"message\": format!(\"failed to construct sqlx::PgPool from DATABASE_URL: {}\", __err)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}),\n");
+                        w.push_str("    };\n");
+                        w.push_str(&format!("    let {clean} = &__shatter_pgpool_{i};\n"));
+                    }
+                }
+            } else if let Some(spec) = native_replays.get(i).and_then(|spec| spec.as_ref()) {
                 let recipe_json =
                     serde_json::to_string(&spec.recipe).unwrap_or_else(|_| "null".to_string());
                 let recipe_literal = rust_string_literal(&recipe_json);
@@ -3430,6 +3506,7 @@ fn generate_crate_bridge_wrapper(
                     "        Err(_) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": \"native replay downcast failed for input {i}: expected {ty}\"}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
                 ));
                 w.push_str("    };\n");
+                json_input_index += 1;
             } else if let Some(ext) = classify_axum_extractor(ty) {
                 let inner = match &ext {
                     AxumExtractor::Path(t) | AxumExtractor::Query(t) | AxumExtractor::Json(t) => t.clone(),
@@ -3438,22 +3515,23 @@ fn generate_crate_bridge_wrapper(
                 };
                 let ctor = axum_extractor_constructor(&ext);
                 w.push_str(&format!(
-                    "    let {clean}_inner: {inner} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
+                    "    let {clean}_inner: {inner} = match serde_json::from_value(inputs[{json_input_index}].clone()) {{\n"
                 ));
                 w.push_str("        Ok(value) => value,\n");
                 w.push_str(&format!(
-                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {json_input_index} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
                 ));
                 w.push_str("    };\n");
                 w.push_str(&format!("    let {clean} = {ctor}({clean}_inner);\n"));
+                json_input_index += 1;
             } else if let Some(mapping) = owned_type_for_ref(ty) {
                 w.push_str(&format!(
-                    "    let {clean}_owned: {} = match serde_json::from_value(inputs[{i}].clone()) {{\n",
+                    "    let {clean}_owned: {} = match serde_json::from_value(inputs[{json_input_index}].clone()) {{\n",
                     mapping.deser_type
                 ));
                 w.push_str("        Ok(value) => value,\n");
                 w.push_str(&format!(
-                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {json_input_index} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
                 ));
                 w.push_str("    };\n");
                 if mapping.needs_slice_conversion {
@@ -3461,15 +3539,17 @@ fn generate_crate_bridge_wrapper(
                         "    let {clean}_refs: Vec<&str> = {clean}_owned.iter().map(|s| s.as_str()).collect();\n"
                     ));
                 }
+                json_input_index += 1;
             } else {
                 w.push_str(&format!(
-                    "    let {clean}: {ty} = match serde_json::from_value(inputs[{i}].clone()) {{\n"
+                    "    let {clean}: {ty} = match serde_json::from_value(inputs[{json_input_index}].clone()) {{\n"
                 ));
                 w.push_str("        Ok(value) => value,\n");
                 w.push_str(&format!(
-                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {i} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                    "        Err(__err) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": format!(\"input {json_input_index} deserialization failed: {{}}\", __err)}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
                 ));
                 w.push_str("    };\n");
+                json_input_index += 1;
             }
         }
 
@@ -3944,7 +4024,7 @@ fn execute_function_crate_bridge(
             "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
         )));
     }
-    let expected_inputs = fn_info.param_names.len();
+    let expected_inputs = crate_bridge_json_input_count(&fn_info.param_types);
     let compatible_fns = vec![fn_info];
     if inputs.len() != expected_inputs {
         return Err(ExecuteError::InstrumentError(format!(
@@ -3952,7 +4032,11 @@ fn execute_function_crate_bridge(
             inputs.len()
         )));
     }
-    let native_replays = native_replay_specs(inputs)?;
+    let input_native_replays = native_replay_specs(inputs)?;
+    let native_replays = align_crate_bridge_native_replays(
+        &compatible_fns[0].param_types,
+        &input_native_replays,
+    );
 
     let mocks_json = serde_json::to_string(mocks)
         .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
@@ -4298,7 +4382,13 @@ pub fn prepare_harness(
         })?;
         // Build the bridge harness by executing with default inputs.
         let ctx = extract_fn_context(&source, function_name)?;
-        let dummy_inputs: Vec<Value> = ctx.sig.param_names.iter().map(|_| Value::Null).collect();
+        let dummy_inputs: Vec<Value> = ctx
+            .sig
+            .param_types
+            .iter()
+            .filter(|ty| classify_crate_bridge_runtime_param(ty).is_none())
+            .map(|_| Value::Null)
+            .collect();
         match execute_function_crate_bridge(
             file_path, function_name, &dummy_inputs, mocks,
             timeout_ms, None, bridge_cache, &crate_root,
@@ -7812,6 +7902,27 @@ fn main() {
         check("&[&str]", "Vec<String>");
         assert!(owned_type_for_ref("i32").is_none());
         assert!(owned_type_for_ref("String").is_none());
+    }
+
+    #[test]
+    fn crate_bridge_runtime_param_classifies_pgpool_refs() {
+        assert_eq!(
+            classify_crate_bridge_runtime_param("&PgPool"),
+            Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+        );
+        assert_eq!(
+            classify_crate_bridge_runtime_param("& sqlx :: PgPool"),
+            Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+        );
+        assert_eq!(
+            classify_crate_bridge_runtime_param("& sqlx :: postgres :: PgPool"),
+            Some(CrateBridgeRuntimeParam::SqlxPgPoolRef)
+        );
+        assert_eq!(classify_crate_bridge_runtime_param("&mut PgPool"), None);
+        assert_eq!(
+            classify_crate_bridge_runtime_param("& sqlx :: Pool < sqlx :: Postgres >"),
+            None
+        );
     }
 
     /// Reproduction test for str-jxap: `&str` parameters must deserialize
