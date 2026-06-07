@@ -441,12 +441,12 @@ func TestGeneratedWrapperNormalizesSentinelMapInput(t *testing.T) {
 	const targetSrc = `package mapdecode
 
 type Entry struct {
-	Count int
+	Count uint64
 	Nested map[string]Entry
 }
 
-func SumEntries(entries map[string]Entry) int {
-	total := 0
+func SumEntries(entries map[string]Entry) uint64 {
+	var total uint64
 	for _, entry := range entries {
 		total += entry.Count
 		for _, nested := range entry.Nested {
@@ -504,14 +504,14 @@ import (
 )
 
 func main() {
-	input := json.RawMessage(` + "`" + `{"_key":"root","_value":{"Count":7,"Nested":{"_key":"child","_value":{"Count":3}}}}` + "`" + `)
+	input := json.RawMessage(` + "`" + `{"_key":"root","_value":{"Count":18446744073709551615,"Nested":{"_key":"child","_value":{"Count":0}}}}` + "`" + `)
 	got, err := mapdecode.ShatterInvoke(mapdecode.PlanDescriptor{TargetID: "example.com/mapdecode:SumEntries"}, []json.RawMessage{input})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if got != 10 {
-		fmt.Fprintf(os.Stderr, "got %v, want 10\n", got)
+	if got != uint64(18446744073709551615) {
+		fmt.Fprintf(os.Stderr, "got %v, want 18446744073709551615\n", got)
 		os.Exit(1)
 	}
 	fmt.Println("ok")
