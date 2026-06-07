@@ -608,6 +608,9 @@ func SumRequest(req Request) int {
 	if len(targets) != 1 {
 		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
 	}
+	if len(targets[0].Parameters) != 1 || !targets[0].Parameters[0].NeedsMapInputNormalization {
+		t.Fatalf("BuildWrapperTargets did not mark named map-containing struct for normalization: %+v", targets[0].Parameters)
+	}
 	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "nestedmapdecode", targets, nil)
 	if err != nil {
 		t.Fatalf("WriteWrapperFile: %v", err)
@@ -678,6 +681,56 @@ func main() {
 	}
 	if got := strings.TrimSpace(runOut.String()); got != "ok" {
 		t.Errorf("runner stdout = %q, want ok\nstderr: %s", got, runErr.String())
+	}
+}
+
+func TestBuildWrapperTargetsDetectsTimeFieldInsideNamedStruct(t *testing.T) {
+	const targetSrc = `package namedtime
+
+import "time"
+
+type Request struct {
+	Now time.Time
+}
+
+func UnixMillis(req Request) int64 {
+	return req.Now.UnixMilli()
+}
+`
+	modDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modDir, "namedtime.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write namedtime.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/namedtime\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  modDir,
+		Env:  append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("load package: %v", err)
+	}
+	if packages.PrintErrors(pkgs) > 0 {
+		t.Fatalf("package load reported errors")
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loaded %d packages, want 1", len(pkgs))
+	}
+
+	targets := wrapper.BuildWrapperTargets(pkgs[0])
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	if len(targets[0].Parameters) != 1 || !targets[0].Parameters[0].NeedsTimeInputNormalization {
+		t.Fatalf("BuildWrapperTargets did not mark named time-containing struct for normalization: %+v", targets[0].Parameters)
+	}
+	out := wrapper.GenerateWrapper("namedtime", targets, nil)
+	if !strings.Contains(out, "shatterNormalizeTimeInput") {
+		t.Fatalf("wrapper should normalize date markers for named time-containing structs; source:\n%s", out)
 	}
 }
 

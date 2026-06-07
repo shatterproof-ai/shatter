@@ -34,10 +34,11 @@ import (
 // form (`[]T`); the call site must expand it with `args...` so the wrapper
 // passes through to the target's variadic call shape (str-jeen.48).
 type WrapperParam struct {
-	Name                       string
-	GoType                     string // concrete Go type string, e.g. "int", "*Counter", "string"
-	IsVariadic                 bool
-	NeedsMapInputNormalization bool
+	Name                        string
+	GoType                      string // concrete Go type string, e.g. "int", "*Counter", "string"
+	IsVariadic                  bool
+	NeedsMapInputNormalization  bool
+	NeedsTimeInputNormalization bool
 	// RuntimeValueExpr, when non-empty, carries a Go-source expression
 	// (e.g. `context.Background()`, `httptest.NewRecorder()`) that the
 	// wrapper substitutes for the parameter's value instead of decoding
@@ -89,7 +90,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v5"
+const generatorVersion = "gen-v6"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -155,6 +156,10 @@ func targetSignature(t WrapperTarget) string {
 		b.WriteByte('/')
 		if p.NeedsMapInputNormalization {
 			b.WriteByte('m')
+		}
+		b.WriteByte('/')
+		if p.NeedsTimeInputNormalization {
+			b.WriteByte('t')
 		}
 		b.WriteByte('/')
 		b.WriteString(p.RuntimeValueExpr)
@@ -266,6 +271,11 @@ func GenerateWrapper(
 			filteredExtra = append(filteredExtra, imp)
 		}
 	}
+	needsTimeNormalizer := wrapperNeedsTimeInputNormalizer(sorted)
+	if needsTimeNormalizer {
+		filteredExtra = appendStringIfMissing(filteredExtra, "time")
+		sort.Strings(filteredExtra)
+	}
 	if needsStrings {
 		b.WriteString("\t\"strings\"\n")
 	}
@@ -286,6 +296,9 @@ func GenerateWrapper(
 	b.WriteString("}\n\n")
 	if wrapperNeedsMapInputNormalizer(sorted) {
 		writeMapInputNormalizer(&b)
+	}
+	if needsTimeNormalizer {
+		writeTimeInputNormalizer(&b)
 	}
 
 	// str-jeen.77: use _shatterInputs instead of inputs so that target
@@ -403,6 +416,11 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 			fmt.Fprintf(b, "%s\t%s := shatterNormalizeMapInput(_shatterInputs[%d])\n", indent, inputVar, i)
 			inputExpr = inputVar
 		}
+		if wrapperParamNeedsTimeInputNormalizer(p) {
+			inputVar := fmt.Sprintf("_shatterTimeInput%d", i)
+			fmt.Fprintf(b, "%s\t%s := shatterNormalizeTimeInput(%s)\n", indent, inputVar, inputExpr)
+			inputExpr = inputVar
+		}
 		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(%s, &%s); _e != nil {\n", indent, inputExpr, p.Name)
 		fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
 		fmt.Fprintf(b, "%s\t}\n", indent)
@@ -423,6 +441,21 @@ func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {
 
 func wrapperParamNeedsMapInputNormalizer(p WrapperParam) bool {
 	return p.RuntimeValueExpr == "" && (p.NeedsMapInputNormalization || strings.Contains(p.GoType, "map["))
+}
+
+func wrapperNeedsTimeInputNormalizer(targets []WrapperTarget) bool {
+	for _, t := range targets {
+		for _, p := range t.Parameters {
+			if wrapperParamNeedsTimeInputNormalizer(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wrapperParamNeedsTimeInputNormalizer(p WrapperParam) bool {
+	return p.RuntimeValueExpr == "" && (p.NeedsTimeInputNormalization || strings.Contains(p.GoType, "time.Time"))
 }
 
 func writeMapInputNormalizer(b *strings.Builder) {
@@ -481,6 +514,62 @@ func writeMapInputNormalizer(b *strings.Builder) {
 	b.WriteString("\t\treturn key\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn fmt.Sprint(value)\n")
+	b.WriteString("}\n\n")
+}
+
+func writeTimeInputNormalizer(b *strings.Builder) {
+	b.WriteString("func shatterNormalizeTimeInput(raw json.RawMessage) json.RawMessage {\n")
+	b.WriteString("\tvar decoded any\n")
+	b.WriteString("\tif err := json.Unmarshal(raw, &decoded); err != nil {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tnormalized, changed := shatterNormalizeTimeValue(decoded)\n")
+	b.WriteString("\tif !changed {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tout, err := json.Marshal(normalized)\n")
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\t\treturn raw\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn out\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterNormalizeTimeValue(value any) (any, bool) {\n")
+	b.WriteString("\tswitch typed := value.(type) {\n")
+	b.WriteString("\tcase map[string]any:\n")
+	b.WriteString("\t\tif encoded, ok := shatterDateMarkerString(typed); ok {\n")
+	b.WriteString("\t\t\treturn encoded, true\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tchanged := false\n")
+	b.WriteString("\t\tnormalized := make(map[string]any, len(typed))\n")
+	b.WriteString("\t\tfor key, mapValue := range typed {\n")
+	b.WriteString("\t\t\tnormalizedValue, valueChanged := shatterNormalizeTimeValue(mapValue)\n")
+	b.WriteString("\t\t\tchanged = changed || valueChanged\n")
+	b.WriteString("\t\t\tnormalized[key] = normalizedValue\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn normalized, changed\n")
+	b.WriteString("\tcase []any:\n")
+	b.WriteString("\t\tchanged := false\n")
+	b.WriteString("\t\tnormalized := make([]any, len(typed))\n")
+	b.WriteString("\t\tfor i, item := range typed {\n")
+	b.WriteString("\t\t\tnormalizedItem, itemChanged := shatterNormalizeTimeValue(item)\n")
+	b.WriteString("\t\t\tchanged = changed || itemChanged\n")
+	b.WriteString("\t\t\tnormalized[i] = normalizedItem\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn normalized, changed\n")
+	b.WriteString("\tdefault:\n")
+	b.WriteString("\t\treturn value, false\n")
+	b.WriteString("\t}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterDateMarkerString(value map[string]any) (string, bool) {\n")
+	b.WriteString("\ttag, ok := value[\"__complex_type\"].(string)\n")
+	b.WriteString("\tif !ok || (tag != \"date\" && tag != \"date_time\") {\n")
+	b.WriteString("\t\treturn \"\", false\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tms, ok := value[\"value\"].(float64)\n")
+	b.WriteString("\tif !ok {\n")
+	b.WriteString("\t\treturn \"\", false\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn time.UnixMilli(int64(ms)).UTC().Format(time.RFC3339Nano), true\n")
 	b.WriteString("}\n\n")
 }
 
@@ -753,6 +842,15 @@ func sortedStrings(values []string) []string {
 	return out
 }
 
+func appendStringIfMissing(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
 func wrapperQualifiedName(fn *ast.FuncDecl) string {
 	if fn.Recv == nil || len(fn.Recv.List) == 0 {
 		return fn.Name.Name
@@ -923,14 +1021,16 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath s
 			goType = "[]" + elemType
 		}
 		needsMapInputNormalization := wrapperExprTypeContainsMap(fieldType, info)
+		needsTimeInputNormalization := wrapperExprTypeContainsTime(fieldType, info)
 		if len(field.Names) == 0 {
 			// Unnamed parameter (e.g. `func F(int, string)`): a single
 			// field with no names represents one positional parameter.
 			params = append(params, WrapperParam{
-				Name:                       syntheticParamName(index),
-				GoType:                     goType,
-				IsVariadic:                 isVariadic,
-				NeedsMapInputNormalization: needsMapInputNormalization,
+				Name:                        syntheticParamName(index),
+				GoType:                      goType,
+				IsVariadic:                  isVariadic,
+				NeedsMapInputNormalization:  needsMapInputNormalization,
+				NeedsTimeInputNormalization: needsTimeInputNormalization,
 			})
 			index++
 			continue
@@ -944,10 +1044,11 @@ func extractWrapperParams(fn *ast.FuncDecl, info *types.Info, pkgName, pkgPath s
 				localName = syntheticParamName(index)
 			}
 			params = append(params, WrapperParam{
-				Name:                       localName,
-				GoType:                     goType,
-				IsVariadic:                 isVariadic,
-				NeedsMapInputNormalization: needsMapInputNormalization,
+				Name:                        localName,
+				GoType:                      goType,
+				IsVariadic:                  isVariadic,
+				NeedsMapInputNormalization:  needsMapInputNormalization,
+				NeedsTimeInputNormalization: needsTimeInputNormalization,
 			})
 			index++
 		}
@@ -994,6 +1095,57 @@ func wrapperTypeContainsMap(typ types.Type, seen map[types.Type]struct{}) bool {
 		}
 	}
 	return false
+}
+
+func wrapperExprTypeContainsTime(expr ast.Expr, info *types.Info) bool {
+	if expr == nil || info == nil {
+		return false
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Type == nil {
+		return false
+	}
+	return wrapperTypeContainsTime(tv.Type, make(map[types.Type]struct{}))
+}
+
+func wrapperTypeContainsTime(typ types.Type, seen map[types.Type]struct{}) bool {
+	if typ == nil {
+		return false
+	}
+	if _, ok := seen[typ]; ok {
+		return false
+	}
+	seen[typ] = struct{}{}
+
+	switch t := typ.(type) {
+	case *types.Pointer:
+		return wrapperTypeContainsTime(t.Elem(), seen)
+	case *types.Slice:
+		return wrapperTypeContainsTime(t.Elem(), seen)
+	case *types.Array:
+		return wrapperTypeContainsTime(t.Elem(), seen)
+	case *types.Map:
+		return wrapperTypeContainsTime(t.Key(), seen) || wrapperTypeContainsTime(t.Elem(), seen)
+	case *types.Named:
+		if wrapperNamedTypeIsTime(t) {
+			return true
+		}
+		return wrapperTypeContainsTime(t.Underlying(), seen)
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if wrapperTypeContainsTime(t.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wrapperNamedTypeIsTime(named *types.Named) bool {
+	if named == nil || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return false
+	}
+	return named.Obj().Pkg().Path() == "time" && named.Obj().Name() == "Time"
 }
 
 func extractWrapperTypeParams(fn *ast.FuncDecl) []TypeParamInfo {

@@ -71,10 +71,10 @@ func Categorize(timeout time.Duration) int {
 
 	// Static guards on the generated source.
 	mustContain := []string{
-		"\"time\"",                                                  // import
-		"var timeout time.Duration",                                 // declared
-		"_shatterDur",                                               // object-fallback struct
-		"_shatterDur.ComplexType != \"duration\"",                   // tag check
+		"\"time\"",                  // import
+		"var timeout time.Duration", // declared
+		"_shatterDur",               // object-fallback struct
+		"_shatterDur.ComplexType != \"duration\"",                     // tag check
 		"timeout = time.Duration(*_shatterDur.Ms) * time.Millisecond", // ms→ns conversion
 	}
 	for _, want := range mustContain {
