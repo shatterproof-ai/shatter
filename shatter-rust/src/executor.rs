@@ -9443,6 +9443,93 @@ fn enabled(config: Config) -> bool {
         }
     }
 
+    #[test]
+    fn crate_bridge_supplies_sqlx_pgpool_reference() {
+        let dir = std::env::temp_dir().join("shatter-test-bridge-pgpool");
+        let src_file = write_test_crate(
+            &dir,
+            r#"
+mod sqlx {
+    #[derive(Debug)]
+    pub struct Pool {
+        pub database_url: String,
+    }
+
+    pub type PgPool = Pool;
+
+    pub mod postgres {
+        use super::Pool;
+
+        pub struct PgPoolOptions;
+
+        impl PgPoolOptions {
+            pub fn new() -> Self {
+                Self
+            }
+
+            pub fn max_connections(self, _max: u32) -> Self {
+                self
+            }
+
+            pub fn connect_lazy(self, database_url: &str) -> Result<Pool, String> {
+                Ok(Pool {
+                    database_url: database_url.to_string(),
+                })
+            }
+        }
+    }
+}
+
+use sqlx::PgPool;
+
+fn workspace_label(pool: &PgPool, workspace_id: String) -> String {
+    format!("{workspace_id}:{}", pool.database_url)
+}
+"#,
+        );
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let old_database_url = std::env::var("DATABASE_URL").ok();
+        unsafe {
+            std::env::set_var("DATABASE_URL", "postgres://example.test/db");
+        }
+
+        let result = execute_function_with_timing(
+            src_file.to_str().unwrap(),
+            "workspace_label",
+            &[serde_json::json!("workspace-1")],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match old_database_url {
+            Some(value) => unsafe { std::env::set_var("DATABASE_URL", value) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(r) => {
+                assert_eq!(
+                    r.return_value,
+                    Some(serde_json::json!("workspace-1:postgres://example.test/db")),
+                    "crate_bridge should synthesize &PgPool from DATABASE_URL and deserialize the JSON input"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!("skipping crate_bridge_supplies_sqlx_pgpool_reference: cargo unavailable ({msg})");
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
     // ─── str-31j.3: crate_bridge respects nested module context ──────────────
 
     /// Build a fixture crate at `dir` with a nested module containing
