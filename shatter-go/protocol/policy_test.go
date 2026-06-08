@@ -181,6 +181,18 @@ func TestClassifyFunction_QualifiedOSProcessGlobalStillDenied(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_QualifiedOSPurePredicateHasNoUses(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "ChecksError",
+		Dependencies: []ExternalDependency{
+			{Symbol: "os.IsNotExist", SourceModule: "os", Kind: "call"},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("expected os.IsNotExist to be treated as pure, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_UnrecognizedModuleIsUnknownHigh(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Dependencies: []ExternalDependency{
