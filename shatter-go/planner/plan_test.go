@@ -565,6 +565,83 @@ func TestPlanRequirements_ConstructorRuntimeValueParamsDoNotConsumeInputPrefix(t
 	}
 }
 
+func TestPlanRequirements_ConstructorInterfaceImplParamsDoNotConsumeInputPrefix(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Handler).Serve"
+	analysis := &protocol.FunctionAnalysis{
+		Name:   "(*Handler).Serve",
+		Params: []protocol.ParamInfo{{Name: "path", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")}},
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "Serve",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Handler", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "NewHandler",
+		TargetType: "Handler",
+		Parameters: []protocol.ParamInfo{
+			{Name: "generator", Type: protocol.TypeInfo{Kind: "opaque"}, TypeName: strPtr("response.Generator")},
+			{Name: "label", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")},
+		},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{
+			Analysis:     analysis,
+			Target:       target,
+			Constructors: ctors,
+			InterfaceImplsByParam: map[string][]protocol.InterfaceParamCandidate{
+				"generator": {
+					{
+						TypeName:    "FakerGenerator",
+						SamePackage: false,
+						Constructors: []protocol.ConstructorCandidate{
+							{FuncName: "response.NewFakerGenerator", TargetType: "FakerGenerator"},
+						},
+						ImportPath: "internal/response",
+					},
+				},
+			},
+		}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:NewHandler" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:NewHandler found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 1 {
+		t.Fatalf("expected only the JSON-backed constructor arg to consume an input slot, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	}
+	cap := ctorPlan.ConstructorArgPlans[0]
+	if cap.ParamName != "label" {
+		t.Errorf("constructor arg plan param_name=%q, want label", cap.ParamName)
+	}
+	if cap.ParamIndex != 1 {
+		t.Errorf("constructor arg plan param_index=%d, want original constructor index 1", cap.ParamIndex)
+	}
+	if cap.TypeHint != "string" {
+		t.Errorf("constructor arg plan type_hint=%q, want string", cap.TypeHint)
+	}
+}
+
 func TestPlanRequirements_ConstructorAggregateParamsAreSatisfiable(t *testing.T) {
 	t.Parallel()
 

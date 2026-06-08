@@ -429,6 +429,30 @@ func (l *Loader) Load() (int, error) {
 	}
 }
 
+func TestExecuteMethodTargetWithInterfaceImplConstructorParam(t *testing.T) {
+	tmp := writeCtorInterfaceFixture(t)
+	extra := fmt.Sprintf(`"file":"%s","function":"(*Handler).Serve","inputs":[]`, tmp)
+	resp := sendRecv(t, reqJSON(1, "execute", extra))
+
+	if resp.Outcome == nil {
+		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		var detail string
+		if resp.Outcome.ThrownError != nil {
+			detail = " thrown_error=" + resp.Outcome.ThrownError.Message
+		}
+		if resp.Outcome.ShortReason != nil {
+			detail += " short_reason=" + *resp.Outcome.ShortReason
+		}
+		t.Fatalf("outcome.Status = %q, want completed;%s", resp.Outcome.Status, detail)
+	}
+	got := strings.TrimSpace(string(resp.Outcome.ReturnValue))
+	if got != `"fake"` {
+		t.Fatalf("ReturnValue = %q, want %q", got, `"fake"`)
+	}
+}
+
 // TestExecuteMethodTargetWithoutPlanSynthesizesPointerReceiverZeroValue
 // verifies str-jeen.50: an Execute request that names a method but omits the
 // `plan` field no longer falls through to the wrapper's `unknown receiver
