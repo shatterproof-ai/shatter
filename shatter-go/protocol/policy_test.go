@@ -151,6 +151,36 @@ func TestClassifyFunction_PureFunctionHasNoUses(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_QualifiedOSLocalFSSymbolsAreAllowed(t *testing.T) {
+	for _, symbol := range []string{"os.ReadFile", "os.Stat", "os.ReadDir"} {
+		t.Run(symbol, func(t *testing.T) {
+			fa := &FunctionAnalysis{
+				Name: "UsesLocalFS",
+				Dependencies: []ExternalDependency{
+					{Symbol: symbol, SourceModule: "os", Kind: "call"},
+				},
+			}
+			uses := classifyFunction(fa)
+			if len(uses) != 1 || uses[0].Class != ClassLocalFS {
+				t.Fatalf("expected %s to classify as local_fs, got %+v", symbol, uses)
+			}
+		})
+	}
+}
+
+func TestClassifyFunction_QualifiedOSProcessGlobalStillDenied(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "MutatesProcess",
+		Dependencies: []ExternalDependency{
+			{Symbol: "os.Setenv", SourceModule: "os", Kind: "call"},
+		},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassProcessGlobal {
+		t.Fatalf("expected os.Setenv to classify as process_global, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_UnrecognizedModuleIsUnknownHigh(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Dependencies: []ExternalDependency{
