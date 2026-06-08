@@ -697,6 +697,7 @@ fn write_failed_scan_artifact(
     let Some(root) = artifact_root else {
         return;
     };
+    let failure = scan_failure_diagnostics(reason);
     let value = serde_json::json!({
         "version": 1,
         "status": "failed",
@@ -704,8 +705,30 @@ fn write_failed_scan_artifact(
         "total": total,
         "function_name": function_name,
         "reason": reason,
+        "failure": failure,
     });
     write_scan_artifact_json(root, current, function_name, &value);
+}
+
+fn scan_failure_diagnostics(reason: &str) -> serde_json::Value {
+    if let Some((phase, elapsed_secs)) = parse_phase_timeout_reason(reason) {
+        return serde_json::json!({
+            "kind": "timeout",
+            "phase": phase,
+            "elapsed_secs": elapsed_secs,
+        });
+    }
+
+    serde_json::json!({
+        "kind": "error",
+    })
+}
+
+fn parse_phase_timeout_reason(reason: &str) -> Option<(&str, u64)> {
+    let rest = reason.strip_prefix("timed out during ")?;
+    let (phase, elapsed) = rest.split_once(" after ")?;
+    let seconds = elapsed.strip_suffix('s')?.parse::<u64>().ok()?;
+    Some((phase, seconds))
 }
 
 // ---------------------------------------------------------------------------
@@ -11167,6 +11190,19 @@ defaults:
         assert_eq!(value["failure"]["kind"], "timeout");
         assert_eq!(value["failure"]["phase"], "execution");
         assert_eq!(value["failure"]["elapsed_secs"], 60);
+    }
+
+    #[test]
+    fn parse_phase_timeout_reason_handles_build_and_task_timeouts() {
+        assert_eq!(
+            parse_phase_timeout_reason("timed out during build after 180s"),
+            Some(("build", 180)),
+        );
+        assert_eq!(
+            parse_phase_timeout_reason("timed out during task after 155s"),
+            Some(("task", 155)),
+        );
+        assert_eq!(parse_phase_timeout_reason("panic during execution"), None);
     }
 
     #[test]
