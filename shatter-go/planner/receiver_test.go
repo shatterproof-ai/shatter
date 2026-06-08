@@ -395,6 +395,26 @@ func TestPlanReceivers_RequiresConstruction_NoStrategy_Unsatisfied(t *testing.T)
 	}
 }
 
+func TestPlanReceivers_RequiresConstruction_InitializedMapsWins(t *testing.T) {
+	target := methodTarget("MapOnlyBuilder", true)
+	plans, unsat := planner.PlanReceivers(target, planner.PlanOptions{
+		ReceiverRequiresConstruction:    true,
+		ReceiverSupportsInitializedMaps: true,
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("plans = %+v, want exactly one initialized_maps plan", plans)
+	}
+	if plans[0].Kind != planner.ReceiverPlanKindInitializedMaps {
+		t.Fatalf("plan.Kind = %v, want %v", plans[0].Kind, planner.ReceiverPlanKindInitializedMaps)
+	}
+	if plans[0].ReceiverKind != planner.WrapperReceiverKindInitializedMaps {
+		t.Fatalf("plan.ReceiverKind = %q, want %q", plans[0].ReceiverKind, planner.WrapperReceiverKindInitializedMaps)
+	}
+}
+
 // str-g7h7: requires_construction only short-circuits when no real strategy
 // applies. A parameterless same-package constructor still wins — it provides
 // the very initialization the flag was warning about.

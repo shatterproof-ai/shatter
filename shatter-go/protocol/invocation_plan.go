@@ -116,8 +116,9 @@ type InvocationPlan struct {
 	// TargetID is the stable target identifier.
 	TargetID string `json:"target_id"`
 	// ReceiverKind selects how to construct the method receiver.
-	// Use "zero_value" for zero-value construction, "constructor:<FuncName>"
-	// for a named constructor, or "" for free functions.
+	// Use "zero_value" for zero-value construction, "initialized_maps" for a
+	// receiver with wrapper-allocated map fields, "constructor:<FuncName>" for
+	// a named constructor, or "" for free functions.
 	ReceiverKind string `json:"receiver_kind"`
 	// GenericTypeArgs is the ordered concrete type argument list for generic
 	// targets, matching the target's TypeParams order.

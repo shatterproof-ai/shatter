@@ -60,17 +60,18 @@ type TypeParamInfo struct {
 // WrapperTarget is an enriched description of a discovered invocation target
 // with Go-level type information for code generation.
 type WrapperTarget struct {
-	ID            string // stable target ID, e.g. "example.com/pkg:Add"
-	SymbolName    string // bare function or method name
-	Kind          TargetKind
-	ReceiverType  string // bare type name (without *) for method targets
-	IsPointerRecv bool   // true for (*T).Method receivers
-	Parameters    []WrapperParam
-	TypeParams    []TypeParamInfo
-	HasResult     bool
-	ResultGoType  string // Go type string for the first return value
-	ResultGoTypes []string
-	ResultCount   int // total number of return values (0 when HasResult is false)
+	ID                string // stable target ID, e.g. "example.com/pkg:Add"
+	SymbolName        string // bare function or method name
+	Kind              TargetKind
+	ReceiverType      string // bare type name (without *) for method targets
+	IsPointerRecv     bool   // true for (*T).Method receivers
+	ReceiverMapFields []ReceiverMapField
+	Parameters        []WrapperParam
+	TypeParams        []TypeParamInfo
+	HasResult         bool
+	ResultGoType      string // Go type string for the first return value
+	ResultGoTypes     []string
+	ResultCount       int // total number of return values (0 when HasResult is false)
 	// Imports lists the import paths required by qualified type names that the
 	// generated wrapper source actually references. Today that means parameter
 	// types such as `context.Context`, `*pgx.Conn`, or `gqlerror.Error`; result
@@ -82,9 +83,19 @@ type WrapperTarget struct {
 	Imports []string
 }
 
+// ReceiverMapField describes a receiver map field the wrapper can initialize
+// from inside the target package.
+type ReceiverMapField struct {
+	Name   string
+	GoType string
+}
+
 const (
 	// WrapperKindZeroValue selects zero-value receiver construction.
 	WrapperKindZeroValue = "zero_value"
+	// WrapperKindInitializedMaps selects receiver construction that allocates
+	// map fields before invoking the target method.
+	WrapperKindInitializedMaps = "initialized_maps"
 	// WrapperKindConstructorPrefix is prepended to a constructor function
 	// name to form the ReceiverKind string.
 	WrapperKindConstructorPrefix = "constructor:"
@@ -95,7 +106,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v10"
+const generatorVersion = "gen-v11"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -145,6 +156,15 @@ func targetSignature(t WrapperTarget) string {
 	b.WriteString(typeParamSignature(t.TypeParams))
 	b.WriteByte(':')
 	b.WriteString(strings.Join(sortedStrings(t.Imports), ","))
+	b.WriteByte(':')
+	for i, f := range t.ReceiverMapFields {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(f.Name)
+		b.WriteByte('/')
+		b.WriteString(f.GoType)
+	}
 	b.WriteByte(':')
 	// Parameter signatures: type, variadic flag, and runtime-value expression.
 	for pi, p := range t.Parameters {
@@ -382,6 +402,22 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 	writeParamDeserialization(b, t.Parameters, "\t\t\t")
 	writeCall(b, t, "_recv", nil, "\t\t\t")
 
+	if len(t.ReceiverMapFields) > 0 {
+		fmt.Fprintf(b, "\t\tcase %q:\n", WrapperKindInitializedMaps)
+		if t.IsPointerRecv {
+			fmt.Fprintf(b, "\t\t\t_recvVal := %s{\n", t.ReceiverType)
+			writeReceiverMapFieldInitializers(b, t.ReceiverMapFields, "\t\t\t\t")
+			b.WriteString("\t\t\t}\n")
+			b.WriteString("\t\t\t_recv := &_recvVal\n")
+		} else {
+			fmt.Fprintf(b, "\t\t\t_recv := %s{\n", t.ReceiverType)
+			writeReceiverMapFieldInitializers(b, t.ReceiverMapFields, "\t\t\t\t")
+			b.WriteString("\t\t\t}\n")
+		}
+		writeParamDeserialization(b, t.Parameters, "\t\t\t")
+		writeCall(b, t, "_recv", nil, "\t\t\t")
+	}
+
 	if ctors, ok := ctorsByType[t.ReceiverType]; ok {
 		for _, c := range ctors {
 			recvKind := WrapperKindConstructorPrefix + c.FuncName
@@ -422,6 +458,12 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 
 	b.WriteString("\t\t}\n")
 	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"shatter: unknown receiver kind for %s: %%s\", d.ReceiverKind)\n", t.ID)
+}
+
+func writeReceiverMapFieldInitializers(b *strings.Builder, fields []ReceiverMapField, indent string) {
+	for _, f := range fields {
+		fmt.Fprintf(b, "%s%s: %s{},\n", indent, f.Name, f.GoType)
+	}
 }
 
 func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent string) {
@@ -1243,6 +1285,69 @@ func BuildWrapperTargets(pkg *packages.Package) []WrapperTarget {
 	return targets
 }
 
+func collectReceiverMapFields(
+	pkg *packages.Package,
+	recvType string,
+	pkgTypesPath string,
+	importSet map[string]struct{},
+) []ReceiverMapField {
+	if pkg == nil || pkg.Types == nil || recvType == "" {
+		return nil
+	}
+	scope := pkg.Types.Scope()
+	if scope == nil {
+		return nil
+	}
+	obj := scope.Lookup(recvType)
+	if obj == nil {
+		return nil
+	}
+	named, ok := obj.Type().(*types.Named)
+	if !ok {
+		return nil
+	}
+	st, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return nil
+	}
+	fields := make([]ReceiverMapField, 0)
+	for i := 0; i < st.NumFields(); i++ {
+		field := st.Field(i)
+		if _, ok := field.Type().Underlying().(*types.Map); ok {
+			fields = append(fields, ReceiverMapField{
+				Name:   field.Name(),
+				GoType: goTypeStringForReceiverField(field.Type(), pkgTypesPath, importSet),
+			})
+			continue
+		}
+		if !field.Exported() && receiverFieldNeedsNonMapInitialization(field.Type()) {
+			return nil
+		}
+	}
+	return fields
+}
+
+func receiverFieldNeedsNonMapInitialization(t types.Type) bool {
+	switch t.Underlying().(type) {
+	case *types.Chan, *types.Signature, *types.Interface, *types.Pointer:
+		return true
+	default:
+		return false
+	}
+}
+
+func goTypeStringForReceiverField(t types.Type, pkgTypesPath string, importSet map[string]struct{}) string {
+	return types.TypeString(t, func(pkg *types.Package) string {
+		if pkg == nil || pkg.Path() == "" || pkg.Path() == pkgTypesPath {
+			return ""
+		}
+		if importSet != nil {
+			importSet[pkg.Path()] = struct{}{}
+		}
+		return pkg.Name()
+	})
+}
+
 // isSyntheticPackageInit reports whether fn is a Go package-init function
 // (`func init()` at package scope with no receiver). These cannot be invoked
 // directly as targets — see BuildWrapperTargets and AnalyzeFile (str-qo1.8).
@@ -1293,6 +1398,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	if pkg.Types != nil {
 		pkgTypesPath = pkg.Types.Path()
 	}
+	receiverMapFields := collectReceiverMapFields(pkg, recvType, pkgTypesPath, importSet)
 	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, pkgTypesPath, importSet)
 	// str-gxjs.1: bind runtime-value expressions for parameter types the
 	// planner's registry can satisfy (context.Context → context.Background(),
@@ -1333,18 +1439,19 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	sort.Strings(imports)
 
 	return &WrapperTarget{
-		ID:            id,
-		SymbolName:    fn.Name.Name,
-		Kind:          kind,
-		ReceiverType:  recvType,
-		IsPointerRecv: isPtr,
-		Parameters:    params,
-		TypeParams:    typeParams,
-		HasResult:     hasResult,
-		ResultGoType:  resultGoType,
-		ResultGoTypes: resultGoTypes,
-		ResultCount:   resultCount,
-		Imports:       imports,
+		ID:                id,
+		SymbolName:        fn.Name.Name,
+		Kind:              kind,
+		ReceiverType:      recvType,
+		IsPointerRecv:     isPtr,
+		ReceiverMapFields: receiverMapFields,
+		Parameters:        params,
+		TypeParams:        typeParams,
+		HasResult:         hasResult,
+		ResultGoType:      resultGoType,
+		ResultGoTypes:     resultGoTypes,
+		ResultCount:       resultCount,
+		Imports:           imports,
 	}
 }
 

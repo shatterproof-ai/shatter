@@ -218,12 +218,13 @@ func planMethod(
 		constructorInterfaceImpls = ctx.InterfaceImplsByParam
 	}
 	receiverPlans, receiverUnsat := PlanReceivers(*target, PlanOptions{
-		SamePackageConstructors:        ctx.Constructors,
-		ReceiverIsCompositeLiteralSafe: false,
-		ReceiverRequiresConstruction:   ctx.ReceiverRequiresConstruction,
-		MaxPlans:                       opts.MaxReceiverPlans,
-		InterfaceImplsByParam:          constructorInterfaceImpls,
-		RuntimeValuesByParam:           ctx.ConstructorRuntimeValuesByParam,
+		SamePackageConstructors:         ctx.Constructors,
+		ReceiverIsCompositeLiteralSafe:  false,
+		ReceiverRequiresConstruction:    ctx.ReceiverRequiresConstruction,
+		ReceiverSupportsInitializedMaps: ctx.ReceiverSupportsInitializedMaps,
+		MaxPlans:                        opts.MaxReceiverPlans,
+		InterfaceImplsByParam:           constructorInterfaceImpls,
+		RuntimeValuesByParam:            ctx.ConstructorRuntimeValuesByParam,
 	})
 	if receiverUnsat != nil {
 		return nil, []protocol.UnsatisfiedRequirement{*receiverUnsat}
