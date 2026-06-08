@@ -642,6 +642,84 @@ func TestPlanRequirements_ConstructorInterfaceImplParamsDoNotConsumeInputPrefix(
 	}
 }
 
+func TestPlanRequirements_ConstructorRuntimeValueBindingsDoNotConsumeInputPrefix(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Handler).Serve"
+	analysis := &protocol.FunctionAnalysis{
+		Name:   "(*Handler).Serve",
+		Params: []protocol.ParamInfo{{Name: "path", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")}},
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "Serve",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Handler", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "NewHandler",
+		TargetType: "Handler",
+		Parameters: []protocol.ParamInfo{
+			{Name: "validator", Type: protocol.TypeInfo{Kind: "opaque"}, TypeName: strPtr("*specs.Validator")},
+			{Name: "generator", Type: protocol.TypeInfo{Kind: "opaque"}, TypeName: strPtr("response.Generator")},
+			{Name: "label", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")},
+		},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{
+			Analysis:     analysis,
+			Target:       target,
+			Constructors: ctors,
+			ConstructorRuntimeValuesByParam: map[string]protocol.ConstructorRuntimeValue{
+				"validator": {Expression: "specs.NewValidator()", Imports: []string{"internal/specs"}},
+			},
+			InterfaceImplsByParam: map[string][]protocol.InterfaceParamCandidate{
+				"generator": {
+					{
+						TypeName:    "FakerGenerator",
+						SamePackage: false,
+						Constructors: []protocol.ConstructorCandidate{
+							{FuncName: "response.NewFakerGenerator", TargetType: "FakerGenerator"},
+						},
+						ImportPath: "internal/response",
+					},
+				},
+			},
+		}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:NewHandler" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:NewHandler found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 1 {
+		t.Fatalf("expected only the JSON-backed constructor arg to consume an input slot, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	}
+	cap := ctorPlan.ConstructorArgPlans[0]
+	if cap.ParamName != "label" {
+		t.Errorf("constructor arg plan param_name=%q, want label", cap.ParamName)
+	}
+	if cap.ParamIndex != 2 {
+		t.Errorf("constructor arg plan param_index=%d, want original constructor index 2", cap.ParamIndex)
+	}
+}
+
 func TestPlanRequirements_ConstructorAggregateParamsAreSatisfiable(t *testing.T) {
 	t.Parallel()
 
