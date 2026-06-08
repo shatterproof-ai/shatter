@@ -4212,6 +4212,274 @@ mod tests {
         }
     }
 
+    fn fs_dependency_analysis(symbol: &str) -> FunctionAnalysis {
+        use crate::protocol::{DependencyKind, ExternalDependency};
+        use crate::types::{ParamInfo, TypeInfo};
+
+        FunctionAnalysis {
+            name: "load".into(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "path".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: symbol.into(),
+                source_module: "os".into(),
+                return_type: TypeInfo::Unknown,
+                param_types: vec![TypeInfo::Str],
+                call_sites: vec![2],
+            }],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        }
+    }
+
+    fn path_feedback_frontend_config(
+        mode: &str,
+        log_path: &std::path::Path,
+    ) -> (tempfile::TempDir, crate::frontend::FrontendConfig) {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        let dir = tempfile::Builder::new()
+            .prefix("shatter-path-feedback-")
+            .tempdir()
+            .expect("create path feedback tempdir");
+        let script_path = dir.path().join("frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import os
+import sys
+
+PROTOCOL_VERSION = "0.1.0"
+mode = os.environ["SHATTER_PATH_FEEDBACK_MODE"]
+log_path = os.environ["SHATTER_PATH_FEEDBACK_LOG"]
+
+def respond(payload):
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
+
+def execute_response(request_id, value):
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(value) + "\n")
+    exists = isinstance(value, str) and (
+        os.path.isfile(value) if mode == "file" else os.path.isdir(value)
+    )
+    if exists:
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "execute",
+            "return_value": "advanced",
+            "thrown_error": None,
+            "branch_path": [{"branch_id": 1, "line": 3, "taken": True}],
+            "lines_executed": [1, 2, 3],
+            "calls_to_external": [],
+            "path_constraints": [],
+            "side_effects": [],
+            "performance": {"wall_time_ms": 0.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0},
+        }
+    op = "open" if mode == "file" else "readdirent"
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "id": request_id,
+        "status": "execute",
+        "return_value": None,
+        "thrown_error": {
+            "error_type": "function_error",
+            "message": f"{op} {value}: no such file or directory",
+            "stack": None,
+        },
+        "branch_path": [{"branch_id": 0, "line": 2, "taken": False}],
+        "lines_executed": [1, 2],
+        "calls_to_external": [],
+        "path_constraints": [],
+        "side_effects": [],
+        "performance": {"wall_time_ms": 0.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0},
+    }
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    request = json.loads(line)
+    request_id = request["id"]
+    command = request["command"]
+    if command == "handshake":
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "handshake",
+            "frontend_version": PROTOCOL_VERSION,
+            "language": "path-feedback",
+            "capabilities": ["execute", "instrument"],
+        })
+    elif command == "instrument":
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "instrument",
+            "instrumented": True,
+            "output_file": None,
+        })
+    elif command == "execute":
+        inputs = request.get("inputs") or [""]
+        respond(execute_response(request_id, inputs[0]))
+    elif command == "shutdown":
+        respond({"protocol_version": PROTOCOL_VERSION, "id": request_id, "status": "shutdown_ack"})
+        break
+    else:
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "error",
+            "code": "invalid_request",
+            "message": f"Unknown command: {command}",
+            "details": None,
+        })
+"#,
+        )
+        .expect("write path feedback frontend");
+
+        let mut config = FrontendConfig::new(PathBuf::from("python3"));
+        config.args = vec![script_path.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+        config.env_vars.push((
+            "SHATTER_PATH_FEEDBACK_MODE".to_string(),
+            mode.to_string(),
+        ));
+        config.env_vars.push((
+            "SHATTER_PATH_FEEDBACK_LOG".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ));
+        (dir, config)
+    }
+
+    fn path_feedback_config(
+        target_root: &std::path::Path,
+        missing_path: &str,
+    ) -> ExploreConfig {
+        ExploreConfig {
+            file: target_root.join("fixture.go").to_string_lossy().into_owned(),
+            max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![vec![serde_json::json!(missing_path)]],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: Some(target_root.to_string_lossy().into_owned()),
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        }
+    }
+
+    async fn run_path_feedback_fixture(
+        mode: &str,
+        symbol: &str,
+    ) -> (ObservationOutput, tempfile::TempDir, std::path::PathBuf) {
+        let target_root = tempfile::Builder::new()
+            .prefix("shatter-target-root-")
+            .tempdir()
+            .expect("create target root");
+        let log_path = target_root.path().join(format!("{mode}.log"));
+        let (_script_dir, frontend_config) = path_feedback_frontend_config(mode, &log_path);
+        let mut frontend = Frontend::spawn(&frontend_config)
+            .await
+            .expect("spawn path feedback frontend");
+        let analysis = fs_dependency_analysis(symbol);
+        let config = path_feedback_config(target_root.path(), "missing-input-path");
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("path feedback exploration should succeed");
+        frontend.shutdown().await.expect("shutdown failed");
+        (result, target_root, log_path)
+    }
+
+    #[tokio::test]
+    async fn explore_function_seeds_temp_file_after_go_enoent_file_path() {
+        let (result, target_root, _log_path) =
+            run_path_feedback_fixture("file", "os.ReadFile").await;
+
+        assert_eq!(result.iterations, 2);
+        let advanced = result.raw_results.iter().find(|(inputs, _, exec)| {
+            inputs.first().and_then(|input| input.as_str()) != Some("missing-input-path")
+                && exec.return_value == Some(serde_json::json!("advanced"))
+        });
+        assert!(
+            advanced.is_some(),
+            "missing file feedback should schedule a real temp-file input; raw={:?}",
+            result.raw_results
+        );
+
+        let generated_path = advanced
+            .and_then(|(inputs, _, _)| inputs.first())
+            .and_then(|input| input.as_str())
+            .expect("advanced input should be a path string");
+        assert!(
+            !generated_path.starts_with(&target_root.path().to_string_lossy().to_string()),
+            "path feedback must not create files in the target project: {generated_path}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_function_seeds_temp_dir_after_go_enoent_dir_path() {
+        let (result, target_root, _log_path) =
+            run_path_feedback_fixture("dir", "os.ReadDir").await;
+
+        assert_eq!(result.iterations, 2);
+        let advanced = result.raw_results.iter().find(|(inputs, _, exec)| {
+            inputs.first().and_then(|input| input.as_str()) != Some("missing-input-path")
+                && exec.return_value == Some(serde_json::json!("advanced"))
+        });
+        assert!(
+            advanced.is_some(),
+            "missing directory feedback should schedule a real temp-directory input; raw={:?}",
+            result.raw_results
+        );
+
+        let generated_path = advanced
+            .and_then(|(inputs, _, _)| inputs.first())
+            .and_then(|input| input.as_str())
+            .expect("advanced input should be a path string");
+        assert!(
+            !generated_path.starts_with(&target_root.path().to_string_lossy().to_string()),
+            "path feedback must not create directories in the target project: {generated_path}"
+        );
+    }
+
     #[tokio::test]
     async fn explore_function_observer_pool_uses_multiple_frontend_processes() {
         let (_log_dir, log_path) = observer_log_path("pool");
