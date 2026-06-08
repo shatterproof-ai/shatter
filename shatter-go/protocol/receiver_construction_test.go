@@ -42,6 +42,15 @@ func TestReceiverRequiresConstruction_AllowsGuardedPointerField(t *testing.T) {
 	}
 }
 
+func TestReceiverRequiresConstruction_AllowsNilSliceRangeBody(t *testing.T) {
+	pkg := loadConstructionTestdata(t)
+
+	target := findMethodTarget(t, pkg, "Select", "SliceRangeSelector")
+	if ReceiverRequiresConstruction(pkg, &target) {
+		t.Fatalf("ReceiverRequiresConstruction(SliceRangeSelector.Select) = true, want false")
+	}
+}
+
 // Negative control: a struct with only primitive fields must not be flagged
 // — the existing fallback zero-value plan stays usable.
 func TestReceiverRequiresConstruction_AllowsPrimitiveStruct(t *testing.T) {
