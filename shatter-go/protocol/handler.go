@@ -1870,6 +1870,9 @@ func constructorParamDirectExecuteSatisfiable(
 	if _, _, ok := interfaceImplRuntimeBinding(interfaceImplsByParam[p.Name]); ok {
 		return true
 	}
+	if _, ok := constructorZeroValueRuntimeValue(p); ok {
+		return true
+	}
 	if p.TypeName != nil {
 		switch *p.TypeName {
 		case "string", "[]byte", "[]uint8", "time.Duration",
@@ -1900,6 +1903,17 @@ func constructorParamDirectExecuteSatisfiable(
 
 func constructorRuntimeValueBinding(value ConstructorRuntimeValue) bool {
 	return strings.TrimSpace(value.Expression) != ""
+}
+
+func constructorZeroValueRuntimeValue(p ParamInfo) (ConstructorRuntimeValue, bool) {
+	if p.TypeName == nil || strings.TrimSpace(*p.TypeName) == "" {
+		return ConstructorRuntimeValue{}, false
+	}
+	typeName := strings.TrimSpace(*p.TypeName)
+	if !strings.HasPrefix(typeName, "*") && (p.Type.Kind != "object" || len(p.Type.Fields) == 0) {
+		return ConstructorRuntimeValue{}, false
+	}
+	return ConstructorRuntimeValue{Expression: "*new(" + typeName + ")"}, true
 }
 
 func interfaceImplRuntimeBinding(candidates []InterfaceParamCandidate) (string, []string, bool) {

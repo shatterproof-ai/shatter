@@ -260,6 +260,9 @@ func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 		if interfaceImplConstructorParamSatisfiable(p, recv.ConstructorInterfaceImplsByParam) {
 			continue
 		}
+		if constructorZeroValueParamSatisfiable(p) {
+			continue
+		}
 		if constructorAggregateParamSatisfiable(p) {
 			plans = append(plans, protocol.ValuePlan{
 				Kind:       protocol.ValuePlanKindZero,

@@ -134,7 +134,21 @@ func isParamSatisfiable(
 	if interfaceImplConstructorParamSatisfiable(p, interfaceImplsByParam) {
 		return true
 	}
+	if constructorZeroValueParamSatisfiable(p) {
+		return true
+	}
 	return false
+}
+
+func constructorZeroValueParamSatisfiable(p protocol.ParamInfo) bool {
+	if p.TypeName == nil || strings.TrimSpace(*p.TypeName) == "" {
+		return false
+	}
+	typeName := strings.TrimSpace(*p.TypeName)
+	if strings.HasPrefix(typeName, "*") {
+		return true
+	}
+	return p.Type.Kind == "object" && len(p.Type.Fields) > 0
 }
 
 func constructorRuntimeValueParamSatisfiable(

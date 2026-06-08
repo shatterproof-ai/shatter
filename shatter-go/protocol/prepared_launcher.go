@@ -488,6 +488,10 @@ func toWrapperConstructorParamsWithBindings(
 					out[i].Imports = append(out[i].Imports, importPath)
 				}
 			}
+			continue
+		}
+		if value, ok := constructorZeroValueRuntimeValue(p); ok {
+			out[i].RuntimeValueExpr = value.Expression
 		}
 	}
 	return out

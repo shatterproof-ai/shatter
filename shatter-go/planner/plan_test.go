@@ -774,21 +774,8 @@ func TestPlanRequirements_ConstructorAggregateParamsAreSatisfiable(t *testing.T)
 	if ctorPlan == nil {
 		t.Fatalf("no plan with ReceiverKind=constructor:newRecorder found; plans=%+v", plans)
 	}
-	if len(ctorPlan.ConstructorArgPlans) != 1 {
-		t.Fatalf("expected only the aggregate constructor arg to consume an input slot, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
-	}
-	capPlan := ctorPlan.ConstructorArgPlans[0]
-	if capPlan.ParamName != "caps" {
-		t.Errorf("constructor arg plan param_name=%q, want caps", capPlan.ParamName)
-	}
-	if capPlan.ParamIndex != 1 {
-		t.Errorf("constructor arg plan param_index=%d, want original constructor index 1", capPlan.ParamIndex)
-	}
-	if capPlan.Kind != protocol.ValuePlanKindZero {
-		t.Errorf("constructor arg plan kind=%q, want %q", capPlan.Kind, protocol.ValuePlanKindZero)
-	}
-	if capPlan.TypeHint != "RecordCaps" {
-		t.Errorf("constructor arg plan type_hint=%q, want RecordCaps", capPlan.TypeHint)
+	if len(ctorPlan.ConstructorArgPlans) != 0 {
+		t.Fatalf("constructor-only aggregate args should use zero-value runtime bindings, got %+v", ctorPlan.ConstructorArgPlans)
 	}
 }
 
