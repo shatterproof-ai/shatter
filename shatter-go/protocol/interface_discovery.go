@@ -29,10 +29,45 @@ func discoverInterfaceImplCandidates(
 	if consumerPkg == nil || consumerPkg.TypesInfo == nil || fn == nil || fn.Type.Params == nil {
 		return nil
 	}
+	return discoverInterfaceImplCandidatesForParams(consumerPkg, fn.Type.Params)
+}
+
+func discoverConstructorInterfaceImplCandidates(
+	consumerPkg *packages.Package,
+	constructors []ConstructorCandidate,
+) map[string][]InterfaceParamCandidate {
+	if consumerPkg == nil || consumerPkg.TypesInfo == nil || len(constructors) == 0 {
+		return nil
+	}
+	result := make(map[string][]InterfaceParamCandidate)
+
+	for _, constructor := range constructors {
+		fn := findFuncDeclByBareName(consumerPkg, constructor.FuncName)
+		if fn == nil || fn.Type.Params == nil {
+			continue
+		}
+		for name, candidates := range discoverInterfaceImplCandidatesForParams(consumerPkg, fn.Type.Params) {
+			result[name] = candidates
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func discoverInterfaceImplCandidatesForParams(
+	consumerPkg *packages.Package,
+	params *ast.FieldList,
+) map[string][]InterfaceParamCandidate {
+	if consumerPkg == nil || consumerPkg.TypesInfo == nil || params == nil {
+		return nil
+	}
 
 	result := make(map[string][]InterfaceParamCandidate)
 
-	for _, field := range fn.Type.Params.List {
+	for _, field := range params.List {
 		ifaceType, ifaceNamed := resolveInterfaceType(field.Type, consumerPkg.TypesInfo)
 		if ifaceType == nil || ifaceNamed == nil {
 			continue

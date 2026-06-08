@@ -213,11 +213,16 @@ func planMethod(
 		}}
 	}
 
+	constructorInterfaceImpls := ctx.ConstructorInterfaceImplsByParam
+	if len(constructorInterfaceImpls) == 0 {
+		constructorInterfaceImpls = ctx.InterfaceImplsByParam
+	}
 	receiverPlans, receiverUnsat := PlanReceivers(*target, PlanOptions{
 		SamePackageConstructors:        ctx.Constructors,
 		ReceiverIsCompositeLiteralSafe: false,
 		ReceiverRequiresConstruction:   ctx.ReceiverRequiresConstruction,
 		MaxPlans:                       opts.MaxReceiverPlans,
+		InterfaceImplsByParam:          constructorInterfaceImpls,
 	})
 	if receiverUnsat != nil {
 		return nil, []protocol.UnsatisfiedRequirement{*receiverUnsat}

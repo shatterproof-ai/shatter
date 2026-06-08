@@ -44,6 +44,12 @@ type TargetContext struct {
 	// these through PlanInterfaceImpls to produce runtime-value plans.
 	InterfaceImplsByParam map[string][]InterfaceParamCandidate
 
+	// ConstructorInterfaceImplsByParam maps constructor parameter names to
+	// discovered interface implementation candidates. It is separate from
+	// InterfaceImplsByParam because method parameters and receiver constructor
+	// parameters can have overlapping names but consume different input slots.
+	ConstructorInterfaceImplsByParam map[string][]InterfaceParamCandidate
+
 	// JSONEncodeInterfaceParams names empty-interface parameters whose value
 	// flows directly into encoding/json encode APIs such as json.Marshal(v) or
 	// json.NewEncoder(w).Encode(v). This is Go-internal planner context, not a

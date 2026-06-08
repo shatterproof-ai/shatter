@@ -344,9 +344,12 @@ func buildDirectExecutionRequest(
 		return build.BuildRequest{}, "", err
 	}
 
+	constructors := ScanConstructors(pkg)
+	constructorInterfaceImpls := discoverConstructorInterfaceImplCandidates(pkg, constructors)
+
 	return build.BuildRequest{
 		Targets:                targets,
-		Constructors:           toWrapperConstructors(ScanConstructors(pkg)),
+		Constructors:           toWrapperConstructorsWithInterfaceImpls(constructors, constructorInterfaceImpls),
 		PackageName:            pkg.Name,
 		TargetModulePath:       modulePath,
 		TargetModuleDir:        moduleDir,
@@ -405,6 +408,13 @@ func methodWrapperQualifiedName(t wrapper.WrapperTarget) string {
 }
 
 func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.ConstructorCandidate {
+	return toWrapperConstructorsWithInterfaceImpls(candidates, nil)
+}
+
+func toWrapperConstructorsWithInterfaceImpls(
+	candidates []ConstructorCandidate,
+	interfaceImplsByParam map[string][]InterfaceParamCandidate,
+) []wrapper.ConstructorCandidate {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -414,7 +424,7 @@ func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.Construc
 			FuncName:       candidate.FuncName,
 			TargetType:     candidate.TargetType,
 			HasParams:      len(candidate.Parameters) > 0,
-			Parameters:     toWrapperConstructorParams(candidate.Parameters),
+			Parameters:     toWrapperConstructorParamsWithInterfaceImpls(candidate.Parameters, interfaceImplsByParam),
 			ReturnsPointer: candidate.ReturnsPointer,
 			// str-jeen.78: propagate ReturnsError so wrapper generation can
 			// use the two-assignment form (_recv, _ := ctor()) for constructors
@@ -428,6 +438,13 @@ func toWrapperConstructors(candidates []ConstructorCandidate) []wrapper.Construc
 // toWrapperConstructorParams converts protocol ParamInfo to wrapper
 // ConstructorParam (str-9b1q). Maps TypeInfo.Kind to the Go source type.
 func toWrapperConstructorParams(params []ParamInfo) []wrapper.ConstructorParam {
+	return toWrapperConstructorParamsWithInterfaceImpls(params, nil)
+}
+
+func toWrapperConstructorParamsWithInterfaceImpls(
+	params []ParamInfo,
+	interfaceImplsByParam map[string][]InterfaceParamCandidate,
+) []wrapper.ConstructorParam {
 	if len(params) == 0 {
 		return nil
 	}
@@ -451,6 +468,14 @@ func toWrapperConstructorParams(params []ParamInfo) []wrapper.ConstructorParam {
 		out[i] = wrapper.ConstructorParam{
 			Name:   p.Name,
 			GoType: goType,
+		}
+		if expr, imports, ok := interfaceImplRuntimeBinding(interfaceImplsByParam[p.Name]); ok {
+			out[i].RuntimeValueExpr = expr
+			for _, importPath := range imports {
+				if importPath != "" {
+					out[i].Imports = append(out[i].Imports, importPath)
+				}
+			}
 		}
 	}
 	return out

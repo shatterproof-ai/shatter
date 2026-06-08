@@ -1742,6 +1742,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 			}
 		}
 		ctx.Constructors = matched
+		ctx.ConstructorInterfaceImplsByParam = discoverConstructorInterfaceImplCandidates(pkg, matched)
 		ctx.ReceiverRequiresConstruction = ReceiverRequiresConstruction(pkg, &target)
 	}
 
@@ -1810,11 +1811,13 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 	// are simple enough for the wrapper to synthesize as zero-value literals.
 	// This matches the receiver planner/wrapper path for primitive-
 	// satisfiable parameterized constructors (str-3ok7).
-	for _, c := range ScanConstructors(pkg) {
+	allConstructors := ScanConstructors(pkg)
+	constructorInterfaceImpls := discoverConstructorInterfaceImplCandidates(pkg, allConstructors)
+	for _, c := range allConstructors {
 		if c.TargetType != target.Receiver.TypeName {
 			continue
 		}
-		if !constructorParamsDirectExecuteSatisfiable(c.Parameters) {
+		if !constructorParamsDirectExecuteSatisfiable(c.Parameters, constructorInterfaceImpls) {
 			continue
 		}
 		return wrapper.WrapperKindConstructorPrefix + c.FuncName, nil
@@ -1841,16 +1844,25 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 	return wrapper.WrapperKindZeroValue, nil
 }
 
-func constructorParamsDirectExecuteSatisfiable(params []ParamInfo) bool {
+func constructorParamsDirectExecuteSatisfiable(
+	params []ParamInfo,
+	interfaceImplsByParam map[string][]InterfaceParamCandidate,
+) bool {
 	for _, p := range params {
-		if !constructorParamDirectExecuteSatisfiable(p) {
+		if !constructorParamDirectExecuteSatisfiable(p, interfaceImplsByParam) {
 			return false
 		}
 	}
 	return true
 }
 
-func constructorParamDirectExecuteSatisfiable(p ParamInfo) bool {
+func constructorParamDirectExecuteSatisfiable(
+	p ParamInfo,
+	interfaceImplsByParam map[string][]InterfaceParamCandidate,
+) bool {
+	if _, _, ok := interfaceImplRuntimeBinding(interfaceImplsByParam[p.Name]); ok {
+		return true
+	}
 	if p.TypeName != nil {
 		switch *p.TypeName {
 		case "string", "[]byte", "[]uint8", "time.Duration",
@@ -1877,6 +1889,54 @@ func constructorParamDirectExecuteSatisfiable(p ParamInfo) bool {
 	default:
 		return false
 	}
+}
+
+func interfaceImplRuntimeBinding(candidates []InterfaceParamCandidate) (string, []string, bool) {
+	if len(candidates) == 0 {
+		return "", nil, false
+	}
+	sorted := append([]InterfaceParamCandidate(nil), candidates...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left := interfaceImplCandidateScore(sorted[i])
+		right := interfaceImplCandidateScore(sorted[j])
+		if left != right {
+			return left > right
+		}
+		return sorted[i].TypeName < sorted[j].TypeName
+	})
+	for _, candidate := range sorted {
+		if len(candidate.Constructors) == 0 {
+			continue
+		}
+		constructors := append([]ConstructorCandidate(nil), candidate.Constructors...)
+		sort.SliceStable(constructors, func(i, j int) bool {
+			return constructors[i].FuncName < constructors[j].FuncName
+		})
+		return constructors[0].FuncName + "()", []string{candidate.ImportPath}, true
+	}
+	return "", nil, false
+}
+
+func interfaceImplCandidateScore(candidate InterfaceParamCandidate) int {
+	score := 0
+	if candidate.SamePackage {
+		score += 4
+	}
+	lowerName := strings.ToLower(candidate.TypeName)
+	switch {
+	case strings.Contains(lowerName, "default"):
+		score += 3
+	case strings.Contains(lowerName, "memory"):
+		score += 3
+	case strings.Contains(lowerName, "mock"):
+		score += 2
+	case strings.Contains(lowerName, "stub"):
+		score += 2
+	}
+	if len(candidate.Constructors) > 0 {
+		score++
+	}
+	return score
 }
 
 func constructorParamDirectExecuteAggregateSatisfiable(p ParamInfo, depth int) bool {
