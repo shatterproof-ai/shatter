@@ -1320,7 +1320,8 @@ pub(crate) async fn run_scan(
             }
 
             if result.has_scan_failure() {
-                let attempted = result.function_results.len() + result.skipped.len();
+                let counts = result.counts();
+                let attempted = counts.completed + counts.failed;
                 return Err(format!(
                     "scan failed: {attempted} function(s) attempted but 0 explored successfully"
                 )

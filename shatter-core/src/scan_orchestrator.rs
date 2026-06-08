@@ -508,8 +508,8 @@ fn emit_progress(
     }
 }
 
-/// Whether a skip is benign (expected), an unsupported target type, or an
-/// actual error.
+/// Whether a skip is benign (expected), an unsupported target type, a
+/// run-level interruption, or an actual error.
 ///
 /// `Unsupported` is split out from `Expected` (str-jeen.46) so the scan
 /// report can count attempted, skipped, and unsupported targets separately.
@@ -524,6 +524,9 @@ pub enum SkipCategory {
     /// supported by the analyzer or executor. Discovered but never
     /// attempted.
     Unsupported,
+    /// The scan-level budget or lifecycle ended before this function could be
+    /// explored. Discovered but not counted as an attempted function failure.
+    Interrupted,
     /// Problematic: timeouts, exploration errors, crashes. The function was
     /// attempted but failed.
     Error,
@@ -536,7 +539,7 @@ pub struct SkippedFunction {
     pub function_name: String,
     /// Reason the function was skipped.
     pub reason: String,
-    /// Whether this skip is expected or an error.
+    /// Whether this skip is expected, unsupported, interrupted, or an error.
     pub category: SkipCategory,
 }
 
@@ -677,6 +680,7 @@ fn write_skipped_scan_artifact(
         "category": match category {
             SkipCategory::Expected => "expected",
             SkipCategory::Unsupported => "unsupported",
+            SkipCategory::Interrupted => "interrupted",
             SkipCategory::Error => "error",
         },
     });
@@ -1092,9 +1096,10 @@ fn summary_record_skipped(
 ) {
     summary.elapsed_secs = elapsed.as_secs_f64();
     match category {
-        SkipCategory::Expected | SkipCategory::Unsupported | SkipCategory::Error => {
-            summary.skipped += 1
-        }
+        SkipCategory::Expected
+        | SkipCategory::Unsupported
+        | SkipCategory::Interrupted
+        | SkipCategory::Error => summary.skipped += 1,
     }
     let artifact_filename = format!(
         "{:05}_{}.json",
@@ -1941,7 +1946,12 @@ impl ParallelScanResult {
     /// Returns true if the scan should be considered a failure:
     /// functions were attempted but none were successfully explored.
     pub fn has_scan_failure(&self) -> bool {
-        let attempted = self.function_results.len() + self.skipped.len();
+        let attempted = self.function_results.len()
+            + self
+                .skipped
+                .iter()
+                .filter(|s| s.category == SkipCategory::Error)
+                .count();
         attempted > 0 && self.function_results.is_empty()
     }
 
@@ -1957,6 +1967,7 @@ impl ParallelScanResult {
                 SkipCategory::Error => failed += 1,
                 SkipCategory::Unsupported => unsupported += 1,
                 SkipCategory::Expected => expected += 1,
+                SkipCategory::Interrupted => {}
             }
         }
         ScanCounts {
@@ -3754,7 +3765,7 @@ pub async fn parallel_scan_with_progress(
                     skipped.push(SkippedFunction {
                         function_name: func_name.clone(),
                         reason: TOTAL_SCAN_TIMEOUT_REASON.into(),
-                        category: SkipCategory::Error,
+                        category: SkipCategory::Interrupted,
                     });
                     write_skipped_scan_artifact(
                         artifact_root.as_deref(),
@@ -3762,14 +3773,14 @@ pub async fn parallel_scan_with_progress(
                         total_functions,
                         func_name,
                         TOTAL_SCAN_TIMEOUT_REASON,
-                        SkipCategory::Error,
+                        SkipCategory::Interrupted,
                     );
                     summary_record_skipped(
                         &mut summary,
                         func_name,
                         progress_index,
                         TOTAL_SCAN_TIMEOUT_REASON,
-                        SkipCategory::Error,
+                        SkipCategory::Interrupted,
                         scan_start.elapsed(),
                     );
                     emit_progress(
@@ -4770,14 +4781,14 @@ pub async fn parallel_scan_with_progress(
                             total_functions,
                             &function_name,
                             TOTAL_SCAN_TIMEOUT_REASON,
-                            SkipCategory::Error,
+                            SkipCategory::Interrupted,
                         );
                         summary_record_skipped(
                             &mut summary,
                             &function_name,
                             idx,
                             TOTAL_SCAN_TIMEOUT_REASON,
-                            SkipCategory::Error,
+                            SkipCategory::Interrupted,
                             scan_start.elapsed(),
                         );
                         emit_progress(
@@ -4791,7 +4802,7 @@ pub async fn parallel_scan_with_progress(
                         skipped.push(SkippedFunction {
                             function_name,
                             reason: TOTAL_SCAN_TIMEOUT_REASON.into(),
-                            category: SkipCategory::Error,
+                            category: SkipCategory::Interrupted,
                         });
                         summary.status = ScanRunStatus::Interrupted;
                     }
@@ -5597,19 +5608,30 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         .iter()
         .filter(|s| s.category == SkipCategory::Error)
         .collect();
+    let interrupted: Vec<_> = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Interrupted)
+        .collect();
     let unsupported_count = result
         .skipped
         .iter()
         .filter(|s| s.category == SkipCategory::Unsupported)
         .count();
+    let interrupted_count = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Interrupted)
+        .count();
 
     // str-izhn: summary line names every bucket so CI and Makefile wrappers
     // can grep `failed=` / `unsupported=` without parsing the report body.
     out.push_str(&format!(
-        "Scan complete: {} completed, {} failed, {} unsupported, {} skipped ({} worker(s))\n",
+        "Scan complete: {} completed, {} failed, {} unsupported, {} interrupted, {} skipped ({} worker(s))\n",
         result.function_results.len(),
         errors.len(),
         unsupported_count,
+        interrupted_count,
         expected.len(),
         result.workers_used,
     ));
@@ -5655,7 +5677,7 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         }
     }
 
-    format_skip_sections(&expected, &errors, &mut out);
+    format_skip_sections(&expected, &interrupted, &errors, &mut out);
 
     out
 }
@@ -5688,6 +5710,11 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         .skipped_functions
         .iter()
         .filter(|s| s.category == SkipCategory::Error)
+        .collect();
+    let interrupted: Vec<_> = result
+        .skipped_functions
+        .iter()
+        .filter(|s| s.category == SkipCategory::Interrupted)
         .collect();
 
     out.push_str(&format!(
@@ -5737,20 +5764,31 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         }
     }
 
-    format_skip_sections(&expected, &errors, &mut out);
+    format_skip_sections(&expected, &interrupted, &errors, &mut out);
 
     out
 }
 
-/// Append "Skipped (expected)" and "Errors" sections to a report string.
+/// Append skipped and error sections to a report string.
 fn format_skip_sections(
     expected: &[&SkippedFunction],
+    interrupted: &[&SkippedFunction],
     errors: &[&SkippedFunction],
     out: &mut String,
 ) {
     if !expected.is_empty() {
         out.push_str(&format!("\nSkipped (expected, {}):\n", expected.len()));
         for skip in expected {
+            out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
+        }
+    }
+
+    if !interrupted.is_empty() {
+        out.push_str(&format!(
+            "\nSkipped (interrupted, {}):\n",
+            interrupted.len()
+        ));
+        for skip in interrupted {
             out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
         }
     }
@@ -7420,6 +7458,7 @@ mod tests {
         assert_eq!(result.skipped.len(), 2);
         for s in &result.skipped {
             assert_eq!(s.reason, "timed out (total scan budget exceeded)");
+            assert_eq!(s.category, SkipCategory::Interrupted);
         }
     }
 
@@ -7907,6 +7946,7 @@ mod tests {
         assert_eq!(result.skipped.len(), 2);
         for skipped in &result.skipped {
             assert_eq!(skipped.reason, "timed out (total scan budget exceeded)");
+            assert_eq!(skipped.category, SkipCategory::Interrupted);
         }
     }
 
@@ -11942,6 +11982,27 @@ defaults:
         assert!(
             !result.has_scan_failure(),
             "1 explored out of 2 attempted is not a total failure"
+        );
+    }
+
+    #[test]
+    fn has_scan_failure_ignores_total_budget_interruptions() {
+        let result = ParallelScanResult {
+            function_results: vec![],
+            test_order: vec!["foo".into()],
+            skipped: vec![SkippedFunction {
+                function_name: "foo".into(),
+                reason: TOTAL_SCAN_TIMEOUT_REASON.into(),
+                category: SkipCategory::Interrupted,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        assert!(
+            !result.has_scan_failure(),
+            "interrupted functions were not attempted function failures"
         );
     }
 
