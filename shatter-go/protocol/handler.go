@@ -1805,16 +1805,15 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 			Detail:   "method has type parameters but no constraints were discovered",
 		}
 	}
-	// Prefer a parameterless same-package constructor when one exists; this
-	// matches the receiver planner's priority order (str-hy9b.H5) and gives
-	// the method a non-zero receiver state when the package author exposed
-	// one. Parameterful constructors are skipped because the wrapper has no
-	// way to synthesize their arguments (str-qo1.14).
+	// Prefer a same-package constructor when one exists and its parameters
+	// are simple enough for the wrapper to synthesize as zero-value literals.
+	// This matches the receiver planner/wrapper path for primitive-
+	// satisfiable parameterized constructors (str-3ok7).
 	for _, c := range ScanConstructors(pkg) {
 		if c.TargetType != target.Receiver.TypeName {
 			continue
 		}
-		if len(c.Parameters) > 0 {
+		if !constructorParamsDirectExecuteSatisfiable(c.Parameters) {
 			continue
 		}
 		return wrapper.WrapperKindConstructorPrefix + c.FuncName, nil
@@ -1839,6 +1838,38 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 	// is now surfaced as a real `runtime_failed` outcome with the actual
 	// panic message instead of the misleading "unknown receiver kind".
 	return wrapper.WrapperKindZeroValue, nil
+}
+
+func constructorParamsDirectExecuteSatisfiable(params []ParamInfo) bool {
+	for _, p := range params {
+		if !constructorParamDirectExecuteSatisfiable(p) {
+			return false
+		}
+	}
+	return true
+}
+
+func constructorParamDirectExecuteSatisfiable(p ParamInfo) bool {
+	if p.TypeName != nil {
+		switch *p.TypeName {
+		case "string", "[]byte", "[]uint8", "time.Duration",
+			"int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64",
+			"float32", "float64", "bool":
+			return true
+		}
+		if strings.HasSuffix(*p.TypeName, ".Duration") {
+			return true
+		}
+	}
+	switch p.Type.Kind {
+	case "str", "int", "float", "bool":
+		return true
+	case "complex":
+		return p.Type.ComplexKind == "go_uint" || p.Type.ComplexKind == "go_byte"
+	default:
+		return false
+	}
 }
 
 // receiverUnsupportedReason renders an UnsatisfiedRequirement as a
