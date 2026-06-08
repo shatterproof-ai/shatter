@@ -44,6 +44,17 @@ type TargetContext struct {
 	// these through PlanInterfaceImpls to produce runtime-value plans.
 	InterfaceImplsByParam map[string][]InterfaceParamCandidate
 
+	// ConstructorInterfaceImplsByParam maps constructor parameter names to
+	// discovered interface implementation candidates. It is separate from
+	// InterfaceImplsByParam because method parameters and receiver constructor
+	// parameters can have overlapping names but consume different input slots.
+	ConstructorInterfaceImplsByParam map[string][]InterfaceParamCandidate
+
+	// ConstructorRuntimeValuesByParam maps constructor parameter names to
+	// concrete Go expressions that initialize non-interface parameters, such
+	// as imported pointer types with parameterless constructors.
+	ConstructorRuntimeValuesByParam map[string]ConstructorRuntimeValue
+
 	// JSONEncodeInterfaceParams names empty-interface parameters whose value
 	// flows directly into encoding/json encode APIs such as json.Marshal(v) or
 	// json.NewEncoder(w).Encode(v). This is Go-internal planner context, not a
@@ -67,4 +78,11 @@ type InterfaceParamCandidate struct {
 	// ImportPath is the package import path for cross-package constructors
 	// (e.g. "internal/response"). Empty for same-package candidates.
 	ImportPath string
+}
+
+// ConstructorRuntimeValue is a Go expression plus imports that can initialize
+// a receiver constructor parameter without consuming a JSON input slot.
+type ConstructorRuntimeValue struct {
+	Expression string
+	Imports    []string
 }

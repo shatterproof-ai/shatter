@@ -10,6 +10,7 @@ package protocol
 import (
 	"go/ast"
 	"go/types"
+	"sort"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -29,10 +30,151 @@ func discoverInterfaceImplCandidates(
 	if consumerPkg == nil || consumerPkg.TypesInfo == nil || fn == nil || fn.Type.Params == nil {
 		return nil
 	}
+	return discoverInterfaceImplCandidatesForParams(consumerPkg, fn.Type.Params)
+}
+
+func discoverConstructorInterfaceImplCandidates(
+	consumerPkg *packages.Package,
+	constructors []ConstructorCandidate,
+) map[string][]InterfaceParamCandidate {
+	if consumerPkg == nil || consumerPkg.TypesInfo == nil || len(constructors) == 0 {
+		return nil
+	}
+	result := make(map[string][]InterfaceParamCandidate)
+
+	for _, constructor := range constructors {
+		fn := findFuncDeclByBareName(consumerPkg, constructor.FuncName)
+		if fn == nil || fn.Type.Params == nil {
+			continue
+		}
+		for name, candidates := range discoverInterfaceImplCandidatesForParams(consumerPkg, fn.Type.Params) {
+			result[name] = candidates
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func discoverConstructorRuntimeValues(
+	consumerPkg *packages.Package,
+	constructors []ConstructorCandidate,
+) map[string]ConstructorRuntimeValue {
+	if consumerPkg == nil || consumerPkg.TypesInfo == nil || len(constructors) == 0 {
+		return nil
+	}
+	result := make(map[string]ConstructorRuntimeValue)
+
+	for _, constructor := range constructors {
+		fn := findFuncDeclByBareName(consumerPkg, constructor.FuncName)
+		if fn == nil || fn.Type.Params == nil {
+			continue
+		}
+		for _, field := range fn.Type.Params.List {
+			value, ok := discoverConstructorRuntimeValueForField(consumerPkg, field)
+			if !ok {
+				continue
+			}
+			for _, name := range field.Names {
+				result[name.Name] = value
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func discoverConstructorRuntimeValueForField(
+	consumerPkg *packages.Package,
+	field *ast.Field,
+) (ConstructorRuntimeValue, bool) {
+	if consumerPkg == nil || consumerPkg.TypesInfo == nil || field == nil {
+		return ConstructorRuntimeValue{}, false
+	}
+	named, wantsPointer := resolveNamedConcreteType(field.Type, consumerPkg.TypesInfo)
+	if named == nil || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return ConstructorRuntimeValue{}, false
+	}
+	if _, isInterface := named.Underlying().(*types.Interface); isInterface {
+		return ConstructorRuntimeValue{}, false
+	}
+
+	defPkgPath := named.Obj().Pkg().Path()
+	if defPkgPath == "" || defPkgPath == consumerPkg.PkgPath {
+		return ConstructorRuntimeValue{}, false
+	}
+	defPkg := consumerPkg.Imports[defPkgPath]
+	if defPkg == nil || defPkg.TypesInfo == nil {
+		return ConstructorRuntimeValue{}, false
+	}
+
+	var candidates []ConstructorCandidate
+	for _, constructor := range ScanConstructors(defPkg) {
+		if constructor.TargetType != named.Obj().Name() {
+			continue
+		}
+		if constructor.ReturnsPointer != wantsPointer {
+			continue
+		}
+		if len(constructor.Parameters) > 0 {
+			continue
+		}
+		candidates = append(candidates, constructor)
+	}
+	if len(candidates) == 0 {
+		return ConstructorRuntimeValue{}, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].FuncName < candidates[j].FuncName
+	})
+
+	pkgAlias := pkgAliasInConsumer(consumerPkg, defPkg.PkgPath)
+	if pkgAlias == "" {
+		pkgAlias = defPkg.Name
+	}
+	return ConstructorRuntimeValue{
+		Expression: pkgAlias + "." + candidates[0].FuncName + "()",
+		Imports:    []string{defPkg.PkgPath},
+	}, true
+}
+
+func resolveNamedConcreteType(expr ast.Expr, info *types.Info) (*types.Named, bool) {
+	if expr == nil || info == nil {
+		return nil, false
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Type == nil {
+		return nil, false
+	}
+	typ := tv.Type
+	isPointer := false
+	if ptr, ok := typ.(*types.Pointer); ok {
+		isPointer = true
+		typ = ptr.Elem()
+	}
+	named, ok := typ.(*types.Named)
+	if !ok {
+		return nil, false
+	}
+	return named, isPointer
+}
+
+func discoverInterfaceImplCandidatesForParams(
+	consumerPkg *packages.Package,
+	params *ast.FieldList,
+) map[string][]InterfaceParamCandidate {
+	if consumerPkg == nil || consumerPkg.TypesInfo == nil || params == nil {
+		return nil
+	}
 
 	result := make(map[string][]InterfaceParamCandidate)
 
-	for _, field := range fn.Type.Params.List {
+	for _, field := range params.List {
 		ifaceType, ifaceNamed := resolveInterfaceType(field.Type, consumerPkg.TypesInfo)
 		if ifaceType == nil || ifaceNamed == nil {
 			continue

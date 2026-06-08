@@ -148,6 +148,34 @@ func (s *SSEWriter) Flush() {}
 	}
 }
 
+func TestSynthesizeExecuteReceiverKind_UsesInterfaceImplParameterizedConstructor(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := writeCtorInterfaceFixture(t)
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*Handler).Serve")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v", unsat)
+	}
+	if got != "constructor:NewHandler" {
+		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want constructor:NewHandler", got)
+	}
+}
+
+func TestSynthesizeExecuteReceiverKind_UsesImportedConstructorParameterizedConstructor(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := writeCtorImportedConstructorFixture(t)
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*Handler).Serve")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v", unsat)
+	}
+	if got != "constructor:NewHandler" {
+		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want constructor:NewHandler", got)
+	}
+}
+
 func TestSynthesizeExecuteReceiverKind_SkipsUnsatisfiableParameterizedConstructor(t *testing.T) {
 	t.Parallel()
 
@@ -228,6 +256,125 @@ func (r *Recorder) Flush() {
 	if got != "constructor:newRecorder" {
 		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want constructor:newRecorder", got)
 	}
+}
+
+func writeCtorInterfaceFixture(t *testing.T) string {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module example.com/ctoriface\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	responseDir := filepath.Join(tmpDir, "internal", "response")
+	if err := os.MkdirAll(responseDir, 0o755); err != nil {
+		t.Fatalf("mkdir response package: %v", err)
+	}
+	responseSrc := `package response
+
+type Generator interface {
+	Generate() string
+}
+
+type FakerGenerator struct{}
+
+func NewFakerGenerator() *FakerGenerator { return &FakerGenerator{} }
+
+func (f *FakerGenerator) Generate() string { return "fake" }
+`
+	if err := os.WriteFile(filepath.Join(responseDir, "response.go"), []byte(responseSrc), 0o644); err != nil {
+		t.Fatalf("write response fixture: %v", err)
+	}
+	mainSrc := `package main
+
+import "example.com/ctoriface/internal/response"
+
+type Handler struct {
+	generator response.Generator
+}
+
+func NewHandler(generator response.Generator) *Handler {
+	return &Handler{generator: generator}
+}
+
+func (h *Handler) Serve() string {
+	return h.generator.Generate()
+}
+`
+	tmpFile := filepath.Join(tmpDir, "handler.go")
+	if err := os.WriteFile(tmpFile, []byte(mainSrc), 0o644); err != nil {
+		t.Fatalf("write handler fixture: %v", err)
+	}
+	return tmpFile
+}
+
+func writeCtorImportedConstructorFixture(t *testing.T) string {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module example.com/ctorimported\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	responseDir := filepath.Join(tmpDir, "internal", "response")
+	if err := os.MkdirAll(responseDir, 0o755); err != nil {
+		t.Fatalf("mkdir response package: %v", err)
+	}
+	responseSrc := `package response
+
+type Generator interface {
+	Generate() string
+}
+
+type FakerGenerator struct{}
+
+func NewFakerGenerator() *FakerGenerator { return &FakerGenerator{} }
+
+func (f *FakerGenerator) Generate() string { return "fake" }
+`
+	if err := os.WriteFile(filepath.Join(responseDir, "response.go"), []byte(responseSrc), 0o644); err != nil {
+		t.Fatalf("write response fixture: %v", err)
+	}
+	specsDir := filepath.Join(tmpDir, "internal", "specs")
+	if err := os.MkdirAll(specsDir, 0o755); err != nil {
+		t.Fatalf("mkdir specs package: %v", err)
+	}
+	specsSrc := `package specs
+
+type Validator struct {
+	prefix string
+}
+
+func NewValidator() *Validator { return &Validator{prefix: "valid"} }
+
+func (v *Validator) Prefix() string { return v.prefix }
+`
+	if err := os.WriteFile(filepath.Join(specsDir, "validator.go"), []byte(specsSrc), 0o644); err != nil {
+		t.Fatalf("write specs fixture: %v", err)
+	}
+	mainSrc := `package main
+
+import (
+	"example.com/ctorimported/internal/response"
+	"example.com/ctorimported/internal/specs"
+)
+
+type Handler struct {
+	validator *specs.Validator
+	generator response.Generator
+}
+
+func NewHandler(validator *specs.Validator, generator response.Generator) *Handler {
+	return &Handler{validator: validator, generator: generator}
+}
+
+func (h *Handler) Serve() string {
+	return h.validator.Prefix() + ":" + h.generator.Generate()
+}
+`
+	tmpFile := filepath.Join(tmpDir, "handler.go")
+	if err := os.WriteFile(tmpFile, []byte(mainSrc), 0o644); err != nil {
+		t.Fatalf("write handler fixture: %v", err)
+	}
+	return tmpFile
 }
 
 type fakePreparedExecution struct {

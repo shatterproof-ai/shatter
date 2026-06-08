@@ -68,6 +68,13 @@ type ReceiverPlan struct {
 	// arguments. The wrapper uses these to generate literal default values
 	// in the constructor call.
 	ConstructorParams []protocol.ParamInfo
+	// ConstructorInterfaceImplsByParam maps constructor parameter names to
+	// interface implementation candidates that the wrapper can initialize
+	// directly from constructor expressions instead of JSON inputs.
+	ConstructorInterfaceImplsByParam map[string][]protocol.InterfaceParamCandidate
+	// ConstructorRuntimeValuesByParam maps constructor parameter names to
+	// concrete runtime expressions that do not consume JSON input slots.
+	ConstructorRuntimeValuesByParam map[string]protocol.ConstructorRuntimeValue
 }
 
 // UsefulZeroValueTypes is the whitelist of receiver types whose zero value
@@ -126,6 +133,15 @@ type PlanOptions struct {
 	ReceiverRequiresConstruction bool
 	// MaxPlans caps the returned slice. Zero means DefaultMaxReceiverPlans.
 	MaxPlans int
+	// InterfaceImplsByParam maps constructor parameter names to discovered
+	// interface implementation candidates. When a parameter has a usable
+	// implementor constructor, it is satisfiable and does not consume a JSON
+	// constructor input slot.
+	InterfaceImplsByParam map[string][]protocol.InterfaceParamCandidate
+	// RuntimeValuesByParam maps constructor parameter names to concrete Go
+	// expressions for imported exact-type parameters with parameterless
+	// constructors.
+	RuntimeValuesByParam map[string]protocol.ConstructorRuntimeValue
 }
 
 // PlanReceivers returns a prioritised list of receiver plans for the method
@@ -194,13 +210,15 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		// primitive-satisfiable. The wrapper generates literal default values
 		// for each constructor argument. Skip only when a param is not
 		// satisfiable (opaque type, interface, etc.).
-		if isParameterful(c) && !allParamsSatisfiable(c) {
+		if isParameterful(c) && !allParamsSatisfiable(c, opts.InterfaceImplsByParam, opts.RuntimeValuesByParam) {
 			continue
 		}
 		plan := ReceiverPlan{
-			Kind:         ReceiverPlanKindSamePackageConstructor,
-			ReceiverKind: WrapperReceiverKindConstructorPrefix + c.FuncName,
-			Label:        labelForConstructor(c),
+			Kind:                             ReceiverPlanKindSamePackageConstructor,
+			ReceiverKind:                     WrapperReceiverKindConstructorPrefix + c.FuncName,
+			Label:                            labelForConstructor(c),
+			ConstructorInterfaceImplsByParam: opts.InterfaceImplsByParam,
+			ConstructorRuntimeValuesByParam:  opts.RuntimeValuesByParam,
 		}
 		if isParameterful(c) {
 			plan.ConstructorParams = c.Parameters
@@ -212,13 +230,15 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		if len(plans) >= max {
 			break
 		}
-		if isParameterful(c) && !allParamsSatisfiable(c) {
+		if isParameterful(c) && !allParamsSatisfiable(c, opts.InterfaceImplsByParam, opts.RuntimeValuesByParam) {
 			continue
 		}
 		plan := ReceiverPlan{
-			Kind:         ReceiverPlanKindNearbyPackageConstructor,
-			ReceiverKind: WrapperReceiverKindConstructorPrefix + c.FuncName,
-			Label:        labelForConstructor(c),
+			Kind:                             ReceiverPlanKindNearbyPackageConstructor,
+			ReceiverKind:                     WrapperReceiverKindConstructorPrefix + c.FuncName,
+			Label:                            labelForConstructor(c),
+			ConstructorInterfaceImplsByParam: opts.InterfaceImplsByParam,
+			ConstructorRuntimeValuesByParam:  opts.RuntimeValuesByParam,
 		}
 		if isParameterful(c) {
 			plan.ConstructorParams = c.Parameters
@@ -309,9 +329,13 @@ func isParameterful(c protocol.ConstructorCandidate) bool {
 // by the primitive family classifier or the runtime-value registry (str-9b1q).
 // Used to permit parameterized constructors whose args are trivially
 // generatable (string, int, float, bool, []byte, duration, uint).
-func allParamsSatisfiable(c protocol.ConstructorCandidate) bool {
+func allParamsSatisfiable(
+	c protocol.ConstructorCandidate,
+	interfaceImplsByParam map[string][]protocol.InterfaceParamCandidate,
+	runtimeValuesByParam map[string]protocol.ConstructorRuntimeValue,
+) bool {
 	for _, p := range c.Parameters {
-		if !isParamSatisfiable(p) {
+		if !isParamSatisfiable(p, interfaceImplsByParam, runtimeValuesByParam) {
 			return false
 		}
 	}
