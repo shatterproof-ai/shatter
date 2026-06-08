@@ -9985,6 +9985,100 @@ fn enabled(config: Config) -> bool {
     }
 
     #[test]
+    fn crate_backed_axum_handler_reports_executed_branch_lines() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = std::env::temp_dir().join("shatter-test-axum-coverage");
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"[package]
+name = "shatter-test-axum"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+"#,
+        )
+        .unwrap();
+        let src_file = src.join("lib.rs");
+        std::fs::write(
+            &src_file,
+            r#"
+use axum::extract::Path;
+
+pub async fn classify(Path(id): Path<u64>) -> String {
+    if id > 10 {
+        "large".to_string()
+    } else {
+        "small".to_string()
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            src_file.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!(11)],
+            &[],
+            60_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("large"))
+                );
+                assert!(
+                    result.lines_executed.iter().any(|line| *line > 0),
+                    "crate-backed Axum handler should report executed source lines: {result:?}"
+                );
+                assert!(
+                    result.lines_executed.len() >= 3,
+                    "crate-backed Axum handler should report statement-level source lines, got {:?}: {result:?}",
+                    result.lines_executed
+                );
+                assert!(
+                    !result.branch_path.is_empty(),
+                    "crate-backed Axum handler should report branch decisions: {result:?}"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_backed_axum_handler_reports_executed_branch_lines: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
     fn crate_bridge_supplies_sqlx_pgpool_reference() {
         let dir = std::env::temp_dir().join("shatter-test-bridge-pgpool");
         let src_file = write_test_crate(

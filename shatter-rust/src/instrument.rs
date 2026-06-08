@@ -18,6 +18,7 @@ use std::path::Path;
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
+use syn::spanned::Spanned;
 use syn::visit_mut::VisitMut;
 use syn::{Expr, ExprForLoop, ExprIf, ExprMatch, ExprWhile, Stmt, parse_file};
 
@@ -170,6 +171,17 @@ impl Instrumentor {
         }
     }
 
+    /// Get the line number for a statement using its span.
+    fn line_of_stmt(&self, stmt: &Stmt) -> u32 {
+        let span = stmt.span();
+        let start = span.start();
+        if start.line > 0 {
+            start.line as u32
+        } else {
+            self.current_line
+        }
+    }
+
     /// Create a branch_hit wrapper expression that evaluates the condition,
     /// records the branch, and returns the condition value.
     ///
@@ -234,6 +246,25 @@ impl Instrumentor {
 }
 
 impl VisitMut for Instrumentor {
+    fn visit_block_mut(&mut self, node: &mut syn::Block) {
+        if !self.inside_target {
+            return;
+        }
+
+        let mut instrumented = Vec::with_capacity(node.stmts.len() * 2);
+        for mut stmt in std::mem::take(&mut node.stmts) {
+            syn::visit_mut::visit_stmt_mut(self, &mut stmt);
+            if should_record_stmt_line(&stmt) {
+                let line = self.line_of_stmt(&stmt);
+                if line > 0 {
+                    instrumented.push(self.line_hit_stmt(line));
+                }
+            }
+            instrumented.push(stmt);
+        }
+        node.stmts = instrumented;
+    }
+
     fn visit_item_fn_mut(&mut self, node: &mut syn::ItemFn) {
         let fn_name = node.sig.ident.to_string();
         let was_inside = self.inside_target;
@@ -249,10 +280,13 @@ impl VisitMut for Instrumentor {
             self.inside_target = true;
         }
 
-        if node.sig.constness.is_none() {
-            let line = self.line_of(node);
-            node.block.stmts.insert(0, self.line_hit_stmt(line));
+        if node.sig.constness.is_some() {
+            self.inside_target = was_inside;
+            return;
         }
+
+        let line = self.line_of(node);
+        node.block.stmts.insert(0, self.line_hit_stmt(line));
 
         // Visit the function body
         syn::visit_mut::visit_item_fn_mut(self, node);
@@ -274,10 +308,13 @@ impl VisitMut for Instrumentor {
             self.inside_target = true;
         }
 
-        if node.sig.constness.is_none() {
-            let line = self.line_of(node);
-            node.block.stmts.insert(0, self.line_hit_stmt(line));
+        if node.sig.constness.is_some() {
+            self.inside_target = was_inside;
+            return;
         }
+
+        let line = self.line_of(node);
+        node.block.stmts.insert(0, self.line_hit_stmt(line));
 
         syn::visit_mut::visit_impl_item_fn_mut(self, node);
 
@@ -409,6 +446,34 @@ impl VisitMut for Instrumentor {
 
         syn::visit_mut::visit_expr_match_mut(self, node);
     }
+}
+
+fn should_record_stmt_line(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Local(_) | Stmt::Macro(_) => true,
+        Stmt::Expr(expr, _) => !is_shatter_runtime_call(expr),
+        Stmt::Item(_) => false,
+    }
+}
+
+fn is_shatter_runtime_call(expr: &Expr) -> bool {
+    let Expr::Call(call) = expr else {
+        return false;
+    };
+    let Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    let mut segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string());
+    matches!(segments.next().as_deref(), Some("shatter_rust_runtime"))
+        && matches!(
+            segments.next().as_deref(),
+            Some("line_hit" | "branch_hit" | "loop_enter")
+        )
+        && segments.next().is_none()
 }
 
 /// Returns true if `expr` is or syntactically contains an `Expr::Let`
@@ -642,6 +707,24 @@ fn check(x: i32) -> i32 {
         assert!(
             result.source.contains("line_hit"),
             "instrumented function should record entry line execution"
+        );
+    }
+
+    #[test]
+    fn straight_line_statements_record_line_hits() {
+        let source = r#"
+fn check(x: i32) -> i32 {
+    let doubled = x * 2;
+    let shifted = doubled + 1;
+    shifted
+}
+"#;
+        let result = instrument_fn(source, "check");
+        let line_hits = result.source.matches("line_hit").count();
+        assert!(
+            line_hits >= 4,
+            "instrumented function should record entry and straight-line statements, got {line_hits} hits:\n{}",
+            result.source
         );
     }
 
