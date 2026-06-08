@@ -1696,7 +1696,7 @@ pub async fn scan(
             loop_buckets: explorer::LoopBuckets::default(),
             timeout_explore: scan_explore_timeout(config),
             meta_config: crate::strategy::MetaConfig::default(),
-            shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
+            shrink_budget: scan_shrink_budget(config),
             isolation: config.isolation,
             capture_side_effects: config.capture_side_effects,
             budget_surplus: None,
@@ -4175,7 +4175,7 @@ pub async fn parallel_scan_with_progress(
                 loop_buckets: explorer::LoopBuckets::default(),
                 timeout_explore: scan_explore_timeout(config),
                 meta_config: crate::strategy::MetaConfig::default(),
-                shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
+                shrink_budget: scan_shrink_budget(config),
                 isolation: config.isolation,
                 capture_side_effects: config.capture_side_effects,
                 budget_surplus: Some(Arc::clone(&layer_surplus)),
@@ -5077,6 +5077,14 @@ fn phase_timeout_reason(phase: &str, d: Duration) -> String {
 
 fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
     config.timeout_explore.or(Some(config.timeout_per_fn))
+}
+
+fn scan_shrink_budget(config: &ScanConfig) -> usize {
+    if scan_explore_timeout(config).is_some() {
+        0
+    } else {
+        crate::orchestrator::DEFAULT_SHRINK_BUDGET
+    }
 }
 
 fn remaining_explore_budget(
@@ -6246,6 +6254,17 @@ mod tests {
         };
 
         assert_eq!(scan_explore_timeout(&cfg), Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn scan_disables_shrink_under_per_function_deadline() {
+        let cfg = ScanConfig {
+            timeout_per_fn: Duration::from_secs(60),
+            timeout_explore: None,
+            ..minimal_scan_config(HashMap::new())
+        };
+
+        assert_eq!(scan_shrink_budget(&cfg), 0);
     }
 
     /// str-cir6: GA follow-up runs after the initial explorer. It must receive
