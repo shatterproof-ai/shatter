@@ -1694,7 +1694,7 @@ pub async fn scan(
             // the correct profile in execute requests.
             execution_profile: execution_profile_from_analysis(analysis),
             loop_buckets: explorer::LoopBuckets::default(),
-            timeout_explore: config.timeout_explore,
+            timeout_explore: scan_explore_timeout(config),
             meta_config: crate::strategy::MetaConfig::default(),
             shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
             isolation: config.isolation,
@@ -4164,7 +4164,7 @@ pub async fn parallel_scan_with_progress(
                 // (parallel path — mirrors serial path).
                 execution_profile: execution_profile_from_analysis(analysis),
                 loop_buckets: explorer::LoopBuckets::default(),
-                timeout_explore: config.timeout_explore,
+                timeout_explore: scan_explore_timeout(config),
                 meta_config: crate::strategy::MetaConfig::default(),
                 shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
                 isolation: config.isolation,
@@ -5064,6 +5064,10 @@ fn execution_profile_from_analysis(
 /// in sync and the message is unit-testable (str-ubp1).
 fn phase_timeout_reason(phase: &str, d: Duration) -> String {
     format!("timed out during {phase} after {:.0}s", d.as_secs_f64())
+}
+
+fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
+    config.timeout_explore
 }
 
 const SHARED_POOL_TASK_CLEANUP_GRACE: Duration = Duration::from_secs(5);
@@ -6145,6 +6149,26 @@ mod tests {
         };
         assert_eq!(separated.build_timeout, Duration::from_secs(60));
         assert_eq!(separated.timeout_per_fn, Duration::from_secs(5));
+    }
+
+    /// str-cir6: a scan target that keeps returning quick target errors must
+    /// still get an internal exploration deadline. Otherwise the random
+    /// explorer keeps generating executions until the outer task watchdog has
+    /// to abort it, which leaves long serial scans with no per-function
+    /// artifact or progress for minutes.
+    #[test]
+    fn scan_defaults_explore_deadline_to_per_function_timeout() {
+        let cfg = ScanConfig {
+            timeout_per_fn: Duration::from_secs(60),
+            timeout_explore: None,
+            ..minimal_scan_config(HashMap::new())
+        };
+
+        assert_eq!(
+            scan_explore_timeout(&cfg),
+            Some(Duration::from_secs(60)),
+            "scan must pass timeout_per_fn into ExploreConfig when --timeout-explore is omitted"
+        );
     }
 
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
