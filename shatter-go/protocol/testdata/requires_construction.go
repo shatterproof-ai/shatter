@@ -23,14 +23,20 @@ func NewLocalControlPlane(seed map[string]string) *LocalControlPlane {
 }
 
 // ListProfiles ranges the store map. On a zero-value receiver it returns nil
-// (range over nil map is safe), but UpsertListener writes through the nil
-// channel and panics. The pattern is enough to trigger str-g7h7's heuristic.
+// because ranging over a nil map is safe, so a method-sensitive construction
+// guard should allow this method.
 func (l *LocalControlPlane) ListProfiles() []string {
 	out := make([]string, 0, len(l.store))
 	for k := range l.store {
 		out = append(out, k)
 	}
 	return out
+}
+
+// BumpCounter writes to an uninitialized map on a zero-value receiver and must
+// still be rejected by the construction guard.
+func (l *LocalControlPlane) BumpCounter(name string) {
+	l.counters[name]++
 }
 
 // PrimitiveOnly is the negative-control case: its zero value is well defined

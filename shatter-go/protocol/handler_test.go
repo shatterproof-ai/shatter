@@ -215,6 +215,34 @@ func (s *Server) Lookup(key string) string {
 	}
 }
 
+func TestSynthesizeExecuteReceiverKind_AllowsSafeZeroValueMethod(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := filepath.Join(t.TempDir(), "cache.go")
+	src := `package fixture
+
+type Cache struct {
+	values map[string]string
+}
+
+func (c *Cache) Len() int {
+	return len(c.values)
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*Cache).Len")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v, want nil", unsat)
+	}
+	if got != "zero_value" {
+		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want zero_value", got)
+	}
+}
+
 func TestSynthesizeExecuteReceiverKind_AllowsAggregateConstructorParam(t *testing.T) {
 	t.Parallel()
 

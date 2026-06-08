@@ -8,16 +8,28 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// TestReceiverRequiresConstruction_DetectsNilFieldStruct asserts the
-// str-g7h7 heuristic: a struct whose unexported fields are reference types
-// (maps, channels, interfaces, function values, pointers) is flagged so the
-// receiver planner refuses the fallback zero-value plan.
-func TestReceiverRequiresConstruction_DetectsNilFieldStruct(t *testing.T) {
+// TestReceiverRequiresConstruction_DetectsUnsafeNilStateMethod asserts the
+// str-g7h7 guard remains active when a method body uses uninitialized
+// reference state in a way that would panic on a zero-value receiver.
+func TestReceiverRequiresConstruction_DetectsUnsafeNilStateMethod(t *testing.T) {
+	pkg := loadConstructionTestdata(t)
+
+	target := findMethodTarget(t, pkg, "BumpCounter", "LocalControlPlane")
+	if !ReceiverRequiresConstruction(pkg, &target) {
+		t.Fatalf("ReceiverRequiresConstruction(LocalControlPlane.BumpCounter) = false, want true")
+	}
+}
+
+// TestReceiverRequiresConstruction_AllowsSafeNilStateMethod covers a receiver
+// type with unexported reference fields whose specific method only performs
+// nil-safe operations. The construction decision is method-sensitive, not
+// type-wide.
+func TestReceiverRequiresConstruction_AllowsSafeNilStateMethod(t *testing.T) {
 	pkg := loadConstructionTestdata(t)
 
 	target := findMethodTarget(t, pkg, "ListProfiles", "LocalControlPlane")
-	if !ReceiverRequiresConstruction(pkg, &target) {
-		t.Fatalf("ReceiverRequiresConstruction(LocalControlPlane) = false, want true")
+	if ReceiverRequiresConstruction(pkg, &target) {
+		t.Fatalf("ReceiverRequiresConstruction(LocalControlPlane.ListProfiles) = true, want false")
 	}
 }
 
