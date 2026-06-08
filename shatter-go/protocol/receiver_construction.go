@@ -54,8 +54,12 @@ func ReceiverRequiresConstruction(pkg *packages.Package, target *DiscoveredTarge
 		return false
 	}
 	dangerousFields := make(map[string]receiverFieldKind)
+	zeroValueEmptyRangeFields := make(map[string]bool)
 	for i := 0; i < st.NumFields(); i++ {
 		f := st.Field(i)
+		if fieldRangesEmptyAtZeroValue(f.Type()) {
+			zeroValueEmptyRangeFields[f.Name()] = true
+		}
 		if f.Exported() {
 			// Exported fields can be initialized by callers via composite
 			// literals; the receiver planner already emits the
@@ -81,7 +85,7 @@ func ReceiverRequiresConstruction(pkg *packages.Package, target *DiscoveredTarge
 	if recvName == "" {
 		return false
 	}
-	return methodUsesDangerousReceiverField(fn.Body, recvName, dangerousFields)
+	return methodUsesDangerousReceiverField(fn.Body, recvName, dangerousFields, zeroValueEmptyRangeFields)
 }
 
 type receiverFieldKind string
@@ -116,6 +120,11 @@ func fieldRequiresInitialization(t types.Type) (receiverFieldKind, bool) {
 	return "", false
 }
 
+func fieldRangesEmptyAtZeroValue(t types.Type) bool {
+	_, ok := t.Underlying().(*types.Slice)
+	return ok
+}
+
 func receiverName(fn *ast.FuncDecl) string {
 	if fn == nil || fn.Recv == nil || len(fn.Recv.List) == 0 {
 		return ""
@@ -130,6 +139,7 @@ func methodUsesDangerousReceiverField(
 	body *ast.BlockStmt,
 	recvName string,
 	fields map[string]receiverFieldKind,
+	zeroValueEmptyRangeFields map[string]bool,
 ) bool {
 	unsafeUse := false
 	guardedFields := receiverFieldsNilChecked(body, recvName, fields)
@@ -156,6 +166,9 @@ func methodUsesDangerousReceiverField(
 				return false
 			}
 		case *ast.RangeStmt:
+			if rangesZeroValueEmptyReceiverField(node, recvName, zeroValueEmptyRangeFields) {
+				return false
+			}
 			if fieldName, ok := directReceiverField(node.X, recvName); ok && fields[fieldName] == receiverFieldChan {
 				unsafeUse = true
 				return false
@@ -180,6 +193,15 @@ func methodUsesDangerousReceiverField(
 		return true
 	})
 	return unsafeUse
+}
+
+func rangesZeroValueEmptyReceiverField(
+	stmt *ast.RangeStmt,
+	recvName string,
+	fields map[string]bool,
+) bool {
+	fieldName, ok := directReceiverField(stmt.X, recvName)
+	return ok && fields[fieldName]
 }
 
 func receiverFieldsNilChecked(
