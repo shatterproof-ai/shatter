@@ -1679,6 +1679,8 @@ fn axum_default_path_segment(ty: &str, index: usize) -> String {
             | "isize"
     ) {
         (index + 1).to_string()
+    } else if normalized == "bool" {
+        "true".to_string()
     } else {
         format!("p{index}")
     }
