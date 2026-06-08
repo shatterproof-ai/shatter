@@ -1706,6 +1706,7 @@ pub async fn scan(
             prepare_id_override: None,
         };
 
+        let explore_started = Instant::now();
         let exploration =
             explore_with_scan_mode(frontend, analysis, config.concolic, &explore_config).await?;
 
@@ -1739,29 +1740,37 @@ pub async fn scan(
                 {
                     seed_inputs.extend(cached_map.extract_seed_inputs());
                 }
-                match crate::genetic_explorer::genetic_explore(
-                    frontend,
-                    func_name,
-                    seed_inputs,
-                    targets,
-                    &analysis.params,
+                if let Some(genetic_config) = genetic_config_for_scan_budget(
                     &config.genetic_config,
-                )
-                .await
-                {
-                    Ok(ga_result) => {
-                        if !ga_result.discoveries.is_empty() {
-                            log::info!(
-                                "[scan] GA found {} new behavior(s) for {}",
-                                ga_result.discoveries.len(),
-                                func_name,
-                            );
+                    explore_config.timeout_explore,
+                    explore_started,
+                ) {
+                    match crate::genetic_explorer::genetic_explore(
+                        frontend,
+                        func_name,
+                        seed_inputs,
+                        targets,
+                        &analysis.params,
+                        &genetic_config,
+                    )
+                    .await
+                    {
+                        Ok(ga_result) => {
+                            if !ga_result.discoveries.is_empty() {
+                                log::info!(
+                                    "[scan] GA found {} new behavior(s) for {}",
+                                    ga_result.discoveries.len(),
+                                    func_name,
+                                );
+                            }
+                            ga_discoveries = ga_result.discoveries;
                         }
-                        ga_discoveries = ga_result.discoveries;
+                        Err(e) => {
+                            log::warn!("[scan] GA error for {}: {e}", func_name);
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("[scan] GA error for {}: {e}", func_name);
-                    }
+                } else {
+                    log::info!("[scan] Skipping GA for {func_name}: exploration budget exhausted");
                 }
             }
         }
@@ -5070,8 +5079,38 @@ fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
     config.timeout_explore.or(Some(config.timeout_per_fn))
 }
 
-fn remaining_explore_budget(timeout_explore: Option<Duration>, _started: Instant) -> Option<Duration> {
-    timeout_explore
+fn remaining_explore_budget(
+    timeout_explore: Option<Duration>,
+    started: Instant,
+) -> Option<Duration> {
+    let timeout = timeout_explore?;
+    let elapsed = started.elapsed();
+    if elapsed >= timeout {
+        None
+    } else {
+        Some(timeout - elapsed)
+    }
+}
+
+fn genetic_config_with_remaining_budget(
+    config: &crate::config::GeneticConfig,
+    remaining: Duration,
+) -> crate::config::GeneticConfig {
+    let mut bounded = config.clone();
+    bounded.timeout_secs = bounded.timeout_secs.min(remaining.as_secs() as u32);
+    bounded
+}
+
+fn genetic_config_for_scan_budget(
+    config: &crate::config::GeneticConfig,
+    timeout_explore: Option<Duration>,
+    started: Instant,
+) -> Option<crate::config::GeneticConfig> {
+    match timeout_explore {
+        Some(_) => remaining_explore_budget(timeout_explore, started)
+            .map(|remaining| genetic_config_with_remaining_budget(config, remaining)),
+        None => Some(config.clone()),
+    }
 }
 
 const SHARED_POOL_TASK_CLEANUP_GRACE: Duration = Duration::from_secs(5);
@@ -5275,6 +5314,7 @@ async fn explore_single_function(
         effective_config.default_execute_plan = Some(plan);
     }
     let explore_config = &effective_config;
+    let explore_started = Instant::now();
     let exploration = explore_with_scan_mode(frontend, analysis, concolic, explore_config).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
@@ -5298,29 +5338,37 @@ async fn explore_single_function(
             {
                 seed_inputs.extend(cached_map.extract_seed_inputs());
             }
-            match crate::genetic_explorer::genetic_explore(
-                frontend,
-                func_name,
-                seed_inputs,
-                targets,
-                &analysis.params,
+            if let Some(genetic_config) = genetic_config_for_scan_budget(
                 genetic_config,
-            )
-            .await
-            {
-                Ok(ga_result) => {
-                    if !ga_result.discoveries.is_empty() {
-                        log::info!(
-                            "[scan] GA found {} new behavior(s) for {}",
-                            ga_result.discoveries.len(),
-                            func_name,
-                        );
+                explore_config.timeout_explore,
+                explore_started,
+            ) {
+                match crate::genetic_explorer::genetic_explore(
+                    frontend,
+                    func_name,
+                    seed_inputs,
+                    targets,
+                    &analysis.params,
+                    &genetic_config,
+                )
+                .await
+                {
+                    Ok(ga_result) => {
+                        if !ga_result.discoveries.is_empty() {
+                            log::info!(
+                                "[scan] GA found {} new behavior(s) for {}",
+                                ga_result.discoveries.len(),
+                                func_name,
+                            );
+                        }
+                        ga_discoveries = ga_result.discoveries;
                     }
-                    ga_discoveries = ga_result.discoveries;
+                    Err(e) => {
+                        log::warn!("[scan] GA error for {}: {e}", func_name);
+                    }
                 }
-                Err(e) => {
-                    log::warn!("[scan] GA error for {}: {e}", func_name);
-                }
+            } else {
+                log::info!("[scan] Skipping GA for {func_name}: exploration budget exhausted");
             }
         }
     }
