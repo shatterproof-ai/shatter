@@ -5067,7 +5067,7 @@ fn phase_timeout_reason(phase: &str, d: Duration) -> String {
 }
 
 fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
-    config.timeout_explore
+    config.timeout_explore.or(Some(config.timeout_per_fn))
 }
 
 const SHARED_POOL_TASK_CLEANUP_GRACE: Duration = Duration::from_secs(5);
@@ -6169,6 +6169,17 @@ mod tests {
             Some(Duration::from_secs(60)),
             "scan must pass timeout_per_fn into ExploreConfig when --timeout-explore is omitted"
         );
+    }
+
+    #[test]
+    fn scan_preserves_explicit_explore_deadline() {
+        let cfg = ScanConfig {
+            timeout_per_fn: Duration::from_secs(60),
+            timeout_explore: Some(Duration::from_secs(7)),
+            ..minimal_scan_config(HashMap::new())
+        };
+
+        assert_eq!(scan_explore_timeout(&cfg), Some(Duration::from_secs(7)));
     }
 
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
