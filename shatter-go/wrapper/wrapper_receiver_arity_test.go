@@ -313,6 +313,78 @@ func (a *Adapter) Run(mode string) string { return a.label + ":" + mode }
 	compileWrapperFixture(t, "ctorruntime", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
 }
 
+func TestParameterizedConstructorRuntimeValuePlusAggregateArgCompiles(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	wrapperTarget := wrapper.WrapperTarget{
+		ID:            "example.com/ctoragg:(*Recorder).Write",
+		SymbolName:    "Write",
+		Kind:          wrapper.TargetKindMethod,
+		ReceiverType:  "Recorder",
+		IsPointerRecv: true,
+		Parameters: []wrapper.WrapperParam{
+			{Name: "payload", GoType: "[]byte"},
+		},
+		HasResult: true, ResultGoType: "int", ResultCount: 2,
+	}
+	wrapperCtors := []wrapper.ConstructorCandidate{
+		{
+			FuncName:       "newRecorder",
+			TargetType:     "Recorder",
+			HasParams:      true,
+			ReturnsPointer: true,
+			Parameters: []wrapper.ConstructorParam{
+				{Name: "w", GoType: "http.ResponseWriter"},
+				{Name: "caps", GoType: "RecordCaps"},
+			},
+		},
+	}
+
+	src := wrapper.GenerateWrapper("ctoragg", []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+	if !strings.Contains(src, "var _shatterCtorArg0 http.ResponseWriter = httptest.NewRecorder()") {
+		t.Fatalf("wrapper did not bind http.ResponseWriter constructor arg from runtime value; source:\n%s", src)
+	}
+	if strings.Contains(src, "json.Unmarshal(_shatterInputs[0], &_shatterCtorArg0)") {
+		t.Fatalf("wrapper decoded runtime-value constructor arg from inputs; source:\n%s", src)
+	}
+	if !strings.Contains(src, "json.Unmarshal(_shatterInputs[0], &_shatterCtorArg1)") {
+		t.Fatalf("wrapper did not decode aggregate constructor arg from first input slot; source:\n%s", src)
+	}
+	if !strings.Contains(src, "json.Unmarshal(_shatterInputs[1], &payload)") {
+		t.Fatalf("wrapper did not shift method arg after aggregate constructor arg; source:\n%s", src)
+	}
+	if !strings.Contains(src, "newRecorder(_shatterCtorArg0, _shatterCtorArg1)") {
+		t.Fatalf("wrapper did not pass runtime and aggregate constructor args; source:\n%s", src)
+	}
+
+	const targetSrc = `package ctoragg
+
+import "net/http"
+
+type RecordCaps struct {
+	RequestBodyCapBytes int
+	ResponseBodyCapBytes int
+	StreamEventCap int
+}
+
+type Recorder struct {
+	w http.ResponseWriter
+	caps RecordCaps
+}
+
+func newRecorder(w http.ResponseWriter, caps RecordCaps) *Recorder {
+	return &Recorder{w: w, caps: caps}
+}
+
+func (r *Recorder) Write(payload []byte) (int, error) {
+	return r.w.Write(payload)
+}
+`
+	compileWrapperFixture(t, "ctoragg", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+}
+
 // TestReceiverArity_PointerReceiverNoCtor_FallbackPlanCompiles regresses the
 // `(*Config).Server` symptom (str-qo1.9 (b)). A pointer-receiver method
 // with no discovered constructor must yield an executable plan (zero-value

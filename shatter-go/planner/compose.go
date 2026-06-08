@@ -242,7 +242,9 @@ func itoa(n int) string {
 // constructor arguments that must come from the JSON input prefix (str-9b1q).
 // Constructor parameters satisfied by the runtime-value registry are omitted:
 // the generated wrapper initializes those directly and they do not consume an
-// input slot.
+// input slot. Aggregate constructor parameters consume one prefix slot as a
+// JSON zero value; the Go wrapper unmarshals that into the declared aggregate
+// type before calling the constructor.
 func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 	if len(recv.ConstructorParams) == 0 {
 		return nil
@@ -250,6 +252,15 @@ func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 	plans := make([]protocol.ValuePlan, 0, len(recv.ConstructorParams))
 	for i, p := range recv.ConstructorParams {
 		if len(runtimeValuePlans(i, p, 1)) > 0 {
+			continue
+		}
+		if constructorAggregateParamSatisfiable(p) {
+			plans = append(plans, protocol.ValuePlan{
+				Kind:       protocol.ValuePlanKindZero,
+				ParamIndex: i,
+				ParamName:  p.Name,
+				TypeHint:   typeHintForParam(p),
+			})
 			continue
 		}
 		typeHint := typeHintForParam(p)
@@ -261,6 +272,11 @@ func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 		})
 	}
 	return plans
+}
+
+func constructorAggregateParamSatisfiable(p protocol.ParamInfo) bool {
+	plans, unsat := planAggregateWithOptions("", 0, p, 1, aggregateOptions{})
+	return len(plans) > 0 && unsat == nil
 }
 
 // typeHintForParam returns the Go type hint string for a ParamInfo (str-9b1q).
