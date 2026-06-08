@@ -2273,6 +2273,57 @@ mod tests {
     }
 
     #[test]
+    fn native_rs_generate_uses_project_root_as_cwd_and_restores_caller_cwd() {
+        use crate::generators::GeneratorResult;
+
+        let caller_cwd = std::env::current_dir().expect("read caller cwd");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        let generator_file = "/tmp/shatter-project-root-generator.rs";
+        let mut registry = NativeRegistry::new();
+        registry.register_for_file(
+            generator_file,
+            "State",
+            Box::new(|_recipe| {
+                let cwd = std::env::current_dir()
+                    .expect("read generator cwd")
+                    .display()
+                    .to_string();
+                GeneratorResult {
+                    id: "project-root-state".to_string(),
+                    value: Box::new(()),
+                    recipe: serde_json::json!({ "cwd": cwd }),
+                }
+            }),
+        );
+
+        let req: Request = serde_json::from_value(serde_json::json!({
+            "protocol_version": "0.1.0",
+            "id": 42,
+            "command": "generate",
+            "file": generator_file,
+            "name": "State",
+            "kind": "type_name",
+            "project_root": project_dir.path()
+        }))
+        .expect("request should decode");
+        let mut handler =
+            Handler::new_with_native_registry(io::empty(), Vec::new(), io::sink(), registry);
+
+        let (resp, shutdown) = handler.dispatch(&req);
+
+        assert!(!shutdown);
+        assert_eq!(resp.status, "generate");
+        assert_eq!(
+            resp.recipe.expect("recipe")["cwd"],
+            project_dir.path().display().to_string()
+        );
+        assert_eq!(
+            std::env::current_dir().expect("read restored cwd"),
+            caller_cwd
+        );
+    }
+
+    #[test]
     fn generate_wasm_missing_file_returns_error() {
         let resp = send_recv(
             r#"{"protocol_version":"0.1.0","id":15,"command":"generate","file":"/nonexistent/gen.wasm","name":"gen","kind":"type_name"}"#,
