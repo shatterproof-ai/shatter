@@ -101,13 +101,16 @@ func TestReceiverArity_ParameterfulConstructor_FallbackPlanCompiles(t *testing.T
 	}
 
 	src := wrapper.GenerateWrapper("arity", []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
-	// str-9b1q: the wrapper should emit NewAdapter("") — a call with the
-	// zero-value string literal, NOT NewAdapter() (arity mismatch).
+	// str-o5p5: parameterized constructors use the input prefix for their
+	// arguments, NOT NewAdapter() (arity mismatch) or a hardcoded zero literal.
 	if strings.Contains(src, "NewAdapter()") {
 		t.Errorf("wrapper emitted parameterless call to NewAdapter; source:\n%s", src)
 	}
-	if !strings.Contains(src, `NewAdapter("")`) {
-		t.Errorf("wrapper did not emit NewAdapter(\"\") for parameterized ctor; source:\n%s", src)
+	if strings.Contains(src, `NewAdapter("")`) {
+		t.Errorf("wrapper hardcoded constructor zero literal; source:\n%s", src)
+	}
+	if !strings.Contains(src, "NewAdapter(_shatterCtorArg0)") {
+		t.Errorf("wrapper did not pass decoded constructor input to NewAdapter; source:\n%s", src)
 	}
 	if !strings.Contains(src, "constructor:NewAdapter") {
 		t.Errorf("wrapper missing constructor:NewAdapter case; source:\n%s", src)
@@ -188,6 +191,59 @@ func NewAdapter(opts Options, runner *Runner, payload []byte, fixtures []Fixture
 func (a *Adapter) Run() {}
 `
 	compileWrapperFixture(t, "ctorzero", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+}
+
+func TestParameterizedConstructorDeserializesArgsFromInputPrefix(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	wrapperTarget := wrapper.WrapperTarget{
+		ID:            "example.com/ctorinput:(*Adapter).Run",
+		SymbolName:    "Run",
+		Kind:          wrapper.TargetKindMethod,
+		ReceiverType:  "Adapter",
+		IsPointerRecv: true,
+		Parameters: []wrapper.WrapperParam{
+			{Name: "mode", GoType: "string"},
+		},
+		HasResult: false,
+	}
+	wrapperCtors := []wrapper.ConstructorCandidate{
+		{
+			FuncName:       "NewAdapter",
+			TargetType:     "Adapter",
+			HasParams:      true,
+			ReturnsPointer: true,
+			Parameters: []wrapper.ConstructorParam{
+				{Name: "endpoint", GoType: "string"},
+			},
+		},
+	}
+
+	src := wrapper.GenerateWrapper("ctorinput", []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+	if strings.Contains(src, `NewAdapter("")`) {
+		t.Fatalf("wrapper hardcoded parameterized constructor zero literal; source:\n%s", src)
+	}
+	if !strings.Contains(src, "json.Unmarshal(_shatterInputs[0], &_shatterCtorArg0)") {
+		t.Fatalf("wrapper did not decode constructor arg from input slot 0; source:\n%s", src)
+	}
+	if !strings.Contains(src, "NewAdapter(_shatterCtorArg0)") {
+		t.Fatalf("wrapper did not pass decoded constructor arg to NewAdapter; source:\n%s", src)
+	}
+	if !strings.Contains(src, "json.Unmarshal(_shatterInputs[1], &mode)") {
+		t.Fatalf("wrapper did not shift method arg deserialization after constructor prefix; source:\n%s", src)
+	}
+
+	const targetSrc = `package ctorinput
+
+type Adapter struct{ endpoint string }
+
+func NewAdapter(endpoint string) *Adapter { return &Adapter{endpoint: endpoint} }
+
+func (a *Adapter) Run(mode string) string { return a.endpoint + ":" + mode }
+`
+	compileWrapperFixture(t, "ctorinput", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
 }
 
 // TestReceiverArity_PointerReceiverNoCtor_FallbackPlanCompiles regresses the

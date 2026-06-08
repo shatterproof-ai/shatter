@@ -90,9 +90,11 @@ pub async fn fetch_planner_seeds(
             plans,
             unsatisfied: unsatisfied_requirements,
         }),
-        ResponseResult::Error { code, message, .. } => Err(PlannerConsumerError::UnexpectedResponse(
-            format!("error code={code:?} message={message}"),
-        )),
+        ResponseResult::Error { code, message, .. } => {
+            Err(PlannerConsumerError::UnexpectedResponse(format!(
+                "error code={code:?} message={message}"
+            )))
+        }
         other => Err(PlannerConsumerError::UnexpectedResponse(format!(
             "expected InvocationPlan, got {other:?}"
         ))),
@@ -122,7 +124,9 @@ fn materialize_plan(plan: &InvocationPlan, param_infos: &[ParamInfo]) -> Option<
     if plan.argument_plans.len() != param_infos.len() {
         return None;
     }
-    let mut values = Vec::with_capacity(plan.argument_plans.len());
+    let mut values =
+        Vec::with_capacity(plan.constructor_arg_plans.len() + plan.argument_plans.len());
+    values.extend(materialize_constructor_arg_values(plan)?);
     for (value_plan, param) in plan.argument_plans.iter().zip(param_infos.iter()) {
         let v = materialize_value(value_plan, param)?;
         values.push(v);
@@ -130,10 +134,72 @@ fn materialize_plan(plan: &InvocationPlan, param_infos: &[ParamInfo]) -> Option<
     Some(values)
 }
 
+/// Materialize constructor argument plans into the input prefix expected by
+/// Go wrapper parameterized-constructor dispatch.
+#[must_use]
+pub fn materialize_constructor_arg_values(plan: &InvocationPlan) -> Option<Vec<Value>> {
+    let mut values = Vec::with_capacity(plan.constructor_arg_plans.len());
+    for value_plan in &plan.constructor_arg_plans {
+        values.push(materialize_constructor_value(value_plan)?);
+    }
+    Some(values)
+}
+
+/// Return the concrete input vector to send to the frontend for a method plan.
+///
+/// Planner-generated constructor args are encoded as an input prefix before
+/// method arguments. If the caller already provided that prefixed shape, the
+/// vector is returned unchanged.
+#[must_use]
+pub fn execute_inputs_for_plan(
+    inputs: &[Value],
+    method_param_count: usize,
+    plan: Option<&InvocationPlan>,
+) -> Vec<Value> {
+    let Some(plan) = plan else {
+        return inputs.to_vec();
+    };
+    if plan.constructor_arg_plans.is_empty() || inputs.len() != method_param_count {
+        return inputs.to_vec();
+    }
+    let Some(mut prefixed) = materialize_constructor_arg_values(plan) else {
+        return inputs.to_vec();
+    };
+    prefixed.extend_from_slice(inputs);
+    prefixed
+}
+
+/// Strip a constructor-arg prefix from an executed vector for strategy feedback.
+#[must_use]
+pub fn strategy_feedback_inputs_for_plan(
+    executed_inputs: &[Value],
+    method_param_count: usize,
+    plan: Option<&InvocationPlan>,
+) -> Vec<Value> {
+    let Some(plan) = plan else {
+        return executed_inputs.to_vec();
+    };
+    let constructor_arg_count = plan.constructor_arg_plans.len();
+    if constructor_arg_count == 0
+        || executed_inputs.len() != method_param_count + constructor_arg_count
+    {
+        return executed_inputs.to_vec();
+    }
+    executed_inputs[constructor_arg_count..].to_vec()
+}
+
 fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value> {
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
         ValuePlanKind::Zero => Some(zero_value(&param.typ)),
+        ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
+    }
+}
+
+fn materialize_constructor_value(value_plan: &ValuePlan) -> Option<Value> {
+    match value_plan.kind {
+        ValuePlanKind::Literal => value_plan.literal.clone(),
+        ValuePlanKind::Zero => Some(zero_value_for_type_hint(&value_plan.type_hint)),
         ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
     }
 }
@@ -147,6 +213,20 @@ fn zero_value(typ: &TypeInfo) -> Value {
         TypeInfo::Float => Value::from(0.0),
         TypeInfo::Str => Value::from(""),
         TypeInfo::Bool => Value::from(false),
+        _ => Value::Null,
+    }
+}
+
+fn zero_value_for_type_hint(type_hint: &str) -> Value {
+    match type_hint.trim() {
+        "string" => Value::from(""),
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32"
+        | "uint64" => Value::from(0),
+        "float32" | "float64" => Value::from(0.0),
+        "bool" => Value::from(false),
+        "[]byte" | "[]uint8" => Value::Array(vec![]),
+        "time.Duration" => Value::from(0),
+        other if other.ends_with(".Duration") => Value::from(0),
         _ => Value::Null,
     }
 }
@@ -221,6 +301,27 @@ mod tests {
         };
         let seeds = materialize_seeds(&[plan], &[str_param("s")]);
         assert_eq!(seeds, vec![vec![json!("")]]);
+    }
+
+    #[test]
+    fn materialize_constructor_arg_plans_prefixes_method_inputs() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewLoader".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![literal_plan(0, "ns", json!("default"))],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "dir".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds = materialize_seeds(&[plan], &[str_param("ns")]);
+        assert_eq!(seeds, vec![vec![json!(""), json!("default")]]);
     }
 
     #[test]
@@ -301,9 +402,6 @@ mod tests {
             label: String::new(),
         };
         let seeds = materialize_seeds(&[mk(1), mk(2), mk(3)], &[int_param("a")]);
-        assert_eq!(
-            seeds,
-            vec![vec![json!(1)], vec![json!(2)], vec![json!(3)]]
-        );
+        assert_eq!(seeds, vec![vec![json!(1)], vec![json!(2)], vec![json!(3)]]);
     }
 }
