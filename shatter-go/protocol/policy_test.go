@@ -305,6 +305,15 @@ func TestExecute_DefaultPolicy_SkipsDatabaseTarget(t *testing.T) {
 	}
 }
 
+func TestExecute_DefaultPolicy_AllowsResponseWriterRuntimeValueTarget(t *testing.T) {
+	resp := runExecuteWithLoader(t, "testdata/opaque.go", "AcceptsResponseWriter", func(string) (config.File, error) {
+		return config.File{}, nil
+	})
+	if resp.Outcome != nil && resp.Outcome.Status == OutcomeStatusSkippedByPolicy {
+		t.Fatalf("http.ResponseWriter should reach runtime-value planning/execution, got skipped_by_policy: %v", resp.Outcome.ShortReason)
+	}
+}
+
 func TestPrepare_DefaultPolicy_DoesNotBuildBrowserTarget(t *testing.T) {
 	file := "testdata/opaque.go"
 	function := "LaunchesBrowser"
