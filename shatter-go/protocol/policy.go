@@ -290,10 +290,14 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		strings.HasPrefix(module, "github.com/tebeka/selenium"):
 		return ClassSubprocess, true
 	case module == "os":
-		if isProcessGlobalOsSymbol(symbol) {
+		osSymbol := unqualifyStdlibSymbol(module, symbol)
+		if isPureOsSymbol(osSymbol) {
+			return "", false
+		}
+		if isProcessGlobalOsSymbol(osSymbol) {
 			return ClassProcessGlobal, true
 		}
-		if isLocalFSOsSymbol(symbol) {
+		if isLocalFSOsSymbol(osSymbol) {
 			return ClassLocalFS, true
 		}
 		// os.* calls we don't recognize — fail closed.
@@ -311,6 +315,18 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		return ClassUnknownHigh, true
 	}
 	return "", false
+}
+
+func unqualifyStdlibSymbol(module, symbol string) string {
+	return strings.TrimPrefix(symbol, module+".")
+}
+
+func isPureOsSymbol(symbol string) bool {
+	switch symbol {
+	case "IsExist", "IsNotExist", "IsPermission", "IsTimeout":
+		return true
+	}
+	return false
 }
 
 func isProcessGlobalOsSymbol(symbol string) bool {
