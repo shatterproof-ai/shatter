@@ -79,6 +79,82 @@ func timingPhaseNames(resp Response) map[string]bool {
 	return phases
 }
 
+func TestSynthesizeExecuteReceiverKind_UsesParameterizedConstructor(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := filepath.Join(t.TempDir(), "loader.go")
+	src := `package fixture
+
+type SequenceCounters struct{}
+type Runner struct{}
+
+type Loader struct {
+	dir      string
+	counters *SequenceCounters
+	runner   *Runner
+}
+
+func NewLoader(dir string) *Loader {
+	return &Loader{dir: dir}
+}
+
+func (l *Loader) WithNamespace(ns string) *Loader {
+	return l
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*Loader).WithNamespace")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v", unsat)
+	}
+	if got != "constructor:NewLoader" {
+		t.Fatalf("synthesizeExecuteReceiverKind = %q, want constructor:NewLoader", got)
+	}
+}
+
+func TestSynthesizeExecuteReceiverKind_SkipsUnsatisfiableParameterizedConstructor(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := filepath.Join(t.TempDir(), "server.go")
+	src := `package fixture
+
+type Store interface {
+	Get(string) string
+}
+
+type Server struct {
+	store Store
+}
+
+func NewServer(store Store) *Server {
+	return &Server{store: store}
+}
+
+func (s *Server) Lookup(key string) string {
+	return s.store.Get(key)
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*Server).Lookup")
+	if got != "" {
+		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want empty", got)
+	}
+	if unsat == nil {
+		t.Fatal("synthesizeExecuteReceiverKind unsat = nil, want requires-construction unsat")
+	}
+	if unsat.Kind != UnsatisfiedRequirementKindRequiresConstruction {
+		t.Fatalf("unsat.Kind = %q, want %q", unsat.Kind, UnsatisfiedRequirementKindRequiresConstruction)
+	}
+}
+
 type fakePreparedExecution struct {
 	ArtifactDir  string
 	BinaryPath   string
