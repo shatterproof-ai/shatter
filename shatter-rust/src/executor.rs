@@ -844,7 +844,7 @@ pub struct ExecuteResult {
     pub performance: Value,
 }
 
-const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 120;
 
 /// Check if harness should be compiled in release mode.
 /// Reads `SHATTER_HARNESS_RELEASE` env var — `"1"` or `"true"` (case-insensitive) enables release.
@@ -9510,6 +9510,14 @@ fn enabled(config: Config) -> bool {
         assert!(!skip_cargo_check(), "'0' should not enable skip");
 
         unsafe { std::env::remove_var("SHATTER_SKIP_CHECK") };
+    }
+
+    #[test]
+    fn default_build_timeout_allows_cold_axum_harness_builds() {
+        assert!(
+            DEFAULT_BUILD_TIMEOUT_SECS >= 120,
+            "cold Axum harness builds in the full duplicated test target can exceed 30s"
+        );
     }
 
     // ─── crate_bridge helper tests ────────────────────────────────────────────
