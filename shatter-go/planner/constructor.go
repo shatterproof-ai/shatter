@@ -74,7 +74,7 @@ func ScoreConstructor(c protocol.ConstructorCandidate, opts ScoreConstructorOpti
 		score += ConstructorScoreZeroParam
 	}
 	for _, p := range c.Parameters {
-		if isParamSatisfiable(p, nil) {
+		if isParamSatisfiable(p, nil, nil) {
 			score += ConstructorScoreSatisfiableParam
 		}
 	}
@@ -114,7 +114,11 @@ func RankConstructors(cands []protocol.ConstructorCandidate, opts ScoreConstruct
 // least one ValuePlan for p — from a primitive family, aggregate synthesis,
 // or the runtime-value registry. Parameters with no available path are
 // treated as unsatisfiable for scoring purposes.
-func isParamSatisfiable(p protocol.ParamInfo, interfaceImplsByParam map[string][]protocol.InterfaceParamCandidate) bool {
+func isParamSatisfiable(
+	p protocol.ParamInfo,
+	interfaceImplsByParam map[string][]protocol.InterfaceParamCandidate,
+	runtimeValuesByParam map[string]protocol.ConstructorRuntimeValue,
+) bool {
 	if _, ok := classifyParamFamily(p); ok {
 		return true
 	}
@@ -124,10 +128,21 @@ func isParamSatisfiable(p protocol.ParamInfo, interfaceImplsByParam map[string][
 	if plans := runtimeValuePlans(0, p, 1); len(plans) > 0 {
 		return true
 	}
+	if constructorRuntimeValueParamSatisfiable(p, runtimeValuesByParam) {
+		return true
+	}
 	if interfaceImplConstructorParamSatisfiable(p, interfaceImplsByParam) {
 		return true
 	}
 	return false
+}
+
+func constructorRuntimeValueParamSatisfiable(
+	p protocol.ParamInfo,
+	runtimeValuesByParam map[string]protocol.ConstructorRuntimeValue,
+) bool {
+	value := runtimeValuesByParam[p.Name]
+	return value.Expression != ""
 }
 
 func interfaceImplConstructorParamSatisfiable(

@@ -223,6 +223,7 @@ func planMethod(
 		ReceiverRequiresConstruction:   ctx.ReceiverRequiresConstruction,
 		MaxPlans:                       opts.MaxReceiverPlans,
 		InterfaceImplsByParam:          constructorInterfaceImpls,
+		RuntimeValuesByParam:           ctx.ConstructorRuntimeValuesByParam,
 	})
 	if receiverUnsat != nil {
 		return nil, []protocol.UnsatisfiedRequirement{*receiverUnsat}

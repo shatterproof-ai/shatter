@@ -1743,6 +1743,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 		}
 		ctx.Constructors = matched
 		ctx.ConstructorInterfaceImplsByParam = discoverConstructorInterfaceImplCandidates(pkg, matched)
+		ctx.ConstructorRuntimeValuesByParam = discoverConstructorRuntimeValues(pkg, matched)
 		ctx.ReceiverRequiresConstruction = ReceiverRequiresConstruction(pkg, &target)
 	}
 
@@ -1813,11 +1814,12 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 	// satisfiable parameterized constructors (str-3ok7).
 	allConstructors := ScanConstructors(pkg)
 	constructorInterfaceImpls := discoverConstructorInterfaceImplCandidates(pkg, allConstructors)
+	constructorRuntimeValues := discoverConstructorRuntimeValues(pkg, allConstructors)
 	for _, c := range allConstructors {
 		if c.TargetType != target.Receiver.TypeName {
 			continue
 		}
-		if !constructorParamsDirectExecuteSatisfiable(c.Parameters, constructorInterfaceImpls) {
+		if !constructorParamsDirectExecuteSatisfiable(c.Parameters, constructorInterfaceImpls, constructorRuntimeValues) {
 			continue
 		}
 		return wrapper.WrapperKindConstructorPrefix + c.FuncName, nil
@@ -1847,9 +1849,10 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 func constructorParamsDirectExecuteSatisfiable(
 	params []ParamInfo,
 	interfaceImplsByParam map[string][]InterfaceParamCandidate,
+	runtimeValuesByParam map[string]ConstructorRuntimeValue,
 ) bool {
 	for _, p := range params {
-		if !constructorParamDirectExecuteSatisfiable(p, interfaceImplsByParam) {
+		if !constructorParamDirectExecuteSatisfiable(p, interfaceImplsByParam, runtimeValuesByParam) {
 			return false
 		}
 	}
@@ -1859,7 +1862,11 @@ func constructorParamsDirectExecuteSatisfiable(
 func constructorParamDirectExecuteSatisfiable(
 	p ParamInfo,
 	interfaceImplsByParam map[string][]InterfaceParamCandidate,
+	runtimeValuesByParam map[string]ConstructorRuntimeValue,
 ) bool {
+	if constructorRuntimeValueBinding(runtimeValuesByParam[p.Name]) {
+		return true
+	}
 	if _, _, ok := interfaceImplRuntimeBinding(interfaceImplsByParam[p.Name]); ok {
 		return true
 	}
@@ -1889,6 +1896,10 @@ func constructorParamDirectExecuteSatisfiable(
 	default:
 		return false
 	}
+}
+
+func constructorRuntimeValueBinding(value ConstructorRuntimeValue) bool {
+	return strings.TrimSpace(value.Expression) != ""
 }
 
 func interfaceImplRuntimeBinding(candidates []InterfaceParamCandidate) (string, []string, bool) {

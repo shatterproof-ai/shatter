@@ -254,6 +254,9 @@ func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 		if len(runtimeValuePlans(i, p, 1)) > 0 {
 			continue
 		}
+		if constructorRuntimeValueParamSatisfiable(p, recv.ConstructorRuntimeValuesByParam) {
+			continue
+		}
 		if interfaceImplConstructorParamSatisfiable(p, recv.ConstructorInterfaceImplsByParam) {
 			continue
 		}
