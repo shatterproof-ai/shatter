@@ -5128,7 +5128,6 @@ fn claim_build_timeout_retry(retry_claimed: &AtomicBool) -> bool {
 
 fn shared_pool_task_watchdog(build_timeout: Duration, timeout_per_fn: Duration) -> Duration {
     build_timeout
-        .saturating_add(build_timeout_retry_budget(build_timeout))
         .saturating_add(timeout_per_fn)
         .saturating_add(SHARED_POOL_TASK_CLEANUP_GRACE)
 }
@@ -6096,22 +6095,20 @@ mod tests {
     #[test]
     fn shared_pool_task_watchdog_uses_small_cleanup_cushion() {
         let build_timeout = Duration::from_secs(30);
-        let retry_build = build_timeout_retry_budget(build_timeout);
         let watchdog = shared_pool_task_watchdog(build_timeout, Duration::from_secs(30));
 
         assert!(
-            watchdog <= build_timeout + retry_build + Duration::from_secs(35),
+            watchdog <= build_timeout + Duration::from_secs(35),
             "watchdog should retain only the small cleanup cushion, got {watchdog:?}"
         );
     }
 
-    /// str-kuc0 regression: Kapow's cold Go builds can exceed the initial
-    /// scan build timeout but then complete once the build cache has warmed.
-    /// The shared-pool task watchdog needs to include the explicit retry
-    /// build budget so the retry reports as a build-phase timeout/success,
-    /// not as an opaque task watchdog abort.
+    /// str-cir6: build retry is claimed inside a task only after a real build
+    /// timeout. The shared-pool join watchdog must not charge that speculative
+    /// retry budget to every function, because most stalls happen after prepare
+    /// in exploration/follow-up execution.
     #[test]
-    fn shared_pool_task_watchdog_accounts_for_build_retry_budget() {
+    fn shared_pool_task_watchdog_excludes_speculative_build_retry_budget() {
         let initial_build = Duration::from_secs(30);
         let retry_build = build_timeout_retry_budget(initial_build);
         assert_eq!(retry_build, Duration::from_secs(60));
@@ -6119,11 +6116,11 @@ mod tests {
         let watchdog = shared_pool_task_watchdog(initial_build, Duration::from_secs(20));
 
         assert!(
-            watchdog >= initial_build + retry_build + Duration::from_secs(20),
-            "watchdog {watchdog:?} must allow initial build, retry build, and exploration budgets"
+            watchdog < initial_build + retry_build + Duration::from_secs(20),
+            "watchdog {watchdog:?} must not reserve speculative build retry budget"
         );
         assert!(
-            watchdog <= initial_build + retry_build + Duration::from_secs(25),
+            watchdog <= initial_build + Duration::from_secs(25),
             "watchdog {watchdog:?} should retain only the small cleanup cushion"
         );
     }
