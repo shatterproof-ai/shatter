@@ -39,6 +39,22 @@ func (l *LocalControlPlane) BumpCounter(name string) {
 	l.counters[name]++
 }
 
+type entryDetails struct {
+	id string
+}
+
+type OptionalEntry struct {
+	details *entryDetails
+	label   string
+}
+
+func (e OptionalEntry) Label() string {
+	if e.details != nil {
+		return e.details.id
+	}
+	return e.label
+}
+
 // PrimitiveOnly is the negative-control case: its zero value is well defined
 // (numeric and string defaults), so str-g7h7 must NOT classify methods on
 // PrimitiveOnly as requires_construction — they continue to receive the

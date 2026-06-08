@@ -132,6 +132,7 @@ func methodUsesDangerousReceiverField(
 	fields map[string]receiverFieldKind,
 ) bool {
 	unsafeUse := false
+	guardedFields := receiverFieldsNilChecked(body, recvName, fields)
 	ast.Inspect(body, func(n ast.Node) bool {
 		if unsafeUse || n == nil {
 			return false
@@ -166,12 +167,12 @@ func methodUsesDangerousReceiverField(
 				return false
 			}
 		case *ast.CallExpr:
-			if callUsesDangerousReceiverField(node, recvName, fields) {
+			if callUsesDangerousReceiverField(node, recvName, fields, guardedFields) {
 				unsafeUse = true
 				return false
 			}
 		case *ast.SelectorExpr:
-			if selectorDereferencesDangerousReceiverField(node, recvName, fields) {
+			if selectorDereferencesDangerousReceiverField(node, recvName, fields, guardedFields) {
 				unsafeUse = true
 				return false
 			}
@@ -179,6 +180,50 @@ func methodUsesDangerousReceiverField(
 		return true
 	})
 	return unsafeUse
+}
+
+func receiverFieldsNilChecked(
+	body *ast.BlockStmt,
+	recvName string,
+	fields map[string]receiverFieldKind,
+) map[string]bool {
+	guarded := map[string]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		bin, ok := n.(*ast.BinaryExpr)
+		if !ok || (bin.Op != token.NEQ && bin.Op != token.EQL) {
+			return true
+		}
+		if fieldName, ok := nilCheckedReceiverField(bin.X, bin.Y, recvName, fields); ok {
+			guarded[fieldName] = true
+		}
+		if fieldName, ok := nilCheckedReceiverField(bin.Y, bin.X, recvName, fields); ok {
+			guarded[fieldName] = true
+		}
+		return true
+	})
+	return guarded
+}
+
+func nilCheckedReceiverField(
+	fieldExpr ast.Expr,
+	nilExpr ast.Expr,
+	recvName string,
+	fields map[string]receiverFieldKind,
+) (string, bool) {
+	ident, ok := unwrapParen(nilExpr).(*ast.Ident)
+	if !ok || ident.Name != "nil" {
+		return "", false
+	}
+	fieldName, ok := directReceiverField(fieldExpr, recvName)
+	if !ok {
+		return "", false
+	}
+	switch fields[fieldName] {
+	case receiverFieldPointer, receiverFieldInterface:
+		return fieldName, true
+	default:
+		return "", false
+	}
 }
 
 func writesDangerousReceiverField(expr ast.Expr, recvName string, fields map[string]receiverFieldKind) bool {
@@ -195,9 +240,14 @@ func writesDangerousReceiverField(expr ast.Expr, recvName string, fields map[str
 	return false
 }
 
-func callUsesDangerousReceiverField(call *ast.CallExpr, recvName string, fields map[string]receiverFieldKind) bool {
+func callUsesDangerousReceiverField(
+	call *ast.CallExpr,
+	recvName string,
+	fields map[string]receiverFieldKind,
+	guardedFields map[string]bool,
+) bool {
 	if sel, ok := unwrapParen(call.Fun).(*ast.SelectorExpr); ok {
-		if containsDangerousReceiverField(sel.X, recvName, fields) {
+		if containsDangerousReceiverField(sel.X, recvName, fields, guardedFields) {
 			return true
 		}
 	}
@@ -219,6 +269,7 @@ func selectorDereferencesDangerousReceiverField(
 	sel *ast.SelectorExpr,
 	recvName string,
 	fields map[string]receiverFieldKind,
+	guardedFields map[string]bool,
 ) bool {
 	fieldName, ok := directReceiverField(sel.X, recvName)
 	if !ok {
@@ -226,13 +277,21 @@ func selectorDereferencesDangerousReceiverField(
 	}
 	switch fields[fieldName] {
 	case receiverFieldPointer, receiverFieldInterface:
+		if guardedFields[fieldName] {
+			return false
+		}
 		return true
 	default:
 		return false
 	}
 }
 
-func containsDangerousReceiverField(expr ast.Expr, recvName string, fields map[string]receiverFieldKind) bool {
+func containsDangerousReceiverField(
+	expr ast.Expr,
+	recvName string,
+	fields map[string]receiverFieldKind,
+	guardedFields ...map[string]bool,
+) bool {
 	found := false
 	ast.Inspect(expr, func(n ast.Node) bool {
 		if found || n == nil {
@@ -244,7 +303,14 @@ func containsDangerousReceiverField(expr ast.Expr, recvName string, fields map[s
 		}
 		fieldName, ok := directReceiverField(e, recvName)
 		if ok {
-			_, found = fields[fieldName]
+			if kind, fieldFound := fields[fieldName]; fieldFound {
+				if len(guardedFields) > 0 &&
+					guardedFields[0][fieldName] &&
+					(kind == receiverFieldPointer || kind == receiverFieldInterface) {
+					return false
+				}
+				found = true
+			}
 			return false
 		}
 		return true

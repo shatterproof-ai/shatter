@@ -33,6 +33,15 @@ func TestReceiverRequiresConstruction_AllowsSafeNilStateMethod(t *testing.T) {
 	}
 }
 
+func TestReceiverRequiresConstruction_AllowsGuardedPointerField(t *testing.T) {
+	pkg := loadConstructionTestdata(t)
+
+	target := findMethodTarget(t, pkg, "Label", "OptionalEntry")
+	if ReceiverRequiresConstruction(pkg, &target) {
+		t.Fatalf("ReceiverRequiresConstruction(OptionalEntry.Label) = true, want false")
+	}
+}
+
 // Negative control: a struct with only primitive fields must not be flagged
 // — the existing fallback zero-value plan stays usable.
 func TestReceiverRequiresConstruction_AllowsPrimitiveStruct(t *testing.T) {
