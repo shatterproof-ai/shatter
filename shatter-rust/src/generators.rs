@@ -125,6 +125,42 @@ impl NativeRegistry {
         name: &str,
         recipe: Option<serde_json::Value>,
     ) -> Result<(serde_json::Value, String, serde_json::Value), String> {
+        let result = self.invoke(file, name, recipe)?;
+        let handle_id = self.handles.store(result.value);
+
+        let sentinel = serde_json::json!({
+            "__shatter_native": true,
+            "handle": handle_id,
+        });
+
+        Ok((sentinel, result.id, result.recipe))
+    }
+
+    /// Look up and call a native generator for recipe-based replay.
+    ///
+    /// Rust `.rs` generators are replayed inside the execution harness from
+    /// their returned recipe, so the original live object must not stay rooted
+    /// in the frontend process.
+    pub fn generate_for_replay(
+        &self,
+        file: Option<&str>,
+        name: &str,
+        recipe: Option<serde_json::Value>,
+    ) -> Result<(serde_json::Value, String, serde_json::Value), String> {
+        let result = self.invoke(file, name, recipe)?;
+        let sentinel = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "replay_only",
+        });
+        Ok((sentinel, result.id, result.recipe))
+    }
+
+    fn invoke(
+        &self,
+        file: Option<&str>,
+        name: &str,
+        recipe: Option<serde_json::Value>,
+    ) -> Result<GeneratorResult, String> {
         let func = file
             .and_then(|file| {
                 self.file_generators
@@ -137,34 +173,24 @@ impl NativeRegistry {
                         "native generator {name:?} from {file:?} not registered (custom build required)"
                     )
                 } else {
-                    format!(
-                        "native generator {name:?} not registered (custom build required)"
-                    )
+                    format!("native generator {name:?} not registered (custom build required)")
                 }
             })?;
 
-        let result = match catch_unwind(AssertUnwindSafe(|| func(recipe))) {
-            Ok(result) => result,
+        match catch_unwind(AssertUnwindSafe(|| func(recipe))) {
+            Ok(result) => Ok(result),
             Err(payload) => {
                 let generator_label = if let Some(file) = file {
                     format!("native generator {name:?} from {file:?}")
                 } else {
                     format!("native generator {name:?}")
                 };
-                return Err(format!(
+                Err(format!(
                     "{generator_label} panicked: {}",
                     panic_payload_message(payload.as_ref())
-                ));
+                ))
             }
-        };
-        let handle_id = self.handles.store(result.value);
-
-        let sentinel = serde_json::json!({
-            "__shatter_native": true,
-            "handle": handle_id,
-        });
-
-        Ok((sentinel, result.id, result.recipe))
+        }
     }
 
     /// Register all built-in native generators (currently: FileHandle).

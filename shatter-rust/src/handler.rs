@@ -1303,7 +1303,11 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             Some("rs") => {
                 if let Some(ref registry) = self.native_registry {
-                    match registry.generate(Some(file_path), func_name, req.recipe.clone()) {
+                    match registry.generate_for_replay(
+                        Some(file_path),
+                        func_name,
+                        req.recipe.clone(),
+                    ) {
                         Ok((value, generator_id, recipe)) => {
                             resp.status = "generate".to_string();
                             resp.value = Some(attach_native_replay_metadata(
@@ -2200,6 +2204,71 @@ mod tests {
         assert_eq!(
             value["__shatter_replay"]["recipe"],
             serde_json::json!({"value": "abc"})
+        );
+    }
+
+    #[test]
+    fn native_rs_generate_drops_replayable_live_value() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use crate::generators::GeneratorResult;
+
+        struct DropProbe(Arc<AtomicUsize>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let generator_file = "/tmp/shatter-replayable-generator.rs";
+        let generator_drops = Arc::clone(&drops);
+        let mut registry = NativeRegistry::new();
+        registry.register_for_file(
+            generator_file,
+            "State",
+            Box::new(move |_recipe| GeneratorResult {
+                id: "replayable-state".to_string(),
+                value: Box::new(DropProbe(Arc::clone(&generator_drops))),
+                recipe: serde_json::json!({"seed": 1}),
+            }),
+        );
+
+        let req: Request = serde_json::from_value(serde_json::json!({
+            "protocol_version": "0.1.0",
+            "id": 41,
+            "command": "generate",
+            "file": generator_file,
+            "name": "State",
+            "kind": "type_name"
+        }))
+        .expect("request should decode");
+        let mut handler =
+            Handler::new_with_native_registry(io::empty(), Vec::new(), io::sink(), registry);
+
+        let (resp, shutdown) = handler.dispatch(&req);
+
+        assert!(!shutdown);
+        assert_eq!(resp.status, "generate");
+        let value = resp.value.expect("generate response should include value");
+        assert_eq!(value["__shatter_native"], true);
+        assert!(value.get("__shatter_replay").is_some());
+        let registry = handler
+            .native_registry
+            .as_ref()
+            .expect("native registry should remain attached");
+        assert!(
+            registry.handles.is_empty(),
+            "replayable .rs generator output should not retain live handles"
+        );
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "live replayable generator value should be dropped after recipe capture"
         );
     }
 
