@@ -4403,7 +4403,7 @@ pub async fn parallel_scan_with_progress(
                     let pool = Arc::clone(&pool);
                     let behavior_maps = Arc::clone(&behavior_maps);
                     let input_pool = Arc::clone(&input_pool);
-                    let timeout = config.timeout_per_fn;
+                    let timeout = effective_scan_explore_timeout(config);
                     let build_timeout = config.build_timeout;
                     let concolic = config.concolic;
                     let genetic_config = config.genetic_config.clone();
@@ -4647,8 +4647,10 @@ pub async fn parallel_scan_with_progress(
 
                 let mut raw_outcomes = Vec::with_capacity(handles.len());
                 let mut pending_handles = handles;
-                let task_watchdog =
-                    shared_pool_task_watchdog(config.build_timeout, config.timeout_per_fn);
+                let task_watchdog = shared_pool_task_watchdog(
+                    config.build_timeout,
+                    effective_scan_explore_timeout(config),
+                );
                 while !pending_handles.is_empty() {
                     let (function_name, progress_index, lease, mut handle) =
                         pending_handles.remove(0);
@@ -5112,6 +5114,10 @@ fn phase_timeout_reason(phase: &str, d: Duration) -> String {
 
 fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
     config.timeout_explore.or(Some(config.timeout_per_fn))
+}
+
+fn effective_scan_explore_timeout(config: &ScanConfig) -> Duration {
+    scan_explore_timeout(config).unwrap_or(config.timeout_per_fn)
 }
 
 fn scan_shrink_budget(config: &ScanConfig) -> usize {
