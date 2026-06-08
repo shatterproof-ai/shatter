@@ -504,6 +504,67 @@ func TestPlanRequirements_ParameterizedConstructor_EmitsConstructorArgPlans(t *t
 	}
 }
 
+func TestPlanRequirements_ConstructorRuntimeValueParamsDoNotConsumeInputPrefix(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*SSEWriter).WriteEvent"
+	analysis := &protocol.FunctionAnalysis{
+		Name:   "(*SSEWriter).WriteEvent",
+		Params: []protocol.ParamInfo{{Name: "event", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")}},
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "WriteEvent",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "SSEWriter", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "NewSSEWriter",
+		TargetType: "SSEWriter",
+		Parameters: []protocol.ParamInfo{
+			{Name: "w", Type: protocol.TypeInfo{Kind: "opaque"}, TypeName: strPtr("http.ResponseWriter")},
+			{Name: "label", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")},
+		},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{Analysis: analysis, Target: target, Constructors: ctors}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:NewSSEWriter" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:NewSSEWriter found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 1 {
+		t.Fatalf("expected 1 JSON-backed ConstructorArgPlan, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	}
+	cap := ctorPlan.ConstructorArgPlans[0]
+	if cap.ParamName != "label" {
+		t.Errorf("constructor arg plan param_name=%q, want label", cap.ParamName)
+	}
+	if cap.ParamIndex != 1 {
+		t.Errorf("constructor arg plan param_index=%d, want original constructor index 1", cap.ParamIndex)
+	}
+	if cap.TypeHint != "string" {
+		t.Errorf("constructor arg plan type_hint=%q, want string", cap.TypeHint)
+	}
+}
+
 // str-9b1q: a constructor with unsatisfiable params (interface, complex types)
 // must NOT produce a constructor plan — fall back to zero value.
 func TestPlanRequirements_UnsatisfiableConstructorParams_FallsBack(t *testing.T) {

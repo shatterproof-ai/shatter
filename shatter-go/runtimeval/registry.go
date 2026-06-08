@@ -134,7 +134,7 @@ var registry = map[string][]Candidate{
 		{
 			Expression: "httptest.NewRecorder()",
 			TypeHint:   "http.ResponseWriter",
-			Imports:    []string{"net/http/httptest"},
+			Imports:    []string{"net/http", "net/http/httptest"},
 		},
 	},
 	// str-gxjs: *http.Request goes through httptest.NewRequest so the
@@ -145,7 +145,7 @@ var registry = map[string][]Candidate{
 		{
 			Expression: `httptest.NewRequest("GET", "/", bytes.NewReader(nil))`,
 			TypeHint:   "*http.Request",
-			Imports:    []string{"bytes", "net/http/httptest"},
+			Imports:    []string{"bytes", "net/http", "net/http/httptest"},
 		},
 	},
 	"*template.Template": {

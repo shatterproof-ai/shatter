@@ -24,6 +24,7 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/generators"
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
+	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 	"github.com/shatter-dev/shatter/shatter-go/setup"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
@@ -1859,6 +1860,9 @@ func constructorParamDirectExecuteSatisfiable(p ParamInfo) bool {
 			return true
 		}
 		if strings.HasSuffix(*p.TypeName, ".Duration") {
+			return true
+		}
+		if len(runtimeval.Lookup(*p.TypeName)) > 0 {
 			return true
 		}
 	}

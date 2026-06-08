@@ -246,6 +246,73 @@ func (a *Adapter) Run(mode string) string { return a.endpoint + ":" + mode }
 	compileWrapperFixture(t, "ctorinput", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
 }
 
+func TestParameterizedConstructorRuntimeValueDoesNotConsumeInputSlot(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	wrapperTarget := wrapper.WrapperTarget{
+		ID:            "example.com/ctorruntime:(*Adapter).Run",
+		SymbolName:    "Run",
+		Kind:          wrapper.TargetKindMethod,
+		ReceiverType:  "Adapter",
+		IsPointerRecv: true,
+		Parameters: []wrapper.WrapperParam{
+			{Name: "mode", GoType: "string"},
+		},
+		HasResult: false,
+	}
+	wrapperCtors := []wrapper.ConstructorCandidate{
+		{
+			FuncName:       "NewAdapter",
+			TargetType:     "Adapter",
+			HasParams:      true,
+			ReturnsPointer: true,
+			Parameters: []wrapper.ConstructorParam{
+				{Name: "w", GoType: "http.ResponseWriter"},
+				{Name: "label", GoType: "string"},
+			},
+		},
+	}
+
+	src := wrapper.GenerateWrapper("ctorruntime", []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+	if !strings.Contains(src, `"net/http/httptest"`) {
+		t.Fatalf("wrapper missing httptest import for constructor runtime value; source:\n%s", src)
+	}
+	if !strings.Contains(src, "var _shatterCtorArg0 http.ResponseWriter = httptest.NewRecorder()") {
+		t.Fatalf("wrapper did not bind http.ResponseWriter constructor arg from runtime value; source:\n%s", src)
+	}
+	if strings.Contains(src, "json.Unmarshal(_shatterInputs[0], &_shatterCtorArg0)") {
+		t.Fatalf("wrapper decoded runtime-value constructor arg from inputs; source:\n%s", src)
+	}
+	if !strings.Contains(src, "json.Unmarshal(_shatterInputs[0], &_shatterCtorArg1)") {
+		t.Fatalf("wrapper did not decode first JSON-backed constructor arg from input slot 0; source:\n%s", src)
+	}
+	if !strings.Contains(src, "json.Unmarshal(_shatterInputs[1], &mode)") {
+		t.Fatalf("wrapper did not shift method arg after one JSON-backed constructor arg; source:\n%s", src)
+	}
+	if !strings.Contains(src, "NewAdapter(_shatterCtorArg0, _shatterCtorArg1)") {
+		t.Fatalf("wrapper did not pass constructor args to NewAdapter; source:\n%s", src)
+	}
+
+	const targetSrc = `package ctorruntime
+
+import "net/http"
+
+type Adapter struct {
+	w     http.ResponseWriter
+	label string
+}
+
+func NewAdapter(w http.ResponseWriter, label string) *Adapter {
+	return &Adapter{w: w, label: label}
+}
+
+func (a *Adapter) Run(mode string) string { return a.label + ":" + mode }
+`
+	compileWrapperFixture(t, "ctorruntime", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+}
+
 // TestReceiverArity_PointerReceiverNoCtor_FallbackPlanCompiles regresses the
 // `(*Config).Server` symptom (str-qo1.9 (b)). A pointer-receiver method
 // with no discovered constructor must yield an executable plan (zero-value

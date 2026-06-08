@@ -215,7 +215,7 @@ func constructorSignature(c ConstructorCandidate) string {
 	if len(c.Parameters) > 0 {
 		paramParts := make([]string, len(c.Parameters))
 		for i, p := range c.Parameters {
-			paramParts[i] = p.Name + "/" + p.GoType
+			paramParts[i] = p.Name + "/" + p.GoType + "/" + constructorParamRuntimeValueExpr(p)
 		}
 		sig += ":" + strings.Join(paramParts, ";")
 	}
@@ -246,6 +246,10 @@ func GenerateWrapper(
 
 	sortedCtors := make([]ConstructorCandidate, len(constructors))
 	copy(sortedCtors, constructors)
+	for i := range sortedCtors {
+		sortedCtors[i].Parameters = append([]ConstructorParam(nil), sortedCtors[i].Parameters...)
+	}
+	applyRuntimeValueBindingsToConstructors(sortedCtors)
 	sort.Slice(sortedCtors, func(i, j int) bool { return sortedCtors[i].FuncName < sortedCtors[j].FuncName })
 
 	// Index constructors by target type for receiver-kind enumeration.
@@ -276,7 +280,7 @@ func GenerateWrapper(
 	// Previously "strings" was hard-excluded from collectExtraImports as a
 	// "core import" and only added conditionally for generic targets, silently
 	// dropping it when non-generic targets needed it.
-	extraImports := collectExtraImports(sorted)
+	extraImports := collectExtraImports(sorted, sortedCtors)
 	needsStrings := hasGenericTargets(sorted)
 	filteredExtra := make([]string, 0, len(extraImports))
 	for _, imp := range extraImports {
@@ -411,7 +415,7 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			default: // !t.IsPointerRecv && !c.ReturnsPointer
 				fmt.Fprintf(b, "\t\t\t_recv := %s(%s)\n", c.FuncName, ctorArgs)
 			}
-			writeParamDeserializationAtOffset(b, t.Parameters, "\t\t\t", len(c.Parameters))
+			writeParamDeserializationAtOffset(b, t.Parameters, "\t\t\t", constructorInputSlotCount(c.Parameters))
 			writeCall(b, t, "_recv", nil, "\t\t\t")
 		}
 	}
@@ -426,49 +430,52 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 
 func writeParamDeserializationAtOffset(b *strings.Builder, params []WrapperParam, indent string, inputOffset int) {
 	for i, p := range params {
-		inputIndex := i + inputOffset
-		if p.RuntimeValueExpr != "" {
-			// str-gxjs.1: parameter is satisfied by the planner's
-			// runtime-value registry. Emit a direct Go expression
-			// (e.g. context.Background()) at the param-init site so
-			// the wrapper does not need a JSON input for this slot.
-			// The expression must produce a value assignable to GoType
-			// — the planner registry enforces that contract.
-			fmt.Fprintf(b, "%svar %s %s = %s\n", indent, p.Name, p.GoType, p.RuntimeValueExpr)
-			continue
-		}
-		if p.GoType == "time.Duration" {
-			writeDurationParamDeserialization(b, p.Name, inputIndex, indent)
-			continue
-		}
-		fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
-		fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, inputIndex)
-		inputExpr := fmt.Sprintf("_shatterInputs[%d]", inputIndex)
-		if wrapperParamNeedsMapInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterMapInput%d", inputIndex)
-			fmt.Fprintf(b, "%s\t%s := shatterNormalizeMapInput(_shatterInputs[%d])\n", indent, inputVar, inputIndex)
-			inputExpr = inputVar
-		}
-		if wrapperParamNeedsTimeInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterTimeInput%d", inputIndex)
-			fmt.Fprintf(b, "%s\t%s := shatterNormalizeTimeInput(%s)\n", indent, inputVar, inputExpr)
-			inputExpr = inputVar
-		}
-		if wrapperParamNeedsFuncInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterFuncInput%d", inputIndex)
-			fmt.Fprintf(b, "%s\t%s := shatterNormalizeFuncInput(%s, %s)\n", indent, inputVar, inputExpr, p.Name)
-			inputExpr = inputVar
-		}
-		if wrapperParamNeedsRuntimeValueInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterRuntimeValueInput%d", inputIndex)
-			fmt.Fprintf(b, "%s\t%s := shatterNormalizeRuntimeValueInput(%s, %s)\n", indent, inputVar, inputExpr, p.Name)
-			inputExpr = inputVar
-		}
-		fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(%s, &%s); _e != nil {\n", indent, inputExpr, p.Name)
-		fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
-		fmt.Fprintf(b, "%s\t}\n", indent)
-		fmt.Fprintf(b, "%s}\n", indent)
+		writeParamDeserializationAtInputIndex(b, p, i+inputOffset, indent)
 	}
+}
+
+func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, inputIndex int, indent string) {
+	if p.RuntimeValueExpr != "" {
+		// str-gxjs.1: parameter is satisfied by the planner's
+		// runtime-value registry. Emit a direct Go expression
+		// (e.g. context.Background()) at the param-init site so
+		// the wrapper does not need a JSON input for this slot.
+		// The expression must produce a value assignable to GoType
+		// — the planner registry enforces that contract.
+		fmt.Fprintf(b, "%svar %s %s = %s\n", indent, p.Name, p.GoType, p.RuntimeValueExpr)
+		return
+	}
+	if p.GoType == "time.Duration" {
+		writeDurationParamDeserialization(b, p.Name, inputIndex, indent)
+		return
+	}
+	fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, inputIndex)
+	inputExpr := fmt.Sprintf("_shatterInputs[%d]", inputIndex)
+	if wrapperParamNeedsMapInputNormalizer(p) {
+		inputVar := fmt.Sprintf("_shatterMapInput%d", inputIndex)
+		fmt.Fprintf(b, "%s\t%s := shatterNormalizeMapInput(_shatterInputs[%d])\n", indent, inputVar, inputIndex)
+		inputExpr = inputVar
+	}
+	if wrapperParamNeedsTimeInputNormalizer(p) {
+		inputVar := fmt.Sprintf("_shatterTimeInput%d", inputIndex)
+		fmt.Fprintf(b, "%s\t%s := shatterNormalizeTimeInput(%s)\n", indent, inputVar, inputExpr)
+		inputExpr = inputVar
+	}
+	if wrapperParamNeedsFuncInputNormalizer(p) {
+		inputVar := fmt.Sprintf("_shatterFuncInput%d", inputIndex)
+		fmt.Fprintf(b, "%s\t%s := shatterNormalizeFuncInput(%s, %s)\n", indent, inputVar, inputExpr, p.Name)
+		inputExpr = inputVar
+	}
+	if wrapperParamNeedsRuntimeValueInputNormalizer(p) {
+		inputVar := fmt.Sprintf("_shatterRuntimeValueInput%d", inputIndex)
+		fmt.Fprintf(b, "%s\t%s := shatterNormalizeRuntimeValueInput(%s, %s)\n", indent, inputVar, inputExpr, p.Name)
+		inputExpr = inputVar
+	}
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(%s, &%s); _e != nil {\n", indent, inputExpr, p.Name)
+	fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
 }
 
 func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {
@@ -557,14 +564,56 @@ func writeConstructorParamDeserialization(b *strings.Builder, params []Construct
 	if len(params) == 0 {
 		return
 	}
-	wrapped := make([]WrapperParam, len(params))
+	inputIndex := 0
 	for i, p := range params {
-		wrapped[i] = WrapperParam{
-			Name:   fmt.Sprintf("_shatterCtorArg%d", i),
-			GoType: p.GoType,
+		wrapped := WrapperParam{
+			Name:             fmt.Sprintf("_shatterCtorArg%d", i),
+			GoType:           p.GoType,
+			RuntimeValueExpr: constructorParamRuntimeValueExpr(p),
+		}
+		writeParamDeserializationAtInputIndex(b, wrapped, inputIndex, indent)
+		if wrapped.RuntimeValueExpr == "" {
+			inputIndex++
 		}
 	}
-	writeParamDeserializationAtOffset(b, wrapped, indent, 0)
+}
+
+func constructorInputSlotCount(params []ConstructorParam) int {
+	count := 0
+	for _, p := range params {
+		if constructorParamRuntimeValueExpr(p) == "" {
+			count++
+		}
+	}
+	return count
+}
+
+func constructorParamRuntimeValueExpr(p ConstructorParam) string {
+	if p.RuntimeValueExpr != "" {
+		return p.RuntimeValueExpr
+	}
+	candidates := runtimeval.Lookup(p.GoType)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0].Expression
+}
+
+func applyRuntimeValueBindingsToConstructors(constructors []ConstructorCandidate) {
+	for ci := range constructors {
+		for pi := range constructors[ci].Parameters {
+			param := &constructors[ci].Parameters[pi]
+			if param.RuntimeValueExpr != "" {
+				continue
+			}
+			candidates := runtimeval.Lookup(param.GoType)
+			if len(candidates) == 0 {
+				continue
+			}
+			param.RuntimeValueExpr = candidates[0].Expression
+			param.Imports = append([]string(nil), candidates[0].Imports...)
+		}
+	}
 }
 
 func writeMapInputNormalizer(b *strings.Builder) {
@@ -1877,7 +1926,7 @@ func wrapperASTTypeString(expr ast.Expr) string {
 // excluding the always-emitted core imports (encoding/json, fmt, strings) so
 // they are never duplicated. The output is deterministic so GenerateWrapper
 // remains byte-stable across calls. See str-jeen.33.
-func collectExtraImports(targets []WrapperTarget) []string {
+func collectExtraImports(targets []WrapperTarget, constructors []ConstructorCandidate) []string {
 	// str-jeen.73: only exclude the always-emitted core imports (encoding/json
 	// and fmt). "strings" is NOT excluded here — it is conditionally emitted
 	// by GenerateWrapper when either generic targets require it OR when target
@@ -1900,6 +1949,21 @@ func collectExtraImports(targets []WrapperTarget) []string {
 				continue
 			}
 			seen[trimmed] = struct{}{}
+		}
+	}
+	for _, c := range constructors {
+		for _, p := range c.Parameters {
+			for _, importPath := range p.Imports {
+				trimmed := strings.TrimSpace(importPath)
+				if trimmed == "" {
+					continue
+				}
+				switch trimmed {
+				case coreImportJSON, coreImportFmt:
+					continue
+				}
+				seen[trimmed] = struct{}{}
+			}
 		}
 	}
 	result := make([]string, 0, len(seen))

@@ -116,6 +116,38 @@ func (l *Loader) WithNamespace(ns string) *Loader {
 	}
 }
 
+func TestSynthesizeExecuteReceiverKind_UsesRuntimeValueParameterizedConstructor(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := filepath.Join(t.TempDir(), "sse.go")
+	src := `package response
+
+import "net/http"
+
+type SSEWriter struct {
+	w http.ResponseWriter
+}
+
+func NewSSEWriter(w http.ResponseWriter) *SSEWriter {
+	return &SSEWriter{w: w}
+}
+
+func (s *SSEWriter) Flush() {}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*SSEWriter).Flush")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v", unsat)
+	}
+	if got != "constructor:NewSSEWriter" {
+		t.Fatalf("synthesizeExecuteReceiverKind = %q, want constructor:NewSSEWriter", got)
+	}
+}
+
 func TestSynthesizeExecuteReceiverKind_SkipsUnsatisfiableParameterizedConstructor(t *testing.T) {
 	t.Parallel()
 
