@@ -191,6 +191,170 @@ pub struct ExploreConfig {
 /// Default interval between periodic progress summaries.
 pub const PROGRESS_SUMMARY_INTERVAL_SECS: u64 = 15;
 
+#[derive(Debug, Clone, Copy)]
+enum PathFeedbackKind {
+    File,
+    Dir,
+}
+
+enum PathFeedbackScratch {
+    File { _file: tempfile::NamedTempFile },
+    Dir { _dir: tempfile::TempDir },
+}
+
+struct PathFeedbackQueue {
+    enabled: bool,
+    kind_hint: Option<PathFeedbackKind>,
+    pending: VecDeque<Vec<serde_json::Value>>,
+    seen: HashSet<u64>,
+    scratch: Vec<PathFeedbackScratch>,
+}
+
+impl PathFeedbackQueue {
+    fn new(analysis: &FunctionAnalysis, config: &ExploreConfig) -> Self {
+        let kind_hint = path_feedback_kind_hint(analysis, config);
+        Self {
+            enabled: kind_hint.is_some(),
+            kind_hint,
+            pending: VecDeque::new(),
+            seen: HashSet::new(),
+            scratch: Vec::new(),
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<Vec<serde_json::Value>> {
+        self.pending.pop_front()
+    }
+
+    fn enqueue_from_result(&mut self, inputs: &[serde_json::Value], result: &ExecuteResult) {
+        if !self.enabled {
+            return;
+        }
+
+        let Some(error) = result.thrown_error.as_ref() else {
+            return;
+        };
+        if !is_enoent_message(&error.message) {
+            return;
+        }
+
+        for (idx, input) in inputs.iter().enumerate() {
+            let Some(path) = input.as_str() else {
+                continue;
+            };
+            if !enoent_message_references_path(&error.message, path) {
+                continue;
+            }
+
+            let kind = self.kind_from_error(&error.message, path);
+            let Some(seed_path) = self.create_seed_path(kind) else {
+                continue;
+            };
+            let mut follow_up = inputs.to_vec();
+            follow_up[idx] = serde_json::Value::String(seed_path);
+            let fingerprint = path_feedback_fingerprint(&follow_up);
+            if self.seen.insert(fingerprint) {
+                self.pending.push_back(follow_up);
+            }
+        }
+    }
+
+    fn kind_from_error(&self, message: &str, path: &str) -> PathFeedbackKind {
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("readdir")
+            || lower.contains("read directory")
+            || lower.contains("read fixture dir")
+            || (!path.is_empty()
+                && (message.contains(&format!("{path}/"))
+                    || message.contains(&format!("{path}\\"))))
+        {
+            return PathFeedbackKind::Dir;
+        }
+        self.kind_hint.unwrap_or(PathFeedbackKind::File)
+    }
+
+    fn create_seed_path(&mut self, kind: PathFeedbackKind) -> Option<String> {
+        match kind {
+            PathFeedbackKind::File => {
+                let file = tempfile::Builder::new()
+                    .prefix("shatter-enoent-file-")
+                    .tempfile()
+                    .map_err(|err| {
+                        log::debug!("failed to create ENOENT feedback file seed: {err}");
+                        err
+                    })
+                    .ok()?;
+                let path = file.path().to_string_lossy().into_owned();
+                self.scratch.push(PathFeedbackScratch::File { _file: file });
+                Some(path)
+            }
+            PathFeedbackKind::Dir => {
+                let dir = tempfile::Builder::new()
+                    .prefix("shatter-enoent-dir-")
+                    .tempdir()
+                    .map_err(|err| {
+                        log::debug!("failed to create ENOENT feedback dir seed: {err}");
+                        err
+                    })
+                    .ok()?;
+                let path = dir.path().to_string_lossy().into_owned();
+                self.scratch.push(PathFeedbackScratch::Dir { _dir: dir });
+                Some(path)
+            }
+        }
+    }
+}
+
+fn path_feedback_kind_hint(
+    analysis: &FunctionAnalysis,
+    config: &ExploreConfig,
+) -> Option<PathFeedbackKind> {
+    if !config.file.ends_with(".go") {
+        return None;
+    }
+
+    let mut has_file = false;
+    let mut has_dir = false;
+    for dep in &analysis.dependencies {
+        if dep.source_module != "os" {
+            continue;
+        }
+        match dep.symbol.rsplit('.').next().unwrap_or(dep.symbol.as_str()) {
+            "ReadDir" => has_dir = true,
+            "ReadFile" | "Stat" | "Open" => has_file = true,
+            _ => {}
+        }
+    }
+
+    if has_dir && !has_file {
+        Some(PathFeedbackKind::Dir)
+    } else if has_file || has_dir {
+        Some(PathFeedbackKind::File)
+    } else {
+        None
+    }
+}
+
+fn is_enoent_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("no such file or directory") || lower.contains("enoent")
+}
+
+fn enoent_message_references_path(message: &str, path: &str) -> bool {
+    if path.is_empty() {
+        return message.contains("open :") || message.contains("\"\"");
+    }
+    message.contains(path)
+}
+
+fn path_feedback_fingerprint(inputs: &[serde_json::Value]) -> u64 {
+    let canonical =
+        crate::canonical_json::canonicalize_json(&serde_json::Value::Array(inputs.to_vec()));
+    let mut hasher = DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Snapshot of exploration progress emitted periodically during the explore loop.
 #[derive(Debug, Clone)]
 pub struct ExploreProgressSnapshot {
@@ -1117,6 +1281,7 @@ pub async fn explore_function(
         literals: analysis.literals.clone(),
         capabilities: config.capabilities.clone(),
     };
+    let mut path_feedback = PathFeedbackQueue::new(analysis, config);
     let explore_start = Instant::now();
     // str-gz8j: track whether the per-function timeout (timeout_explore)
     // tripped, so the returned ObservationOutput can carry that signal.
@@ -1251,45 +1416,52 @@ pub async fn explore_function(
         // Returns (inputs, strategy_idx): strategy_idx is None for custom-generator fallback.
         let (inputs, strategy_idx) = {
             let _input_gen_span = tracing::info_span!("input_gen").entered();
-            match meta_strategy.next(&strategy_ctx, &mut rng) {
-                Some((v, idx)) => {
-                    let strategy_kind = meta_strategy.strategy_kind(idx);
-                    let inputs = if use_generators
-                        && strategy_kind != crate::strategy::RegisteredStrategyKind::Z3Solver
-                    {
+            if let Some(inputs) = path_feedback.pop_front() {
+                (inputs, None)
+            } else {
+                match meta_strategy.next(&strategy_ctx, &mut rng) {
+                    Some((v, idx)) => {
+                        let strategy_kind = meta_strategy.strategy_kind(idx);
+                        let inputs = if use_generators
+                            && strategy_kind != crate::strategy::RegisteredStrategyKind::Z3Solver
+                        {
+                            if !custom_generator_values_available(
+                                &config.value_sources,
+                                &prefetched,
+                            ) {
+                                break;
+                            }
+                            overlay_custom_inputs(
+                                &analysis.params,
+                                &config.value_sources,
+                                v,
+                                &mut prefetched,
+                                &mut rng,
+                                Some(&config.capabilities),
+                            )
+                        } else {
+                            v
+                        };
+                        (inputs, Some(idx))
+                    }
+                    None if use_generators => {
+                        // Custom generators require an async frontend round-trip; they cannot
+                        // be a standard InputStrategy, so they serve as the infinite fallback
+                        // when MetaStrategy (finite strategies only) is exhausted.
                         if !custom_generator_values_available(&config.value_sources, &prefetched) {
                             break;
                         }
-                        overlay_custom_inputs(
+                        let v = generate_inputs_with_custom(
                             &analysis.params,
                             &config.value_sources,
-                            v,
                             &mut prefetched,
                             &mut rng,
                             Some(&config.capabilities),
-                        )
-                    } else {
-                        v
-                    };
-                    (inputs, Some(idx))
-                }
-                None if use_generators => {
-                    // Custom generators require an async frontend round-trip; they cannot
-                    // be a standard InputStrategy, so they serve as the infinite fallback
-                    // when MetaStrategy (finite strategies only) is exhausted.
-                    if !custom_generator_values_available(&config.value_sources, &prefetched) {
-                        break;
+                        );
+                        (v, None)
                     }
-                    let v = generate_inputs_with_custom(
-                        &analysis.params,
-                        &config.value_sources,
-                        &mut prefetched,
-                        &mut rng,
-                        Some(&config.capabilities),
-                    );
-                    (v, None)
+                    None => break,
                 }
-                None => break,
             }
         };
 
@@ -1340,6 +1512,7 @@ pub async fn explore_function(
         // Check connection_failures reported by the frontend and transition
         // per-dep states accordingly.
         update_live_first_states(&obs.exec_result, &mut live_first_states);
+        path_feedback.enqueue_from_result(&inputs, &obs.exec_result);
 
         // --- Crypto boundary logging ---
         // When the frontend intercepts known encrypt/decrypt calls, log them.
@@ -1917,6 +2090,7 @@ async fn explore_function_with_observer_pool(
         literals: analysis.literals.clone(),
         capabilities: config.capabilities.clone(),
     };
+    let mut path_feedback = PathFeedbackQueue::new(analysis, config);
 
     let observer_pool = config.observer_pool.max(1);
     let mut queue_policy = CandidateQueuePolicy::with_capacity_override(
@@ -1979,12 +2153,37 @@ async fn explore_function_with_observer_pool(
 
             let (inputs, strategy_idx) = {
                 let _input_gen_span = tracing::info_span!("input_gen").entered();
-                match meta_strategy.next(&strategy_ctx, &mut rng) {
-                    Some((v, idx)) => {
-                        let strategy_kind = meta_strategy.strategy_kind(idx);
-                        let inputs = if use_generators
-                            && strategy_kind != crate::strategy::RegisteredStrategyKind::Z3Solver
-                        {
+                if let Some(inputs) = path_feedback.pop_front() {
+                    (inputs, None)
+                } else {
+                    match meta_strategy.next(&strategy_ctx, &mut rng) {
+                        Some((v, idx)) => {
+                            let strategy_kind = meta_strategy.strategy_kind(idx);
+                            let inputs = if use_generators
+                                && strategy_kind
+                                    != crate::strategy::RegisteredStrategyKind::Z3Solver
+                            {
+                                if !custom_generator_values_available(
+                                    &config.value_sources,
+                                    &prefetched,
+                                ) {
+                                    producer_done = true;
+                                    break;
+                                }
+                                overlay_custom_inputs(
+                                    &analysis.params,
+                                    &config.value_sources,
+                                    v,
+                                    &mut prefetched,
+                                    &mut rng,
+                                    Some(&config.capabilities),
+                                )
+                            } else {
+                                v
+                            };
+                            (inputs, Some(idx))
+                        }
+                        None if use_generators => {
                             if !custom_generator_values_available(
                                 &config.value_sources,
                                 &prefetched,
@@ -1992,36 +2191,19 @@ async fn explore_function_with_observer_pool(
                                 producer_done = true;
                                 break;
                             }
-                            overlay_custom_inputs(
+                            let v = generate_inputs_with_custom(
                                 &analysis.params,
                                 &config.value_sources,
-                                v,
                                 &mut prefetched,
                                 &mut rng,
                                 Some(&config.capabilities),
-                            )
-                        } else {
-                            v
-                        };
-                        (inputs, Some(idx))
-                    }
-                    None if use_generators => {
-                        if !custom_generator_values_available(&config.value_sources, &prefetched) {
+                            );
+                            (v, None)
+                        }
+                        None => {
                             producer_done = true;
                             break;
                         }
-                        let v = generate_inputs_with_custom(
-                            &analysis.params,
-                            &config.value_sources,
-                            &mut prefetched,
-                            &mut rng,
-                            Some(&config.capabilities),
-                        );
-                        (v, None)
-                    }
-                    None => {
-                        producer_done = true;
-                        break;
                     }
                 }
             };
@@ -2090,6 +2272,7 @@ async fn explore_function_with_observer_pool(
                 }
 
                 update_live_first_states(&observation.result, &mut live_first_states);
+                path_feedback.enqueue_from_result(&observation.inputs, &observation.result);
                 let discovery_method = observation
                     .strategy_idx
                     .map(|idx| meta_strategy.strategy_kind(idx).explorer_discovery_method())
@@ -4210,6 +4393,304 @@ mod tests {
             adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
         }
+    }
+
+    fn fs_dependency_analysis(symbol: &str) -> FunctionAnalysis {
+        use crate::protocol::{DependencyKind, ExternalDependency};
+        use crate::types::{ParamInfo, TypeInfo};
+
+        FunctionAnalysis {
+            name: "load".into(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "path".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![ExternalDependency {
+                kind: DependencyKind::FunctionCall,
+                symbol: symbol.into(),
+                source_module: "os".into(),
+                return_type: TypeInfo::Unknown,
+                param_types: vec![TypeInfo::Str],
+                call_sites: vec![2],
+            }],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        }
+    }
+
+    fn path_feedback_frontend_config(
+        mode: &str,
+        log_path: &std::path::Path,
+    ) -> (tempfile::TempDir, crate::frontend::FrontendConfig) {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        let dir = tempfile::Builder::new()
+            .prefix("shatter-path-feedback-")
+            .tempdir()
+            .expect("create path feedback tempdir");
+        let script_path = dir.path().join("frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import os
+import sys
+
+PROTOCOL_VERSION = "0.1.0"
+mode = os.environ["SHATTER_PATH_FEEDBACK_MODE"]
+log_path = os.environ["SHATTER_PATH_FEEDBACK_LOG"]
+
+def respond(payload):
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
+
+def execute_response(request_id, value):
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(value) + "\n")
+    exists = isinstance(value, str) and (
+        os.path.isfile(value) if mode == "file" else os.path.isdir(value)
+    )
+    if exists:
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "execute",
+            "return_value": "advanced",
+            "thrown_error": None,
+            "branch_path": [{"branch_id": 1, "line": 3, "taken": True}],
+            "lines_executed": [1, 2, 3],
+            "calls_to_external": [],
+            "path_constraints": [],
+            "side_effects": [],
+            "performance": {"wall_time_ms": 0.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0},
+        }
+    if mode == "dir" and value == "":
+        message = 'read fixture dir "": open : no such file or directory'
+    else:
+        op = "open" if mode == "file" else "readdirent"
+        message = f"{op} {value}: no such file or directory"
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "id": request_id,
+        "status": "execute",
+        "return_value": None,
+        "thrown_error": {
+            "error_type": "function_error",
+            "message": message,
+            "stack": None,
+        },
+        "branch_path": [{"branch_id": 0, "line": 2, "taken": False}],
+        "lines_executed": [1, 2],
+        "calls_to_external": [],
+        "path_constraints": [],
+        "side_effects": [],
+        "performance": {"wall_time_ms": 0.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0},
+    }
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    request = json.loads(line)
+    request_id = request["id"]
+    command = request["command"]
+    if command == "handshake":
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "handshake",
+            "frontend_version": PROTOCOL_VERSION,
+            "language": "path-feedback",
+            "capabilities": ["execute", "instrument"],
+        })
+    elif command == "instrument":
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "instrument",
+            "instrumented": True,
+            "output_file": None,
+        })
+    elif command == "execute":
+        inputs = request.get("inputs") or [""]
+        respond(execute_response(request_id, inputs[0]))
+    elif command == "shutdown":
+        respond({"protocol_version": PROTOCOL_VERSION, "id": request_id, "status": "shutdown_ack"})
+        break
+    else:
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "error",
+            "code": "invalid_request",
+            "message": f"Unknown command: {command}",
+            "details": None,
+        })
+"#,
+        )
+        .expect("write path feedback frontend");
+
+        let mut config = FrontendConfig::new(PathBuf::from("python3"));
+        config.args = vec![script_path.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+        config
+            .env_vars
+            .push(("SHATTER_PATH_FEEDBACK_MODE".to_string(), mode.to_string()));
+        config.env_vars.push((
+            "SHATTER_PATH_FEEDBACK_LOG".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ));
+        (dir, config)
+    }
+
+    fn path_feedback_config(target_root: &std::path::Path, missing_path: &str) -> ExploreConfig {
+        ExploreConfig {
+            file: target_root
+                .join("fixture.go")
+                .to_string_lossy()
+                .into_owned(),
+            max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![vec![serde_json::json!(missing_path)]],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: Some(target_root.to_string_lossy().into_owned()),
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        }
+    }
+
+    async fn run_path_feedback_fixture(
+        mode: &str,
+        symbol: &str,
+        missing_path: &str,
+    ) -> (ObservationOutput, tempfile::TempDir, std::path::PathBuf) {
+        let target_root = tempfile::Builder::new()
+            .prefix("shatter-target-root-")
+            .tempdir()
+            .expect("create target root");
+        let log_path = target_root.path().join(format!("{mode}.log"));
+        let (_script_dir, frontend_config) = path_feedback_frontend_config(mode, &log_path);
+        let mut frontend = Frontend::spawn(&frontend_config)
+            .await
+            .expect("spawn path feedback frontend");
+        let analysis = fs_dependency_analysis(symbol);
+        let config = path_feedback_config(target_root.path(), missing_path);
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("path feedback exploration should succeed");
+        frontend.shutdown().await.expect("shutdown failed");
+        (result, target_root, log_path)
+    }
+
+    #[tokio::test]
+    async fn explore_function_seeds_temp_file_after_go_enoent_file_path() {
+        let (result, target_root, _log_path) =
+            run_path_feedback_fixture("file", "os.ReadFile", "missing-input-path").await;
+
+        assert_eq!(result.iterations, 2);
+        let advanced = result.raw_results.iter().find(|(inputs, _, exec)| {
+            inputs.first().and_then(|input| input.as_str()) != Some("missing-input-path")
+                && exec.return_value == Some(serde_json::json!("advanced"))
+        });
+        assert!(
+            advanced.is_some(),
+            "missing file feedback should schedule a real temp-file input; raw={:?}",
+            result.raw_results
+        );
+
+        let generated_path = advanced
+            .and_then(|(inputs, _, _)| inputs.first())
+            .and_then(|input| input.as_str())
+            .expect("advanced input should be a path string");
+        assert!(
+            !generated_path.starts_with(&target_root.path().to_string_lossy().to_string()),
+            "path feedback must not create files in the target project: {generated_path}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_function_seeds_temp_dir_after_go_enoent_dir_path() {
+        let (result, target_root, _log_path) =
+            run_path_feedback_fixture("dir", "os.ReadDir", "missing-input-path").await;
+
+        assert_eq!(result.iterations, 2);
+        let advanced = result.raw_results.iter().find(|(inputs, _, exec)| {
+            inputs.first().and_then(|input| input.as_str()) != Some("missing-input-path")
+                && exec.return_value == Some(serde_json::json!("advanced"))
+        });
+        assert!(
+            advanced.is_some(),
+            "missing directory feedback should schedule a real temp-directory input; raw={:?}",
+            result.raw_results
+        );
+
+        let generated_path = advanced
+            .and_then(|(inputs, _, _)| inputs.first())
+            .and_then(|input| input.as_str())
+            .expect("advanced input should be a path string");
+        assert!(
+            !generated_path.starts_with(&target_root.path().to_string_lossy().to_string()),
+            "path feedback must not create directories in the target project: {generated_path}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_function_seeds_temp_dir_after_go_enoent_empty_dir_path() {
+        let (result, target_root, _log_path) =
+            run_path_feedback_fixture("dir", "os.ReadDir", "").await;
+
+        assert_eq!(result.iterations, 2);
+        let advanced = result.raw_results.iter().find(|(inputs, _, exec)| {
+            inputs.first().and_then(|input| input.as_str()) != Some("")
+                && exec.return_value == Some(serde_json::json!("advanced"))
+        });
+        assert!(
+            advanced.is_some(),
+            "empty missing directory feedback should schedule a real temp-directory input; raw={:?}",
+            result.raw_results
+        );
+
+        let generated_path = advanced
+            .and_then(|(inputs, _, _)| inputs.first())
+            .and_then(|input| input.as_str())
+            .expect("advanced input should be a path string");
+        assert!(
+            !generated_path.starts_with(&target_root.path().to_string_lossy().to_string()),
+            "path feedback must not create directories in the target project: {generated_path}"
+        );
     }
 
     #[tokio::test]
