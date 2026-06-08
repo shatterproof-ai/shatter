@@ -646,6 +646,9 @@ impl MetaStrategy {
                 self.priority_z3_since_user_seed = false;
                 return Some(candidate);
             }
+            if let Some(candidate) = self.next_priority_literals(ctx) {
+                return Some(candidate);
+            }
             if let Some(candidate) = self.next_priority_branch_guided(ctx) {
                 self.priority_z3_since_user_seed = true;
                 return Some(candidate);
@@ -733,6 +736,20 @@ impl MetaStrategy {
         let idx = self.states.iter().position(|state| {
             state.kind == RegisteredStrategyKind::UserProvided && !state.exhausted
         })?;
+        self.try_next(idx, ctx).map(|inputs| (inputs, idx))
+    }
+
+    /// Drain static literal-derived seeds before adaptive scoring.
+    ///
+    /// Literal seeds are finite, deterministic, and usually encode exact branch
+    /// discriminants observed in source. Weighted adaptive selection can starve
+    /// them on small budgets, leaving enum-like branches uncovered even though
+    /// the frontend reported the relevant literals.
+    fn next_priority_literals(&mut self, ctx: &StrategyContext) -> Option<(Vec<Value>, usize)> {
+        let idx = self
+            .states
+            .iter()
+            .position(|state| state.kind == RegisteredStrategyKind::Literals && !state.exhausted)?;
         self.try_next(idx, ctx).map(|inputs| (inputs, idx))
     }
 
@@ -1691,6 +1708,43 @@ mod tests {
                 "seed {seed} selected a fallback strategy before user inputs"
             );
             assert_eq!(candidate, expected, "seed {seed} skipped the user input");
+        }
+    }
+
+    #[test]
+    fn random_meta_strategy_drains_literals_before_adaptive_fallbacks() {
+        let params = make_params(&[TypeInfo::Str]);
+        let literals = vec![LiteralValue::Str {
+            value: "ready".into(),
+        }];
+
+        for seed in 0..32 {
+            let mut meta = build_random_explorer_meta_strategy(
+                &params,
+                &literals,
+                vec![],
+                vec![],
+                vec![],
+                false,
+                MetaConfig::default(),
+            );
+            let ctx = StrategyContext {
+                params: params.clone(),
+                literals: literals.clone(),
+                capabilities: FrontendCapabilities::default(),
+            };
+            let mut rng = StdRng::seed_from_u64(seed);
+
+            let (candidate, strategy_idx) = meta
+                .next(&ctx, &mut rng)
+                .expect("literal strategy should produce a candidate");
+
+            assert_eq!(
+                meta.strategy_kind(strategy_idx),
+                RegisteredStrategyKind::Literals,
+                "seed {seed} selected a fallback strategy before literals"
+            );
+            assert_eq!(candidate, vec![Value::from("ready")]);
         }
     }
 

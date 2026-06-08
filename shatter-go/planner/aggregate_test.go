@@ -246,6 +246,41 @@ func TestPlanParam_Struct_EmitsCompositeLiteralPlan(t *testing.T) {
 	}
 }
 
+func TestPlanParam_StructStringLiteralFieldCandidates(t *testing.T) {
+	param := structParam("cfg", "pkg.Config",
+		protocol.ObjectField{Name: "Mode", Type: protocol.TypeInfo{Kind: "str"}},
+		protocol.ObjectField{Name: "N", Type: protocol.TypeInfo{Kind: "int"}},
+	)
+	plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		StringLiteralsByParam: map[string][]string{
+			"cfg.Mode": {"fixed", "random"},
+		},
+		MaxPlansPerParam: 4,
+	})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) != 3 {
+		t.Fatalf("len(plans) = %d, want base plus two literal-field variants", len(plans))
+	}
+	for _, want := range []string{`Mode: "fixed"`, `Mode: "random"`} {
+		found := false
+		for _, plan := range plans[1:] {
+			expr, err := decodeExpression(plan.Literal)
+			if err != nil {
+				t.Fatalf("plan Literal is not a JSON string: %v (%s)", err, string(plan.Literal))
+			}
+			if strings.Contains(expr, want) && strings.Contains(expr, "N: 0") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing struct literal variant containing %s in plans %+v", want, plans)
+		}
+	}
+}
+
 func TestPlanParam_StructWithRoundTripperField_EmitsNilInterfaceField(t *testing.T) {
 	param := structParam("fetcher", "pkg.Fetcher",
 		protocol.ObjectField{Name: "Transport", Type: protocol.TypeInfo{Kind: "opaque", Label: "http.RoundTripper"}},

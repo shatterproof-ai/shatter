@@ -189,6 +189,9 @@ func planOne(
 	if len(ctx.JSONEncodeInterfaceParams) > 0 {
 		paramOpts.JSONEncodeInterfaceParams = ctx.JSONEncodeInterfaceParams
 	}
+	if len(ctx.StringLiteralsByParam) > 0 {
+		paramOpts.StringLiteralsByParam = ctx.StringLiteralsByParam
+	}
 	return planWithGenericArgs(req, ctx, nil, false, paramOpts, opts)
 }
 
@@ -237,6 +240,9 @@ func planMethod(
 	}
 	if len(ctx.JSONEncodeInterfaceParams) > 0 {
 		paramOpts.JSONEncodeInterfaceParams = ctx.JSONEncodeInterfaceParams
+	}
+	if len(ctx.StringLiteralsByParam) > 0 {
+		paramOpts.StringLiteralsByParam = ctx.StringLiteralsByParam
 	}
 	return planWithGenericArgs(req, ctx, receiverPlans, true, paramOpts, opts)
 }

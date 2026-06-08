@@ -67,6 +67,10 @@ type ParamPlanOptions struct {
 	// deterministic JSON-serializable candidate family instead of remaining
 	// opaque. Decode-style destinations are intentionally not included.
 	JSONEncodeInterfaceParams map[string]bool
+	// StringLiteralsByParam maps parameter names to string literals harvested
+	// from target-local control flow. Matching string parameters receive these
+	// candidates before generic primitive-family defaults.
+	StringLiteralsByParam map[string][]string
 	// MaxPlansPerParam caps each parameter's ValuePlan slice. Zero means
 	// DefaultMaxParamValuePlans.
 	MaxPlansPerParam int
@@ -135,6 +139,7 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		}
 		if aggPlans, aggUnsat := planAggregateWithOptions(targetID, paramIndex, p, maxPlans, aggregateOptions{
 			ConfiguredRuntimeValues: opts.ConfiguredRuntimeValues,
+			StringLiteralsByParam:   opts.StringLiteralsByParam,
 		}); aggPlans != nil {
 			return aggPlans, nil
 		} else if aggUnsat != nil {
@@ -190,6 +195,22 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 			Literal:  hint.Literal,
 			TypeHint: typeHint,
 		})
+	}
+
+	if family.typeHint == paramTypeHintString {
+		for _, literal := range opts.StringLiteralsByParam[p.Name] {
+			encoded, err := json.Marshal(literal)
+			if err != nil {
+				continue
+			}
+			if !add(protocol.ValuePlan{
+				Kind:     protocol.ValuePlanKindLiteral,
+				Literal:  encoded,
+				TypeHint: family.typeHint,
+			}) {
+				break
+			}
+		}
 	}
 
 	for _, cand := range family.candidates {

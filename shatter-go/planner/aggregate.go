@@ -33,6 +33,7 @@ const mapTypeNamePrefix = "map["
 
 type aggregateOptions struct {
 	ConfiguredRuntimeValues map[string]config.GoRuntimeValueConfig
+	StringLiteralsByParam   map[string][]string
 }
 
 // PlanAggregate synthesizes ValuePlans for slice, map, and struct parameters.
@@ -171,7 +172,32 @@ func planStructAggregate(targetID string, paramIndex int, p protocol.ParamInfo, 
 		return nil, unsat
 	}
 	expressions := []string{composite.Expression}
+	expressions = append(expressions, structStringLiteralExpressions(typeName, p.Name, p.Type, maxPlans-len(expressions), opts)...)
 	return aggregateValuePlans(paramIndex, p.Name, typeName, expressions, maxPlans), nil
+}
+
+func structStringLiteralExpressions(typeName string, paramName string, t protocol.TypeInfo, limit int, opts aggregateOptions) []string {
+	if limit <= 0 || len(opts.StringLiteralsByParam) == 0 || t.Kind != "object" {
+		return nil
+	}
+	expressions := make([]string, 0, limit)
+	for _, field := range t.Fields {
+		if field.Type.Kind != "str" {
+			continue
+		}
+		path := paramName + "." + field.Name
+		for _, literal := range opts.StringLiteralsByParam[path] {
+			expr, err := synthesizeStructLiteralWithStringField(typeName, t, field.Name, literal, opts)
+			if err != nil {
+				continue
+			}
+			expressions = append(expressions, expr)
+			if len(expressions) >= limit {
+				return expressions
+			}
+		}
+	}
+	return expressions
 }
 
 // mapKeyValueTypes extracts the map's key and value TypeInfo from the
