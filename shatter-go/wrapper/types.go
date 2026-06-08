@@ -55,4 +55,10 @@ type ConstructorParam struct {
 	Name string
 	// GoType is the Go source type spelling (e.g. "string", "int").
 	GoType string
+	// RuntimeValueExpr, when non-empty, carries a Go-source expression
+	// assignable to GoType. Constructor params with this field set are
+	// initialized directly and do not consume a JSON input slot.
+	RuntimeValueExpr string
+	// Imports lists package paths required by RuntimeValueExpr.
+	Imports []string
 }

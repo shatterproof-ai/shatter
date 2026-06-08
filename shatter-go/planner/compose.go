@@ -108,10 +108,10 @@ func Compose(
 
 // composeCandidate carries the ranking-relevant metadata for one beam entry.
 type composeCandidate struct {
-	plan              protocol.InvocationPlan
-	hintDepCount      int
-	receiverPriority  int
-	enumerationIndex  int
+	plan             protocol.InvocationPlan
+	hintDepCount     int
+	receiverPriority int
+	enumerationIndex int
 }
 
 func (c composeCandidate) less(other composeCandidate) bool {
@@ -238,23 +238,27 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-// constructorArgPlansForReceiver generates ValuePlans for a parameterized
-// constructor's arguments (str-9b1q). Each param gets a Zero-kind plan with
-// a type hint, which the core materializes as the type's zero value.
-// Returns nil for parameterless receivers.
+// constructorArgPlansForReceiver generates ValuePlans for parameterized
+// constructor arguments that must come from the JSON input prefix (str-9b1q).
+// Constructor parameters satisfied by the runtime-value registry are omitted:
+// the generated wrapper initializes those directly and they do not consume an
+// input slot.
 func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 	if len(recv.ConstructorParams) == 0 {
 		return nil
 	}
-	plans := make([]protocol.ValuePlan, len(recv.ConstructorParams))
+	plans := make([]protocol.ValuePlan, 0, len(recv.ConstructorParams))
 	for i, p := range recv.ConstructorParams {
+		if len(runtimeValuePlans(i, p, 1)) > 0 {
+			continue
+		}
 		typeHint := typeHintForParam(p)
-		plans[i] = protocol.ValuePlan{
+		plans = append(plans, protocol.ValuePlan{
 			Kind:       protocol.ValuePlanKindZero,
 			ParamIndex: i,
 			ParamName:  p.Name,
 			TypeHint:   typeHint,
-		}
+		})
 	}
 	return plans
 }
