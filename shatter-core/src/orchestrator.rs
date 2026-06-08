@@ -1227,6 +1227,7 @@ async fn observe_one(
     entry: &WorklistEntry,
     frontend: &mut Frontend,
     function_name: &str,
+    param_infos: &[ParamInfo],
     config: &ExploreConfig,
     covered_paths: &mut HashSet<u64>,
     triage_state: &mut TriageState,
@@ -1294,10 +1295,15 @@ async fn observe_one(
     // an error — when the frontend is slow to respond (e.g., long compile
     // times in the Rust harness), the orchestrator should stop scheduling
     // new work and report a timeout, not a protocol ID mismatch.
+    let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+        &entry.inputs,
+        param_infos.len(),
+        config.default_execute_plan.as_ref(),
+    );
     let response = match frontend
         .send(Command::Execute {
             function: function_name.to_string(),
-            inputs: entry.inputs.clone(),
+            inputs: execute_inputs,
             mocks: effective_mocks.clone(),
             setup_context: setup_context.clone(),
             capture: true,
@@ -2055,10 +2061,15 @@ async fn refine_boundaries_async(
             }
 
             let candidate = &candidates[0];
+            let execute_candidate = crate::planner_consumer::execute_inputs_for_plan(
+                candidate,
+                param_infos.len(),
+                execute_plan.as_ref(),
+            );
             let response = match frontend
                 .send(Command::Execute {
                     function: function_name.to_string(),
-                    inputs: candidate.clone(),
+                    inputs: execute_candidate,
                     mocks: mocks.clone(),
                     setup_context: setup_context.clone(),
                     capture: false,
@@ -2335,10 +2346,20 @@ pub async fn explore_with_oracle(
                     timed_out_overall = true;
                     break 'float_probe;
                 }
+                let execute_float_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                    &float_inputs,
+                    param_infos.len(),
+                    config.default_execute_plan.as_ref(),
+                );
+                let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                    &floor_inputs,
+                    param_infos.len(),
+                    config.default_execute_plan.as_ref(),
+                );
                 let float_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: float_inputs.clone(),
+                        inputs: execute_float_inputs,
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -2351,7 +2372,7 @@ pub async fn explore_with_oracle(
                 let floor_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: floor_inputs,
+                        inputs: execute_floor_inputs,
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -2529,6 +2550,7 @@ pub async fn explore_with_oracle(
             &entry,
             frontend,
             function_name,
+            param_infos,
             config,
             &mut covered_paths,
             &mut triage_state,
@@ -2665,11 +2687,16 @@ pub async fn explore_with_oracle(
                                 &[],
                                 &mut fuzz_rng,
                             );
+                            let execute_mutated = crate::planner_consumer::execute_inputs_for_plan(
+                                &mutated,
+                                param_infos.len(),
+                                config.default_execute_plan.as_ref(),
+                            );
 
                             let response = frontend
                                 .send(Command::Execute {
                                     function: function_name.to_string(),
-                                    inputs: mutated.clone(),
+                                    inputs: execute_mutated,
                                     mocks: config.mocks.clone(),
                                     setup_context: setup_context.clone(),
                                     capture: true,
@@ -3187,10 +3214,15 @@ pub async fn explore_with_oracle(
                     crate::shrink::bulk_shrink_candidate(&current, param_infos)
             {
                 attempts += 1;
+                let execute_bulk_trial = crate::planner_consumer::execute_inputs_for_plan(
+                    &bulk_trial,
+                    param_infos.len(),
+                    config.default_execute_plan.as_ref(),
+                );
                 let resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: bulk_trial.clone(),
+                        inputs: execute_bulk_trial,
                         mocks: effective_mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: true,
@@ -3225,10 +3257,15 @@ pub async fn explore_with_oracle(
                         break;
                     }
                     attempts += 1;
+                    let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
+                        &trial,
+                        param_infos.len(),
+                        config.default_execute_plan.as_ref(),
+                    );
                     let resp = frontend
                         .send(Command::Execute {
                             function: function_name.to_string(),
-                            inputs: trial.clone(),
+                            inputs: execute_trial,
                             mocks: effective_mocks.clone(),
                             setup_context: setup_context.clone(),
                             capture: false,
@@ -3272,11 +3309,16 @@ pub async fn explore_with_oracle(
                         let mut trial = current.clone();
                         trial[i] = candidate;
                         attempts += 1;
+                        let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
+                            &trial,
+                            param_infos.len(),
+                            config.default_execute_plan.as_ref(),
+                        );
 
                         let resp = frontend
                             .send(Command::Execute {
                                 function: function_name.to_string(),
-                                inputs: trial.clone(),
+                                inputs: execute_trial,
                                 mocks: effective_mocks.clone(),
                                 setup_context: setup_context.clone(),
                                 capture: false,

@@ -1486,10 +1486,20 @@ pub async fn explore_function(
         // event (raw_results, discoveries, new_path_executions, iterations,
         // last_discovery_iteration) without re-deriving what observe_single
         // already computed.
+        let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+            &inputs,
+            analysis.params.len(),
+            config.default_execute_plan.as_ref(),
+        );
+        let strategy_feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
+            &execute_inputs,
+            analysis.params.len(),
+            config.default_execute_plan.as_ref(),
+        );
         let obs = crate::observe::observe_single(
             frontend,
             &analysis.name,
-            &inputs,
+            &execute_inputs,
             &iteration_mocks,
             setup_context.as_ref(),
             config.execution_profile.as_ref(),
@@ -1513,7 +1523,7 @@ pub async fn explore_function(
         // Check connection_failures reported by the frontend and transition
         // per-dep states accordingly.
         update_live_first_states(&obs.exec_result, &mut live_first_states);
-        path_feedback.enqueue_from_result(&inputs, &obs.exec_result);
+        path_feedback.enqueue_from_result(&execute_inputs, &obs.exec_result);
 
         // --- Crypto boundary logging ---
         // When the frontend intercepts known encrypt/decrypt calls, log them.
@@ -1534,7 +1544,7 @@ pub async fn explore_function(
         // Fan out the execution result to all strategies for adaptive scoring.
         // record_outcome updates the sliding window for the strategy that produced
         // these inputs, enabling adaptive reallocation.
-        meta_strategy.feedback(&inputs, &obs.exec_result, obs.is_new_path);
+        meta_strategy.feedback(&strategy_feedback_inputs, &obs.exec_result, obs.is_new_path);
         if let Some(idx) = strategy_idx {
             meta_strategy.record_outcome(idx, obs.is_new_path);
         }
@@ -1566,7 +1576,7 @@ pub async fn explore_function(
         }
 
         aggregator.record_post_observe(
-            inputs,
+            execute_inputs,
             iteration_mocks,
             obs.exec_result,
             discovery_method,
@@ -1847,6 +1857,7 @@ fn should_run_shrink_pass(
 
 struct ObserverJob {
     inputs: Vec<serde_json::Value>,
+    feedback_inputs: Vec<serde_json::Value>,
     mocks: Vec<MockConfig>,
     strategy_idx: Option<usize>,
 }
@@ -1978,6 +1989,7 @@ fn candidate_fingerprint(inputs: &[serde_json::Value], mocks: &[MockConfig]) -> 
 
 struct ObserverObservation {
     inputs: Vec<serde_json::Value>,
+    feedback_inputs: Vec<serde_json::Value>,
     mocks: Vec<MockConfig>,
     result: ExecuteResult,
     strategy_idx: Option<usize>,
@@ -2217,10 +2229,22 @@ async fn explore_function_with_observer_pool(
             };
             apply_live_first_overrides(&live_first_states, &mut iteration_mocks);
 
-            if queue_policy.should_enqueue(&inputs, &iteration_mocks) {
+            let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                &inputs,
+                analysis.params.len(),
+                config.default_execute_plan.as_ref(),
+            );
+            let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
+                &execute_inputs,
+                analysis.params.len(),
+                config.default_execute_plan.as_ref(),
+            );
+
+            if queue_policy.should_enqueue(&execute_inputs, &iteration_mocks) {
                 if job_tx
                     .send(ObserverJob {
-                        inputs,
+                        inputs: execute_inputs,
+                        feedback_inputs,
                         mocks: iteration_mocks,
                         strategy_idx,
                     })
@@ -2289,7 +2313,11 @@ async fn explore_function_with_observer_pool(
                     discovery_method,
                 };
                 let outcome = aggregator.aggregate(event.clone());
-                meta_strategy.feedback(&event.inputs, &event.result, outcome.is_new_path);
+                meta_strategy.feedback(
+                    &observation.feedback_inputs,
+                    &event.result,
+                    outcome.is_new_path,
+                );
                 if let Some(idx) = observation.strategy_idx {
                     meta_strategy.record_outcome(idx, outcome.is_new_path);
                 }
@@ -2512,6 +2540,7 @@ async fn run_observer_worker_inner(
         if result_tx
             .send(ObserverMessage::Observed(Box::new(ObserverObservation {
                 inputs: job.inputs,
+                feedback_inputs: job.feedback_inputs,
                 mocks: job.mocks,
                 result: exec_result,
                 strategy_idx: job.strategy_idx,
@@ -4692,6 +4721,43 @@ for line in sys.stdin:
         assert!(
             !generated_path.starts_with(&target_root.path().to_string_lossy().to_string()),
             "path feedback must not create directories in the target project: {generated_path}"
+        );
+    }
+
+    #[test]
+    fn execute_inputs_prepend_constructor_arg_plan_once() {
+        let plan = crate::protocol::InvocationPlan {
+            target_id: "fixture:(*Loader).Load".into(),
+            receiver_kind: "constructor:NewLoader".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![crate::protocol::ValuePlan {
+                param_index: 0,
+                param_name: "namespace".into(),
+                kind: crate::protocol::ValuePlanKind::Literal,
+                literal: Some(serde_json::json!("default")),
+                type_hint: String::new(),
+            }],
+            constructor_arg_plans: vec![crate::protocol::ValuePlan {
+                param_index: 0,
+                param_name: "dir".into(),
+                kind: crate::protocol::ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let method_inputs = vec![serde_json::json!("default")];
+        let prefixed =
+            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan));
+        assert_eq!(
+            prefixed,
+            vec![serde_json::json!(""), serde_json::json!("default")]
+        );
+        assert_eq!(
+            crate::planner_consumer::execute_inputs_for_plan(&prefixed, 1, Some(&plan)),
+            prefixed,
+            "already-prefixed planner seeds and path-feedback retries must not be prefixed twice"
         );
     }
 

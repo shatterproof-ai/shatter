@@ -251,8 +251,8 @@ func GenerateWrapper(
 	// Index constructors by target type for receiver-kind enumeration.
 	// Skip constructors whose real signature takes unsatisfiable parameters
 	// (str-qo1.14). Parameterized constructors with populated Parameters
-	// (str-9b1q) are allowed — the wrapper generates literal zero-value
-	// arguments for them.
+	// (str-9b1q) are allowed — the wrapper deserializes their values from
+	// the input prefix before method arguments.
 	ctorsByType := make(map[string][]ConstructorCandidate)
 	for _, c := range sortedCtors {
 		if c.HasParams && len(c.Parameters) == 0 {
@@ -286,12 +286,12 @@ func GenerateWrapper(
 			filteredExtra = append(filteredExtra, imp)
 		}
 	}
-	needsTimeNormalizer := wrapperNeedsTimeInputNormalizer(sorted)
+	needsTimeNormalizer := wrapperNeedsTimeInputNormalizer(sorted) || constructorsNeedTimeInputNormalizer(sortedCtors)
 	if needsTimeNormalizer {
 		filteredExtra = appendStringIfMissing(filteredExtra, "time")
 		sort.Strings(filteredExtra)
 	}
-	needsMapNormalizer := wrapperNeedsMapInputNormalizer(sorted)
+	needsMapNormalizer := wrapperNeedsMapInputNormalizer(sorted) || constructorsNeedMapInputNormalizer(sortedCtors)
 	needsFuncNormalizer := wrapperNeedsFuncInputNormalizer(sorted)
 	needsRuntimeValueNormalizer := wrapperNeedsRuntimeValueInputNormalizer(sorted)
 	if needsFuncNormalizer || needsRuntimeValueNormalizer {
@@ -382,11 +382,8 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 		for _, c := range ctors {
 			recvKind := WrapperKindConstructorPrefix + c.FuncName
 			fmt.Fprintf(b, "\t\tcase %q:\n", recvKind)
-			// str-9b1q: parameterized constructors use hardcoded zero-value
-			// arguments. The planner verifies all params are satisfiable
-			// primitives; the wrapper generates the type's zero literal
-			// directly in the constructor call.
-			ctorArgs := constructorCallExpr(c)
+			writeConstructorParamDeserialization(b, c.Parameters, "\t\t\t")
+			ctorArgs := constructorInputArgExpr(c)
 			// str-jeen.49: choose the call shape from the cross product
 			// of (target receiver kind) × (constructor return kind).
 			//
@@ -414,7 +411,7 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			default: // !t.IsPointerRecv && !c.ReturnsPointer
 				fmt.Fprintf(b, "\t\t\t_recv := %s(%s)\n", c.FuncName, ctorArgs)
 			}
-			writeParamDeserialization(b, t.Parameters, "\t\t\t")
+			writeParamDeserializationAtOffset(b, t.Parameters, "\t\t\t", len(c.Parameters))
 			writeCall(b, t, "_recv", nil, "\t\t\t")
 		}
 	}
@@ -424,7 +421,12 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 }
 
 func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent string) {
+	writeParamDeserializationAtOffset(b, params, indent, 0)
+}
+
+func writeParamDeserializationAtOffset(b *strings.Builder, params []WrapperParam, indent string, inputOffset int) {
 	for i, p := range params {
+		inputIndex := i + inputOffset
 		if p.RuntimeValueExpr != "" {
 			// str-gxjs.1: parameter is satisfied by the planner's
 			// runtime-value registry. Emit a direct Go expression
@@ -436,29 +438,29 @@ func writeParamDeserialization(b *strings.Builder, params []WrapperParam, indent
 			continue
 		}
 		if p.GoType == "time.Duration" {
-			writeDurationParamDeserialization(b, p.Name, i, indent)
+			writeDurationParamDeserialization(b, p.Name, inputIndex, indent)
 			continue
 		}
 		fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
-		fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, i)
-		inputExpr := fmt.Sprintf("_shatterInputs[%d]", i)
+		fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, inputIndex)
+		inputExpr := fmt.Sprintf("_shatterInputs[%d]", inputIndex)
 		if wrapperParamNeedsMapInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterMapInput%d", i)
-			fmt.Fprintf(b, "%s\t%s := shatterNormalizeMapInput(_shatterInputs[%d])\n", indent, inputVar, i)
+			inputVar := fmt.Sprintf("_shatterMapInput%d", inputIndex)
+			fmt.Fprintf(b, "%s\t%s := shatterNormalizeMapInput(_shatterInputs[%d])\n", indent, inputVar, inputIndex)
 			inputExpr = inputVar
 		}
 		if wrapperParamNeedsTimeInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterTimeInput%d", i)
+			inputVar := fmt.Sprintf("_shatterTimeInput%d", inputIndex)
 			fmt.Fprintf(b, "%s\t%s := shatterNormalizeTimeInput(%s)\n", indent, inputVar, inputExpr)
 			inputExpr = inputVar
 		}
 		if wrapperParamNeedsFuncInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterFuncInput%d", i)
+			inputVar := fmt.Sprintf("_shatterFuncInput%d", inputIndex)
 			fmt.Fprintf(b, "%s\t%s := shatterNormalizeFuncInput(%s, %s)\n", indent, inputVar, inputExpr, p.Name)
 			inputExpr = inputVar
 		}
 		if wrapperParamNeedsRuntimeValueInputNormalizer(p) {
-			inputVar := fmt.Sprintf("_shatterRuntimeValueInput%d", i)
+			inputVar := fmt.Sprintf("_shatterRuntimeValueInput%d", inputIndex)
 			fmt.Fprintf(b, "%s\t%s := shatterNormalizeRuntimeValueInput(%s, %s)\n", indent, inputVar, inputExpr, p.Name)
 			inputExpr = inputVar
 		}
@@ -484,10 +486,32 @@ func wrapperParamNeedsMapInputNormalizer(p WrapperParam) bool {
 	return p.RuntimeValueExpr == "" && (p.NeedsMapInputNormalization || strings.Contains(p.GoType, "map["))
 }
 
+func constructorsNeedMapInputNormalizer(constructors []ConstructorCandidate) bool {
+	for _, c := range constructors {
+		for _, p := range c.Parameters {
+			if strings.Contains(p.GoType, "map[") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func wrapperNeedsTimeInputNormalizer(targets []WrapperTarget) bool {
 	for _, t := range targets {
 		for _, p := range t.Parameters {
 			if wrapperParamNeedsTimeInputNormalizer(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func constructorsNeedTimeInputNormalizer(constructors []ConstructorCandidate) bool {
+	for _, c := range constructors {
+		for _, p := range c.Parameters {
+			if strings.TrimSpace(p.GoType) == "time.Duration" || strings.HasSuffix(strings.TrimSpace(p.GoType), ".Duration") {
 				return true
 			}
 		}
@@ -527,6 +551,20 @@ func wrapperNeedsRuntimeValueInputNormalizer(targets []WrapperTarget) bool {
 
 func wrapperParamNeedsRuntimeValueInputNormalizer(p WrapperParam) bool {
 	return p.RuntimeValueExpr == "" && p.NeedsRuntimeValueInputNormalization
+}
+
+func writeConstructorParamDeserialization(b *strings.Builder, params []ConstructorParam, indent string) {
+	if len(params) == 0 {
+		return
+	}
+	wrapped := make([]WrapperParam, len(params))
+	for i, p := range params {
+		wrapped[i] = WrapperParam{
+			Name:   fmt.Sprintf("_shatterCtorArg%d", i),
+			GoType: p.GoType,
+		}
+	}
+	writeParamDeserializationAtOffset(b, wrapped, indent, 0)
 }
 
 func writeMapInputNormalizer(b *strings.Builder) {
@@ -959,17 +997,17 @@ func writeRuntimeValueInputNormalizer(b *strings.Builder) {
 	b.WriteString("}\n\n")
 }
 
-// constructorCallExpr builds the argument expression string for a constructor
-// call (str-9b1q). For parameterless constructors returns "". For parameterized
-// constructors returns comma-separated Go zero-value literals matching each
-// parameter's type (e.g. `"", 0` for (string, int)).
-func constructorCallExpr(c ConstructorCandidate) string {
+// constructorInputArgExpr builds the argument expression string for a
+// constructor call. For parameterless constructors returns "". For
+// parameterized constructors returns the temporary variables populated from
+// the input prefix immediately before the call.
+func constructorInputArgExpr(c ConstructorCandidate) string {
 	if len(c.Parameters) == 0 {
 		return ""
 	}
 	args := make([]string, len(c.Parameters))
-	for i, p := range c.Parameters {
-		args[i] = goZeroLiteral(p.GoType)
+	for i := range c.Parameters {
+		args[i] = fmt.Sprintf("_shatterCtorArg%d", i)
 	}
 	return strings.Join(args, ", ")
 }

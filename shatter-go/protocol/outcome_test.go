@@ -376,6 +376,59 @@ func (s *Service) Compute(n int) int {
 	}
 }
 
+func TestExecuteMethodTargetWithParameterizedConstructorUsesInputPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmp := filepath.Join(tmpDir, "loader.go")
+	fixtureDir := filepath.Join(tmpDir, "fixtures")
+	if err := os.Mkdir(fixtureDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtureDir, "one.txt"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	src := `package main
+
+import "os"
+
+type Loader struct{ dir string }
+
+func NewLoader(dir string) *Loader { return &Loader{dir: dir} }
+
+func (l *Loader) Load() (int, error) {
+	entries, err := os.ReadDir(l.dir)
+	if err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fixtureDirJSON, err := json.Marshal(fixtureDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planJSON := `{"target_id":"main:(*Loader).Load","receiver_kind":"constructor:NewLoader","argument_plans":[],"constructor_arg_plans":[{"param_index":0,"param_name":"dir","kind":"zero","type_hint":"string"}],"priority":0}`
+	extra := fmt.Sprintf(`"file":"%s","function":"Load","inputs":[%s],"plan":%s`, tmp, fixtureDirJSON, planJSON)
+	resp := sendRecv(t, reqJSON(1, "execute", extra))
+
+	if resp.Outcome == nil {
+		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		var detail string
+		if resp.Outcome.ThrownError != nil {
+			detail = " thrown_error=" + resp.Outcome.ThrownError.Message
+		}
+		t.Fatalf("outcome.Status = %q, want completed;%s", resp.Outcome.Status, detail)
+	}
+	got := strings.TrimSpace(string(resp.Outcome.ReturnValue))
+	if got != "1" {
+		t.Fatalf("ReturnValue = %q, want 1", got)
+	}
+}
+
 // TestExecuteMethodTargetWithoutPlanSynthesizesPointerReceiverZeroValue
 // verifies str-jeen.50: an Execute request that names a method but omits the
 // `plan` field no longer falls through to the wrapper's `unknown receiver
