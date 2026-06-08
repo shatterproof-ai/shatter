@@ -230,7 +230,11 @@ async fn e2e_go_classify_number_discovers_all_branches() {
         ..Default::default()
     };
 
-    let seed_inputs = vec![vec![serde_json::json!(7)], vec![serde_json::json!(-3)]];
+    let seed_inputs = vec![
+        vec![serde_json::json!(7)],
+        vec![serde_json::json!(2)],
+        vec![serde_json::json!(-3)],
+    ];
 
     let (result, _) = orchestrator::explore(
         &mut frontend,
