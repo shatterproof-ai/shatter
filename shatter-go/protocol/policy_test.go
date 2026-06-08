@@ -33,6 +33,32 @@ func TestClassifyFunction_DatabaseParamIsClassified(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_SafeHTTPRuntimeValueParamsAreNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "UsesInMemoryHTTPValues",
+		Params: []ParamInfo{
+			{Name: "w", Type: TypeInfo{Kind: "unknown", Label: "http.ResponseWriter"}, TypeName: ptr("http.ResponseWriter")},
+			{Name: "r", Type: TypeInfo{Kind: "unknown", Label: "http.Request"}, TypeName: ptr("*http.Request")},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("safe httptest-backed runtime values should not be policy-denied, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_HTTPClientParamStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "UsesHTTPClient",
+		Params: []ParamInfo{
+			{Name: "client", Type: TypeInfo{Kind: "opaque", Label: "http.Client"}, TypeName: ptr("*http.Client")},
+		},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("expected http.Client to remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_SubprocessDependencyIsClassified(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "Runs",

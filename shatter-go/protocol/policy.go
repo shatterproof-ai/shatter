@@ -150,6 +150,9 @@ func classifyParam(p ParamInfo) (ClassifiedUse, bool) {
 	if candidate == "" {
 		return ClassifiedUse{}, false
 	}
+	if isSafeRuntimeValueParam(label, typeName) {
+		return ClassifiedUse{}, false
+	}
 	class, ok := paramTypeClass(candidate)
 	if !ok {
 		return ClassifiedUse{}, false
@@ -163,6 +166,17 @@ func classifyParam(p ParamInfo) (ClassifiedUse, bool) {
 		Component: component,
 		Evidence:  fmt.Sprintf("param %q type %s", p.Name, component),
 	}, true
+}
+
+func isSafeRuntimeValueParam(label, typeName string) bool {
+	switch {
+	case label == "http.ResponseWriter" || typeName == "http.ResponseWriter":
+		return true
+	case typeName == "*http.Request":
+		return true
+	default:
+		return false
+	}
 }
 
 func classifyReturnType(t TypeInfo) (ClassifiedUse, bool) {
