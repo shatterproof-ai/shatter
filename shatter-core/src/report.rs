@@ -309,9 +309,10 @@ pub enum CompletionOutcome {
     /// At least one discovered input was recorded and every one threw a
     /// real target error.
     ErrorOnly,
-    /// Every recorded input threw the launcher wrapper's
-    /// `"unknown receiver kind"` sentinel — the target was never
-    /// dispatched cleanly. str-jeen.50.
+    /// Every recorded input failed before target behavior ran. This covers
+    /// launcher wrapper dispatch sentinels such as `"unknown receiver kind"`
+    /// (str-jeen.50) and frontend `unsupported` outcomes for receiver or
+    /// parameter construction gaps.
     DispatchFailed,
     /// Every recorded input was skipped by the frontend policy before
     /// target execution. These rows are completed at the scan-orchestrator
@@ -352,6 +353,13 @@ impl CompletionOutcome {
                 .is_some_and(|status| status == "skipped_by_policy")
         }) {
             return CompletionOutcome::SkippedByPolicy;
+        }
+        if inputs.iter().all(|d| {
+            d.outcome_status
+                .as_deref()
+                .is_some_and(|status| status == "unsupported")
+        }) {
+            return CompletionOutcome::DispatchFailed;
         }
         if !inputs.iter().all(|d| d.thrown_error.is_some()) {
             return CompletionOutcome::Behavioral;
@@ -1124,6 +1132,10 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
             CompletionOutcome::SkippedByPolicy => discovered_inputs
                 .iter()
                 .find_map(|input| input.outcome_reason.clone()),
+            CompletionOutcome::DispatchFailed => discovered_inputs
+                .iter()
+                .find(|input| input.outcome_status.as_deref() == Some("unsupported"))
+                .and_then(|input| input.outcome_reason.clone()),
             _ => None,
         };
         (outcome, reason)
@@ -3771,8 +3783,14 @@ mod tests {
         assert_eq!(func.completion_reason.as_deref(), Some(reason));
         assert_eq!(func.lines_covered, 0);
         assert_eq!(func.branches_covered, 0);
-        assert_eq!(func.discovered_inputs[0].outcome_status.as_deref(), Some("unsupported"));
-        assert_eq!(func.discovered_inputs[0].outcome_reason.as_deref(), Some(reason));
+        assert_eq!(
+            func.discovered_inputs[0].outcome_status.as_deref(),
+            Some("unsupported")
+        );
+        assert_eq!(
+            func.discovered_inputs[0].outcome_reason.as_deref(),
+            Some(reason)
+        );
         assert_eq!(report.codebase.completed_with_behavior, 0);
         assert_eq!(report.codebase.completed_dispatch_failed, 1);
     }
