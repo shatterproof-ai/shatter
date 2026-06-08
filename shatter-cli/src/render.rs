@@ -39,6 +39,7 @@ pub(crate) struct PathView {
 pub(crate) struct ScanView {
     pub functions: Vec<FnScanView>,
     pub skipped_expected: Vec<SkippedView>,
+    pub skipped_interrupted: Vec<SkippedView>,
     pub skipped_errors: Vec<SkippedView>,
     pub workers_used: usize,
     /// Pre-formatted sampling line, or empty string if no sampling was active.
@@ -176,6 +177,11 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
         .iter()
         .filter(|s| s.category == SkipCategory::Error)
         .collect();
+    let interrupted: Vec<_> = result
+        .skipped
+        .iter()
+        .filter(|s| s.category == SkipCategory::Interrupted)
+        .collect();
     let unsupported_count = result
         .skipped
         .iter()
@@ -209,6 +215,7 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
         total_tested: result.function_results.len(),
         functions,
         skipped_expected: expected.iter().map(to_view).collect(),
+        skipped_interrupted: interrupted.iter().map(to_view).collect(),
         skipped_errors: errors.iter().map(to_view).collect(),
         workers_used: result.workers_used,
         sampling_info,
@@ -330,6 +337,42 @@ mod tests {
             "should list mocks"
         );
         assert!(md.contains("concolic"), "should mention concolic explorer");
+    }
+
+    #[test]
+    fn scan_view_renders_interrupted_skips_separately() {
+        let result = ParallelScanResult {
+            function_results: vec![],
+            test_order: vec!["slow".into()],
+            skipped: vec![shatter_core::scan_orchestrator::SkippedFunction {
+                function_name: "slow".into(),
+                reason: "timed out (total scan budget exceeded)".into(),
+                category: SkipCategory::Interrupted,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+
+        let md = render_scan(&scan_view(&result));
+
+        assert!(
+            md.contains("**1 interrupted**"),
+            "summary should expose total-budget interruptions"
+        );
+        assert!(
+            md.contains("**Interrupted:**"),
+            "interrupted skips should not be hidden under expected skips"
+        );
+        assert!(
+            md.contains("slow"),
+            "interrupted function name should be rendered"
+        );
+        assert!(
+            !md.contains("**0 skipped** (1 worker"),
+            "expected-skip count alone must not be the only skipped signal"
+        );
     }
 
     #[test]
