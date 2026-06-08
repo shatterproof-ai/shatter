@@ -42,7 +42,10 @@ const MAX_DISPLAY_CLUSTERS: usize = 5;
 /// could not derive completeness from the JSON. The `unsupported_functions`
 /// field remains and is now a documented sub-count of
 /// `skipped_functions_count`. Schema bumps to v6.
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 6;
+///
+/// str-smcx adds `"interrupted"` skipped entries for functions not attempted
+/// because the run-level scan budget expired. Schema bumps to v7.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 7;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
@@ -50,6 +53,7 @@ struct ScanOutcomeCounts {
     failed: usize,
     expected_skipped: usize,
     unsupported: usize,
+    interrupted: usize,
     attempted: usize,
     discovered: usize,
 }
@@ -60,20 +64,23 @@ impl ScanOutcomeCounts {
         let mut failed = 0usize;
         let mut expected_skipped = 0usize;
         let mut unsupported = 0usize;
+        let mut interrupted = 0usize;
         for s in skipped {
             match s.category {
                 SkipCategory::Error => failed += 1,
                 SkipCategory::Expected => expected_skipped += 1,
                 SkipCategory::Unsupported => unsupported += 1,
+                SkipCategory::Interrupted => interrupted += 1,
             }
         }
         let attempted = completed + failed + expected_skipped;
-        let discovered = attempted + unsupported;
+        let discovered = attempted + unsupported + interrupted;
         Self {
             completed,
             failed,
             expected_skipped,
             unsupported,
+            interrupted,
             attempted,
             discovered,
         }
@@ -142,7 +149,7 @@ fn classify_failure_reason(reason: &str) -> (String, String, String) {
 
 /// Partition a flat skipped-function list into the structured `failed`
 /// array (entries with `SkipCategory::Error`) and the remaining
-/// `skipped_functions` entries (Expected + Unsupported). See str-jeen.46
+/// `skipped_functions` entries (Expected + Unsupported + Interrupted). See str-jeen.46
 /// for context on the split: failure rows used to be co-located with
 /// benign skips, hiding the denominator of attempted-but-failed runs.
 fn split_skipped_into_failed(
@@ -203,6 +210,15 @@ fn split_skipped_into_failed(
                     qualified_id: s.function_name.clone(),
                     reason: s.reason.clone(),
                     category: "unsupported".into(),
+                });
+            }
+            SkipCategory::Interrupted => {
+                skipped_out.push(SkippedFunctionReport {
+                    function_name: display_name.to_string(),
+                    display_name: display_name.to_string(),
+                    qualified_id: s.function_name.clone(),
+                    reason: s.reason.clone(),
+                    category: "interrupted".into(),
                 });
             }
         }
@@ -547,11 +563,12 @@ pub struct CodebaseReport {
     pub failed_functions: usize,
     /// Total number of entries in [`Self::skipped_functions`]. Equals
     /// `skipped_functions.len()` and equals
-    /// `expected_skipped + unsupported_functions`, where
+    /// `expected_skipped + unsupported_functions + interrupted`, where
     /// `expected_skipped` is the count of benign skips (cache hits,
     /// checkpoint resumes, intentional bypasses) and
     /// `unsupported_functions` is the count of targets filtered before
-    /// any attempt.
+    /// any attempt. Interrupted entries are targets not attempted because
+    /// the run-level scan budget expired.
     ///
     /// Pre-str-21w2 v5 reports set this to the Expected-only sub-count
     /// while the array carried both Expected and Unsupported entries —
@@ -594,9 +611,10 @@ pub struct CodebaseReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<FailedFunctionReport>,
     /// Functions that were skipped without being attempted. Includes
-    /// both `Expected` skips (cache hits, checkpoint resumes) and
-    /// `Unsupported` skips (unexecutable parameter types). Functions
-    /// that were attempted and failed live in [`Self::failed`] instead.
+    /// `Expected` skips (cache hits, checkpoint resumes), `Unsupported`
+    /// skips (unexecutable parameter types), and `Interrupted` skips
+    /// caused by the run-level scan budget ending. Functions that were
+    /// attempted and failed live in [`Self::failed`] instead.
     pub skipped_functions: Vec<SkippedFunctionReport>,
     /// Dependency graph edges.
     pub dependency_graph: Vec<DependencyEdge>,
@@ -605,10 +623,10 @@ pub struct CodebaseReport {
 /// A function that was skipped during the scan (not attempted).
 ///
 /// `category` is one of `"expected"` (benign skip), `"unsupported"`
-/// (target shape not representable), or — for backward compatibility
-/// with v1 readers — historically `"error"`. Post-str-jeen.46 reports
-/// no longer emit `"error"` here; failed targets appear in
-/// [`CodebaseReport::failed`].
+/// (target shape not representable), `"interrupted"` (not attempted because
+/// the scan-level budget ended), or — for backward compatibility with v1
+/// readers — historically `"error"`. Post-str-jeen.46 reports no longer emit
+/// `"error"` here; failed targets appear in [`CodebaseReport::failed`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkippedFunctionReport {
     pub function_name: String,
@@ -1331,7 +1349,9 @@ pub fn generate_report(
             completed_dispatch_failed,
             completed_skipped_by_policy,
             failed_functions: counts.failed,
-            skipped_functions_count: counts.expected_skipped + counts.unsupported,
+            skipped_functions_count: counts.expected_skipped
+                + counts.unsupported
+                + counts.interrupted,
             unsupported_functions: counts.unsupported,
             total_discovered_functions: counts.discovered,
             total_branches,
@@ -1407,7 +1427,9 @@ pub fn generate_report_from_scan(
             completed_dispatch_failed,
             completed_skipped_by_policy,
             failed_functions: counts.failed,
-            skipped_functions_count: counts.expected_skipped + counts.unsupported,
+            skipped_functions_count: counts.expected_skipped
+                + counts.unsupported
+                + counts.interrupted,
             unsupported_functions: counts.unsupported,
             total_discovered_functions: counts.discovered,
             total_branches,
@@ -1656,29 +1678,40 @@ fn write_md_header(out: &mut String, report: &ScanReport) {
     }
     if cb.skipped_functions_count > 0 {
         // str-21w2: `skipped_functions_count` now matches
-        // `skipped_functions.len()` (Expected + Unsupported); show the
-        // Unsupported sub-count beneath it so the markdown breakdown
-        // stays unambiguous without double-counting.
+        // `skipped_functions.len()`; show sub-counts beneath it so the
+        // markdown breakdown stays unambiguous without double-counting.
         let _ = writeln!(
             out,
             "- **Functions skipped:** {}",
             cb.skipped_functions_count
         );
+        let interrupted = cb
+            .skipped_functions
+            .iter()
+            .filter(|s| s.category == "interrupted")
+            .count();
         if cb.unsupported_functions > 0 {
             let _ = writeln!(
                 out,
                 "  - **unsupported (target shape not representable):** {}",
                 cb.unsupported_functions
             );
-            let expected = cb
-                .skipped_functions_count
-                .saturating_sub(cb.unsupported_functions);
-            if expected > 0 {
-                let _ = writeln!(
-                    out,
-                    "  - **expected (cache/checkpoint/bypass):** {expected}",
-                );
-            }
+        }
+        if interrupted > 0 {
+            let _ = writeln!(
+                out,
+                "  - **interrupted (total scan budget exceeded):** {interrupted}",
+            );
+        }
+        let expected = cb
+            .skipped_functions_count
+            .saturating_sub(cb.unsupported_functions)
+            .saturating_sub(interrupted);
+        if expected > 0 {
+            let _ = writeln!(
+                out,
+                "  - **expected (cache/checkpoint/bypass):** {expected}",
+            );
         }
     } else if cb.unsupported_functions > 0 {
         // Defensive path: if a producer reports unsupported without
@@ -2039,6 +2072,10 @@ fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport
         .iter()
         .filter(|s| s.category == "unsupported")
         .collect();
+    let interrupted: Vec<_> = skipped
+        .iter()
+        .filter(|s| s.category == "interrupted")
+        .collect();
     // Backward-compat: legacy reports lumped failures in here under
     // "error". Post-str-jeen.46 those entries live in the structured
     // `failed` array and are rendered by `write_md_failed_functions`.
@@ -2057,6 +2094,14 @@ fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport
     if !unsupported.is_empty() {
         let _ = writeln!(out, "## Skipped (Unsupported)\n");
         for s in &unsupported {
+            let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
+        }
+        out.push('\n');
+    }
+
+    if !interrupted.is_empty() {
+        let _ = writeln!(out, "## Skipped (Interrupted)\n");
+        for s in &interrupted {
             let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
         }
         out.push('\n');
