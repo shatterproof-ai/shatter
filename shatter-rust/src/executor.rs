@@ -1679,6 +1679,8 @@ fn axum_default_path_segment(ty: &str, index: usize) -> String {
             | "isize"
     ) {
         (index + 1).to_string()
+    } else if normalized == "bool" {
+        "true".to_string()
     } else {
         format!("p{index}")
     }
@@ -6833,6 +6835,70 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
     }
 
     #[test]
+    fn execute_axum_handler_defaults_bool_path_segment_to_parseable_value() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::Path;
+
+pub async fn handler(Path(enabled): Path<bool>) -> String {
+    if enabled {
+        "enabled".to_string()
+    } else {
+        "disabled".to_string()
+    }
+}
+"#,
+        )
+        .expect("write source");
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "handler",
+            &[serde_json::Value::Null],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200)),
+                    "default bool path segment must enter handler instead of router rejection: {result:?}"
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("enabled"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_defaults_bool_path_segment_to_parseable_value: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
     fn execute_axum_handler_defaults_null_json_body_to_valid_payload() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
@@ -10072,6 +10138,88 @@ pub async fn classify(Path(id): Path<u64>) -> String {
             Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!(
                     "skipping crate_backed_axum_handler_reports_executed_branch_lines: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_axum_tuple_uuid_path_default_enters_handler() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = std::env::temp_dir().join("shatter-test-axum-tuple-uuid-path");
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"[package]
+name = "shatter-test-axum-tuple-uuid"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+"#,
+        )
+        .unwrap();
+        let src_file = src.join("lib.rs");
+        std::fs::write(
+            &src_file,
+            r#"
+use axum::extract::Path;
+use uuid::Uuid;
+
+pub async fn handler(Path((workspace_id, item_id)): Path<(Uuid, Uuid)>) -> String {
+    format!("{workspace_id}:{item_id}")
+}
+"#,
+        )
+        .unwrap();
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            src_file.to_str().unwrap(),
+            "handler",
+            &[serde_json::Value::Null],
+            &[],
+            60_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200)),
+                    "default tuple UUID path must enter handler: {result:?}"
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!(
+                        "00000000-0000-0000-0000-000000000001:00000000-0000-0000-0000-000000000002"
+                    ))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_backed_axum_tuple_uuid_path_default_enters_handler: cargo unavailable ({msg})"
                 );
             }
             Err(e) => panic!("unexpected error: {e:?}"),
