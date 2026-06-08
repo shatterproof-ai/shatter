@@ -1193,6 +1193,7 @@ pub async fn prefetch_custom_values(
     sources: &[ValueSource],
     frontend: &mut crate::frontend::Frontend,
     count: usize,
+    project_root: Option<String>,
 ) -> Result<PrefetchedValues, crate::frontend::FrontendError> {
     let commands = collect_generate_commands(sources);
     let mut store = PrefetchedValues::new();
@@ -1205,7 +1206,7 @@ pub async fn prefetch_custom_values(
                     name: name.clone(),
                     kind: kind.clone(),
                     recipe: None,
-                    project_root: None,
+                    project_root: project_root.clone(),
                 })
                 .await?;
 
@@ -3886,6 +3887,66 @@ mod tests {
         let sources = vec![ValueSource::BuiltIn, ValueSource::BuiltIn];
         let commands = collect_generate_commands(&sources);
         assert!(commands.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prefetch_custom_values_sends_project_root_on_generate() {
+        use crate::frontend::{Frontend, FrontendConfig};
+        use std::io::Write;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("record-generate.sh");
+        let request_log = dir.path().join("generate-request.jsonl");
+        let project_root = dir.path().join("project");
+        std::fs::create_dir(&project_root).expect("create project root");
+        let mut script = std::fs::File::create(&script_path).expect("create script");
+        writeln!(
+            script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+record="$1"
+IFS= read -r handshake
+echo '{{"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"recorder","capabilities":["generate"]}}'
+IFS= read -r generate
+printf '%s\n' "$generate" > "$record"
+echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"generator_id":"recorder","recipe":{{"ok":true}}}}'
+IFS= read -r _shutdown || exit 0
+echo '{{"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}}'
+"#
+        )
+        .expect("write script");
+
+        let mut config = FrontendConfig::new(std::path::PathBuf::from("bash"));
+        config.args = vec![
+            script_path.display().to_string(),
+            request_log.display().to_string(),
+        ];
+        config.request_timeout = Duration::from_secs(5);
+
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn frontend");
+        let sources = vec![ValueSource::CustomGenerator {
+            generator_name: "current".into(),
+            param_name: Some("current".into()),
+            generator_file: "/gen/current.rs".into(),
+            kind: crate::protocol::GeneratorKind::ParamName,
+        }];
+
+        prefetch_custom_values(
+            &sources,
+            &mut frontend,
+            1,
+            Some(project_root.display().to_string()),
+        )
+        .await
+        .expect("prefetch custom values");
+        frontend.shutdown().await.expect("shutdown frontend");
+
+        let raw_request = std::fs::read_to_string(&request_log).expect("read request log");
+        let request: serde_json::Value =
+            serde_json::from_str(raw_request.trim()).expect("parse generate request");
+        assert_eq!(request["command"], "generate");
+        assert_eq!(request["project_root"], project_root.display().to_string());
     }
 
     #[test]

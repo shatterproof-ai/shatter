@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
 
+static NATIVE_GENERATOR_CWD_LOCK: Mutex<()> = Mutex::new(());
+
 /// Result returned by compiled-in (custom build) native generators.
 /// Value holds a live in-process object; recipe is a serializable blob for replay.
 pub struct GeneratorResult {
@@ -125,7 +127,7 @@ impl NativeRegistry {
         name: &str,
         recipe: Option<serde_json::Value>,
     ) -> Result<(serde_json::Value, String, serde_json::Value), String> {
-        let result = self.invoke(file, name, recipe)?;
+        let result = self.invoke(file, name, recipe, None)?;
         let handle_id = self.handles.store(result.value);
 
         let sentinel = serde_json::json!({
@@ -147,7 +149,21 @@ impl NativeRegistry {
         name: &str,
         recipe: Option<serde_json::Value>,
     ) -> Result<(serde_json::Value, String, serde_json::Value), String> {
-        let result = self.invoke(file, name, recipe)?;
+        self.generate_for_replay_with_project_root(file, name, recipe, None)
+    }
+
+    /// Look up and call a replayable native generator using a project-root CWD.
+    ///
+    /// Relative filesystem access inside the generator resolves against
+    /// `project_root`, and the original process CWD is restored before return.
+    pub fn generate_for_replay_with_project_root(
+        &self,
+        file: Option<&str>,
+        name: &str,
+        recipe: Option<serde_json::Value>,
+        project_root: Option<&str>,
+    ) -> Result<(serde_json::Value, String, serde_json::Value), String> {
+        let result = self.invoke(file, name, recipe, project_root)?;
         let sentinel = serde_json::json!({
             "__shatter_native": true,
             "handle": "replay_only",
@@ -160,6 +176,7 @@ impl NativeRegistry {
         file: Option<&str>,
         name: &str,
         recipe: Option<serde_json::Value>,
+        project_root: Option<&str>,
     ) -> Result<GeneratorResult, String> {
         let func = file
             .and_then(|file| {
@@ -177,9 +194,11 @@ impl NativeRegistry {
                 }
             })?;
 
-        match catch_unwind(AssertUnwindSafe(|| func(recipe))) {
+        let invoke_result = invoke_native_generator(func, recipe, project_root);
+        match invoke_result {
             Ok(result) => Ok(result),
-            Err(payload) => {
+            Err(NativeInvokeError::Message(message)) => Err(message),
+            Err(NativeInvokeError::Panic(payload)) => {
                 let generator_label = if let Some(file) = file {
                     format!("native generator {name:?} from {file:?}")
                 } else {
@@ -204,6 +223,45 @@ impl NativeRegistry {
     pub fn has_native(&self, name: &str) -> bool {
         self.generators.contains_key(name)
     }
+}
+
+enum NativeInvokeError {
+    Message(String),
+    Panic(Box<dyn std::any::Any + Send>),
+}
+
+fn invoke_native_generator(
+    func: &NativeGeneratorFn,
+    recipe: Option<serde_json::Value>,
+    project_root: Option<&str>,
+) -> Result<GeneratorResult, NativeInvokeError> {
+    if let Some(project_root) = project_root {
+        let _guard = NATIVE_GENERATOR_CWD_LOCK
+            .lock()
+            .expect("native generator cwd lock poisoned");
+        let original_cwd = std::env::current_dir().map_err(|err| {
+            NativeInvokeError::Message(format!(
+                "read current directory before native generator: {err}"
+            ))
+        })?;
+        std::env::set_current_dir(project_root).map_err(|err| {
+            NativeInvokeError::Message(format!(
+                "change native generator working directory to {project_root}: {err}"
+            ))
+        })?;
+
+        let result =
+            catch_unwind(AssertUnwindSafe(|| func(recipe))).map_err(NativeInvokeError::Panic);
+        if let Err(err) = std::env::set_current_dir(&original_cwd) {
+            return Err(NativeInvokeError::Message(format!(
+                "restore native generator working directory to {}: {err}",
+                original_cwd.display()
+            )));
+        }
+        return result;
+    }
+
+    catch_unwind(AssertUnwindSafe(|| func(recipe))).map_err(NativeInvokeError::Panic)
 }
 
 fn normalize_generator_file(file: &str) -> String {
