@@ -1483,6 +1483,10 @@ pub async fn explore_function(
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
             let mut bulk_accepted = false;
+            if explore_deadline_crossed(config, explore_start) {
+                timed_out_due_to_budget = true;
+                break;
+            }
             if attempts < witness_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
@@ -1519,6 +1523,10 @@ pub async fn explore_function(
                 for trial in
                     crate::shrink::grouped_shrink_candidates(&current, &analysis.params, group_size)
                 {
+                    if explore_deadline_crossed(config, explore_start) {
+                        timed_out_due_to_budget = true;
+                        break;
+                    }
                     if attempts >= witness_budget {
                         break;
                     }
@@ -1550,9 +1558,17 @@ pub async fn explore_function(
             while progress && attempts < witness_budget {
                 progress = false;
                 for i in 0..analysis.params.len().min(current.len()) {
+                    if explore_deadline_crossed(config, explore_start) {
+                        timed_out_due_to_budget = true;
+                        break;
+                    }
                     let candidates =
                         crate::shrink::shrink_candidates(&current[i], &analysis.params[i].typ);
                     for candidate in candidates {
+                        if explore_deadline_crossed(config, explore_start) {
+                            timed_out_due_to_budget = true;
+                            break;
+                        }
                         if attempts >= witness_budget {
                             break;
                         }
@@ -1586,6 +1602,9 @@ pub async fn explore_function(
                     if attempts >= witness_budget {
                         break;
                     }
+                }
+                if timed_out_due_to_budget {
+                    break;
                 }
             }
 
@@ -1644,10 +1663,12 @@ fn explore_deadline_crossed(config: &ExploreConfig, explore_start: Instant) -> b
 
 fn should_run_shrink_pass(
     config: &ExploreConfig,
-    _explore_start: Instant,
-    _timed_out_due_to_budget: bool,
+    explore_start: Instant,
+    timed_out_due_to_budget: bool,
 ) -> bool {
     config.shrink_budget > 0
+        && !timed_out_due_to_budget
+        && !explore_deadline_crossed(config, explore_start)
 }
 
 struct ObserverJob {
@@ -4747,6 +4768,14 @@ mod tests {
         assert!(
             !should_run_shrink_pass(&config, started_before_deadline, false),
             "shrink pass must stop after timeout_explore has elapsed"
+        );
+        assert!(
+            !should_run_shrink_pass(&config, Instant::now(), true),
+            "shrink pass must stop when the explore loop recorded a timeout"
+        );
+        assert!(
+            should_run_shrink_pass(&config, Instant::now(), false),
+            "shrink pass may run while budget remains"
         );
     }
 
