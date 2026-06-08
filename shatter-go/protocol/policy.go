@@ -291,6 +291,9 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		return ClassSubprocess, true
 	case module == "os":
 		osSymbol := unqualifyStdlibSymbol(module, symbol)
+		if isPureOsSymbol(osSymbol) {
+			return "", false
+		}
 		if isProcessGlobalOsSymbol(osSymbol) {
 			return ClassProcessGlobal, true
 		}
@@ -316,6 +319,14 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 
 func unqualifyStdlibSymbol(module, symbol string) string {
 	return strings.TrimPrefix(symbol, module+".")
+}
+
+func isPureOsSymbol(symbol string) bool {
+	switch symbol {
+	case "IsExist", "IsNotExist", "IsPermission", "IsTimeout":
+		return true
+	}
+	return false
 }
 
 func isProcessGlobalOsSymbol(symbol string) bool {
