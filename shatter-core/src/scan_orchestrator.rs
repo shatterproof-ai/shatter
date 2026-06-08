@@ -4403,7 +4403,7 @@ pub async fn parallel_scan_with_progress(
                     let pool = Arc::clone(&pool);
                     let behavior_maps = Arc::clone(&behavior_maps);
                     let input_pool = Arc::clone(&input_pool);
-                    let timeout = config.timeout_per_fn;
+                    let timeout = effective_scan_explore_timeout(config);
                     let build_timeout = config.build_timeout;
                     let concolic = config.concolic;
                     let genetic_config = config.genetic_config.clone();
@@ -4647,8 +4647,10 @@ pub async fn parallel_scan_with_progress(
 
                 let mut raw_outcomes = Vec::with_capacity(handles.len());
                 let mut pending_handles = handles;
-                let task_watchdog =
-                    shared_pool_task_watchdog(config.build_timeout, config.timeout_per_fn);
+                let task_watchdog = shared_pool_task_watchdog(
+                    config.build_timeout,
+                    effective_scan_explore_timeout(config),
+                );
                 while !pending_handles.is_empty() {
                     let (function_name, progress_index, lease, mut handle) =
                         pending_handles.remove(0);
@@ -5112,6 +5114,10 @@ fn phase_timeout_reason(phase: &str, d: Duration) -> String {
 
 fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
     config.timeout_explore.or(Some(config.timeout_per_fn))
+}
+
+fn effective_scan_explore_timeout(config: &ScanConfig) -> Duration {
+    scan_explore_timeout(config).unwrap_or(config.timeout_per_fn)
 }
 
 fn scan_shrink_budget(config: &ScanConfig) -> usize {
@@ -6209,6 +6215,26 @@ mod tests {
         assert!(
             watchdog <= build_timeout + timeout_per_fn + SHARED_POOL_TASK_CLEANUP_GRACE,
             "watchdog {watchdog:?} should not include unclaimed build retry budget"
+        );
+    }
+
+    /// str-plr2 regression: when `--timeout-explore` is lower than
+    /// `--timeout-per-fn`, the final task backstop should be sized from the
+    /// effective exploration budget, not the larger per-function budget.
+    #[test]
+    fn shared_pool_task_watchdog_uses_effective_explore_timeout() {
+        let build_timeout = Duration::from_secs(20);
+        let timeout_per_fn = Duration::from_secs(10);
+        let timeout_explore = Duration::from_secs(5);
+        let watchdog = shared_pool_task_watchdog(build_timeout, timeout_explore);
+
+        assert_eq!(
+            watchdog,
+            build_timeout + timeout_explore + SHARED_POOL_TASK_CLEANUP_GRACE
+        );
+        assert!(
+            watchdog < shared_pool_task_watchdog(build_timeout, timeout_per_fn),
+            "lower effective explore timeout should shrink task watchdog"
         );
     }
 
@@ -7855,6 +7881,91 @@ mod tests {
                 s.reason
             );
         }
+    }
+
+    /// str-plr2 regression: the shared-pool phased scan path must honor an
+    /// explicit `timeout_explore` instead of always using `timeout_per_fn`.
+    #[tokio::test]
+    async fn parallel_scan_honors_timeout_explore_for_execution_timeout() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let slow_path = manifest_dir.join("../protocol/slow-execute-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![slow_path.to_string_lossy().into_owned()];
+        fe_config
+            .env_vars
+            .push(("SLOW_EXECUTE_SECS".to_string(), "2".to_string()));
+        fe_config.request_timeout = Duration::from_secs(10);
+
+        let analysis = FunctionAnalysis {
+            name: "slow_timeout_explore".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        };
+
+        let mut file_map = HashMap::new();
+        file_map.insert("slow_timeout_explore".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 3,
+            concolic: false,
+            seed: Some(42),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(3),
+            build_timeout: Duration::from_secs(30),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: None,
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: Some(Duration::from_secs(1)),
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
+        };
+
+        let result = parallel_scan(&fe_config, &[analysis], &config)
+            .await
+            .expect("parallel_scan should succeed with a timeout skip");
+
+        assert!(result.function_results.is_empty());
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(
+            result.skipped[0].reason,
+            "timed out during execution after 1s"
+        );
     }
 
     #[tokio::test]
