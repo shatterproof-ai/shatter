@@ -2639,6 +2639,10 @@ pub async fn explore_with_oracle(
                         let mut fuzz_rng = StdRng::from_os_rng();
 
                         let fuzz_termination = loop {
+                            if deadline_crossed() {
+                                timed_out_overall = true;
+                                break crate::fuzzer::FuzzTermination::Timeout;
+                            }
                             if fuzz_plateau >= fuzz_plateau_threshold {
                                 break crate::fuzzer::FuzzTermination::Plateau;
                             }
@@ -2726,6 +2730,12 @@ pub async fn explore_with_oracle(
                             fuzz_executions,
                             fuzz_termination,
                         );
+
+                        if deadline_crossed() {
+                            timed_out_overall = true;
+                            termination_reason = TerminationReason::TimeoutExplore;
+                            break;
+                        }
 
                         // Reset plateau and continue.
                         plateau_counter = 0;
@@ -3168,6 +3178,10 @@ pub async fn explore_with_oracle(
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
             let mut bulk_accepted = false;
+            if deadline_crossed() {
+                timed_out_overall = true;
+                break;
+            }
             if attempts < witness_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, param_infos)
@@ -3203,6 +3217,10 @@ pub async fn explore_with_oracle(
                 for trial in
                     crate::shrink::grouped_shrink_candidates(&current, param_infos, group_size)
                 {
+                    if deadline_crossed() {
+                        timed_out_overall = true;
+                        break;
+                    }
                     if attempts >= witness_budget {
                         break;
                     }
@@ -3231,11 +3249,23 @@ pub async fn explore_with_oracle(
             // Phase 2: one-at-a-time per-param loop.
             let mut progress = true;
             while progress && attempts < witness_budget {
+                if deadline_crossed() {
+                    timed_out_overall = true;
+                    break;
+                }
                 progress = false;
                 for i in 0..param_infos.len().min(current.len()) {
+                    if deadline_crossed() {
+                        timed_out_overall = true;
+                        break;
+                    }
                     let candidates =
                         crate::shrink::shrink_candidates(&current[i], &param_infos[i].typ);
                     for candidate in candidates {
+                        if deadline_crossed() {
+                            timed_out_overall = true;
+                            break;
+                        }
                         if attempts >= witness_budget {
                             break;
                         }
@@ -3268,6 +3298,9 @@ pub async fn explore_with_oracle(
                     if attempts >= witness_budget {
                         break;
                     }
+                }
+                if timed_out_overall {
+                    break;
                 }
             }
 
@@ -5152,6 +5185,66 @@ mod tests {
             "expected total_executions <= {user_cap}; got {} (termination={:?})",
             result.total_executions,
             result.termination_reason,
+        );
+
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// str-cir6 regression: plateau-triggered fuzzing must obey the same
+    /// per-function deadline as the main concolic observe loop. Without this,
+    /// a scan could continue issuing fast fuzz Execute calls long after
+    /// `timeout_explore` had expired.
+    #[tokio::test]
+    async fn explore_stops_plateau_fuzz_on_timeout_explore() {
+        let config = config_for_script("unknown-branch-fuzz-frontend.sh");
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let fuzz_cap = 50;
+        let explore_config = ExploreConfig {
+            max_iterations: Some(100),
+            max_executions: Some(100),
+            plateau_threshold: 1,
+            timeout_explore: Some(Duration::from_millis(20)),
+            refine_budget: None,
+            shrink_budget: 0,
+            fuzz: crate::config::FuzzConfig {
+                plateau_threshold: Some(fuzz_cap),
+                max_executions: Some(fuzz_cap),
+                timeout_seconds: Some(10),
+                max_attempts: Some(3),
+            },
+            ..Default::default()
+        };
+
+        let (result, _) = explore(
+            &mut frontend,
+            "f",
+            vec![vec![serde_json::json!(0)]],
+            vec![],
+            &[ParamInfo {
+                name: "x".into(),
+                typ: crate::types::TypeInfo::Int,
+                type_name: None,
+            }],
+            &explore_config,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .expect("explore failed");
+
+        assert!(
+            result.timed_out,
+            "plateau fuzz crossing timeout_explore must surface timed_out=true"
+        );
+        assert_eq!(result.termination_reason, TerminationReason::TimeoutExplore);
+        assert!(
+            result.total_executions < fuzz_cap as usize,
+            "timeout_explore should stop fuzz before exhausting its phase cap; got {} executions",
+            result.total_executions
         );
 
         frontend.shutdown().await.expect("shutdown failed");
