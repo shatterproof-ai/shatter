@@ -66,6 +66,12 @@ type TargetContext struct {
 	// json.NewEncoder(w).Encode(v). This is Go-internal planner context, not a
 	// wire-protocol field. Decode destinations are intentionally excluded.
 	JSONEncodeInterfaceParams map[string]bool
+
+	// StringLiteralsByParam maps parameter names or top-level field paths
+	// (`param.Field`) to string literals found in target-local switch cases or
+	// equality comparisons. This is Go-internal planner context used to seed
+	// enum-like string inputs without adding wire-protocol fields.
+	StringLiteralsByParam map[string][]string
 }
 
 // InterfaceParamCandidate names a concrete type that implements a parameter's

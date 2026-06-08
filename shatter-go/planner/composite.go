@@ -3,6 +3,7 @@ package planner
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
@@ -123,11 +124,34 @@ func synthesizeStructLiteral(typeName string, t protocol.TypeInfo, depth int, im
 	return typeName + body, nil
 }
 
+func synthesizeStructLiteralWithStringField(typeName string, t protocol.TypeInfo, fieldName string, literal string, opts aggregateOptions) (string, error) {
+	imports := newCompositeImportSet()
+	body, err := synthesizeStructBodyWithStringField(t, typeName, fieldName, literal, DefaultMaxCompositeDepth, imports, CompositeOptions{
+		ConfiguredRuntimeValues: opts.ConfiguredRuntimeValues,
+	})
+	if err != nil {
+		return "", err
+	}
+	return typeName + body, nil
+}
+
 // synthesizeStructBody emits the `{F: v, ...}` portion of a composite
 // literal. When called for a top-level struct the caller prepends the
 // qualified type name; when called for a nested field the caller relies on
 // Go's elided-type composite literal and prepends nothing.
 func synthesizeStructBody(t protocol.TypeInfo, context string, depth int, imports *compositeImportSet, opts CompositeOptions) (string, error) {
+	return synthesizeStructBodyWithStringField(t, context, "", "", depth, imports, opts)
+}
+
+func synthesizeStructBodyWithStringField(
+	t protocol.TypeInfo,
+	context string,
+	overrideField string,
+	overrideLiteral string,
+	depth int,
+	imports *compositeImportSet,
+	opts CompositeOptions,
+) (string, error) {
 	if t.Kind != "object" {
 		return "", fmt.Errorf("type %s is not a struct (kind=%q)", labelOr(context, "struct"), t.Kind)
 	}
@@ -143,9 +167,15 @@ func synthesizeStructBody(t protocol.TypeInfo, context string, depth int, import
 		}
 		b.WriteString(f.Name)
 		b.WriteString(": ")
-		val, err := synthesizeFieldValue(f.Type, depth-1, imports, opts)
-		if err != nil {
-			return "", fmt.Errorf("field %q: %w", f.Name, err)
+		val := ""
+		if f.Name == overrideField && f.Type.Kind == "str" {
+			val = strconv.Quote(overrideLiteral)
+		} else {
+			var err error
+			val, err = synthesizeFieldValue(f.Type, depth-1, imports, opts)
+			if err != nil {
+				return "", fmt.Errorf("field %q: %w", f.Name, err)
+			}
 		}
 		b.WriteString(val)
 	}

@@ -652,6 +652,121 @@ func paramNameSet(params []ParamInfo) map[string]bool {
 	return m
 }
 
+func stringLiteralCandidatesByParam(fn *ast.FuncDecl, info *types.Info, params []ParamInfo) map[string][]string {
+	if fn == nil || fn.Body == nil {
+		return nil
+	}
+	paramNames := make(map[string]bool, len(params))
+	for _, p := range params {
+		if p.Name != "" {
+			paramNames[p.Name] = true
+		}
+	}
+	if len(paramNames) == 0 {
+		return nil
+	}
+
+	out := make(map[string][]string)
+	seen := make(map[string]map[string]bool)
+	add := func(path string, lit string) {
+		if path == "" {
+			return
+		}
+		if seen[path] == nil {
+			seen[path] = make(map[string]bool)
+		}
+		if seen[path][lit] {
+			return
+		}
+		seen[path][lit] = true
+		out[path] = append(out[path], lit)
+	}
+
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.SwitchStmt:
+			path := stringCandidatePath(node.Tag, paramNames, info)
+			if path == "" {
+				return true
+			}
+			for _, stmt := range node.Body.List {
+				clause, ok := stmt.(*ast.CaseClause)
+				if !ok {
+					continue
+				}
+				for _, expr := range clause.List {
+					if lit, ok := stringBasicLiteral(expr); ok {
+						add(path, lit)
+					}
+				}
+			}
+		case *ast.BinaryExpr:
+			if node.Op != token.EQL && node.Op != token.NEQ {
+				return true
+			}
+			if lit, ok := stringBasicLiteral(node.X); ok {
+				add(stringCandidatePath(node.Y, paramNames, info), lit)
+			}
+			if lit, ok := stringBasicLiteral(node.Y); ok {
+				add(stringCandidatePath(node.X, paramNames, info), lit)
+			}
+		}
+		return true
+	})
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func stringCandidatePath(expr ast.Expr, paramNames map[string]bool, info *types.Info) string {
+	if expr == nil || !isStringTypedExpr(expr, info) {
+		return ""
+	}
+	return selectorPath(expr, paramNames)
+}
+
+func selectorPath(expr ast.Expr, paramNames map[string]bool) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if paramNames[e.Name] {
+			return e.Name
+		}
+	case *ast.SelectorExpr:
+		base := selectorPath(e.X, paramNames)
+		if base != "" {
+			return base + "." + e.Sel.Name
+		}
+	case *ast.ParenExpr:
+		return selectorPath(e.X, paramNames)
+	}
+	return ""
+}
+
+func isStringTypedExpr(expr ast.Expr, info *types.Info) bool {
+	if info == nil {
+		return true
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Type == nil {
+		return true
+	}
+	return types.Identical(tv.Type.Underlying(), types.Typ[types.String])
+}
+
+func stringBasicLiteral(expr ast.Expr) (string, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return strings.Trim(lit.Value, "`\"'"), true
+	}
+	return s, true
+}
+
 // --- Parameter and Return Type Extraction ---
 
 func extractParams(fn *ast.FuncDecl, info *types.Info) []ParamInfo {

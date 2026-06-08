@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -14,6 +15,29 @@ import (
 func testdataPath(name string) string {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(file), "testdata", name)
+}
+
+func firstFuncDecl(t *testing.T, file *ast.File) *ast.FuncDecl {
+	t.Helper()
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			return fn
+		}
+	}
+	t.Fatal("no function declaration found")
+	return nil
+}
+
+func assertStringSlice(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d; got=%v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d] = %q, want %q; got=%v", i, got[i], want[i], got)
+		}
+	}
 }
 
 // --- Basic type extraction ---
@@ -61,6 +85,42 @@ func TestAnalyzeGreetReturnsStringParams(t *testing.T) {
 	if fn.ReturnType.Kind != "str" {
 		t.Errorf("return type = %q, want str", fn.ReturnType.Kind)
 	}
+}
+
+func TestStringLiteralCandidatesByParamSwitchAndComparison(t *testing.T) {
+	src := `package p
+
+type Config struct {
+	Mode string
+}
+
+func choose(cfg Config, state string) int {
+	switch cfg.Mode {
+	case "fixed":
+		return 1
+	case "random":
+		return 2
+	}
+	if state == "ready" {
+		return 3
+	}
+	if "blocked" != state {
+		return 4
+	}
+	return 0
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "literal_candidates.go", src, 0)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	fn := firstFuncDecl(t, file)
+	got := stringLiteralCandidatesByParam(fn, nil, []ParamInfo{
+		{Name: "cfg", Type: TypeInfo{Kind: "object"}},
+		{Name: "state", Type: TypeInfo{Kind: "str"}},
+	})
+	assertStringSlice(t, got["cfg.Mode"], []string{"fixed", "random"})
+	assertStringSlice(t, got["state"], []string{"ready", "blocked"})
 }
 
 func TestAnalyzeMaxReturnsFloatParams(t *testing.T) {

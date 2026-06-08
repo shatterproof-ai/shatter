@@ -252,6 +252,33 @@ func TestPlanParam_HintOverrideTakesPriority(t *testing.T) {
 	}
 }
 
+func TestPlanParam_StringLiteralCandidatesPrecedeFamilyDefaults(t *testing.T) {
+	opts := planner.ParamPlanOptions{
+		StringLiteralsByParam: map[string][]string{
+			"mode": {"fixed", "random"},
+		},
+		MaxPlansPerParam: 5,
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, strParam("mode"), opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) < 3 {
+		t.Fatalf("len(plans) = %d, want at least 3", len(plans))
+	}
+	for i, want := range []string{`"fixed"`, `"random"`} {
+		if plans[i].Kind != protocol.ValuePlanKindLiteral {
+			t.Fatalf("plans[%d].Kind = %q, want literal", i, plans[i].Kind)
+		}
+		if string(plans[i].Literal) != want {
+			t.Errorf("plans[%d].Literal = %s, want %s", i, plans[i].Literal, want)
+		}
+		if plans[i].TypeHint != "string" {
+			t.Errorf("plans[%d].TypeHint = %q, want string", i, plans[i].TypeHint)
+		}
+	}
+}
+
 func TestPlanParam_EmptyParams_NoMatrixEntries(t *testing.T) {
 	matrix, unsat := planner.PlanParams(testTargetID, nil, planner.ParamPlanOptions{})
 	if len(matrix) != 0 {

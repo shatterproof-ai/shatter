@@ -3009,16 +3009,20 @@ pub fn literals_to_candidate_inputs(
 
     for lit in &deduped {
         for (idx, param) in params.iter().enumerate() {
-            let Some(val) = literal_matches_type(lit, &param.typ) else {
-                continue;
-            };
-            let dedup_key = (idx, serde_json::to_string(&val).unwrap_or_default());
-            if !seen.insert(dedup_key) {
-                continue;
+            let mut values = Vec::new();
+            if let Some(val) = literal_matches_type(lit, &param.typ) {
+                values.push(val);
             }
-            let mut row = defaults.clone();
-            row[idx] = val;
-            result.push(row);
+            values.extend(literal_matches_object_string_fields(lit, &param.typ));
+            for val in values {
+                let dedup_key = (idx, serde_json::to_string(&val).unwrap_or_default());
+                if !seen.insert(dedup_key) {
+                    continue;
+                }
+                let mut row = defaults.clone();
+                row[idx] = val;
+                result.push(row);
+            }
         }
     }
 
@@ -3176,6 +3180,34 @@ fn literal_matches_type(lit: &LiteralValue, typ: &TypeInfo) -> Option<Value> {
         // Regex literal → Str param: try the pattern as a string input
         (LiteralValue::Regex { pattern }, TypeInfo::Str) => Some(json!(pattern)),
         _ => None,
+    }
+}
+
+fn literal_matches_object_string_fields(lit: &LiteralValue, typ: &TypeInfo) -> Vec<Value> {
+    let TypeInfo::Object { fields } = typ else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    for (name, field_type) in fields {
+        if !type_accepts_string_literal(field_type) {
+            continue;
+        }
+        let Some(value) = literal_matches_type(lit, field_type) else {
+            continue;
+        };
+        let mut object = serde_json::Map::new();
+        object.insert(name.clone(), value);
+        values.push(Value::Object(object));
+    }
+    values
+}
+
+fn type_accepts_string_literal(typ: &TypeInfo) -> bool {
+    match typ {
+        TypeInfo::Str => true,
+        TypeInfo::Union { variants } => variants.iter().any(type_accepts_string_literal),
+        TypeInfo::Nullable { inner } => type_accepts_string_literal(inner),
+        _ => false,
     }
 }
 
@@ -4216,6 +4248,23 @@ echo '{{"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}}'
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0][0], json!("hello"));
+    }
+
+    #[test]
+    fn literals_to_candidates_str_populates_object_string_fields() {
+        let params = vec![ParamInfo {
+            name: "delay".into(),
+            typ: TypeInfo::Object {
+                fields: vec![("Mode".into(), TypeInfo::Str), ("MS".into(), TypeInfo::Int)],
+            },
+            type_name: Some("StreamDelay".into()),
+        }];
+        let literals = vec![LiteralValue::Str {
+            value: "fixed".into(),
+        }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!({"Mode": "fixed"}));
     }
 
     #[test]

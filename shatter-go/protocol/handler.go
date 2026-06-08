@@ -1731,6 +1731,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 
 	target := BuildDiscoveredTarget(pkg.Fset, fn, pkg.TypesInfo, pkg.PkgPath, pkg.Name, file)
 	ctx.Target = &target
+	ctx.StringLiteralsByParam = stringLiteralCandidatesByParam(fn, pkg.TypesInfo, analysis.Params)
 
 	if target.Receiver != nil && target.Receiver.TypeName != "" {
 		all := ScanConstructors(pkg)
