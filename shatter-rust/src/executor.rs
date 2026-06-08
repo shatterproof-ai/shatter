@@ -844,7 +844,7 @@ pub struct ExecuteResult {
     pub performance: Value,
 }
 
-const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 120;
 
 /// Check if harness should be compiled in release mode.
 /// Reads `SHATTER_HARNESS_RELEASE` env var — `"1"` or `"true"` (case-insensitive) enables release.
