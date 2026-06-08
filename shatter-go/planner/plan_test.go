@@ -792,6 +792,77 @@ func TestPlanRequirements_ConstructorAggregateParamsAreSatisfiable(t *testing.T)
 	}
 }
 
+func TestPlanRequirements_ConstructorZeroValueParamsDoNotConsumeInputs(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Control).List"
+	analysis := &protocol.FunctionAnalysis{Name: "(*Control).List"}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "List",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Control", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "newControl",
+		TargetType: "Control",
+		Parameters: []protocol.ParamInfo{
+			{
+				Name:     "opts",
+				TypeName: strPtr("localOptions"),
+				Type: protocol.TypeInfo{
+					Kind:   "object",
+					Fields: []protocol.ObjectField{{Name: "Addr", Type: protocol.TypeInfo{Kind: "str"}}},
+				},
+			},
+			{
+				Name:     "deps",
+				TypeName: strPtr("startupDeps"),
+				Type: protocol.TypeInfo{
+					Kind: "object",
+					Fields: []protocol.ObjectField{{
+						Name: "logf",
+						Type: protocol.TypeInfo{Kind: "complex", ComplexKind: "func"},
+					}},
+				},
+			},
+			{Name: "runner", Type: protocol.TypeInfo{Kind: "object"}, TypeName: strPtr("*Runner")},
+		},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{
+			Analysis:                     analysis,
+			Target:                       target,
+			Constructors:                 ctors,
+			ReceiverRequiresConstruction: true,
+		}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:newControl" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:newControl found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 0 {
+		t.Fatalf("constructor-only zero-value params should not consume input slots, got %+v", ctorPlan.ConstructorArgPlans)
+	}
+}
+
 // str-9b1q: a constructor with unsatisfiable params (interface, complex types)
 // must NOT produce a constructor plan — fall back to zero value.
 func TestPlanRequirements_UnsatisfiableConstructorParams_FallsBack(t *testing.T) {
