@@ -5070,6 +5070,10 @@ fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
     config.timeout_explore.or(Some(config.timeout_per_fn))
 }
 
+fn remaining_explore_budget(timeout_explore: Option<Duration>, _started: Instant) -> Option<Duration> {
+    timeout_explore
+}
+
 const SHARED_POOL_TASK_CLEANUP_GRACE: Duration = Duration::from_secs(5);
 const BUILD_TIMEOUT_RETRY_FACTOR: u32 = 2;
 
@@ -6180,6 +6184,19 @@ mod tests {
         };
 
         assert_eq!(scan_explore_timeout(&cfg), Some(Duration::from_secs(7)));
+    }
+
+    /// str-cir6: GA follow-up runs after the initial explorer. It must receive
+    /// only the remaining per-function budget, otherwise a function that keeps
+    /// returning quick errors can run GA indefinitely after the scan timeout.
+    #[test]
+    fn remaining_explore_budget_expires_after_deadline() {
+        let started_before_deadline = Instant::now() - Duration::from_secs(2);
+
+        assert_eq!(
+            remaining_explore_budget(Some(Duration::from_secs(1)), started_before_deadline),
+            None
+        );
     }
 
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
