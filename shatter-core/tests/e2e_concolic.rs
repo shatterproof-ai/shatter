@@ -170,8 +170,13 @@ async fn concolic_classifynumber_discovers_all_branches() {
         ..Default::default()
     };
 
-    // Seed with a few diverse values to start exploration.
-    let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-3)]];
+    // Seed the sign and positive-parity classes so this regression does not
+    // depend on random or solver ordering to observe the even branch.
+    let seed_inputs = vec![
+        vec![serde_json::json!(5)],
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(2)],
+    ];
 
     let (result, _) = orchestrator::explore(
         &mut frontend,
