@@ -3285,6 +3285,44 @@ mod tests {
     }
 
     #[test]
+    fn report_keeps_total_budget_interruptions_out_of_failed() {
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result("good", 5, 1, 3, 5, vec![])],
+            test_order: vec!["good".into(), "slow".into(), "unrun".into()],
+            skipped: vec![
+                SkippedFunction {
+                    function_name: "slow".to_string(),
+                    reason: "timed out during execution after 30s".to_string(),
+                    category: crate::scan_orchestrator::SkipCategory::Error,
+                },
+                SkippedFunction {
+                    function_name: "unrun".to_string(),
+                    reason: "timed out (total scan budget exceeded)".to_string(),
+                    category: crate::scan_orchestrator::SkipCategory::Interrupted,
+                },
+            ],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+
+        let file_map = HashMap::new();
+        let report = generate_report(&parallel_result, &file_map, None);
+
+        assert_eq!(report.codebase.completed_functions, 1);
+        assert_eq!(report.codebase.attempted_functions, 2);
+        assert_eq!(report.codebase.failed_functions, 1);
+        assert_eq!(report.codebase.failed.len(), 1);
+        assert_eq!(report.codebase.failed[0].function_name, "slow");
+        assert_eq!(report.codebase.skipped_functions_count, 1);
+        assert_eq!(report.codebase.skipped_functions.len(), 1);
+        assert_eq!(report.codebase.skipped_functions[0].function_name, "unrun");
+        assert_eq!(report.codebase.skipped_functions[0].category, "interrupted");
+        assert_eq!(report.codebase.total_discovered_functions, 3);
+    }
+
+    #[test]
     fn empty_scan_produces_valid_report() {
         let parallel_result = ParallelScanResult {
             function_results: vec![],

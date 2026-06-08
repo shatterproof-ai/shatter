@@ -7420,6 +7420,7 @@ mod tests {
         assert_eq!(result.skipped.len(), 2);
         for s in &result.skipped {
             assert_eq!(s.reason, "timed out (total scan budget exceeded)");
+            assert_eq!(s.category, SkipCategory::Interrupted);
         }
     }
 
@@ -7907,6 +7908,7 @@ mod tests {
         assert_eq!(result.skipped.len(), 2);
         for skipped in &result.skipped {
             assert_eq!(skipped.reason, "timed out (total scan budget exceeded)");
+            assert_eq!(skipped.category, SkipCategory::Interrupted);
         }
     }
 
