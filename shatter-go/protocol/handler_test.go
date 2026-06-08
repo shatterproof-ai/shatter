@@ -258,6 +258,102 @@ func (r *Recorder) Flush() {
 	}
 }
 
+func TestSynthesizeExecuteReceiverKind_UsesZeroValueConstructorParams(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := filepath.Join(t.TempDir(), "control.go")
+	src := `package main
+
+type localOptions struct {
+	Addr string
+}
+
+type startupDeps struct {
+	logf func(string)
+}
+
+type Runner struct{}
+
+type Control struct {
+	deps startupDeps
+	opts localOptions
+	runner *Runner
+	listeners map[string]string
+}
+
+func newControl(opts localOptions, deps startupDeps, runner *Runner) *Control {
+	if deps.logf == nil {
+		deps.logf = func(string) {}
+	}
+	return &Control{
+		deps: deps,
+		opts: opts,
+		runner: runner,
+		listeners: map[string]string{},
+	}
+}
+
+func (c *Control) List() int {
+	return len(c.listeners)
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*Control).List")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v, want nil", unsat)
+	}
+	if got != "constructor:newControl" {
+		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want constructor:newControl", got)
+	}
+}
+
+func TestToWrapperConstructors_ZeroValueConstructorParamsUseRuntimeExpressions(t *testing.T) {
+	t.Parallel()
+
+	ctors := []ConstructorCandidate{{
+		FuncName:   "newControl",
+		TargetType: "Control",
+		Parameters: []ParamInfo{
+			{
+				Name:     "opts",
+				TypeName: strPtr("localOptions"),
+				Type: TypeInfo{
+					Kind:   "object",
+					Fields: []ObjectField{{Name: "Addr", Type: TypeInfo{Kind: "str"}}},
+				},
+			},
+			{
+				Name:     "deps",
+				TypeName: strPtr("startupDeps"),
+				Type: TypeInfo{
+					Kind: "object",
+					Fields: []ObjectField{{
+						Name: "logf",
+						Type: TypeInfo{Kind: "complex", ComplexKind: "func"},
+					}},
+				},
+			},
+			{Name: "runner", Type: TypeInfo{Kind: "object"}, TypeName: strPtr("*Runner")},
+		},
+		ReturnsPointer: true,
+	}}
+
+	wrapperCtors := toWrapperConstructorsWithBindings(ctors, nil, nil)
+	if len(wrapperCtors) != 1 || len(wrapperCtors[0].Parameters) != 3 {
+		t.Fatalf("unexpected wrapper constructors: %+v", wrapperCtors)
+	}
+	want := []string{"*new(localOptions)", "*new(startupDeps)", "*new(*Runner)"}
+	for i, param := range wrapperCtors[0].Parameters {
+		if param.RuntimeValueExpr != want[i] {
+			t.Fatalf("param %d RuntimeValueExpr = %q, want %q", i, param.RuntimeValueExpr, want[i])
+		}
+	}
+}
+
 func writeCtorInterfaceFixture(t *testing.T) string {
 	t.Helper()
 

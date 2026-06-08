@@ -774,21 +774,79 @@ func TestPlanRequirements_ConstructorAggregateParamsAreSatisfiable(t *testing.T)
 	if ctorPlan == nil {
 		t.Fatalf("no plan with ReceiverKind=constructor:newRecorder found; plans=%+v", plans)
 	}
-	if len(ctorPlan.ConstructorArgPlans) != 1 {
-		t.Fatalf("expected only the aggregate constructor arg to consume an input slot, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	if len(ctorPlan.ConstructorArgPlans) != 0 {
+		t.Fatalf("constructor-only aggregate args should use zero-value runtime bindings, got %+v", ctorPlan.ConstructorArgPlans)
 	}
-	capPlan := ctorPlan.ConstructorArgPlans[0]
-	if capPlan.ParamName != "caps" {
-		t.Errorf("constructor arg plan param_name=%q, want caps", capPlan.ParamName)
+}
+
+func TestPlanRequirements_ConstructorZeroValueParamsDoNotConsumeInputs(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Control).List"
+	analysis := &protocol.FunctionAnalysis{Name: "(*Control).List"}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "List",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Control", IsPointer: true},
 	}
-	if capPlan.ParamIndex != 1 {
-		t.Errorf("constructor arg plan param_index=%d, want original constructor index 1", capPlan.ParamIndex)
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "newControl",
+		TargetType: "Control",
+		Parameters: []protocol.ParamInfo{
+			{
+				Name:     "opts",
+				TypeName: strPtr("localOptions"),
+				Type: protocol.TypeInfo{
+					Kind:   "object",
+					Fields: []protocol.ObjectField{{Name: "Addr", Type: protocol.TypeInfo{Kind: "str"}}},
+				},
+			},
+			{
+				Name:     "deps",
+				TypeName: strPtr("startupDeps"),
+				Type: protocol.TypeInfo{
+					Kind: "object",
+					Fields: []protocol.ObjectField{{
+						Name: "logf",
+						Type: protocol.TypeInfo{Kind: "complex", ComplexKind: "func"},
+					}},
+				},
+			},
+			{Name: "runner", Type: protocol.TypeInfo{Kind: "object"}, TypeName: strPtr("*Runner")},
+		},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{
+			Analysis:                     analysis,
+			Target:                       target,
+			Constructors:                 ctors,
+			ReceiverRequiresConstruction: true,
+		}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
 	}
-	if capPlan.Kind != protocol.ValuePlanKindZero {
-		t.Errorf("constructor arg plan kind=%q, want %q", capPlan.Kind, protocol.ValuePlanKindZero)
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:newControl" {
+			ctorPlan = &plans[i]
+			break
+		}
 	}
-	if capPlan.TypeHint != "RecordCaps" {
-		t.Errorf("constructor arg plan type_hint=%q, want RecordCaps", capPlan.TypeHint)
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:newControl found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 0 {
+		t.Fatalf("constructor-only zero-value params should not consume input slots, got %+v", ctorPlan.ConstructorArgPlans)
 	}
 }
 
