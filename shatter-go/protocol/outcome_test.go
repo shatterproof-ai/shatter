@@ -554,6 +554,44 @@ func (c Calc) Classify(n int) string {
 	}
 }
 
+func TestExecuteMethodTargetWithoutPlanInitializesMapReceiver(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "builder.go")
+	src := `package main
+
+type MapOnlyBuilder struct {
+	seen map[string]bool
+}
+
+func (b MapOnlyBuilder) Mark() int {
+	b.seen["x"] = true
+	return len(b.seen)
+}
+`
+	if err := os.WriteFile(tmp, []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+	req := reqJSON(1, "execute", fmt.Sprintf(`"file":"%s","function":"Mark","inputs":[]`, tmp))
+	resp := sendRecv(t, req)
+
+	if resp.Outcome == nil {
+		t.Fatalf("resp.Outcome is nil; response: %+v", resp)
+	}
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		var detail string
+		if resp.Outcome.ShortReason != nil {
+			detail = " short_reason=" + *resp.Outcome.ShortReason
+		}
+		if resp.Outcome.ThrownError != nil {
+			detail += " thrown_error=" + resp.Outcome.ThrownError.Message
+		}
+		t.Fatalf("outcome.Status = %q, want completed (map-only receiver should be initialized;%s)", resp.Outcome.Status, detail)
+	}
+	got := strings.TrimSpace(string(resp.Outcome.ReturnValue))
+	if got != "1" {
+		t.Fatalf("ReturnValue = %q, want 1", got)
+	}
+}
+
 // TestFailureOutcomeClassifiesUnknownReceiverKindAsUnsupported is a
 // defense-in-depth check: even if the wrapper's `unknown receiver kind` error
 // reaches failureOutcome (e.g. a caller deliberately passes an invalid

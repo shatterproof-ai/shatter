@@ -36,6 +36,10 @@ const (
 	// so callers always see at least one executable plan instead of a
 	// `NoConstructor` unsatisfied requirement (str-qo1.9).
 	ReceiverPlanKindFallbackZeroValue ReceiverPlanKind = "fallback_zero_value"
+	// ReceiverPlanKindInitializedMaps constructs a receiver whose hidden
+	// reference state consists only of maps by allocating those maps in the
+	// same-package wrapper before invoking the method.
+	ReceiverPlanKindInitializedMaps ReceiverPlanKind = "initialized_maps"
 	// ReceiverPlanKindHint applies an operator-supplied override.
 	ReceiverPlanKindHint ReceiverPlanKind = "hint"
 )
@@ -44,6 +48,11 @@ const (
 // zero-value construction. Mirrors shatter-go/wrapper.WrapperKindZeroValue;
 // duplicated here to avoid the planner depending on the wrapper package.
 const WrapperReceiverKindZeroValue = "zero_value"
+
+// WrapperReceiverKindInitializedMaps is the wrapper-facing receiver token for
+// same-package map-field initialization. Mirrors
+// shatter-go/wrapper.WrapperKindInitializedMaps.
+const WrapperReceiverKindInitializedMaps = "initialized_maps"
 
 // WrapperReceiverKindConstructorPrefix is prepended to a constructor
 // function name to form the wrapper-facing receiver token. Mirrors
@@ -131,6 +140,10 @@ type PlanOptions struct {
 	// fallback zero-value plan, so the method is classified `unsupported`
 	// rather than silently explored on a nil-state receiver (str-g7h7).
 	ReceiverRequiresConstruction bool
+	// ReceiverSupportsInitializedMaps signals that map-field initialization is
+	// an available real strategy for receivers that would otherwise reject the
+	// zero-value fallback.
+	ReceiverSupportsInitializedMaps bool
 	// MaxPlans caps the returned slice. Zero means DefaultMaxReceiverPlans.
 	MaxPlans int
 	// InterfaceImplsByParam maps constructor parameter names to discovered
@@ -262,6 +275,14 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 				Label:        "zero_value_" + toSnakeCase(t.Receiver.TypeName),
 			})
 		}
+	}
+
+	if opts.ReceiverSupportsInitializedMaps && t.Receiver != nil {
+		add(ReceiverPlan{
+			Kind:         ReceiverPlanKindInitializedMaps,
+			ReceiverKind: WrapperReceiverKindInitializedMaps,
+			Label:        "initialized_maps_" + toSnakeCase(t.Receiver.TypeName),
+		})
 	}
 
 	if opts.Hint != nil {

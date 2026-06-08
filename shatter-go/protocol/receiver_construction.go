@@ -31,45 +31,9 @@ import (
 // instead of a fallback zero-value plan when no real strategy applies
 // (str-g7h7).
 func ReceiverRequiresConstruction(pkg *packages.Package, target *DiscoveredTarget) bool {
-	if pkg == nil || pkg.TypesInfo == nil || target == nil || target.Receiver == nil {
-		return false
-	}
-	if target.Receiver.IsInterface {
-		return false
-	}
-	scope := pkg.Types.Scope()
-	if scope == nil {
-		return false
-	}
-	obj := scope.Lookup(target.Receiver.TypeName)
-	if obj == nil {
-		return false
-	}
-	named, ok := obj.Type().(*types.Named)
+	dangerousFields, ok := receiverDangerousFields(pkg, target)
 	if !ok {
 		return false
-	}
-	st, ok := named.Underlying().(*types.Struct)
-	if !ok {
-		return false
-	}
-	dangerousFields := make(map[string]receiverFieldKind)
-	zeroValueEmptyRangeFields := make(map[string]bool)
-	for i := 0; i < st.NumFields(); i++ {
-		f := st.Field(i)
-		if fieldRangesEmptyAtZeroValue(f.Type()) {
-			zeroValueEmptyRangeFields[f.Name()] = true
-		}
-		if f.Exported() {
-			// Exported fields can be initialized by callers via composite
-			// literals; the receiver planner already emits the
-			// composite-literal strategy for that case. We only flag types
-			// whose required state is hidden behind unexported fields.
-			continue
-		}
-		if kind, ok := fieldRequiresInitialization(f.Type()); ok {
-			dangerousFields[f.Name()] = kind
-		}
 	}
 	if len(dangerousFields) == 0 {
 		return false
@@ -85,7 +49,91 @@ func ReceiverRequiresConstruction(pkg *packages.Package, target *DiscoveredTarge
 	if recvName == "" {
 		return false
 	}
-	return methodUsesDangerousReceiverField(fn.Body, recvName, dangerousFields, zeroValueEmptyRangeFields)
+	return methodUsesDangerousReceiverField(fn.Body, recvName, dangerousFields, receiverZeroValueEmptyRangeFields(pkg, target))
+}
+
+// ReceiverSupportsInitializedMaps reports whether a receiver rejected by
+// ReceiverRequiresConstruction can still be safely synthesized by initializing
+// all map fields in the same-package wrapper. Non-map reference fields stay
+// excluded so channel, function, interface, and pointer state still requires a
+// constructor or explicit hint.
+func ReceiverSupportsInitializedMaps(pkg *packages.Package, target *DiscoveredTarget) bool {
+	dangerousFields, ok := receiverDangerousFields(pkg, target)
+	if !ok || !receiverKindMapOnly(dangerousFields) {
+		return false
+	}
+	return ReceiverRequiresConstruction(pkg, target)
+}
+
+func receiverDangerousFields(pkg *packages.Package, target *DiscoveredTarget) (map[string]receiverFieldKind, bool) {
+	st, ok := receiverStruct(pkg, target)
+	if !ok {
+		return nil, false
+	}
+	dangerousFields := make(map[string]receiverFieldKind)
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		if f.Exported() {
+			continue
+		}
+		if kind, ok := fieldRequiresInitialization(f.Type()); ok {
+			dangerousFields[f.Name()] = kind
+		}
+	}
+	return dangerousFields, true
+}
+
+func receiverZeroValueEmptyRangeFields(pkg *packages.Package, target *DiscoveredTarget) map[string]bool {
+	st, ok := receiverStruct(pkg, target)
+	if !ok {
+		return nil
+	}
+	fields := make(map[string]bool)
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		if fieldRangesEmptyAtZeroValue(f.Type()) {
+			fields[f.Name()] = true
+		}
+	}
+	return fields
+}
+
+func receiverStruct(pkg *packages.Package, target *DiscoveredTarget) (*types.Struct, bool) {
+	if pkg == nil || pkg.TypesInfo == nil || target == nil || target.Receiver == nil {
+		return nil, false
+	}
+	if target.Receiver.IsInterface {
+		return nil, false
+	}
+	scope := pkg.Types.Scope()
+	if scope == nil {
+		return nil, false
+	}
+	obj := scope.Lookup(target.Receiver.TypeName)
+	if obj == nil {
+		return nil, false
+	}
+	named, ok := obj.Type().(*types.Named)
+	if !ok {
+		return nil, false
+	}
+	st, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return nil, false
+	}
+	return st, true
+}
+
+func receiverKindMapOnly(fields map[string]receiverFieldKind) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	for _, kind := range fields {
+		if kind != receiverFieldMap {
+			return false
+		}
+	}
+	return true
 }
 
 type receiverFieldKind string

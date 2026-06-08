@@ -1745,6 +1745,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 		ctx.ConstructorInterfaceImplsByParam = discoverConstructorInterfaceImplCandidates(pkg, matched)
 		ctx.ConstructorRuntimeValuesByParam = discoverConstructorRuntimeValues(pkg, matched)
 		ctx.ReceiverRequiresConstruction = ReceiverRequiresConstruction(pkg, &target)
+		ctx.ReceiverSupportsInitializedMaps = ReceiverSupportsInitializedMaps(pkg, &target)
 	}
 
 	// str-4v9h: discover interface implementation candidates for parameters
@@ -1823,6 +1824,9 @@ func (h *Handler) synthesizeExecuteReceiverKind(file string, function string) (s
 			continue
 		}
 		return wrapper.WrapperKindConstructorPrefix + c.FuncName, nil
+	}
+	if ReceiverSupportsInitializedMaps(pkg, &target) {
+		return wrapper.WrapperKindInitializedMaps, nil
 	}
 	// When the receiver type carries unexported reference-typed fields a
 	// constructor is expected to initialize and no parameterless constructor

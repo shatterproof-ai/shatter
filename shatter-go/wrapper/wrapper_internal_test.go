@@ -162,6 +162,83 @@ func Handle(w http.ResponseWriter, r *http.Request) {}
 	}
 }
 
+func TestGenerateWrapper_InitializedMapsReceiverKind(t *testing.T) {
+	target := WrapperTarget{
+		ID:            "example.com/fixture:(*MapOnlyBuilder).Mark",
+		SymbolName:    "Mark",
+		Kind:          TargetKindMethod,
+		ReceiverType:  "MapOnlyBuilder",
+		IsPointerRecv: true,
+		ReceiverMapFields: []ReceiverMapField{{
+			Name:   "seen",
+			GoType: "map[string]bool",
+		}},
+		HasResult:     true,
+		ResultGoType:  "int",
+		ResultGoTypes: []string{"int"},
+		ResultCount:   1,
+	}
+	out := GenerateWrapper("fixture", []WrapperTarget{target}, nil)
+
+	if !strings.Contains(out, `case "initialized_maps":`) {
+		t.Fatalf("generated wrapper missing initialized_maps case; source:\n%s", out)
+	}
+	if !strings.Contains(out, "seen: map[string]bool{},") {
+		t.Fatalf("generated wrapper missing initialized map field; source:\n%s", out)
+	}
+	if !strings.Contains(out, "_recv := &_recvVal") {
+		t.Fatalf("generated wrapper missing pointer receiver binding; source:\n%s", out)
+	}
+}
+
+func TestBuildWrapperTargets_InitializedMapsSkipsNonMapHiddenState(t *testing.T) {
+	const src = `package fixture
+
+type MixedReceiver struct {
+	seen map[string]bool
+	done chan struct{}
+}
+
+func (m *MixedReceiver) Mark() int {
+	m.seen["x"] = true
+	return len(m.seen)
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mixed.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs: map[*ast.Ident]types.Object{},
+		Uses: map[*ast.Ident]types.Object{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("fixture", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "fixture",
+		PkgPath:   "example.com/fixture",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d", len(targets))
+	}
+	if len(targets[0].ReceiverMapFields) != 0 {
+		t.Fatalf("ReceiverMapFields = %+v, want nil for receiver with hidden channel state", targets[0].ReceiverMapFields)
+	}
+	out := GenerateWrapper("fixture", targets, nil)
+	if strings.Contains(out, `case "initialized_maps":`) {
+		t.Fatalf("generated wrapper should not expose initialized_maps for hidden channel state; source:\n%s", out)
+	}
+}
+
 // str-gxjs.1: when a parameter's Go-source type matches a runtime-value
 // registry entry (context.Context, http.ResponseWriter, …), the generated
 // wrapper must (a) substitute the registered expression at the param-init

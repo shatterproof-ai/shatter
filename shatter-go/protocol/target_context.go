@@ -37,6 +37,12 @@ type TargetContext struct {
 	// real strategy applies (str-g7h7).
 	ReceiverRequiresConstruction bool
 
+	// ReceiverSupportsInitializedMaps is set when the receiver's unsafe
+	// zero-value state consists only of map fields that the same-package
+	// wrapper can initialize directly. The planner uses this as a real
+	// strategy before falling back to requires_construction.
+	ReceiverSupportsInitializedMaps bool
+
 	// InterfaceImplsByParam maps parameter names to discovered interface
 	// implementation candidates. Populated when a parameter is typed as an
 	// imported interface whose defining package exports parameterless

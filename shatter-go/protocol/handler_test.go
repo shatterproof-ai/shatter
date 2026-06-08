@@ -243,6 +243,39 @@ func (c *Cache) Len() int {
 	}
 }
 
+func TestSynthesizeExecuteReceiverKind_UsesInitializedMapReceiver(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := filepath.Join(t.TempDir(), "builder.go")
+	src := `package fixture
+
+type MapOnlyBuilder struct {
+	all map[string]string
+	seen map[string]bool
+}
+
+func (b MapOnlyBuilder) Mark(name string) string {
+	if _, ok := b.all[name]; !ok {
+		return "missing"
+	}
+	b.seen[name] = true
+	return "found"
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(MapOnlyBuilder).Mark")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v, want nil", unsat)
+	}
+	if got != "initialized_maps" {
+		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want initialized_maps", got)
+	}
+}
+
 func TestSynthesizeExecuteReceiverKind_AllowsAggregateConstructorParam(t *testing.T) {
 	t.Parallel()
 
