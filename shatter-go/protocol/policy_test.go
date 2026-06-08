@@ -33,6 +33,32 @@ func TestClassifyFunction_DatabaseParamIsClassified(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_SafeHTTPRuntimeValueParamsAreNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "UsesInMemoryHTTPValues",
+		Params: []ParamInfo{
+			{Name: "w", Type: TypeInfo{Kind: "unknown", Label: "http.ResponseWriter"}, TypeName: ptr("http.ResponseWriter")},
+			{Name: "r", Type: TypeInfo{Kind: "unknown", Label: "http.Request"}, TypeName: ptr("*http.Request")},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("safe httptest-backed runtime values should not be policy-denied, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_HTTPClientParamStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "UsesHTTPClient",
+		Params: []ParamInfo{
+			{Name: "client", Type: TypeInfo{Kind: "opaque", Label: "http.Client"}, TypeName: ptr("*http.Client")},
+		},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("expected http.Client to remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_SubprocessDependencyIsClassified(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "Runs",
@@ -302,6 +328,15 @@ func TestExecute_DefaultPolicy_SkipsDatabaseTarget(t *testing.T) {
 	// str-adfp: Performance must be present so the core can deserialize the response.
 	if resp.Performance == nil {
 		t.Fatalf("performance field must be present on skipped_by_policy responses")
+	}
+}
+
+func TestExecute_DefaultPolicy_AllowsResponseWriterRuntimeValueTarget(t *testing.T) {
+	resp := runExecuteWithLoader(t, "testdata/opaque.go", "AcceptsResponseWriter", func(string) (config.File, error) {
+		return config.File{}, nil
+	})
+	if resp.Outcome != nil && resp.Outcome.Status == OutcomeStatusSkippedByPolicy {
+		t.Fatalf("http.ResponseWriter should reach runtime-value planning/execution, got skipped_by_policy: %v", resp.Outcome.ShortReason)
 	}
 }
 
