@@ -6128,6 +6128,23 @@ mod tests {
         );
     }
 
+    /// str-cir6: the join watchdog is the final backstop when async phase
+    /// cancellation cannot preempt a busy frontend loop. It must not reserve a
+    /// speculative build-retry budget for every function, or a serial Zolem
+    /// scan with `--build-timeout 120 --timeout-per-fn 5` can sit on one
+    /// function for more than six minutes before writing an artifact.
+    #[test]
+    fn shared_pool_task_watchdog_omits_unclaimed_build_retry_budget() {
+        let build_timeout = Duration::from_secs(120);
+        let timeout_per_fn = Duration::from_secs(5);
+        let watchdog = shared_pool_task_watchdog(build_timeout, timeout_per_fn);
+
+        assert!(
+            watchdog <= build_timeout + timeout_per_fn + SHARED_POOL_TASK_CLEANUP_GRACE,
+            "watchdog {watchdog:?} should not include unclaimed build retry budget"
+        );
+    }
+
     /// str-kuc0 regression: the cold-build retry is a scan-level cache-warm
     /// opportunity, not a per-function doubled timeout. Otherwise a cluster
     /// of build timeouts can consume the whole-corpus Kapow scan budget one
