@@ -353,19 +353,35 @@ pub(crate) fn print_markdown(md: &str, use_color: bool) {
 
 /// Check for a custom-built frontend binary at `.shatter-cache/bin/shatter-{lang}-custom`.
 ///
-/// Also checks legacy `.shatter/bin/` for backward compatibility.
+/// Also checks project-local `.shatter-cache/bin/` and legacy `.shatter/bin/`
+/// when a project `.shatter` directory is provided.
 pub(crate) fn find_custom_binary(shatter_dir: Option<&Path>, lang: &str) -> Option<PathBuf> {
     let binary_name = format!("shatter-{lang}-custom");
-    // Check new location: .shatter-cache/bin/
     let cache_bin = PathBuf::from(".shatter-cache")
         .join("bin")
         .join(&binary_name);
     if cache_bin.is_file() {
         return Some(cache_bin);
     }
-    // Fall back to legacy .shatter/bin/
-    let bin = shatter_dir?.join("bin").join(&binary_name);
-    bin.is_file().then_some(bin)
+
+    if let Some(shatter_dir) = shatter_dir {
+        if let Some(project_root) = shatter_dir.parent() {
+            let project_cache_bin = project_root
+                .join(".shatter-cache")
+                .join("bin")
+                .join(&binary_name);
+            if project_cache_bin.is_file() {
+                return Some(project_cache_bin);
+            }
+        }
+
+        let legacy_bin = shatter_dir.join("bin").join(&binary_name);
+        if legacy_bin.is_file() {
+            return Some(legacy_bin);
+        }
+    }
+
+    None
 }
 
 /// Search PATH for a binary by name, returning the first match.
@@ -1035,6 +1051,7 @@ mod cli_parity_tests {
     /// Canonical CLI default for `--log-level`.
     const CLI_LOG_LEVEL_DEFAULT: &str = "info";
     static HARNESS_CACHE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Every governed env var must appear in the env_vars vector produced by
     /// `apply_frontend_env`. This is the minimal contract: if a var is missing,
@@ -1189,6 +1206,89 @@ mod cli_parity_tests {
         }
     }
 
+    #[test]
+    fn find_custom_binary_prefers_cwd_cache() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let original_cwd = std::env::current_dir().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_dir = temp_dir.path().join(".shatter-cache").join("bin");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let expected = PathBuf::from(".shatter-cache/bin/shatter-rust-custom");
+        std::fs::write(cache_dir.join("shatter-rust-custom"), b"").unwrap();
+
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+        let actual = find_custom_binary(None, "rust");
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert_eq!(actual, Some(expected));
+    }
+
+    #[test]
+    fn find_custom_binary_uses_project_cache_from_non_project_cwd() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let original_cwd = std::env::current_dir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let shatter_dir = project_dir.path().join(".shatter");
+        let cache_dir = project_dir.path().join(".shatter-cache").join("bin");
+        std::fs::create_dir_all(&shatter_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let expected = cache_dir.join("shatter-rust-custom");
+        std::fs::write(&expected, b"").unwrap();
+
+        std::env::set_current_dir(other_dir.path()).unwrap();
+        let actual = find_custom_binary(Some(&shatter_dir), "rust");
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert_eq!(actual, Some(expected));
+    }
+
+    #[test]
+    fn find_custom_binary_uses_legacy_shatter_bin() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let shatter_bin_dir = project_dir.path().join(".shatter").join("bin");
+        std::fs::create_dir_all(&shatter_bin_dir).unwrap();
+        let expected = shatter_bin_dir.join("shatter-rust-custom");
+        std::fs::write(&expected, b"").unwrap();
+
+        let shatter_dir = project_dir.path().join(".shatter");
+        assert_eq!(
+            find_custom_binary(Some(&shatter_dir), "rust"),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn frontend_config_rust_uses_project_custom_binary_from_non_project_cwd() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let original_cwd = std::env::current_dir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let shatter_dir = project_dir.path().join(".shatter");
+        let cache_dir = project_dir.path().join(".shatter-cache").join("bin");
+        std::fs::create_dir_all(&shatter_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let expected = cache_dir.join("shatter-rust-custom");
+        std::fs::write(&expected, b"").unwrap();
+
+        std::env::set_current_dir(other_dir.path()).unwrap();
+        let config = frontend_config(
+            Language::Rust,
+            shatter_core::frontend::DEFAULT_REQUEST_TIMEOUT,
+            LogLevel::Info,
+            10,
+            30,
+            None,
+            Some(&shatter_dir),
+            false,
+            false,
+        )
+        .unwrap();
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert_eq!(config.command, expected);
+    }
+
     /// `apply_storage_env` must set all three storage env vars.
     #[test]
     fn apply_storage_env_sets_all_storage_vars() {
@@ -1298,6 +1398,7 @@ mod cli_parity_tests {
     /// no spawn attempt and no generic failure.
     #[test]
     fn frontend_availability_rust_unavailable_returns_install_hint() {
+        let _guard = CWD_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev_path = std::env::var_os("PATH");
         let prev_cwd = std::env::current_dir().expect("cwd");

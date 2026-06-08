@@ -198,6 +198,10 @@ pub(crate) async fn run_scan(
         .map_err(|e| format!("failed to resolve path '{}': {e}", directory))?;
 
     let project_root_str = resolve_project_root(project_dir, &root);
+    let project_shatter_dir = project_root_str
+        .as_deref()
+        .map(|project_root| PathBuf::from(project_root).join(".shatter"));
+    let project_shatter_dir_ref = project_shatter_dir.as_deref();
 
     if let Some(ref pr) = project_root_str {
         log::debug!("Project root: {pr}");
@@ -373,7 +377,8 @@ pub(crate) async fn run_scan(
         for lang in langs_in_scan.iter().copied().collect::<Vec<_>>() {
             let cli_lang = discovery_lang_to_cli_lang(lang)
                 .expect("discovery_lang_to_cli_lang already filtered above");
-            let availability = crate::helpers::check_frontend_availability(cli_lang, None);
+            let availability =
+                crate::helpers::check_frontend_availability(cli_lang, project_shatter_dir_ref);
             if let Some(msg) = availability.unavailable_message() {
                 unavailable.insert(lang, msg);
                 langs_in_scan.remove(&lang);
@@ -486,7 +491,7 @@ pub(crate) async fn run_scan(
             exec_timeout,
             build_timeout,
             memory_limit,
-            None,
+            project_shatter_dir_ref,
             false,
             release,
         )?;
@@ -912,7 +917,7 @@ pub(crate) async fn run_scan(
             exec_timeout,
             build_timeout,
             memory_limit,
-            None,
+            project_shatter_dir_ref,
             false,
             release,
         )?;
