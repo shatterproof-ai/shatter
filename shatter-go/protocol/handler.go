@@ -1866,6 +1866,9 @@ func constructorParamDirectExecuteSatisfiable(p ParamInfo) bool {
 			return true
 		}
 	}
+	if constructorParamDirectExecuteAggregateSatisfiable(p, 0) {
+		return true
+	}
 	switch p.Type.Kind {
 	case "str", "int", "float", "bool":
 		return true
@@ -1874,6 +1877,73 @@ func constructorParamDirectExecuteSatisfiable(p ParamInfo) bool {
 	default:
 		return false
 	}
+}
+
+func constructorParamDirectExecuteAggregateSatisfiable(p ParamInfo, depth int) bool {
+	const maxConstructorAggregateDepth = 4
+	if depth > maxConstructorAggregateDepth {
+		return false
+	}
+	if p.TypeName == nil || strings.TrimSpace(*p.TypeName) == "" {
+		return false
+	}
+	switch p.Type.Kind {
+	case "array":
+		if *p.TypeName == "[]byte" || *p.TypeName == "[]uint8" {
+			return false
+		}
+		if p.Type.Element == nil {
+			return false
+		}
+		return constructorTypeInfoDirectExecuteSatisfiable(*p.Type.Element, depth+1)
+	case "object":
+		if constructorObjectTypeIsMap(p.Type, *p.TypeName) {
+			if len(p.Type.Fields) != 2 {
+				return false
+			}
+			return constructorTypeInfoDirectExecuteSatisfiable(p.Type.Fields[0].Type, depth+1) &&
+				constructorTypeInfoDirectExecuteSatisfiable(p.Type.Fields[1].Type, depth+1)
+		}
+		for _, field := range p.Type.Fields {
+			if !constructorTypeInfoDirectExecuteSatisfiable(field.Type, depth+1) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func constructorTypeInfoDirectExecuteSatisfiable(t TypeInfo, depth int) bool {
+	switch t.Kind {
+	case "str", "int", "float", "bool":
+		return true
+	case "complex":
+		return t.ComplexKind == "go_uint" || t.ComplexKind == "go_byte"
+	case "array":
+		if t.Element == nil {
+			return false
+		}
+		p := ParamInfo{Type: t}
+		typeName := "[]any"
+		p.TypeName = &typeName
+		return constructorParamDirectExecuteAggregateSatisfiable(p, depth)
+	case "object":
+		p := ParamInfo{Type: t}
+		typeName := "struct{}"
+		p.TypeName = &typeName
+		return constructorParamDirectExecuteAggregateSatisfiable(p, depth)
+	default:
+		return false
+	}
+}
+
+func constructorObjectTypeIsMap(t TypeInfo, typeName string) bool {
+	if strings.HasPrefix(strings.TrimSpace(typeName), "map[") {
+		return true
+	}
+	return len(t.Fields) == 2 && t.Fields[0].Name == "_key" && t.Fields[1].Name == "_value"
 }
 
 // receiverUnsupportedReason renders an UnsatisfiedRequirement as a

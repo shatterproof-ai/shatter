@@ -565,6 +565,78 @@ func TestPlanRequirements_ConstructorRuntimeValueParamsDoNotConsumeInputPrefix(t
 	}
 }
 
+func TestPlanRequirements_ConstructorAggregateParamsAreSatisfiable(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Recorder).Flush"
+	analysis := &protocol.FunctionAnalysis{Name: "(*Recorder).Flush"}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "Flush",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Recorder", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "newRecorder",
+		TargetType: "Recorder",
+		Parameters: []protocol.ParamInfo{
+			{Name: "w", Type: protocol.TypeInfo{Kind: "opaque"}, TypeName: strPtr("http.ResponseWriter")},
+			{
+				Name:     "caps",
+				TypeName: strPtr("RecordCaps"),
+				Type: protocol.TypeInfo{
+					Kind: "object",
+					Fields: []protocol.ObjectField{
+						{Name: "RequestBodyCapBytes", Type: protocol.TypeInfo{Kind: "int"}},
+						{Name: "ResponseBodyCapBytes", Type: protocol.TypeInfo{Kind: "int"}},
+						{Name: "StreamEventCap", Type: protocol.TypeInfo{Kind: "int"}},
+					},
+				},
+			},
+		},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{Analysis: analysis, Target: target, Constructors: ctors}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:newRecorder" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:newRecorder found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 1 {
+		t.Fatalf("expected only the aggregate constructor arg to consume an input slot, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	}
+	capPlan := ctorPlan.ConstructorArgPlans[0]
+	if capPlan.ParamName != "caps" {
+		t.Errorf("constructor arg plan param_name=%q, want caps", capPlan.ParamName)
+	}
+	if capPlan.ParamIndex != 1 {
+		t.Errorf("constructor arg plan param_index=%d, want original constructor index 1", capPlan.ParamIndex)
+	}
+	if capPlan.Kind != protocol.ValuePlanKindZero {
+		t.Errorf("constructor arg plan kind=%q, want %q", capPlan.Kind, protocol.ValuePlanKindZero)
+	}
+	if capPlan.TypeHint != "RecordCaps" {
+		t.Errorf("constructor arg plan type_hint=%q, want RecordCaps", capPlan.TypeHint)
+	}
+}
+
 // str-9b1q: a constructor with unsatisfiable params (interface, complex types)
 // must NOT produce a constructor plan — fall back to zero value.
 func TestPlanRequirements_UnsatisfiableConstructorParams_FallsBack(t *testing.T) {

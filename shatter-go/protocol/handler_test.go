@@ -187,6 +187,49 @@ func (s *Server) Lookup(key string) string {
 	}
 }
 
+func TestSynthesizeExecuteReceiverKind_AllowsAggregateConstructorParam(t *testing.T) {
+	t.Parallel()
+
+	tmpFile := filepath.Join(t.TempDir(), "recorder.go")
+	src := `package fixture
+
+import "net/http"
+
+type RecordCaps struct {
+	RequestBodyCapBytes int
+	ResponseBodyCapBytes int
+	StreamEventCap int
+}
+
+type Recorder struct {
+	w http.ResponseWriter
+	caps RecordCaps
+}
+
+func newRecorder(w http.ResponseWriter, caps RecordCaps) *Recorder {
+	return &Recorder{w: w, caps: caps}
+}
+
+func (r *Recorder) Flush() {
+	if flusher, ok := r.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handler := NewHandler(strings.NewReader(""), io.Discard, io.Discard)
+	got, unsat := handler.synthesizeExecuteReceiverKind(tmpFile, "(*Recorder).Flush")
+	if unsat != nil {
+		t.Fatalf("synthesizeExecuteReceiverKind unsat = %+v, want nil", unsat)
+	}
+	if got != "constructor:newRecorder" {
+		t.Fatalf("synthesizeExecuteReceiverKind kind = %q, want constructor:newRecorder", got)
+	}
+}
+
 type fakePreparedExecution struct {
 	ArtifactDir  string
 	BinaryPath   string

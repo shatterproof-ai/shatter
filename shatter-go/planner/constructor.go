@@ -21,9 +21,10 @@ const (
 	// they are trivially satisfiable and introduce no planner load.
 	ConstructorScoreZeroParam = 1
 	// ConstructorScoreSatisfiableParam is added for each parameter the
-	// planner can satisfy from the primitive families or the runtime-value
-	// registry. Parameters that are neither primitive nor registered cost
-	// nothing (they are not penalised, but they do not contribute).
+	// planner can satisfy from the primitive families, aggregate synthesis,
+	// or the runtime-value registry. Parameters that have no supported
+	// synthesis path cost nothing (they are not penalised, but they do not
+	// contribute).
 	ConstructorScoreSatisfiableParam = 1
 	// ConstructorScoreIdiomaticPrefix rewards the standard Go constructor
 	// prefixes `New` and `Default` (as in `NewService` / `DefaultConfig`).
@@ -110,11 +111,14 @@ func RankConstructors(cands []protocol.ConstructorCandidate, opts ScoreConstruct
 }
 
 // isParamSatisfiable reports whether the parameter planner can produce at
-// least one ValuePlan for p — either from a primitive family or from the
-// runtime-value registry. Parameters with neither path available are
+// least one ValuePlan for p — from a primitive family, aggregate synthesis,
+// or the runtime-value registry. Parameters with no available path are
 // treated as unsatisfiable for scoring purposes.
 func isParamSatisfiable(p protocol.ParamInfo) bool {
 	if _, ok := classifyParamFamily(p); ok {
+		return true
+	}
+	if plans, unsat := planAggregateWithOptions("", 0, p, 1, aggregateOptions{}); len(plans) > 0 && unsat == nil {
 		return true
 	}
 	if plans := runtimeValuePlans(0, p, 1); len(plans) > 0 {
