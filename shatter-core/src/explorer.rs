@@ -1421,7 +1421,7 @@ pub async fn explore_function(
     let mut shrunk_witnesses: std::collections::HashMap<u64, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
     let mut shrink_stats = crate::shrink::ShrinkStats::default();
-    if config.shrink_budget > 0 {
+    if should_run_shrink_pass(config, explore_start, timed_out_due_to_budget) {
         // Collect the lowest-complexity witness per unique path.
         // Starting from the simplest witness reduces shrink iterations needed.
         let mut path_witnesses: std::collections::HashMap<
@@ -1483,6 +1483,10 @@ pub async fn explore_function(
 
             // Phase 1: bulk shrink — try all parameters at once (1 execute call).
             let mut bulk_accepted = false;
+            if explore_deadline_crossed(config, explore_start) {
+                timed_out_due_to_budget = true;
+                break;
+            }
             if attempts < witness_budget
                 && let Some(bulk_trial) =
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
@@ -1519,6 +1523,10 @@ pub async fn explore_function(
                 for trial in
                     crate::shrink::grouped_shrink_candidates(&current, &analysis.params, group_size)
                 {
+                    if explore_deadline_crossed(config, explore_start) {
+                        timed_out_due_to_budget = true;
+                        break;
+                    }
                     if attempts >= witness_budget {
                         break;
                     }
@@ -1550,9 +1558,17 @@ pub async fn explore_function(
             while progress && attempts < witness_budget {
                 progress = false;
                 for i in 0..analysis.params.len().min(current.len()) {
+                    if explore_deadline_crossed(config, explore_start) {
+                        timed_out_due_to_budget = true;
+                        break;
+                    }
                     let candidates =
                         crate::shrink::shrink_candidates(&current[i], &analysis.params[i].typ);
                     for candidate in candidates {
+                        if explore_deadline_crossed(config, explore_start) {
+                            timed_out_due_to_budget = true;
+                            break;
+                        }
                         if attempts >= witness_budget {
                             break;
                         }
@@ -1586,6 +1602,9 @@ pub async fn explore_function(
                     if attempts >= witness_budget {
                         break;
                     }
+                }
+                if timed_out_due_to_budget {
+                    break;
                 }
             }
 
@@ -1634,6 +1653,22 @@ pub async fn explore_function(
         reconcile_instrumentable,
     );
     Ok(output)
+}
+
+fn explore_deadline_crossed(config: &ExploreConfig, explore_start: Instant) -> bool {
+    config
+        .timeout_explore
+        .is_some_and(|timeout| explore_start.elapsed() >= timeout)
+}
+
+fn should_run_shrink_pass(
+    config: &ExploreConfig,
+    explore_start: Instant,
+    timed_out_due_to_budget: bool,
+) -> bool {
+    config.shrink_budget > 0
+        && !timed_out_due_to_budget
+        && !explore_deadline_crossed(config, explore_start)
 }
 
 struct ObserverJob {
@@ -4690,6 +4725,58 @@ mod tests {
             result.iterations,
         );
         frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// str-cir6: once the per-function deadline has crossed, the follow-up
+    /// shrink pass must not keep issuing Execute requests. Zolem's
+    /// lookupRequestSchema reproduced this as a stream of quick target errors
+    /// after the intended scan budget had already been consumed.
+    #[test]
+    fn shrink_pass_is_suppressed_after_explore_deadline() {
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(1),
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: Some(Duration::from_secs(1)),
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 16,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+        let started_before_deadline = Instant::now() - Duration::from_secs(2);
+
+        assert!(
+            !should_run_shrink_pass(&config, started_before_deadline, false),
+            "shrink pass must stop after timeout_explore has elapsed"
+        );
+        assert!(
+            !should_run_shrink_pass(&config, Instant::now(), true),
+            "shrink pass must stop when the explore loop recorded a timeout"
+        );
+        assert!(
+            should_run_shrink_pass(&config, Instant::now(), false),
+            "shrink pass may run while budget remains"
+        );
     }
 
     #[tokio::test]

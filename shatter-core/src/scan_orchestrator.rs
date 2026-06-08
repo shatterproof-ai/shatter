@@ -1694,9 +1694,9 @@ pub async fn scan(
             // the correct profile in execute requests.
             execution_profile: execution_profile_from_analysis(analysis),
             loop_buckets: explorer::LoopBuckets::default(),
-            timeout_explore: config.timeout_explore,
+            timeout_explore: scan_explore_timeout(config),
             meta_config: crate::strategy::MetaConfig::default(),
-            shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
+            shrink_budget: scan_shrink_budget(config),
             isolation: config.isolation,
             capture_side_effects: config.capture_side_effects,
             budget_surplus: None,
@@ -1706,6 +1706,7 @@ pub async fn scan(
             prepare_id_override: None,
         };
 
+        let explore_started = Instant::now();
         let exploration =
             explore_with_scan_mode(frontend, analysis, config.concolic, &explore_config).await?;
 
@@ -1739,29 +1740,37 @@ pub async fn scan(
                 {
                     seed_inputs.extend(cached_map.extract_seed_inputs());
                 }
-                match crate::genetic_explorer::genetic_explore(
-                    frontend,
-                    func_name,
-                    seed_inputs,
-                    targets,
-                    &analysis.params,
+                if let Some(genetic_config) = genetic_config_for_scan_budget(
                     &config.genetic_config,
-                )
-                .await
-                {
-                    Ok(ga_result) => {
-                        if !ga_result.discoveries.is_empty() {
-                            log::info!(
-                                "[scan] GA found {} new behavior(s) for {}",
-                                ga_result.discoveries.len(),
-                                func_name,
-                            );
+                    explore_config.timeout_explore,
+                    explore_started,
+                ) {
+                    match crate::genetic_explorer::genetic_explore(
+                        frontend,
+                        func_name,
+                        seed_inputs,
+                        targets,
+                        &analysis.params,
+                        &genetic_config,
+                    )
+                    .await
+                    {
+                        Ok(ga_result) => {
+                            if !ga_result.discoveries.is_empty() {
+                                log::info!(
+                                    "[scan] GA found {} new behavior(s) for {}",
+                                    ga_result.discoveries.len(),
+                                    func_name,
+                                );
+                            }
+                            ga_discoveries = ga_result.discoveries;
                         }
-                        ga_discoveries = ga_result.discoveries;
+                        Err(e) => {
+                            log::warn!("[scan] GA error for {}: {e}", func_name);
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("[scan] GA error for {}: {e}", func_name);
-                    }
+                } else {
+                    log::info!("[scan] Skipping GA for {func_name}: exploration budget exhausted");
                 }
             }
         }
@@ -4164,9 +4173,9 @@ pub async fn parallel_scan_with_progress(
                 // (parallel path — mirrors serial path).
                 execution_profile: execution_profile_from_analysis(analysis),
                 loop_buckets: explorer::LoopBuckets::default(),
-                timeout_explore: config.timeout_explore,
+                timeout_explore: scan_explore_timeout(config),
                 meta_config: crate::strategy::MetaConfig::default(),
-                shrink_budget: crate::orchestrator::DEFAULT_SHRINK_BUDGET,
+                shrink_budget: scan_shrink_budget(config),
                 isolation: config.isolation,
                 capture_side_effects: config.capture_side_effects,
                 budget_surplus: Some(Arc::clone(&layer_surplus)),
@@ -5066,6 +5075,52 @@ fn phase_timeout_reason(phase: &str, d: Duration) -> String {
     format!("timed out during {phase} after {:.0}s", d.as_secs_f64())
 }
 
+fn scan_explore_timeout(config: &ScanConfig) -> Option<Duration> {
+    config.timeout_explore.or(Some(config.timeout_per_fn))
+}
+
+fn scan_shrink_budget(config: &ScanConfig) -> usize {
+    if scan_explore_timeout(config).is_some() {
+        0
+    } else {
+        crate::orchestrator::DEFAULT_SHRINK_BUDGET
+    }
+}
+
+fn remaining_explore_budget(
+    timeout_explore: Option<Duration>,
+    started: Instant,
+) -> Option<Duration> {
+    let timeout = timeout_explore?;
+    let elapsed = started.elapsed();
+    if elapsed >= timeout {
+        None
+    } else {
+        Some(timeout - elapsed)
+    }
+}
+
+fn genetic_config_with_remaining_budget(
+    config: &crate::config::GeneticConfig,
+    remaining: Duration,
+) -> crate::config::GeneticConfig {
+    let mut bounded = config.clone();
+    bounded.timeout_secs = bounded.timeout_secs.min(remaining.as_secs() as u32);
+    bounded
+}
+
+fn genetic_config_for_scan_budget(
+    config: &crate::config::GeneticConfig,
+    timeout_explore: Option<Duration>,
+    started: Instant,
+) -> Option<crate::config::GeneticConfig> {
+    match timeout_explore {
+        Some(_) => remaining_explore_budget(timeout_explore, started)
+            .map(|remaining| genetic_config_with_remaining_budget(config, remaining)),
+        None => Some(config.clone()),
+    }
+}
+
 const SHARED_POOL_TASK_CLEANUP_GRACE: Duration = Duration::from_secs(5);
 const BUILD_TIMEOUT_RETRY_FACTOR: u32 = 2;
 
@@ -5081,7 +5136,6 @@ fn claim_build_timeout_retry(retry_claimed: &AtomicBool) -> bool {
 
 fn shared_pool_task_watchdog(build_timeout: Duration, timeout_per_fn: Duration) -> Duration {
     build_timeout
-        .saturating_add(build_timeout_retry_budget(build_timeout))
         .saturating_add(timeout_per_fn)
         .saturating_add(SHARED_POOL_TASK_CLEANUP_GRACE)
 }
@@ -5267,6 +5321,7 @@ async fn explore_single_function(
         effective_config.default_execute_plan = Some(plan);
     }
     let explore_config = &effective_config;
+    let explore_started = Instant::now();
     let exploration = explore_with_scan_mode(frontend, analysis, concolic, explore_config).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
@@ -5290,29 +5345,37 @@ async fn explore_single_function(
             {
                 seed_inputs.extend(cached_map.extract_seed_inputs());
             }
-            match crate::genetic_explorer::genetic_explore(
-                frontend,
-                func_name,
-                seed_inputs,
-                targets,
-                &analysis.params,
+            if let Some(genetic_config) = genetic_config_for_scan_budget(
                 genetic_config,
-            )
-            .await
-            {
-                Ok(ga_result) => {
-                    if !ga_result.discoveries.is_empty() {
-                        log::info!(
-                            "[scan] GA found {} new behavior(s) for {}",
-                            ga_result.discoveries.len(),
-                            func_name,
-                        );
+                explore_config.timeout_explore,
+                explore_started,
+            ) {
+                match crate::genetic_explorer::genetic_explore(
+                    frontend,
+                    func_name,
+                    seed_inputs,
+                    targets,
+                    &analysis.params,
+                    &genetic_config,
+                )
+                .await
+                {
+                    Ok(ga_result) => {
+                        if !ga_result.discoveries.is_empty() {
+                            log::info!(
+                                "[scan] GA found {} new behavior(s) for {}",
+                                ga_result.discoveries.len(),
+                                func_name,
+                            );
+                        }
+                        ga_discoveries = ga_result.discoveries;
                     }
-                    ga_discoveries = ga_result.discoveries;
+                    Err(e) => {
+                        log::warn!("[scan] GA error for {}: {e}", func_name);
+                    }
                 }
-                Err(e) => {
-                    log::warn!("[scan] GA error for {}: {e}", func_name);
-                }
+            } else {
+                log::info!("[scan] Skipping GA for {func_name}: exploration budget exhausted");
             }
         }
     }
@@ -6040,22 +6103,20 @@ mod tests {
     #[test]
     fn shared_pool_task_watchdog_uses_small_cleanup_cushion() {
         let build_timeout = Duration::from_secs(30);
-        let retry_build = build_timeout_retry_budget(build_timeout);
         let watchdog = shared_pool_task_watchdog(build_timeout, Duration::from_secs(30));
 
         assert!(
-            watchdog <= build_timeout + retry_build + Duration::from_secs(35),
+            watchdog <= build_timeout + Duration::from_secs(35),
             "watchdog should retain only the small cleanup cushion, got {watchdog:?}"
         );
     }
 
-    /// str-kuc0 regression: Kapow's cold Go builds can exceed the initial
-    /// scan build timeout but then complete once the build cache has warmed.
-    /// The shared-pool task watchdog needs to include the explicit retry
-    /// build budget so the retry reports as a build-phase timeout/success,
-    /// not as an opaque task watchdog abort.
+    /// str-cir6: build retry is claimed inside a task only after a real build
+    /// timeout. The shared-pool join watchdog must not charge that speculative
+    /// retry budget to every function, because most stalls happen after prepare
+    /// in exploration/follow-up execution.
     #[test]
-    fn shared_pool_task_watchdog_accounts_for_build_retry_budget() {
+    fn shared_pool_task_watchdog_excludes_speculative_build_retry_budget() {
         let initial_build = Duration::from_secs(30);
         let retry_build = build_timeout_retry_budget(initial_build);
         assert_eq!(retry_build, Duration::from_secs(60));
@@ -6063,12 +6124,29 @@ mod tests {
         let watchdog = shared_pool_task_watchdog(initial_build, Duration::from_secs(20));
 
         assert!(
-            watchdog >= initial_build + retry_build + Duration::from_secs(20),
-            "watchdog {watchdog:?} must allow initial build, retry build, and exploration budgets"
+            watchdog < initial_build + retry_build + Duration::from_secs(20),
+            "watchdog {watchdog:?} must not reserve speculative build retry budget"
         );
         assert!(
-            watchdog <= initial_build + retry_build + Duration::from_secs(25),
+            watchdog <= initial_build + Duration::from_secs(25),
             "watchdog {watchdog:?} should retain only the small cleanup cushion"
+        );
+    }
+
+    /// str-cir6: the join watchdog is the final backstop when async phase
+    /// cancellation cannot preempt a busy frontend loop. It must not reserve a
+    /// speculative build-retry budget for every function, or a serial Zolem
+    /// scan with `--build-timeout 120 --timeout-per-fn 5` can sit on one
+    /// function for more than six minutes before writing an artifact.
+    #[test]
+    fn shared_pool_task_watchdog_omits_unclaimed_build_retry_budget() {
+        let build_timeout = Duration::from_secs(120);
+        let timeout_per_fn = Duration::from_secs(5);
+        let watchdog = shared_pool_task_watchdog(build_timeout, timeout_per_fn);
+
+        assert!(
+            watchdog <= build_timeout + timeout_per_fn + SHARED_POOL_TASK_CLEANUP_GRACE,
+            "watchdog {watchdog:?} should not include unclaimed build retry budget"
         );
     }
 
@@ -6145,6 +6223,61 @@ mod tests {
         };
         assert_eq!(separated.build_timeout, Duration::from_secs(60));
         assert_eq!(separated.timeout_per_fn, Duration::from_secs(5));
+    }
+
+    /// str-cir6: a scan target that keeps returning quick target errors must
+    /// still get an internal exploration deadline. Otherwise the random
+    /// explorer keeps generating executions until the outer task watchdog has
+    /// to abort it, which leaves long serial scans with no per-function
+    /// artifact or progress for minutes.
+    #[test]
+    fn scan_defaults_explore_deadline_to_per_function_timeout() {
+        let cfg = ScanConfig {
+            timeout_per_fn: Duration::from_secs(60),
+            timeout_explore: None,
+            ..minimal_scan_config(HashMap::new())
+        };
+
+        assert_eq!(
+            scan_explore_timeout(&cfg),
+            Some(Duration::from_secs(60)),
+            "scan must pass timeout_per_fn into ExploreConfig when --timeout-explore is omitted"
+        );
+    }
+
+    #[test]
+    fn scan_preserves_explicit_explore_deadline() {
+        let cfg = ScanConfig {
+            timeout_per_fn: Duration::from_secs(60),
+            timeout_explore: Some(Duration::from_secs(7)),
+            ..minimal_scan_config(HashMap::new())
+        };
+
+        assert_eq!(scan_explore_timeout(&cfg), Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn scan_disables_shrink_under_per_function_deadline() {
+        let cfg = ScanConfig {
+            timeout_per_fn: Duration::from_secs(60),
+            timeout_explore: None,
+            ..minimal_scan_config(HashMap::new())
+        };
+
+        assert_eq!(scan_shrink_budget(&cfg), 0);
+    }
+
+    /// str-cir6: GA follow-up runs after the initial explorer. It must receive
+    /// only the remaining per-function budget, otherwise a function that keeps
+    /// returning quick errors can run GA indefinitely after the scan timeout.
+    #[test]
+    fn remaining_explore_budget_expires_after_deadline() {
+        let started_before_deadline = Instant::now() - Duration::from_secs(2);
+
+        assert_eq!(
+            remaining_explore_budget(Some(Duration::from_secs(1)), started_before_deadline),
+            None
+        );
     }
 
     fn make_analysis(name: &str, deps: Vec<&str>) -> FunctionAnalysis {
