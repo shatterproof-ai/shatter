@@ -1451,8 +1451,7 @@ fn resolve_from_merged(
     let mut func_config: Option<&FunctionConfig> = None;
 
     for (pattern, fc) in &config.functions {
-        let matcher = compile_pattern(pattern)?;
-        if matcher.is_match(function_id) {
+        if function_pattern_matches(pattern, function_id)? {
             func_config = Some(fc);
             break;
         }
@@ -1573,8 +1572,7 @@ pub fn resolve_function_config_with_inputs(
         // Check function config for an inputs path.
         for dc in &discovered {
             for (pattern, fc) in &dc.config.functions {
-                let matcher = compile_pattern(pattern)?;
-                if matcher.is_match(function_id)
+                if function_pattern_matches(pattern, function_id)?
                     && let Some(inputs_rel) = &fc.inputs
                 {
                     let inputs_path = dc.shatter_dir.join(inputs_rel);
@@ -1593,8 +1591,7 @@ pub fn resolve_function_config_with_inputs(
             break;
         }
         for (pattern, fc) in &dc.config.functions {
-            let matcher = compile_pattern(pattern)?;
-            if matcher.is_match(function_id)
+            if function_pattern_matches(pattern, function_id)?
                 && let Some(setup_rel) = &fc.setup
             {
                 resolved.setup = Some(dc.shatter_dir.join(setup_rel));
@@ -1640,8 +1637,7 @@ pub fn resolve_function_config_with_inputs(
     // Function-level generators overlay defaults (nearest matching function wins).
     for dc in &discovered {
         for (pattern, fc) in &dc.config.functions {
-            let matcher = compile_pattern(pattern)?;
-            if matcher.is_match(function_id) {
+            if function_pattern_matches(pattern, function_id)? {
                 if let Some(ref g) = fc.generators {
                     for (type_name, gen_rel) in g {
                         resolved
@@ -1662,6 +1658,37 @@ pub fn resolve_function_config_with_inputs(
     }
 
     Ok(resolved)
+}
+
+fn function_pattern_matches(pattern: &str, function_id: &str) -> Result<bool, ConfigError> {
+    let matcher = compile_pattern(pattern)?;
+    if matcher.is_match(function_id) {
+        return Ok(true);
+    }
+
+    Ok(equivalent_rust_function_id(function_id)
+        .as_deref()
+        .is_some_and(|alternate| matcher.is_match(alternate)))
+}
+
+fn equivalent_rust_function_id(function_id: &str) -> Option<String> {
+    if let Some((file, function)) = function_id.rsplit_once("::")
+        && is_rust_file_function_id(file, function)
+    {
+        return Some(format!("{file}:{function}"));
+    }
+
+    if let Some((file, function)) = function_id.rsplit_once(':')
+        && is_rust_file_function_id(file, function)
+    {
+        return Some(format!("{file}::{function}"));
+    }
+
+    None
+}
+
+fn is_rust_file_function_id(file: &str, function: &str) -> bool {
+    !file.is_empty() && !function.is_empty() && file.ends_with(".rs")
 }
 
 fn compile_pattern(pattern: &str) -> Result<GlobMatcher, ConfigError> {
@@ -2443,8 +2470,7 @@ functions:
         // from the nearest config wins. (CLI > project defaults is covered by
         // `resolve_function_config_cli_beats_project_defaults`.)
         let resolved =
-            resolve_function_config("src/auth/login.ts:validateToken", &configs, None, 60)
-                .unwrap();
+            resolve_function_config("src/auth/login.ts:validateToken", &configs, None, 60).unwrap();
         assert_eq!(resolved.max_iterations, Some(500)); // from sub defaults
         assert_eq!(resolved.timeout, 120); // from function pattern
     }
@@ -2753,6 +2779,70 @@ functions:
             resolved.param_generators[&"sessionId".to_string()],
             shatter_dir.join("./gen/session.ts")
         );
+    }
+
+    #[test]
+    fn rust_function_separator_config_matches_cli_target_id() {
+        let root = TempDir::new().unwrap();
+        let shatter_dir = root.path().join(".shatter");
+        fs::create_dir_all(&shatter_dir).unwrap();
+
+        fs::write(
+            shatter_dir.join("config.yaml"),
+            r#"
+defaults:
+  param_generators:
+    current: ./gen/default_current.rs
+functions:
+  "**/bundles.rs::create_bundle_entry":
+    param_generators:
+      current: ./gen/bundle_current.rs
+"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_function_config_with_inputs(
+            "src/handlers/bundles.rs:create_bundle_entry",
+            root.path(),
+            None,
+            Some(100),
+            60,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.param_generators[&"current".to_string()],
+            shatter_dir.join("./gen/bundle_current.rs")
+        );
+    }
+
+    #[test]
+    fn documented_separator_config_matches_rust_qualified_id() {
+        let mut functions = HashMap::new();
+        functions.insert(
+            "**/bundles.rs:create_bundle_entry".to_string(),
+            FunctionConfig {
+                skip: Some(true),
+                ..FunctionConfig::default()
+            },
+        );
+
+        let config = ShatterConfig {
+            defaults: DefaultsConfig::default(),
+            functions,
+            ..ShatterConfig::default()
+        };
+
+        let resolved = resolve_function_config(
+            "/repo/src/handlers/bundles.rs::create_bundle_entry",
+            &[config],
+            Some(100),
+            60,
+        )
+        .unwrap();
+
+        assert!(resolved.skip);
     }
 
     #[test]
