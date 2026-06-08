@@ -3012,6 +3012,7 @@ async fn prefetch_concolic_generator_inputs(
         &explore_config.value_sources,
         frontend,
         max_iterations,
+        explore_config.project_root.clone(),
     )
     .await
     {

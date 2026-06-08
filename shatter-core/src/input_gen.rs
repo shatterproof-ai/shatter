@@ -1193,6 +1193,7 @@ pub async fn prefetch_custom_values(
     sources: &[ValueSource],
     frontend: &mut crate::frontend::Frontend,
     count: usize,
+    project_root: Option<String>,
 ) -> Result<PrefetchedValues, crate::frontend::FrontendError> {
     let commands = collect_generate_commands(sources);
     let mut store = PrefetchedValues::new();
@@ -1205,7 +1206,7 @@ pub async fn prefetch_custom_values(
                     name: name.clone(),
                     kind: kind.clone(),
                     recipe: None,
-                    project_root: None,
+                    project_root: project_root.clone(),
                 })
                 .await?;
 

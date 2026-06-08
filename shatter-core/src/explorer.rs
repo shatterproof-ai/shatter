@@ -1085,6 +1085,7 @@ pub async fn explore_function(
             &config.value_sources,
             frontend,
             custom_generator_prefetch_budget(&config.value_sources, config.max_iterations),
+            config.project_root.clone(),
         )
         .instrument(tracing::info_span!("input_gen.prefetch"))
         .await
@@ -2061,6 +2062,7 @@ async fn explore_function_with_observer_pool(
             &config.value_sources,
             frontend,
             custom_generator_prefetch_budget(&config.value_sources, config.max_iterations),
+            config.project_root.clone(),
         )
         .instrument(tracing::info_span!("input_gen.prefetch"))
         .await

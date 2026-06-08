@@ -1303,10 +1303,11 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             }
             Some("rs") => {
                 if let Some(ref registry) = self.native_registry {
-                    match registry.generate_for_replay(
+                    match registry.generate_for_replay_with_project_root(
                         Some(file_path),
                         func_name,
                         req.recipe.clone(),
+                        req.project_root.as_deref(),
                     ) {
                         Ok((value, generator_id, recipe)) => {
                             resp.status = "generate".to_string();
