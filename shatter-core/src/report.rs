@@ -3704,6 +3704,79 @@ mod tests {
         assert_eq!(input.outcome_reason.as_deref(), Some(reason));
     }
 
+    #[test]
+    fn report_marks_all_unsupported_inputs_as_non_behavioral_with_reason() {
+        let reason = "receiver type localControlPlane requires constructor initialization; no parameterless constructor available";
+        let inputs = vec![serde_json::json!("listener")];
+        let mut unsupported_receiver =
+            make_function_result("(*localControlPlane).UpsertListener", 1, 0, 0, 105, vec![]);
+        unsupported_receiver.coverage_metrics.total_branches = 13;
+        unsupported_receiver.coverage_metrics.uncovered = 13;
+        unsupported_receiver
+            .exploration
+            .new_path_executions
+            .push(ExecutionSummary {
+                inputs: inputs.clone(),
+                return_value: None,
+                thrown_error: None,
+                lines_executed: vec![],
+                is_new_path: true,
+                error_intent: None,
+            });
+        unsupported_receiver.exploration.raw_results.push((
+            inputs,
+            vec![],
+            ExecuteResult {
+                return_value: None,
+                thrown_error: None,
+                lines_executed: vec![],
+                outcome: Some(InvocationOutcome {
+                    status: OutcomeStatus::Unsupported,
+                    short_reason: Some(reason.to_string()),
+                    return_value: None,
+                    thrown_error: None,
+                    side_effects: vec![],
+                }),
+                ..Default::default()
+            },
+        ));
+
+        let parallel_result = ParallelScanResult {
+            function_results: vec![unsupported_receiver],
+            test_order: vec!["(*localControlPlane).UpsertListener".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        let mut file_map = HashMap::new();
+        file_map.insert(
+            "(*localControlPlane).UpsertListener".into(),
+            "cmd/zolem/local_admin.go".into(),
+        );
+
+        let report = generate_report(&parallel_result, &file_map, None);
+        let func = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "(*localControlPlane).UpsertListener")
+            .expect("function should be in the report");
+
+        assert_eq!(
+            func.completion_outcome,
+            CompletionOutcome::DispatchFailed,
+            "all-unsupported receiver setup must not report behavioral completion",
+        );
+        assert_eq!(func.completion_reason.as_deref(), Some(reason));
+        assert_eq!(func.lines_covered, 0);
+        assert_eq!(func.branches_covered, 0);
+        assert_eq!(func.discovered_inputs[0].outcome_status.as_deref(), Some("unsupported"));
+        assert_eq!(func.discovered_inputs[0].outcome_reason.as_deref(), Some(reason));
+        assert_eq!(report.codebase.completed_with_behavior, 0);
+        assert_eq!(report.codebase.completed_dispatch_failed, 1);
+    }
+
     /// str-jeen.50 regression: a function whose every recorded outcome
     /// is the launcher wrapper's `"unknown receiver kind"` sentinel must
     /// classify as `DispatchFailed` (not `ErrorOnly` and not
