@@ -7,6 +7,8 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -349,6 +351,92 @@ func Render(t *template.Template) error { return t.Execute(nil, nil) }
 	}
 	if strings.Contains(out, "json.Unmarshal(inputs[0], &t)") {
 		t.Errorf("wrapper still decodes template from inputs; source:\n%s", out)
+	}
+}
+
+func TestBuildWrapperTargets_ImportedValueParamUsesParameterlessConstructor(t *testing.T) {
+	modDir := t.TempDir()
+	depDir := filepath.Join(modDir, "dep")
+	appDir := filepath.Join(modDir, "app")
+	if err := os.MkdirAll(depDir, 0o755); err != nil {
+		t.Fatalf("mkdir dep: %v", err)
+	}
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatalf("mkdir app: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/ctorparam\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	const depSrc = `package dep
+
+type Client struct {
+	baseURL string
+}
+
+func NewClient(baseURL string) Client { return Client{baseURL: baseURL} }
+func NewInertClient() Client { return Client{baseURL: "http://127.0.0.1:0"} }
+func NewPointerClient() *Client { return &Client{} }
+func NewErrorClient() (Client, error) { return Client{}, nil }
+
+func (c Client) BaseURL() string { return c.baseURL }
+`
+	if err := os.WriteFile(filepath.Join(depDir, "dep.go"), []byte(depSrc), 0o644); err != nil {
+		t.Fatalf("write dep.go: %v", err)
+	}
+	const appSrc = `package app
+
+import safe "example.com/ctorparam/dep"
+
+func Use(client safe.Client) string {
+	return client.BaseURL()
+}
+`
+	if err := os.WriteFile(filepath.Join(appDir, "app.go"), []byte(appSrc), 0o644); err != nil {
+		t.Fatalf("write app.go: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: appDir,
+		Env: append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loaded %d packages, want 1", len(pkgs))
+	}
+	for _, pkgErr := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", pkgErr)
+	}
+
+	targets := BuildWrapperTargets(pkgs[0])
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	target := targets[0]
+	if len(target.Parameters) != 1 {
+		t.Fatalf("Use param count = %d, want 1", len(target.Parameters))
+	}
+	if got, want := target.Parameters[0].RuntimeValueExpr, "dep.NewInertClient()"; got != want {
+		t.Fatalf("RuntimeValueExpr = %q, want %q", got, want)
+	}
+	if !slices.Contains(target.Imports, "example.com/ctorparam/dep") {
+		t.Fatalf("target.Imports = %v, want imported dep package", target.Imports)
+	}
+
+	out := GenerateWrapper("app", targets, nil)
+	if !strings.Contains(out, `"example.com/ctorparam/dep"`) {
+		t.Fatalf("generated wrapper missing dep import:\n%s", out)
+	}
+	if !strings.Contains(out, "var client dep.Client = dep.NewInertClient()") {
+		t.Fatalf("generated wrapper missing constructor-backed client assignment:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(_shatterInputs[0], &client)") {
+		t.Fatalf("generated wrapper still decodes constructor-backed client from JSON:\n%s", out)
 	}
 }
 
