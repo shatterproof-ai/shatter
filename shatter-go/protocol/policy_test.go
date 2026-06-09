@@ -59,6 +59,18 @@ func TestClassifyFunction_HTTPClientParamStillNetwork(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_HTTPRequestConstructorDependencyIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "BuildsHTTPRequest",
+		Dependencies: []ExternalDependency{
+			{Symbol: "http.NewRequestWithContext", SourceModule: "net/http", Kind: "call"},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("http.NewRequestWithContext should only construct an in-memory request, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_SubprocessDependencyIsClassified(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "Runs",
