@@ -101,6 +101,18 @@ func TestClassifyFunction_SplitHostPortDependencyIsNotNetwork(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_ParseIPDependencyIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "ParsesIP",
+		Dependencies: []ExternalDependency{
+			{Symbol: "net.ParseIP", SourceModule: "net", Kind: "call"},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("net.ParseIP should only parse an IP string, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_NetDialDependencyStillNetwork(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "DialsNetwork",
