@@ -329,15 +329,26 @@ func TestClassifyFunction_QualifiedOSPurePredicateHasNoUses(t *testing.T) {
 	}
 }
 
-func TestClassifyFunction_UnrecognizedModuleIsUnknownHigh(t *testing.T) {
+func TestClassifyFunction_CryptoRandReadIsNotPolicyDenied(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Dependencies: []ExternalDependency{
-			{Symbol: "Read", SourceModule: "crypto/rand"},
+			{Symbol: "rand.Read", SourceModule: "crypto/rand", Kind: "call"},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("crypto/rand.Read should be handled as deterministic local randomness, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_UnrecognizedCryptoRandSymbolIsUnknownHigh(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Dependencies: []ExternalDependency{
+			{Symbol: "rand.Prime", SourceModule: "crypto/rand", Kind: "call"},
 		},
 	}
 	uses := classifyFunction(fa)
 	if len(uses) != 1 || uses[0].Class != ClassUnknownHigh {
-		t.Fatalf("expected unknown_high for crypto/rand, got %+v", uses)
+		t.Fatalf("expected unknown_high for unrecognized crypto/rand symbol, got %+v", uses)
 	}
 }
 
