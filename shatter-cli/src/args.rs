@@ -2157,6 +2157,17 @@ mod tests {
     }
 
     #[test]
+    fn expand_target_args_accepts_go_pointer_receiver_method() {
+        let out =
+            expand_target_args(&["cmd/local_admin.go::(*localControlPlane).ListProfiles".into()])
+                .unwrap();
+        assert_eq!(
+            out,
+            vec!["cmd/local_admin.go::(*localControlPlane).ListProfiles"]
+        );
+    }
+
+    #[test]
     fn expand_target_args_expands_quoted_glob() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("lib");
