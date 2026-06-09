@@ -241,6 +241,9 @@ func typeInfoClass(t TypeInfo) (SideEffectClass, string, bool) {
 // classifyDependency maps an ExternalDependency to a side-effect class
 // based on its declared source module and symbol.
 func classifyDependency(d ExternalDependency) (ClassifiedUse, bool) {
+	if isPureDependency(d) {
+		return ClassifiedUse{}, false
+	}
 	class, ok := moduleClass(d.SourceModule, d.Symbol)
 	if !ok {
 		var component string
@@ -265,6 +268,15 @@ func classifyDependency(d ExternalDependency) (ClassifiedUse, bool) {
 	}, true
 }
 
+func isPureDependency(d ExternalDependency) bool {
+	switch d.SourceModule {
+	case "net/http":
+		return isPureNetHTTPSymbol(d.Symbol)
+	default:
+		return false
+	}
+}
+
 // moduleClass classifies an external symbol by module path. The table is
 // intentionally conservative: anything not recognized is treated as
 // ClassUnknownHigh so the policy gate defaults to deny.
@@ -277,8 +289,12 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		strings.HasPrefix(module, "github.com/jmoiron/sqlx"),
 		strings.HasPrefix(module, "gorm.io/gorm"):
 		return ClassDatabase, true
-	case module == "net/http",
-		module == "net",
+	case module == "net/http":
+		if isPureNetHTTPSymbol(symbol) {
+			return "", false
+		}
+		return ClassNetwork, true
+	case module == "net",
 		strings.HasPrefix(module, "golang.org/x/net"):
 		return ClassNetwork, true
 	case module == "os/exec",
@@ -315,6 +331,15 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		return ClassUnknownHigh, true
 	}
 	return "", false
+}
+
+func isPureNetHTTPSymbol(symbol string) bool {
+	switch strings.TrimPrefix(symbol, "http.") {
+	case "NewRequest", "NewRequestWithContext":
+		return true
+	default:
+		return false
+	}
 }
 
 func unqualifyStdlibSymbol(module, symbol string) string {
