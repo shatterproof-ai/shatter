@@ -59,6 +59,46 @@ func TestClassifyFunction_HTTPClientParamStillNetwork(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_HTTPResponseWriterReturnIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name:       "ReturnsWriter",
+		ReturnType: TypeInfo{Kind: "unknown", Label: "http.ResponseWriter"},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("http.ResponseWriter return value should be an in-memory runtime value, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_HTTPResponseWriterDependencyReturnIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "BuildsWriterWrapper",
+		Dependencies: []ExternalDependency{
+			{
+				Symbol:       "response.NewSSEWriter",
+				SourceModule: "example.com/response",
+				Kind:         "call",
+				ReturnType: TypeInfo{Kind: "object", Label: "response.SSEWriter", Fields: []ObjectField{
+					{Name: "w", Type: TypeInfo{Kind: "unknown", Label: "http.ResponseWriter"}},
+				}},
+			},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("dependency return values that only wrap http.ResponseWriter should not be policy-denied, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_HTTPClientReturnStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name:       "ReturnsHTTPClient",
+		ReturnType: TypeInfo{Kind: "opaque", Label: "http.Client"},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("expected http.Client return value to remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_HTTPRequestConstructorDependencyIsNotNetwork(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "BuildsHTTPRequest",
