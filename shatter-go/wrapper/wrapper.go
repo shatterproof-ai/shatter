@@ -1103,35 +1103,6 @@ func constructorInputArgExpr(c ConstructorCandidate) string {
 	return strings.Join(args, ", ")
 }
 
-// goZeroLiteral returns the Go source zero literal for a type (str-9b1q).
-func goZeroLiteral(goType string) string {
-	trimmed := strings.TrimSpace(goType)
-	switch trimmed {
-	case "string":
-		return `""`
-	case "int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64":
-		return "0"
-	case "float32", "float64":
-		return "0.0"
-	case "bool":
-		return "false"
-	case "[]byte":
-		return "nil"
-	case "time.Duration":
-		return "0"
-	default:
-		if strings.HasSuffix(trimmed, ".Duration") {
-			return "0"
-		}
-		// Ask Go for the zero value of the exact type. This keeps
-		// constructor calls assignable for named structs, aliases, arrays,
-		// slices, maps, pointers, functions, and interfaces without guessing
-		// which literal form fits the type.
-		return "*new(" + trimmed + ")"
-	}
-}
-
 // writeDurationParamDeserialization emits a time.Duration-specific decode
 // block (str-is5g). The canonical wire format is integer nanoseconds — that
 // is what time.Duration's default (int64) UnmarshalJSON consumes and what
@@ -1409,6 +1380,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	// would compile and link but the param would be the zero interface
 	// value (`nil`), panicking on first use.
 	applyRuntimeValueBindingsForPackage(params, importSet, configuredRuntimeValuesForFunc(fn, pkg), pkg.Name)
+	applyImportedConstructorBindingsForPackage(fn, pkg, params, importSet, pkgTypesPath)
 	typeParams := extractWrapperTypeParams(fn)
 
 	hasResult := false
@@ -1571,6 +1543,194 @@ func applyRuntimeValueBindingsForPackage(
 			}
 		}
 	}
+}
+
+type constructorRuntimeBinding struct {
+	Expression string
+	Imports    []string
+}
+
+func applyImportedConstructorBindingsForPackage(
+	fn *ast.FuncDecl,
+	pkg *packages.Package,
+	params []WrapperParam,
+	importSet map[string]struct{},
+	pkgPath string,
+) {
+	if fn == nil || fn.Type == nil || fn.Type.Params == nil || pkg == nil || pkg.TypesInfo == nil || len(params) == 0 {
+		return
+	}
+	paramIndex := 0
+	for _, field := range fn.Type.Params.List {
+		fieldType := field.Type
+		if _, ok := fieldType.(*ast.Ellipsis); ok {
+			paramIndex += wrapperParamFieldCount(field)
+			continue
+		}
+		for range wrapperParamFieldCount(field) {
+			if paramIndex >= len(params) {
+				return
+			}
+			if params[paramIndex].RuntimeValueExpr == "" {
+				if binding, ok := importedParameterConstructorBinding(fieldType, pkg, pkgPath); ok {
+					params[paramIndex].RuntimeValueExpr = binding.Expression
+					for _, imp := range binding.Imports {
+						if imp != "" {
+							importSet[imp] = struct{}{}
+						}
+					}
+				}
+			}
+			paramIndex++
+		}
+	}
+}
+
+func wrapperParamFieldCount(field *ast.Field) int {
+	if field == nil || len(field.Names) == 0 {
+		return 1
+	}
+	return len(field.Names)
+}
+
+func importedParameterConstructorBinding(
+	expr ast.Expr,
+	consumerPkg *packages.Package,
+	consumerPkgPath string,
+) (constructorRuntimeBinding, bool) {
+	named, wantsPointer := resolveNamedConcreteWrapperType(expr, consumerPkg.TypesInfo)
+	if named == nil || wantsPointer || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return constructorRuntimeBinding{}, false
+	}
+	if _, isInterface := named.Underlying().(*types.Interface); isInterface {
+		return constructorRuntimeBinding{}, false
+	}
+	defPkgPath := named.Obj().Pkg().Path()
+	if defPkgPath == "" || defPkgPath == consumerPkgPath || defPkgPath == consumerPkg.PkgPath {
+		return constructorRuntimeBinding{}, false
+	}
+	defPkg := consumerPkg.Imports[defPkgPath]
+	if defPkg == nil || defPkg.TypesInfo == nil {
+		return constructorRuntimeBinding{}, false
+	}
+
+	candidates := importedParameterConstructorsForType(defPkg, named.Obj().Name())
+	if len(candidates) == 0 {
+		return constructorRuntimeBinding{}, false
+	}
+	sort.Strings(candidates)
+	pkgName := defPkg.Name
+	if defPkg.Types != nil && defPkg.Types.Name() != "" {
+		pkgName = defPkg.Types.Name()
+	}
+	return constructorRuntimeBinding{
+		Expression: pkgName + "." + candidates[0] + "()",
+		Imports:    []string{defPkgPath},
+	}, true
+}
+
+func resolveNamedConcreteWrapperType(expr ast.Expr, info *types.Info) (*types.Named, bool) {
+	if expr == nil || info == nil {
+		return nil, false
+	}
+	wantsPointer := false
+	if star, ok := expr.(*ast.StarExpr); ok {
+		wantsPointer = true
+		expr = star.X
+	}
+	tv, ok := info.Types[expr]
+	if !ok || tv.Type == nil {
+		return nil, wantsPointer
+	}
+	named, ok := tv.Type.(*types.Named)
+	if !ok {
+		return nil, wantsPointer
+	}
+	return named, wantsPointer
+}
+
+func importedParameterConstructorsForType(pkg *packages.Package, targetType string) []string {
+	if pkg == nil || pkg.TypesInfo == nil {
+		return nil
+	}
+	var candidates []string
+	for _, file := range pkg.Syntax {
+		if file == nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Recv != nil {
+				continue
+			}
+			if !isImportedParameterConstructorName(fn.Name.Name) {
+				continue
+			}
+			if fn.Type.Params != nil && len(fn.Type.Params.List) > 0 {
+				continue
+			}
+			if constructorReturnsImportedParamType(fn, pkg, targetType) {
+				candidates = append(candidates, fn.Name.Name)
+			}
+		}
+	}
+	return candidates
+}
+
+func isImportedParameterConstructorName(name string) bool {
+	return strings.HasPrefix(name, "New") || strings.HasPrefix(name, "Default")
+}
+
+func constructorReturnsImportedParamType(fn *ast.FuncDecl, pkg *packages.Package, targetType string) bool {
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
+		return false
+	}
+	var exprs []ast.Expr
+	for _, field := range fn.Type.Results.List {
+		count := wrapperParamFieldCount(field)
+		for range count {
+			exprs = append(exprs, field.Type)
+		}
+	}
+	if len(exprs) == 0 || len(exprs) > 2 {
+		return false
+	}
+	name, isPtr, same := sameWrapperPackageTypeName(exprs[0], pkg)
+	if !same || isPtr || name != targetType {
+		return false
+	}
+	if len(exprs) == 2 {
+		return false
+	}
+	return true
+}
+
+func sameWrapperPackageTypeName(expr ast.Expr, pkg *packages.Package) (string, bool, bool) {
+	isPointer := false
+	if star, ok := expr.(*ast.StarExpr); ok {
+		isPointer = true
+		expr = star.X
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok || pkg == nil || pkg.TypesInfo == nil {
+		return "", false, false
+	}
+	obj := pkg.TypesInfo.Uses[ident]
+	if obj == nil {
+		obj = pkg.TypesInfo.Defs[ident]
+	}
+	tn, ok := obj.(*types.TypeName)
+	if !ok || tn.Pkg() == nil {
+		return "", false, false
+	}
+	pkgPath := pkg.PkgPath
+	if pkg.Types != nil && pkg.Types.Path() != "" {
+		pkgPath = pkg.Types.Path()
+	}
+	if tn.Pkg().Path() != pkgPath {
+		return "", false, false
+	}
+	return tn.Name(), isPointer, true
 }
 
 func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map[string]config.GoRuntimeValueConfig {
