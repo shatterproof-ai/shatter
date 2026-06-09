@@ -3014,6 +3014,7 @@ pub fn literals_to_candidate_inputs(
                 values.push(val);
             }
             values.extend(literal_matches_object_string_fields(lit, &param.typ));
+            values.extend(literal_matches_array_string_elements(lit, &param.typ));
             for val in values {
                 let dedup_key = (idx, serde_json::to_string(&val).unwrap_or_default());
                 if !seen.insert(dedup_key) {
@@ -3200,6 +3201,26 @@ fn literal_matches_object_string_fields(lit: &LiteralValue, typ: &TypeInfo) -> V
         values.push(Value::Object(object));
     }
     values
+}
+
+fn literal_matches_array_string_elements(lit: &LiteralValue, typ: &TypeInfo) -> Vec<Value> {
+    match typ {
+        TypeInfo::Array { element } => {
+            if !type_accepts_string_literal(element) {
+                return Vec::new();
+            }
+            let Some(value) = literal_matches_type(lit, element) else {
+                return Vec::new();
+            };
+            vec![Value::Array(vec![value])]
+        }
+        TypeInfo::Union { variants } => variants
+            .iter()
+            .flat_map(|v| literal_matches_array_string_elements(lit, v))
+            .collect(),
+        TypeInfo::Nullable { inner } => literal_matches_array_string_elements(lit, inner),
+        _ => Vec::new(),
+    }
 }
 
 fn type_accepts_string_literal(typ: &TypeInfo) -> bool {
@@ -4265,6 +4286,23 @@ echo '{{"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}}'
         let candidates = literals_to_candidate_inputs(&params, &literals);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0][0], json!({"Mode": "fixed"}));
+    }
+
+    #[test]
+    fn literals_to_candidates_str_populates_string_slice_param() {
+        let params = vec![ParamInfo {
+            name: "args".into(),
+            typ: TypeInfo::Array {
+                element: Box::new(TypeInfo::Str),
+            },
+            type_name: Some("[]string".into()),
+        }];
+        let literals = vec![LiteralValue::Str {
+            value: "list".into(),
+        }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!(["list"]));
     }
 
     #[test]

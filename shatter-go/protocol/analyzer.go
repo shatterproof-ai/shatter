@@ -738,6 +738,8 @@ func selectorPath(expr ast.Expr, paramNames map[string]bool) string {
 		if base != "" {
 			return base + "." + e.Sel.Name
 		}
+	case *ast.IndexExpr:
+		return selectorPath(e.X, paramNames)
 	case *ast.ParenExpr:
 		return selectorPath(e.X, paramNames)
 	}
@@ -2489,6 +2491,34 @@ func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 			results = append(results, lit)
 		}
 	}
+
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.SwitchStmt:
+			for _, stmt := range node.Body.List {
+				clause, ok := stmt.(*ast.CaseClause)
+				if !ok {
+					continue
+				}
+				for _, expr := range clause.List {
+					if lit, ok := stringBasicLiteral(expr); ok {
+						add(LiteralValue{Type: "str", Value: lit})
+					}
+				}
+			}
+		case *ast.BinaryExpr:
+			if node.Op != token.EQL && node.Op != token.NEQ {
+				return true
+			}
+			if lit, ok := stringBasicLiteral(node.X); ok {
+				add(LiteralValue{Type: "str", Value: lit})
+			}
+			if lit, ok := stringBasicLiteral(node.Y); ok {
+				add(LiteralValue{Type: "str", Value: lit})
+			}
+		}
+		return true
+	})
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {

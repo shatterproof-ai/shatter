@@ -123,6 +123,35 @@ func choose(cfg Config, state string) int {
 	assertStringSlice(t, got["state"], []string{"ready", "blocked"})
 }
 
+func TestStringLiteralCandidatesByParamIndexedStringSlice(t *testing.T) {
+	src := `package p
+
+func choose(args []string) int {
+	switch args[0] {
+	case "list":
+		return 1
+	case "create":
+		return 2
+	case "delete":
+		return 3
+	}
+	return 0
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "indexed_literal_candidates.go", src, 0)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	fn := firstFuncDecl(t, file)
+	got := stringLiteralCandidatesByParam(fn, nil, []ParamInfo{
+		{
+			Name: "args",
+			Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "str"}},
+		},
+	})
+	assertStringSlice(t, got["args"], []string{"list", "create", "delete"})
+}
+
 func TestAnalyzeMaxReturnsFloatParams(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("basic.go"), "Max")
 	if err != nil {
@@ -1292,6 +1321,41 @@ func TestExtractLiterals_StringsFromConditions(t *testing.T) {
 	for _, want := range []string{"express", "economy", "standard"} {
 		if !containsLitValue(strs, want) {
 			t.Errorf("missing string literal %q in %v", want, strs)
+		}
+	}
+}
+
+func TestExtractLiterals_PrioritizesSwitchCaseStrings(t *testing.T) {
+	src := `package p
+
+func choose(args []string) error {
+	if len(args) == 0 {
+		return errors.New("choose requires list, create, or delete")
+	}
+	switch args[0] {
+	case "list":
+		return nil
+	case "create":
+		return nil
+	case "delete":
+		return nil
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "literal_priority.go", src, 0)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	lits := extractLiterals(firstFuncDecl(t, file), file)
+	strs := filterLiterals(lits, "str")
+	if len(strs) < 3 {
+		t.Fatalf("got %d string literals, want at least three: %v", len(strs), strs)
+	}
+	for i, want := range []string{"list", "create", "delete"} {
+		if strs[i].Value != want {
+			t.Fatalf("strs[%d].Value = %q, want %q; literals=%v", i, strs[i].Value, want, strs)
 		}
 	}
 }
