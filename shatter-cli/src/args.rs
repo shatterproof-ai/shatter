@@ -1753,6 +1753,21 @@ pub(crate) fn contains_glob_chars(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
 }
 
+/// Function target suffixes normally reject glob characters, but Go pointer
+/// receiver methods use a concrete `(*T).Method` spelling. Treat only that
+/// receiver marker as syntax, and keep rejecting wildcards in the receiver type
+/// name or method name.
+fn contains_function_glob_chars(s: &str) -> bool {
+    if let Some(rest) = s.strip_prefix("(*")
+        && let Some((receiver, method)) = rest.split_once(").")
+        && !receiver.is_empty()
+        && !method.is_empty()
+    {
+        return contains_glob_chars(receiver) || contains_glob_chars(method);
+    }
+    contains_glob_chars(s)
+}
+
 /// Reject wildcard inputs for single-target commands that require a concrete
 /// `<file>` or `<file>:<function>`. Returns an actionable error before the
 /// frontend is spawned so the user gets a clear diagnostic instead of a
@@ -1802,7 +1817,7 @@ pub(crate) fn expand_target_args(args: &[String]) -> Result<Vec<String>, String>
         };
 
         if let Some(fn_) = func_part
-            && contains_glob_chars(fn_)
+            && contains_function_glob_chars(fn_)
         {
             return Err(format!(
                 "function-name globs are not supported: '{arg}'"
@@ -2164,6 +2179,16 @@ mod tests {
         assert_eq!(
             out,
             vec!["cmd/local_admin.go::(*localControlPlane).ListProfiles"]
+        );
+    }
+
+    #[test]
+    fn expand_target_args_rejects_glob_after_go_pointer_receiver_method() {
+        let err = expand_target_args(&["cmd/local_admin.go::(*localControlPlane).List*".into()])
+            .unwrap_err();
+        assert!(
+            err.contains("function-name globs"),
+            "unexpected error: {err}"
         );
     }
 
