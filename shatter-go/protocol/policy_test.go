@@ -59,6 +59,36 @@ func TestClassifyFunction_HTTPClientParamStillNetwork(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_HTTPRequestConstructorDependencyIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "BuildsHTTPRequest",
+		Dependencies: []ExternalDependency{
+			{
+				Symbol:       "http.NewRequestWithContext",
+				SourceModule: "net/http",
+				Kind:         "call",
+				ReturnType:   TypeInfo{Kind: "opaque", Label: "*http.Request"},
+			},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("http.NewRequestWithContext should only construct an in-memory request, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_HTTPClientDoDependencyStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "SendsHTTPRequest",
+		Dependencies: []ExternalDependency{
+			{Symbol: "http.Client.Do", SourceModule: "net/http", Kind: "call"},
+		},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("expected http.Client.Do to remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_SubprocessDependencyIsClassified(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "Runs",
