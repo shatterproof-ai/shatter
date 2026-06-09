@@ -199,7 +199,6 @@ func F(a, b string) string {
 	}
 }
 
-
 func TestForLoopConditionWrapped(t *testing.T) {
 	src := `package main
 
@@ -384,6 +383,25 @@ func F(x int) {
 	}
 	if !strings.Contains(out, `defer __shatter_record_scope("call_exit"`) {
 		t.Errorf("missing defer call_exit scope marker\noutput:\n%s", out)
+	}
+}
+
+func TestCryptoRandReadRewrittenToDeterministicHelper(t *testing.T) {
+	src := `package main
+
+import crand "crypto/rand"
+
+func F(buf []byte) error {
+	_, err := crand.Read(buf)
+	return err
+}
+`
+	out, _ := transformSource(t, src, nil)
+	if !strings.Contains(out, "__shatter_side_effect_crypto_rand_read(crand.Read, buf)") {
+		t.Errorf("crypto/rand.Read not rewritten to deterministic helper\noutput:\n%s", out)
+	}
+	if strings.Contains(out, "_, err := crand.Read(buf)") {
+		t.Errorf("crypto/rand.Read passthrough remained in output\noutput:\n%s", out)
 	}
 }
 

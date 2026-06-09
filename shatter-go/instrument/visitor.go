@@ -54,7 +54,7 @@ func sideEffectImportAliases(file *ast.File) map[string]string {
 			continue
 		}
 		switch path {
-		case "fmt", "log", "log/slog", "os", "net/http":
+		case "fmt", "log", "log/slog", "os", "net/http", "crypto/rand":
 		default:
 			continue
 		}
@@ -68,6 +68,8 @@ func sideEffectImportAliases(file *ast.File) map[string]string {
 			name = "slog"
 		} else if path == "net/http" {
 			name = "http"
+		} else if path == "crypto/rand" {
+			name = "rand"
 		} else {
 			name = path
 		}
@@ -181,6 +183,8 @@ func rewriteSideEffectCall(call *ast.CallExpr, imports map[string]string) {
 		rewriteOSSideEffectCall(call, sel)
 	case "net/http":
 		rewriteHTTPClientSideEffectCall(call, sel)
+	case "crypto/rand":
+		rewriteCryptoRandSideEffectCall(call, sel)
 	}
 }
 
@@ -263,6 +267,14 @@ func rewriteHTTPClientSideEffectCall(call *ast.CallExpr, sel *ast.SelectorExpr) 
 		return
 	}
 	call.Fun = ast.NewIdent(helper)
+	call.Args = append([]ast.Expr{sel}, call.Args...)
+}
+
+func rewriteCryptoRandSideEffectCall(call *ast.CallExpr, sel *ast.SelectorExpr) {
+	if sel.Sel.Name != "Read" {
+		return
+	}
+	call.Fun = ast.NewIdent("__shatter_side_effect_crypto_rand_read")
 	call.Args = append([]ast.Expr{sel}, call.Args...)
 }
 
