@@ -3,6 +3,7 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
@@ -130,10 +131,9 @@ func planSliceAggregate(targetID string, paramIndex int, p protocol.ParamInfo, m
 	if err != nil {
 		return nil, unsatisfiedAggregate(targetID, p.Name, typeName, err.Error())
 	}
-	expressions := []string{
-		typeName + "{}",
-		typeName + "{" + elemZero + "}",
-	}
+	expressions := []string{typeName + "{}"}
+	expressions = appendUniqueExpressions(expressions, sliceStringLiteralExpressions(typeName, p.Name, p.Type, maxPlans-len(expressions), opts)...)
+	expressions = appendUniqueExpressions(expressions, typeName+"{"+elemZero+"}")
 	return aggregateValuePlans(paramIndex, p.Name, typeName, expressions, maxPlans), nil
 }
 
@@ -195,6 +195,39 @@ func structStringLiteralExpressions(typeName string, paramName string, t protoco
 			if len(expressions) >= limit {
 				return expressions
 			}
+		}
+	}
+	return expressions
+}
+
+func sliceStringLiteralExpressions(typeName string, paramName string, t protocol.TypeInfo, limit int, opts aggregateOptions) []string {
+	if limit <= 0 || len(opts.StringLiteralsByParam) == 0 || t.Kind != "array" || t.Element == nil {
+		return nil
+	}
+	if t.Element.Kind != "str" {
+		return nil
+	}
+	expressions := make([]string, 0, limit)
+	for _, literal := range opts.StringLiteralsByParam[paramName] {
+		expressions = append(expressions, typeName+"{"+strconv.Quote(literal)+"}")
+		if len(expressions) >= limit {
+			return expressions
+		}
+	}
+	return expressions
+}
+
+func appendUniqueExpressions(expressions []string, candidates ...string) []string {
+	for _, candidate := range candidates {
+		duplicate := false
+		for _, existing := range expressions {
+			if existing == candidate {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			expressions = append(expressions, candidate)
 		}
 	}
 	return expressions

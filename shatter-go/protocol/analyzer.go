@@ -738,6 +738,8 @@ func selectorPath(expr ast.Expr, paramNames map[string]bool) string {
 		if base != "" {
 			return base + "." + e.Sel.Name
 		}
+	case *ast.IndexExpr:
+		return selectorPath(e.X, paramNames)
 	case *ast.ParenExpr:
 		return selectorPath(e.X, paramNames)
 	}

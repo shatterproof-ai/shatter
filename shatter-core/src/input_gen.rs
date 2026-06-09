@@ -3014,6 +3014,7 @@ pub fn literals_to_candidate_inputs(
                 values.push(val);
             }
             values.extend(literal_matches_object_string_fields(lit, &param.typ));
+            values.extend(literal_matches_array_string_elements(lit, &param.typ));
             for val in values {
                 let dedup_key = (idx, serde_json::to_string(&val).unwrap_or_default());
                 if !seen.insert(dedup_key) {
@@ -3200,6 +3201,26 @@ fn literal_matches_object_string_fields(lit: &LiteralValue, typ: &TypeInfo) -> V
         values.push(Value::Object(object));
     }
     values
+}
+
+fn literal_matches_array_string_elements(lit: &LiteralValue, typ: &TypeInfo) -> Vec<Value> {
+    match typ {
+        TypeInfo::Array { element } => {
+            if !type_accepts_string_literal(element) {
+                return Vec::new();
+            }
+            let Some(value) = literal_matches_type(lit, element) else {
+                return Vec::new();
+            };
+            vec![Value::Array(vec![value])]
+        }
+        TypeInfo::Union { variants } => variants
+            .iter()
+            .flat_map(|v| literal_matches_array_string_elements(lit, v))
+            .collect(),
+        TypeInfo::Nullable { inner } => literal_matches_array_string_elements(lit, inner),
+        _ => Vec::new(),
+    }
 }
 
 fn type_accepts_string_literal(typ: &TypeInfo) -> bool {
