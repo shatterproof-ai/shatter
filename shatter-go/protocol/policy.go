@@ -341,6 +341,9 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		}
 		return "", false
 	case module == "crypto/rand":
+		if isLocalRandomSymbol(symbol) {
+			return "", false
+		}
 		return ClassUnknownHigh, true
 	}
 	return "", false
@@ -358,6 +361,15 @@ func isPureNetHTTPSymbol(symbol string) bool {
 func isPureNetSymbol(symbol string) bool {
 	switch strings.TrimPrefix(symbol, "net.") {
 	case "ParseIP", "SplitHostPort":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLocalRandomSymbol(symbol string) bool {
+	switch strings.TrimPrefix(symbol, "rand.") {
+	case "Read":
 		return true
 	default:
 		return false
