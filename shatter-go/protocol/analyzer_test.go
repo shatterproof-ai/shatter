@@ -123,6 +123,35 @@ func choose(cfg Config, state string) int {
 	assertStringSlice(t, got["state"], []string{"ready", "blocked"})
 }
 
+func TestStringLiteralCandidatesByParamIndexedStringSlice(t *testing.T) {
+	src := `package p
+
+func choose(args []string) int {
+	switch args[0] {
+	case "list":
+		return 1
+	case "create":
+		return 2
+	case "delete":
+		return 3
+	}
+	return 0
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "indexed_literal_candidates.go", src, 0)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	fn := firstFuncDecl(t, file)
+	got := stringLiteralCandidatesByParam(fn, nil, []ParamInfo{
+		{
+			Name: "args",
+			Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "str"}},
+		},
+	})
+	assertStringSlice(t, got["args"], []string{"list", "create", "delete"})
+}
+
 func TestAnalyzeMaxReturnsFloatParams(t *testing.T) {
 	results, err := AnalyzeFile(testdataPath("basic.go"), "Max")
 	if err != nil {

@@ -281,6 +281,37 @@ func TestPlanParam_StructStringLiteralFieldCandidates(t *testing.T) {
 	}
 }
 
+func TestPlanParam_SliceStringLiteralCandidates(t *testing.T) {
+	param := sliceParam("args", "[]string", protocol.TypeInfo{Kind: "str"})
+	plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		StringLiteralsByParam: map[string][]string{
+			"args": {"list", "create", "delete"},
+		},
+		MaxPlansPerParam: 4,
+	})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) != 4 {
+		t.Fatalf("len(plans) = %d, want empty slice plus three literal variants", len(plans))
+	}
+	wantExpressions := []string{
+		"[]string{}",
+		`[]string{"list"}`,
+		`[]string{"create"}`,
+		`[]string{"delete"}`,
+	}
+	for i, want := range wantExpressions {
+		expr, err := decodeExpression(plans[i].Literal)
+		if err != nil {
+			t.Fatalf("plan[%d] Literal is not a JSON string: %v (%s)", i, err, string(plans[i].Literal))
+		}
+		if expr != want {
+			t.Errorf("plan[%d] expression = %q, want %q", i, expr, want)
+		}
+	}
+}
+
 func TestPlanParam_StructWithRoundTripperField_EmitsNilInterfaceField(t *testing.T) {
 	param := structParam("fetcher", "pkg.Fetcher",
 		protocol.ObjectField{Name: "Transport", Type: protocol.TypeInfo{Kind: "opaque", Label: "http.RoundTripper"}},

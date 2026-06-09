@@ -4268,6 +4268,23 @@ echo '{{"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}}'
     }
 
     #[test]
+    fn literals_to_candidates_str_populates_string_slice_param() {
+        let params = vec![ParamInfo {
+            name: "args".into(),
+            typ: TypeInfo::Array {
+                element: Box::new(TypeInfo::Str),
+            },
+            type_name: Some("[]string".into()),
+        }];
+        let literals = vec![LiteralValue::Str {
+            value: "list".into(),
+        }];
+        let candidates = literals_to_candidate_inputs(&params, &literals);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0][0], json!(["list"]));
+    }
+
+    #[test]
     fn literals_to_candidates_empty_params_returns_empty() {
         let literals = vec![LiteralValue::Str {
             value: "test".into(),
