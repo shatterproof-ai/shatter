@@ -1712,14 +1712,23 @@ impl Language {
     }
 }
 
-/// Parse a target string: `<file>:<function>` or just `<file>`.
+fn split_target_function(target: &str) -> (&str, Option<&str>) {
+    match target.rsplit_once("::") {
+        Some((f, func)) if !func.is_empty() => (f, Some(func)),
+        _ => match target.rsplit_once(':') {
+            Some((f, func)) if !func.is_empty() => (f, Some(func)),
+            _ => (target, None),
+        },
+    }
+}
+
+/// Parse a target string: `<file>:<function>`, `<file>::<function>`, or just `<file>`.
 ///
-/// If there is no colon, the entire string is treated as a file path (analyze all functions).
+/// If there is no separator with a non-empty function, the entire string is
+/// treated as a file path (analyze all functions).
 pub(crate) fn parse_target(target: &str) -> Result<Target, String> {
-    let (file_str, function) = match target.rsplit_once(':') {
-        Some((f, func)) if !func.is_empty() => (f, Some(func.to_string())),
-        _ => (target, None),
-    };
+    let (file_str, function) = split_target_function(target);
+    let function = function.map(str::to_string);
 
     let file = PathBuf::from(file_str);
 
@@ -1811,10 +1820,7 @@ pub(crate) fn expand_target_args(args: &[String]) -> Result<Vec<String>, String>
     let mut seen_literals: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for arg in args {
-        let (file_part, func_part) = match arg.rsplit_once(':') {
-            Some((f, fn_)) if !fn_.is_empty() => (f, Some(fn_)),
-            _ => (arg.as_str(), None),
-        };
+        let (file_part, func_part) = split_target_function(arg);
 
         if let Some(fn_) = func_part
             && contains_function_glob_chars(fn_)
@@ -2054,6 +2060,17 @@ mod tests {
         let target = parse_target("pkg/math.go:Add").unwrap();
         assert_eq!(target.file, PathBuf::from("pkg/math.go"));
         assert_eq!(target.function.as_deref(), Some("Add"));
+        assert_eq!(target.language, Language::Go);
+    }
+
+    #[test]
+    fn parse_target_go_pointer_receiver_qualified_id() {
+        let target = parse_target("pkg/local_admin.go::(*localControlPlane).ListProfiles").unwrap();
+        assert_eq!(target.file, PathBuf::from("pkg/local_admin.go"));
+        assert_eq!(
+            target.function.as_deref(),
+            Some("(*localControlPlane).ListProfiles")
+        );
         assert_eq!(target.language, Language::Go);
     }
 
