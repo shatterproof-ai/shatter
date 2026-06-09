@@ -89,6 +89,43 @@ func TestClassifyFunction_HTTPClientDoDependencyStillNetwork(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_SplitHostPortDependencyIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "ParsesHostPort",
+		Dependencies: []ExternalDependency{
+			{Symbol: "net.SplitHostPort", SourceModule: "net", Kind: "call"},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("net.SplitHostPort should only parse a host-port string, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_ParseIPDependencyIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "ParsesIP",
+		Dependencies: []ExternalDependency{
+			{Symbol: "net.ParseIP", SourceModule: "net", Kind: "call"},
+		},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("net.ParseIP should only parse an IP string, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_NetDialDependencyStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "DialsNetwork",
+		Dependencies: []ExternalDependency{
+			{Symbol: "net.Dial", SourceModule: "net", Kind: "call"},
+		},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("expected net.Dial to remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_SubprocessDependencyIsClassified(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "Runs",

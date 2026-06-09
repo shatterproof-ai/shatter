@@ -272,6 +272,8 @@ func isPureDependency(d ExternalDependency) bool {
 	switch d.SourceModule {
 	case "net/http":
 		return isPureNetHTTPSymbol(d.Symbol)
+	case "net":
+		return isPureNetSymbol(d.Symbol)
 	default:
 		return false
 	}
@@ -294,8 +296,12 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 			return "", false
 		}
 		return ClassNetwork, true
-	case module == "net",
-		strings.HasPrefix(module, "golang.org/x/net"):
+	case module == "net":
+		if isPureNetSymbol(symbol) {
+			return "", false
+		}
+		return ClassNetwork, true
+	case strings.HasPrefix(module, "golang.org/x/net"):
 		return ClassNetwork, true
 	case module == "os/exec",
 		module == "syscall",
@@ -336,6 +342,15 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 func isPureNetHTTPSymbol(symbol string) bool {
 	switch strings.TrimPrefix(symbol, "http.") {
 	case "NewRequest", "NewRequestWithContext":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPureNetSymbol(symbol string) bool {
+	switch strings.TrimPrefix(symbol, "net.") {
+	case "ParseIP", "SplitHostPort":
 		return true
 	default:
 		return false
