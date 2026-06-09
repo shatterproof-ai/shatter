@@ -348,7 +348,7 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 
 func isPureNetHTTPSymbol(symbol string) bool {
 	switch strings.TrimPrefix(symbol, "http.") {
-	case "NewRequest", "NewRequestWithContext":
+	case "Error", "HandlerFunc", "NewRequest", "NewRequestWithContext", "NotFound":
 		return true
 	default:
 		return false

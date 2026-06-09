@@ -129,6 +129,35 @@ func TestClassifyFunction_HTTPClientDoDependencyStillNetwork(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_PureHTTPHandlerHelpersAreNotNetwork(t *testing.T) {
+	for _, symbol := range []string{"http.NotFound", "http.Error", "http.HandlerFunc"} {
+		t.Run(symbol, func(t *testing.T) {
+			fa := &FunctionAnalysis{
+				Name: "BuildsHandlerResponse",
+				Dependencies: []ExternalDependency{
+					{Symbol: symbol, SourceModule: "net/http", Kind: "call"},
+				},
+			}
+			if uses := classifyFunction(fa); len(uses) != 0 {
+				t.Fatalf("%s should only construct handler behavior against an in-memory writer, got %+v", symbol, uses)
+			}
+		})
+	}
+}
+
+func TestClassifyFunction_HTTPGetDependencyStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "FetchesURL",
+		Dependencies: []ExternalDependency{
+			{Symbol: "http.Get", SourceModule: "net/http", Kind: "call"},
+		},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("expected http.Get to remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_SplitHostPortDependencyIsNotNetwork(t *testing.T) {
 	fa := &FunctionAnalysis{
 		Name: "ParsesHostPort",
