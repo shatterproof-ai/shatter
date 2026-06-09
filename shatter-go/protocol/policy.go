@@ -170,13 +170,17 @@ func classifyParam(p ParamInfo) (ClassifiedUse, bool) {
 
 func isSafeRuntimeValueParam(label, typeName string) bool {
 	switch {
-	case label == "http.ResponseWriter" || typeName == "http.ResponseWriter":
+	case isHTTPResponseWriterType(label) || isHTTPResponseWriterType(typeName):
 		return true
 	case typeName == "*http.Request":
 		return true
 	default:
 		return false
 	}
+}
+
+func isHTTPResponseWriterType(typeName string) bool {
+	return strings.TrimLeft(typeName, "*[]") == "http.ResponseWriter"
 }
 
 func classifyReturnType(t TypeInfo) (ClassifiedUse, bool) {
@@ -210,6 +214,9 @@ func paramTypeClass(label string) (SideEffectClass, bool) {
 }
 
 func typeInfoClass(t TypeInfo) (SideEffectClass, string, bool) {
+	if isHTTPResponseWriterType(t.Label) {
+		return "", "", false
+	}
 	if t.Label != "" {
 		if class, ok := paramTypeClass(t.Label); ok {
 			return class, t.Label, true
