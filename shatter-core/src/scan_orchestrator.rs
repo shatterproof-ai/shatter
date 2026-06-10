@@ -4205,7 +4205,7 @@ pub async fn parallel_scan_with_progress(
                 file: file.clone(),
                 max_iterations: Some(config.max_iterations_per_function),
                 observer_pool: 1,
-                observer_frontend_config: None,
+                observer_frontend_config: Some((*fe_config_persistent).clone()),
                 candidate_queue_capacity: None,
                 seed: config.seed,
                 mocks,

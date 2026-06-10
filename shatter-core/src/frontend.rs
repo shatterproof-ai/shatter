@@ -263,13 +263,26 @@ impl Frontend {
     /// prevents ID mismatch errors when the subprocess finishes processing a
     /// timed-out request after the caller has moved on.
     pub async fn send(&mut self, command: ProtoCommand) -> Result<Response, FrontendError> {
+        self.send_with_timeout(command, self.request_timeout).await
+    }
+
+    /// Send a command with an explicit timeout for this request.
+    ///
+    /// This is used for request classes that need a stricter local deadline
+    /// than the frontend's general request timeout. A timeout still taints the
+    /// frontend because the response stream can no longer be trusted.
+    pub async fn send_with_timeout(
+        &mut self,
+        command: ProtoCommand,
+        request_timeout: Duration,
+    ) -> Result<Response, FrontendError> {
         let span = request_span(&command);
 
         // A tainted frontend has a misaligned request/response pipe — refuse
         // further sends immediately so callers get a clean Timeout instead of
         // an IdMismatch from a stale buffered response.
         if self.tainted {
-            return Err(FrontendError::Timeout(self.request_timeout));
+            return Err(FrontendError::Timeout(request_timeout));
         }
 
         let id = self.next_id;
@@ -291,7 +304,6 @@ impl Frontend {
         // Phase 2: send the new request and read its response.
         // Copy request_timeout before the async block to avoid holding a
         // shared borrow on `self` while the block captures a mutable borrow.
-        let request_timeout = self.request_timeout;
         let write_and_read = async {
             self.stdin
                 .write_all(json.as_bytes())
@@ -315,7 +327,7 @@ impl Frontend {
                 // an IdMismatch from the stale buffered response.
                 self.tainted = true;
                 self.pending_drain += 1;
-                Err(FrontendError::Timeout(self.request_timeout))
+                Err(FrontendError::Timeout(request_timeout))
             }
         }
     }
