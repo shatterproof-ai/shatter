@@ -4393,6 +4393,104 @@ mod tests {
             .expect("spawn recording frontend")
     }
 
+    fn slow_generator_frontend_config(
+        log_path: &std::path::Path,
+    ) -> (tempfile::TempDir, crate::frontend::FrontendConfig) {
+        use crate::frontend::FrontendConfig;
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        let dir = tempfile::Builder::new()
+            .prefix("shatter-slow-generator-")
+            .tempdir()
+            .expect("create slow generator tempdir");
+        let script_path = dir.path().join("frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import sys
+import time
+
+PROTOCOL_VERSION = "0.1.0"
+log_path = sys.argv[1]
+
+def respond(payload):
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    request = json.loads(line)
+    request_id = request["id"]
+    command = request["command"]
+    if command == "handshake":
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "handshake",
+            "frontend_version": PROTOCOL_VERSION,
+            "language": "slow-generator",
+            "capabilities": ["execute", "instrument", "generate"],
+        })
+    elif command == "instrument":
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "instrument",
+            "instrumented": True,
+            "output_file": None,
+        })
+    elif command == "generate":
+        time.sleep(2.0)
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "generate",
+            "value": 42,
+            "generator_id": "slow",
+        })
+    elif command == "execute":
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write("execute\n")
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "execute",
+            "return_value": None,
+            "thrown_error": None,
+            "branch_path": [{"branch_id": 1, "line": 3, "taken": True}],
+            "lines_executed": [1, 2, 3],
+            "calls_to_external": [],
+            "path_constraints": [],
+            "side_effects": [],
+            "performance": {"wall_time_ms": 0.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0},
+        })
+    elif command == "shutdown":
+        respond({"protocol_version": PROTOCOL_VERSION, "id": request_id, "status": "shutdown_ack"})
+        break
+    else:
+        respond({
+            "protocol_version": PROTOCOL_VERSION,
+            "id": request_id,
+            "status": "error",
+            "code": "invalid_request",
+            "message": "unknown command",
+            "details": None,
+        })
+"#,
+        )
+        .expect("write slow generator frontend");
+
+        let mut config = FrontendConfig::new(PathBuf::from("python3"));
+        config.args = vec![
+            script_path.to_string_lossy().into_owned(),
+            log_path.to_string_lossy().into_owned(),
+        ];
+        config.request_timeout = Duration::from_secs(5);
+        (dir, config)
+    }
+
     fn observer_log_path(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::Builder::new()
             .prefix("shatter-observer-test-")
@@ -5503,6 +5601,69 @@ for line in sys.stdin:
         assert_eq!(result.iterations, 2);
         assert_eq!(result.unique_paths, 1);
         frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn slow_generator_prefetch_falls_back_without_tainting_main_frontend() {
+        let (_log_dir, log_path) = observer_log_path("slow-generator");
+        let (_frontend_dir, frontend_config) = slow_generator_frontend_config(&log_path);
+        let mut frontend = Frontend::spawn(&frontend_config)
+            .await
+            .expect("spawn slow generator frontend");
+        let analysis = stub_analysis();
+        let caps = FrontendCapabilities::from_raw(&capabilities_with(&["generate"]));
+        let config = ExploreConfig {
+            file: "test.rs".into(),
+            max_iterations: Some(1),
+            observer_pool: 1,
+            observer_frontend_config: Some(frontend_config),
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![ValueSource::CustomGenerator {
+                generator_name: "x".into(),
+                param_name: Some("x".into()),
+                generator_file: "gen.rs".into(),
+                kind: crate::protocol::GeneratorKind::ParamName,
+            }],
+            capabilities: caps,
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("slow prefetch should fall back to built-in execution");
+        let _ = frontend.shutdown().await;
+
+        assert_eq!(
+            result.iterations, 1,
+            "slow custom generator prefetch must not stop built-in fallback execution"
+        );
+        assert_eq!(result.unique_paths, 1);
+        let log = std::fs::read_to_string(&log_path).expect("execute log should exist");
+        assert_eq!(
+            log.lines().filter(|line| *line == "execute").count(),
+            1,
+            "main frontend should remain usable for Execute after prefetch timeout"
+        );
     }
 
     #[tokio::test]
