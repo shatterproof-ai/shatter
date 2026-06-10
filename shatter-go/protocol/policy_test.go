@@ -173,6 +173,33 @@ func TestClassifyFunction_HTTPResponseLookalikeWithClientStillNetwork(t *testing
 	}
 }
 
+func TestClassifyFunction_HTTPResponseLookalikeWithNetworkFieldStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "ReturnsSameShapeLookalike",
+		ReturnType: TypeInfo{Kind: "object", Fields: []ObjectField{
+			{Name: "Status", Type: TypeInfo{Kind: "str"}},
+			{Name: "StatusCode", Type: TypeInfo{Kind: "int"}},
+			{Name: "Header", Type: TypeInfo{Kind: "object"}},
+			{Name: "Body", Type: TypeInfo{Kind: "opaque", Label: "http.Client"}},
+			{Name: "ContentLength", Type: TypeInfo{Kind: "int"}},
+			{Name: "TransferEncoding", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "str"}}},
+			{Name: "Close", Type: TypeInfo{Kind: "bool"}},
+			{Name: "Uncompressed", Type: TypeInfo{Kind: "bool"}},
+			{Name: "Trailer", Type: TypeInfo{Kind: "object"}},
+			{Name: "Request", Type: TypeInfo{Kind: "unknown", Label: "*http.Request"}},
+			{Name: "TLS", Type: TypeInfo{Kind: "unknown"}},
+			{Name: "VerifiedChains", Type: TypeInfo{Kind: "unknown"}},
+			{Name: "SignedCertificateTimestamps", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+			{Name: "OCSPResponse", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+			{Name: "TLSUnique", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+		}},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("http.Response lookalikes with network-capable field substitutions should remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_PureHTTPHandlerHelpersAreNotNetwork(t *testing.T) {
 	for _, symbol := range []string{"http.NotFound", "http.Error", "http.HandlerFunc"} {
 		t.Run(symbol, func(t *testing.T) {

@@ -216,28 +216,39 @@ func isExpandedHTTPResponseObject(t TypeInfo) bool {
 	if t.Kind != "object" {
 		return false
 	}
-	fields := map[string]bool{}
+	fields := map[string]TypeInfo{}
 	for _, field := range t.Fields {
-		fields[field.Name] = true
+		fields[field.Name] = field.Type
 	}
 	if len(fields) != 15 {
 		return false
 	}
-	return fields["Status"] &&
-		fields["StatusCode"] &&
-		fields["Header"] &&
-		fields["Body"] &&
-		fields["ContentLength"] &&
-		fields["TransferEncoding"] &&
-		fields["Close"] &&
-		fields["Uncompressed"] &&
-		fields["Trailer"] &&
-		fields["Request"] &&
-		fields["TLS"] &&
-		fields["VerifiedChains"] &&
-		fields["SignedCertificateTimestamps"] &&
-		fields["OCSPResponse"] &&
-		fields["TLSUnique"]
+	for _, name := range []string{
+		"Status",
+		"StatusCode",
+		"Header",
+		"Body",
+		"ContentLength",
+		"TransferEncoding",
+		"Close",
+		"Uncompressed",
+		"Trailer",
+		"Request",
+		"TLS",
+		"VerifiedChains",
+		"SignedCertificateTimestamps",
+		"OCSPResponse",
+		"TLSUnique",
+	} {
+		fieldType, ok := fields[name]
+		if !ok {
+			return false
+		}
+		if _, _, classified := typeInfoClass(fieldType); classified {
+			return false
+		}
+	}
+	return true
 }
 
 // paramTypeClass maps a parameter type label (e.g. "sql.DB") to the
