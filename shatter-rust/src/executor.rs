@@ -3411,7 +3411,7 @@ fn inject_lib_module_declaration(
 /// be present as optional deps gated by the feature.
 ///
 /// Injection strategy avoids duplicate TOML section headers:
-/// - Appends a `[features]` block if no feature marker is present.
+/// - Extends an existing `[features]` block when present, otherwise appends one.
 /// - Appends `[dependencies]` only when no `[dependencies]` section exists yet;
 ///   otherwise inserts dep lines directly after the existing header.
 fn inject_crate_bridge_feature(
@@ -3468,12 +3468,35 @@ fn inject_crate_bridge_feature(
             feature_deps.push("\"dep:shatter-rust-runtime\"");
         }
         let dep_list = feature_deps.join(", ");
-        new_content.push_str(&format!(
-            "\n[features]\nshatter-crate-bridge = [{dep_list}]\n"
-        ));
+        let feature_line = format!("shatter-crate-bridge = [{dep_list}]\n");
+        if let Some(insert_at) = section_header_insert_after(&new_content, "[features]") {
+            new_content.insert_str(insert_at, &feature_line);
+        } else {
+            new_content.push_str("\n[features]\n");
+            new_content.push_str(&feature_line);
+        }
     }
 
     std::fs::write(cargo_toml_path, new_content).map_err(ExecuteError::IoError)
+}
+
+fn section_header_insert_after(content: &str, header: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        if line.trim() == header {
+            return Some(offset + line.len());
+        }
+        offset += line.len();
+    }
+    if content
+        .lines()
+        .last()
+        .is_some_and(|line| line.trim() == header)
+    {
+        Some(content.len())
+    } else {
+        None
+    }
 }
 
 /// Generate the `__shatter.rs` wrapper module content.
@@ -9886,6 +9909,41 @@ fn enabled(config: Config) -> bool {
     }
 
     #[test]
+    fn inject_crate_bridge_feature_extends_existing_features_section() {
+        let dir = std::env::temp_dir().join("shatter-test-inject-existing-feat");
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml_path = dir.join("Cargo.toml");
+        std::fs::write(
+            &toml_path,
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n# [features]\n[dependencies]\nserde_json = \"1\"\n\n[features]\ncoverage-denominators = []\n",
+        )
+        .unwrap();
+
+        inject_crate_bridge_feature(&toml_path, std::path::Path::new("/fake/runtime")).unwrap();
+
+        let content = std::fs::read_to_string(&toml_path).unwrap();
+        let features_header_count = content
+            .lines()
+            .filter(|line| line.trim() == "[features]")
+            .count();
+        assert_eq!(
+            features_header_count, 1,
+            "must not duplicate [features] headers:\n{content}"
+        );
+        let features_section = section_body(&content, "[features]");
+        assert!(
+            features_section.contains("coverage-denominators = []"),
+            "must preserve existing features"
+        );
+        assert!(
+            features_section.contains("shatter-crate-bridge"),
+            "must add shatter feature"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn inject_crate_bridge_feature_idempotent() {
         let dir = std::env::temp_dir().join("shatter-test-inject-feat-idem");
         std::fs::create_dir_all(&dir).unwrap();
@@ -9905,6 +9963,25 @@ fn enabled(config: Config) -> bool {
         assert_eq!(count, 1, "feature must appear exactly once, got {count}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn section_body(content: &str, header: &str) -> String {
+        let mut in_section = false;
+        let mut lines = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed == header {
+                in_section = true;
+                continue;
+            }
+            if in_section && trimmed.starts_with('[') {
+                break;
+            }
+            if in_section {
+                lines.push(line);
+            }
+        }
+        lines.join("\n")
     }
 
     #[test]
