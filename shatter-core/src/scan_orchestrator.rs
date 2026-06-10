@@ -12603,6 +12603,60 @@ defaults:
     }
 
     #[test]
+    fn status_targets_do_not_link_missing_failure_artifacts() {
+        let scan_root = tempfile::tempdir().expect("scan root");
+        let mut summary = new_scan_summary("missing-artifacts", 2);
+        summary_record_failed(
+            &mut summary,
+            "pkg/fail.go::FailTarget",
+            1,
+            "error: failed to spawn frontend: No such file or directory (os error 2)",
+            Duration::from_secs(1),
+        );
+        summary_record_skipped(
+            &mut summary,
+            "pkg/unsupported.go::UnsupportedTarget",
+            2,
+            "unsupported: opaque parameter",
+            SkipCategory::Unsupported,
+            Duration::from_secs(1),
+        );
+
+        let file_map = HashMap::from([
+            (
+                "pkg/fail.go::FailTarget".to_string(),
+                "pkg/fail.go".to_string(),
+            ),
+            (
+                "pkg/unsupported.go::UnsupportedTarget".to_string(),
+                "pkg/unsupported.go".to_string(),
+            ),
+        ]);
+        let targets =
+            status_target_inputs_from_scan_summary(scan_root.path(), &summary, &file_map, &[]);
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].target_id, "pkg/fail.go::FailTarget");
+        assert!(
+            targets[0].artifact_path.is_none(),
+            "failed targets without function artifacts must not point status export at missing files"
+        );
+        assert_eq!(
+            targets[0].unavailable_reason.as_deref(),
+            Some("error: failed to spawn frontend: No such file or directory (os error 2)")
+        );
+        assert_eq!(targets[1].target_id, "pkg/unsupported.go::UnsupportedTarget");
+        assert!(
+            targets[1].artifact_path.is_none(),
+            "unsupported targets without function artifacts must not point status export at missing files"
+        );
+        assert_eq!(
+            targets[1].unavailable_reason.as_deref(),
+            Some("unsupported: opaque parameter")
+        );
+    }
+
+    #[test]
     fn build_summary_from_scan_result_captures_all_functions() {
         let results = vec![
             make_function_result("fn_a", vec![(vec![], vec![], make_execute_result(1))]),
