@@ -111,8 +111,11 @@ pub struct ExploreConfig {
     /// frontend subprocesses; the public CLI/config knob is intentionally
     /// deferred to str-frc.6.
     pub observer_pool: usize,
-    /// Frontend spawn template for observer subprocesses when
-    /// `observer_pool > 1`.
+    /// Frontend spawn template for helper subprocesses.
+    ///
+    /// The observer pool uses this when `observer_pool > 1`; custom generator
+    /// prefetch also uses it to isolate short prefetch timeouts from the main
+    /// frontend used for prepare/execute.
     pub observer_frontend_config: Option<FrontendConfig>,
     /// Override the bounded candidate queue capacity used between the
     /// candidate generator and the observer pool. `None` keeps the auto-derived
@@ -1079,23 +1082,8 @@ pub async fn explore_function(
         .iter()
         .any(|s| matches!(s, ValueSource::CustomGenerator { .. }));
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
-
-    let mut prefetched = if use_generators {
-        prefetch_custom_values(
-            &config.value_sources,
-            frontend,
-            custom_generator_prefetch_budget(&config.value_sources, config.max_iterations),
-            config.project_root.clone(),
-        )
-        .instrument(tracing::info_span!("input_gen.prefetch"))
-        .await
-        .unwrap_or_else(|e| {
-            log::debug!("prefetch failed, falling back to built-in: {e}");
-            PrefetchedValues::new()
-        })
-    } else {
-        PrefetchedValues::new()
-    };
+    let (mut prefetched, use_generators) =
+        prefetch_custom_values_for_explore(config, frontend, use_generators).await;
 
     // ObservationAggregator owns the per-execution merge state previously
     // inlined in this function (paths, branches, lines, discoveries,
@@ -1953,6 +1941,58 @@ fn max_custom_generator_slots_per_generator(sources: &[ValueSource]) -> usize {
     slots_by_generator.into_values().max().unwrap_or(0)
 }
 
+async fn prefetch_custom_values_for_explore(
+    config: &ExploreConfig,
+    frontend: &mut Frontend,
+    use_generators: bool,
+) -> (PrefetchedValues, bool) {
+    if !use_generators {
+        return (PrefetchedValues::new(), false);
+    }
+
+    let count = custom_generator_prefetch_budget(&config.value_sources, config.max_iterations);
+    let result = if let Some(prefetch_config) = config.observer_frontend_config.as_ref() {
+        match Frontend::spawn(prefetch_config).await {
+            Ok(mut prefetch_frontend) => {
+                let result = prefetch_custom_values(
+                    &config.value_sources,
+                    &mut prefetch_frontend,
+                    count,
+                    config.project_root.clone(),
+                )
+                .instrument(tracing::info_span!("input_gen.prefetch"))
+                .await;
+                let _ = prefetch_frontend.shutdown().await;
+                result
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        prefetch_custom_values(
+            &config.value_sources,
+            frontend,
+            count,
+            config.project_root.clone(),
+        )
+        .instrument(tracing::info_span!("input_gen.prefetch"))
+        .await
+    };
+
+    match result {
+        Ok(prefetched) if custom_generator_values_available(&config.value_sources, &prefetched) => {
+            (prefetched, true)
+        }
+        Ok(prefetched) => {
+            log::debug!("prefetch returned incomplete custom values, falling back to built-in");
+            (prefetched, false)
+        }
+        Err(e) => {
+            log::debug!("prefetch failed, falling back to built-in: {e}");
+            (PrefetchedValues::new(), false)
+        }
+    }
+}
+
 fn custom_generator_values_available(
     sources: &[ValueSource],
     prefetched: &PrefetchedValues,
@@ -2069,22 +2109,8 @@ async fn explore_function_with_observer_pool(
         .iter()
         .any(|s| matches!(s, ValueSource::CustomGenerator { .. }));
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
-    let mut prefetched = if use_generators {
-        prefetch_custom_values(
-            &config.value_sources,
-            frontend,
-            custom_generator_prefetch_budget(&config.value_sources, config.max_iterations),
-            config.project_root.clone(),
-        )
-        .instrument(tracing::info_span!("input_gen.prefetch"))
-        .await
-        .unwrap_or_else(|e| {
-            log::debug!("prefetch failed, falling back to built-in: {e}");
-            PrefetchedValues::new()
-        })
-    } else {
-        PrefetchedValues::new()
-    };
+    let (mut prefetched, use_generators) =
+        prefetch_custom_values_for_explore(config, frontend, use_generators).await;
 
     let mut aggregator =
         crate::observation_aggregator::ObservationAggregator::new(config.loop_buckets.clone());
