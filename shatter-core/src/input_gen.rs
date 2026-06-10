@@ -6,10 +6,13 @@
 
 use rand::Rng;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 use crate::orchestrator::FrontendCapabilities;
 use crate::string_mutation;
 use crate::types::{ComplexKind, TypeInfo};
+
+const GENERATOR_PREFETCH_TIMEOUT: Duration = Duration::from_secs(1);
 
 // ---------------------------------------------------------------------------
 // Param-name heuristic string generation
@@ -213,9 +216,7 @@ fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
         TypeInfo::Array { .. } => value.is_array(),
         TypeInfo::Object { .. } => value.is_object(),
         TypeInfo::Nullable { inner } => value.is_null() || value_matches_type_shape(value, inner),
-        TypeInfo::Union { variants } => variants
-            .iter()
-            .any(|v| value_matches_type_shape(value, v)),
+        TypeInfo::Union { variants } => variants.iter().any(|v| value_matches_type_shape(value, v)),
         TypeInfo::Complex {
             kind: ComplexKind::GoByte,
             ..
@@ -728,12 +729,12 @@ fn generate_go_duration(rng: &mut impl Rng) -> Value {
     const NS_PER_SEC: i64 = 1_000_000_000;
     let choice: u8 = rng.random_range(0..7);
     let ns: i64 = match choice {
-        0 => 0,                       // zero duration
-        1 => NS_PER_MS,               // 1ms
-        2 => NS_PER_SEC,              // 1s
-        3 => -NS_PER_SEC,             // -1s
-        4 => 5 * NS_PER_SEC,          // 5s
-        5 => 100 * NS_PER_MS,         // 100ms
+        0 => 0,               // zero duration
+        1 => NS_PER_MS,       // 1ms
+        2 => NS_PER_SEC,      // 1s
+        3 => -NS_PER_SEC,     // -1s
+        4 => 5 * NS_PER_SEC,  // 5s
+        5 => 100 * NS_PER_MS, // 100ms
         _ => rng.random_range(-10 * NS_PER_SEC..=10 * NS_PER_SEC),
     };
     json!(ns)
@@ -1201,13 +1202,16 @@ pub async fn prefetch_custom_values(
     for (file, name, kind) in &commands {
         for _ in 0..count {
             let response = frontend
-                .send(crate::protocol::Command::Generate {
-                    file: file.clone(),
-                    name: name.clone(),
-                    kind: kind.clone(),
-                    recipe: None,
-                    project_root: project_root.clone(),
-                })
+                .send_with_timeout(
+                    crate::protocol::Command::Generate {
+                        file: file.clone(),
+                        name: name.clone(),
+                        kind: kind.clone(),
+                        recipe: None,
+                        project_root: project_root.clone(),
+                    },
+                    GENERATOR_PREFETCH_TIMEOUT,
+                )
                 .await?;
 
             match response.result {
@@ -1322,19 +1326,24 @@ pub fn overlay_custom_inputs(
         };
 
         let file_str = generator_file.display().to_string();
-        let value = prefetched.take(&file_str, generator_name).unwrap_or_else(|| {
-            let heuristic = if matches!(param.typ, TypeInfo::Str) {
-                heuristic_string_for_name(&param.name).or_else(|| {
-                    param
-                        .type_name
-                        .as_deref()
-                        .and_then(heuristic_string_for_name)
-                })
-            } else {
-                None
-            };
-            heuristic.map_or_else(|| generate_random_value(&param.typ, rng, caps), |v| json!(v))
-        });
+        let value = prefetched
+            .take(&file_str, generator_name)
+            .unwrap_or_else(|| {
+                let heuristic = if matches!(param.typ, TypeInfo::Str) {
+                    heuristic_string_for_name(&param.name).or_else(|| {
+                        param
+                            .type_name
+                            .as_deref()
+                            .and_then(heuristic_string_for_name)
+                    })
+                } else {
+                    None
+                };
+                heuristic.map_or_else(
+                    || generate_random_value(&param.typ, rng, caps),
+                    |v| json!(v),
+                )
+            });
 
         if let Some(slot) = inputs.get_mut(idx) {
             *slot = value;
@@ -2654,8 +2663,20 @@ fn crossover_array(
             (b.clone(), a.clone())
         };
         return (
-            coerce_value_to_type(&c1, &TypeInfo::Array { element: Box::new(element_type.clone()) }, rng),
-            coerce_value_to_type(&c2, &TypeInfo::Array { element: Box::new(element_type.clone()) }, rng),
+            coerce_value_to_type(
+                &c1,
+                &TypeInfo::Array {
+                    element: Box::new(element_type.clone()),
+                },
+                rng,
+            ),
+            coerce_value_to_type(
+                &c2,
+                &TypeInfo::Array {
+                    element: Box::new(element_type.clone()),
+                },
+                rng,
+            ),
         );
     };
 
@@ -4154,7 +4175,10 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             None,
         );
 
-        assert_eq!(inputs[0], json!({"__shatter_native": true, "handle": "h_1"}));
+        assert_eq!(
+            inputs[0],
+            json!({"__shatter_native": true, "handle": "h_1"})
+        );
         assert_eq!(inputs[1], json!(7));
     }
 
