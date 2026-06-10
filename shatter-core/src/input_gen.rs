@@ -4002,6 +4002,51 @@ echo '{{"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}}'
         assert_eq!(request["project_root"], project_root.display().to_string());
     }
 
+    #[tokio::test]
+    async fn prefetch_custom_values_times_out_slow_generators_quickly() {
+        use crate::frontend::{Frontend, FrontendConfig, FrontendError};
+        use std::io::Write;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("slow-generate.sh");
+        let mut script = std::fs::File::create(&script_path).expect("create script");
+        writeln!(
+            script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+IFS= read -r handshake
+echo '{{"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"slow","capabilities":["generate"]}}'
+IFS= read -r _generate
+sleep 2
+echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"generator_id":"slow","recipe":{{"ok":true}}}}'
+"#
+        )
+        .expect("write script");
+
+        let mut config = FrontendConfig::new(std::path::PathBuf::from("bash"));
+        config.args = vec![script_path.display().to_string()];
+        config.request_timeout = Duration::from_secs(5);
+
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn frontend");
+        let sources = vec![ValueSource::CustomGenerator {
+            generator_name: "current".into(),
+            param_name: Some("current".into()),
+            generator_file: "/gen/current.rs".into(),
+            kind: crate::protocol::GeneratorKind::ParamName,
+        }];
+
+        let started = Instant::now();
+        let error = prefetch_custom_values(&sources, &mut frontend, 1, None)
+            .await
+            .expect_err("slow generator prefetch should time out");
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "generator prefetch should use the short prefetch timeout, not the full request timeout"
+        );
+        assert!(matches!(error, FrontendError::Timeout(_)));
+    }
+
     #[test]
     fn prefetched_values_insert_and_take() {
         let mut store = PrefetchedValues::new();
