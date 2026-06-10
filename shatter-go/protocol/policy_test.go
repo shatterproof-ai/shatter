@@ -129,6 +129,77 @@ func TestClassifyFunction_HTTPClientDoDependencyStillNetwork(t *testing.T) {
 	}
 }
 
+func TestClassifyFunction_InertRoundTripSignatureIsNotNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "(inertTransport).RoundTrip",
+		Params: []ParamInfo{
+			{Name: "req", Type: TypeInfo{Kind: "opaque", Label: "http.Request"}, TypeName: ptr("*http.Request")},
+		},
+		ReturnType: TypeInfo{Kind: "object", Fields: []ObjectField{
+			{Name: "_0", Type: TypeInfo{Kind: "nullable", Inner: &TypeInfo{Kind: "opaque", Label: "*http.Response"}}},
+			{Name: "_1", Type: TypeInfo{Kind: "complex", ComplexKind: "error"}},
+		}},
+	}
+	if uses := classifyFunction(fa); len(uses) != 0 {
+		t.Fatalf("dependency-free inert RoundTrip signature should not be policy-denied, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_HTTPResponseLookalikeWithClientStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "ReturnsLookalike",
+		ReturnType: TypeInfo{Kind: "object", Fields: []ObjectField{
+			{Name: "Status", Type: TypeInfo{Kind: "str"}},
+			{Name: "StatusCode", Type: TypeInfo{Kind: "int"}},
+			{Name: "Header", Type: TypeInfo{Kind: "object"}},
+			{Name: "Body", Type: TypeInfo{Kind: "unknown", Label: "io.ReadCloser"}},
+			{Name: "ContentLength", Type: TypeInfo{Kind: "int"}},
+			{Name: "TransferEncoding", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "str"}}},
+			{Name: "Close", Type: TypeInfo{Kind: "bool"}},
+			{Name: "Uncompressed", Type: TypeInfo{Kind: "bool"}},
+			{Name: "Trailer", Type: TypeInfo{Kind: "object"}},
+			{Name: "Request", Type: TypeInfo{Kind: "unknown", Label: "*http.Request"}},
+			{Name: "TLS", Type: TypeInfo{Kind: "unknown"}},
+			{Name: "VerifiedChains", Type: TypeInfo{Kind: "unknown"}},
+			{Name: "SignedCertificateTimestamps", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+			{Name: "OCSPResponse", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+			{Name: "TLSUnique", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+			{Name: "Client", Type: TypeInfo{Kind: "opaque", Label: "http.Client"}},
+		}},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("http.Response lookalikes with extra network-capable fields should remain network-classified, got %+v", uses)
+	}
+}
+
+func TestClassifyFunction_HTTPResponseLookalikeWithNetworkFieldStillNetwork(t *testing.T) {
+	fa := &FunctionAnalysis{
+		Name: "ReturnsSameShapeLookalike",
+		ReturnType: TypeInfo{Kind: "object", Fields: []ObjectField{
+			{Name: "Status", Type: TypeInfo{Kind: "str"}},
+			{Name: "StatusCode", Type: TypeInfo{Kind: "int"}},
+			{Name: "Header", Type: TypeInfo{Kind: "object"}},
+			{Name: "Body", Type: TypeInfo{Kind: "opaque", Label: "http.Client"}},
+			{Name: "ContentLength", Type: TypeInfo{Kind: "int"}},
+			{Name: "TransferEncoding", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "str"}}},
+			{Name: "Close", Type: TypeInfo{Kind: "bool"}},
+			{Name: "Uncompressed", Type: TypeInfo{Kind: "bool"}},
+			{Name: "Trailer", Type: TypeInfo{Kind: "object"}},
+			{Name: "Request", Type: TypeInfo{Kind: "unknown", Label: "*http.Request"}},
+			{Name: "TLS", Type: TypeInfo{Kind: "unknown"}},
+			{Name: "VerifiedChains", Type: TypeInfo{Kind: "unknown"}},
+			{Name: "SignedCertificateTimestamps", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+			{Name: "OCSPResponse", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+			{Name: "TLSUnique", Type: TypeInfo{Kind: "array", Element: &TypeInfo{Kind: "complex", ComplexKind: "go_byte"}}},
+		}},
+	}
+	uses := classifyFunction(fa)
+	if len(uses) != 1 || uses[0].Class != ClassNetwork {
+		t.Fatalf("http.Response lookalikes with network-capable field substitutions should remain network-classified, got %+v", uses)
+	}
+}
+
 func TestClassifyFunction_PureHTTPHandlerHelpersAreNotNetwork(t *testing.T) {
 	for _, symbol := range []string{"http.NotFound", "http.Error", "http.HandlerFunc"} {
 		t.Run(symbol, func(t *testing.T) {
@@ -539,6 +610,15 @@ func TestExecute_DefaultPolicy_AllowsResponseWriterRuntimeValueTarget(t *testing
 	})
 	if resp.Outcome != nil && resp.Outcome.Status == OutcomeStatusSkippedByPolicy {
 		t.Fatalf("http.ResponseWriter should reach runtime-value planning/execution, got skipped_by_policy: %v", resp.Outcome.ShortReason)
+	}
+}
+
+func TestExecute_DefaultPolicy_AllowsInertRoundTripTarget(t *testing.T) {
+	resp := runExecuteWithLoader(t, "testdata/opaque.go", "(inertTransport).RoundTrip", func(string) (config.File, error) {
+		return config.File{}, nil
+	})
+	if resp.Outcome != nil && resp.Outcome.Status == OutcomeStatusSkippedByPolicy {
+		t.Fatalf("inert RoundTrip should reach execution, got skipped_by_policy: %v", resp.Outcome.ShortReason)
 	}
 }
 

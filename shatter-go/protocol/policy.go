@@ -172,7 +172,7 @@ func isSafeRuntimeValueParam(label, typeName string) bool {
 	switch {
 	case isHTTPResponseWriterType(label) || isHTTPResponseWriterType(typeName):
 		return true
-	case typeName == "*http.Request":
+	case isHTTPRequestType(label) || isHTTPRequestType(typeName):
 		return true
 	default:
 		return false
@@ -192,6 +192,63 @@ func classifyReturnType(t TypeInfo) (ClassifiedUse, bool) {
 		}, true
 	}
 	return ClassifiedUse{}, false
+}
+
+func isSafeHTTPRuntimeValueType(t TypeInfo) bool {
+	if isHTTPResponseWriterType(t.Label) || isHTTPRequestType(t.Label) || isHTTPResponseType(t.Label) {
+		return true
+	}
+	if t.Inner != nil && isSafeHTTPRuntimeValueType(*t.Inner) {
+		return true
+	}
+	return isExpandedHTTPResponseObject(t)
+}
+
+func isHTTPRequestType(typeName string) bool {
+	return strings.TrimLeft(typeName, "*[]") == "http.Request"
+}
+
+func isHTTPResponseType(typeName string) bool {
+	return strings.TrimLeft(typeName, "*[]") == "http.Response"
+}
+
+func isExpandedHTTPResponseObject(t TypeInfo) bool {
+	if t.Kind != "object" {
+		return false
+	}
+	fields := map[string]TypeInfo{}
+	for _, field := range t.Fields {
+		fields[field.Name] = field.Type
+	}
+	if len(fields) != 15 {
+		return false
+	}
+	for _, name := range []string{
+		"Status",
+		"StatusCode",
+		"Header",
+		"Body",
+		"ContentLength",
+		"TransferEncoding",
+		"Close",
+		"Uncompressed",
+		"Trailer",
+		"Request",
+		"TLS",
+		"VerifiedChains",
+		"SignedCertificateTimestamps",
+		"OCSPResponse",
+		"TLSUnique",
+	} {
+		fieldType, ok := fields[name]
+		if !ok {
+			return false
+		}
+		if _, _, classified := typeInfoClass(fieldType); classified {
+			return false
+		}
+	}
+	return true
 }
 
 // paramTypeClass maps a parameter type label (e.g. "sql.DB") to the
@@ -214,7 +271,7 @@ func paramTypeClass(label string) (SideEffectClass, bool) {
 }
 
 func typeInfoClass(t TypeInfo) (SideEffectClass, string, bool) {
-	if isHTTPResponseWriterType(t.Label) {
+	if isSafeHTTPRuntimeValueType(t) {
 		return "", "", false
 	}
 	if t.Label != "" {

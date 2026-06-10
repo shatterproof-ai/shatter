@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -96,6 +97,14 @@ func DecodePlainInterface(r *http.Request, v any) error {
 // Post-str-gxjs *http.Request short-circuits to a synthesizable kind.
 func AcceptsRequestPointer(r *http.Request) string {
 	return r.Method
+}
+
+var errInert = errors.New("inert transport performs no I/O")
+
+type inertTransport struct{}
+
+func (inertTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errInert
 }
 
 // AcceptsIOReadCloser takes an io.ReadCloser — historically opaque,
