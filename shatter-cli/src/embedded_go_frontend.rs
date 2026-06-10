@@ -67,8 +67,8 @@ fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
     // peer still held it open for writing.
     write_executable_atomic(cache_dir, &binary_path)?;
 
-    // Clean up old binaries (different hash)
-    cleanup_old_binaries(cache_dir, &binary_path);
+    // Keep other versioned binaries in place. A long-running scan from another
+    // CLI build may still need its embedded frontend path for respawns.
 
     Ok(binary_path)
 }
@@ -134,27 +134,6 @@ fn dirs_cache_fallback() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join(".cache"))
         .ok_or_else(|| "cannot determine home directory (HOME not set)".to_string())
-}
-
-/// Remove old Go frontend binaries that don't match the current hash.
-fn cleanup_old_binaries(cache_dir: &Path, current: &Path) {
-    let entries = match fs::read_dir(cache_dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path == current {
-            continue;
-        }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.starts_with("go-frontend-")
-            && !name.ends_with(".tmp")
-        {
-            let _ = fs::remove_file(&path);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -280,22 +259,24 @@ mod tests {
     }
 
     #[test]
-    fn extract_to_cleans_up_old_binaries() {
+    fn extract_to_preserves_other_versioned_binaries() {
         let tmp = isolated_temp_dir("cleanup");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
-        // Plant a fake old binary
-        let old_binary = tmp
+        // Plant a fake binary from another CLI build. Live scans from that
+        // build may still need to respawn it while this build extracts its
+        // own hash.
+        let other_binary = tmp
             .join("go-frontend-0000000000000000000000000000000000000000000000000000000000000000");
-        fs::write(&old_binary, b"old").unwrap();
+        fs::write(&other_binary, b"other").unwrap();
 
         let path = extract_to(&tmp).expect("extraction failed");
 
         assert!(path.exists());
         assert!(
-            !old_binary.exists(),
-            "old binary should have been cleaned up"
+            other_binary.exists(),
+            "other versioned binary should remain available for live respawns"
         );
 
         let _ = fs::remove_dir_all(&tmp);
