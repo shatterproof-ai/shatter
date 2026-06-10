@@ -368,12 +368,8 @@ func isPureNetSymbol(symbol string) bool {
 }
 
 func isLocalRandomSymbol(symbol string) bool {
-	switch strings.TrimPrefix(symbol, "rand.") {
-	case "Read":
-		return true
-	default:
-		return false
-	}
+	idx := strings.LastIndex(symbol, ".")
+	return idx > 0 && symbol[idx+1:] == "Read"
 }
 
 func unqualifyStdlibSymbol(module, symbol string) string {
