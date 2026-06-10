@@ -3128,6 +3128,7 @@ async fn run_layer_function_mode(
     artifact_root: Option<Arc<PathBuf>>,
     total_functions: usize,
     scan_start: Instant,
+    scan_deadline: Option<Instant>,
 ) -> (Vec<FunctionOutcome>, usize) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut handles = Vec::new();
@@ -3154,6 +3155,7 @@ async fn run_layer_function_mode(
         let progress_handler = progress_handler.clone();
         let artifact_root = artifact_root.clone();
         let file_path = explore_config.file.clone();
+        let handle_func_name = func_name.clone();
 
         let handle = tokio::spawn(async move {
             // Acquire a concurrency slot before spawning the frontend.
@@ -3309,16 +3311,28 @@ async fn run_layer_function_mode(
             }
         });
 
-        handles.push(handle);
+        handles.push((handle_func_name, handle));
     }
 
     let peak = max_concurrent.min(handles.len());
     let mut outcomes = Vec::with_capacity(handles.len());
-    for handle in handles {
-        match handle.await {
+    for (function_name, mut handle) in handles {
+        let join_result = match total_deadline_remaining(scan_deadline) {
+            Some(remaining) => match tokio::time::timeout(remaining, &mut handle).await {
+                Ok(result) => result,
+                Err(_) => {
+                    handle.abort();
+                    let _ = handle.await;
+                    outcomes.push(FunctionOutcome::TotalTimeout { function_name });
+                    continue;
+                }
+            },
+            None => handle.await,
+        };
+        match join_result {
             Ok(outcome) => outcomes.push(outcome),
             Err(e) => outcomes.push(FunctionOutcome::Error {
-                function_name: "(unknown)".into(),
+                function_name,
                 error: format!("task join error: {e}"),
             }),
         }
@@ -4316,6 +4330,7 @@ pub async fn parallel_scan_with_progress(
                     artifact_root.as_ref().map(Arc::clone),
                     total_functions,
                     scan_start,
+                    scan_deadline,
                 )
                 .await;
                 peak_workers = peak_workers.max(layer_peak);
