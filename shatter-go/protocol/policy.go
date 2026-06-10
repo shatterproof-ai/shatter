@@ -341,6 +341,9 @@ func moduleClass(module, symbol string) (SideEffectClass, bool) {
 		}
 		return "", false
 	case module == "crypto/rand":
+		if isLocalRandomSymbol(symbol) {
+			return "", false
+		}
 		return ClassUnknownHigh, true
 	}
 	return "", false
@@ -362,6 +365,11 @@ func isPureNetSymbol(symbol string) bool {
 	default:
 		return false
 	}
+}
+
+func isLocalRandomSymbol(symbol string) bool {
+	idx := strings.LastIndex(symbol, ".")
+	return idx > 0 && symbol[idx+1:] == "Read"
 }
 
 func unqualifyStdlibSymbol(module, symbol string) string {
