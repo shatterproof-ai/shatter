@@ -3128,6 +3128,7 @@ async fn run_layer_function_mode(
     artifact_root: Option<Arc<PathBuf>>,
     total_functions: usize,
     scan_start: Instant,
+    scan_deadline: Option<Instant>,
 ) -> (Vec<FunctionOutcome>, usize) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut handles = Vec::new();
@@ -3154,6 +3155,7 @@ async fn run_layer_function_mode(
         let progress_handler = progress_handler.clone();
         let artifact_root = artifact_root.clone();
         let file_path = explore_config.file.clone();
+        let handle_func_name = func_name.clone();
 
         let handle = tokio::spawn(async move {
             // Acquire a concurrency slot before spawning the frontend.
@@ -3309,16 +3311,28 @@ async fn run_layer_function_mode(
             }
         });
 
-        handles.push(handle);
+        handles.push((handle_func_name, handle));
     }
 
     let peak = max_concurrent.min(handles.len());
     let mut outcomes = Vec::with_capacity(handles.len());
-    for handle in handles {
-        match handle.await {
+    for (function_name, mut handle) in handles {
+        let join_result = match total_deadline_remaining(scan_deadline) {
+            Some(remaining) => match tokio::time::timeout(remaining, &mut handle).await {
+                Ok(result) => result,
+                Err(_) => {
+                    handle.abort();
+                    let _ = handle.await;
+                    outcomes.push(FunctionOutcome::TotalTimeout { function_name });
+                    continue;
+                }
+            },
+            None => handle.await,
+        };
+        match join_result {
             Ok(outcome) => outcomes.push(outcome),
             Err(e) => outcomes.push(FunctionOutcome::Error {
-                function_name: "(unknown)".into(),
+                function_name,
                 error: format!("task join error: {e}"),
             }),
         }
@@ -4316,6 +4330,7 @@ pub async fn parallel_scan_with_progress(
                     artifact_root.as_ref().map(Arc::clone),
                     total_functions,
                     scan_start,
+                    scan_deadline,
                 )
                 .await;
                 peak_workers = peak_workers.max(layer_peak);
@@ -8082,6 +8097,100 @@ mod tests {
             assert_eq!(skipped.reason, "timed out (total scan budget exceeded)");
             assert_eq!(skipped.category, SkipCategory::Interrupted);
         }
+    }
+
+    #[tokio::test]
+    async fn parallel_scan_total_timeout_interrupts_function_isolation_layer() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::{Path, PathBuf};
+        use std::time::Instant;
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let slow_path = manifest_dir.join("../protocol/slow-execute-frontend.sh");
+
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![slow_path.to_string_lossy().into_owned()];
+        fe_config
+            .env_vars
+            .push(("SLOW_EXECUTE_SECS".to_string(), "5".to_string()));
+        fe_config.request_timeout = Duration::from_secs(10);
+
+        let analyses = vec![FunctionAnalysis {
+            name: "slow_function_mode".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        }];
+
+        let mut file_map = HashMap::new();
+        file_map.insert("slow_function_mode".to_string(), "test.ts".to_string());
+
+        let config = ScanConfig {
+            max_iterations_per_function: 3,
+            concolic: false,
+            seed: Some(42),
+            file_map,
+            parallelism: 1,
+            timeout_per_fn: Duration::from_secs(10),
+            build_timeout: Duration::from_secs(30),
+            cache: None,
+            stratum: None,
+            mock_overrides: HashMap::new(),
+            resume_path: None,
+            timeout_total: Some(Duration::from_millis(200)),
+            pool_path: None,
+            project_root: None,
+            config_dir: None,
+            timeout_explore: None,
+            setup_manager: None,
+            policy: crate::scheduler_policy::SchedulerPolicy::default(),
+            isolation: IsolationMode::Function,
+            capture_side_effects: false,
+            workers_per_fn: 1,
+            capabilities: crate::orchestrator::FrontendCapabilities::default(),
+            genetic_config: crate::config::GeneticConfig::default(),
+            batch_size: None,
+            scheduler_state_cache: None,
+            stored_inputs_cache: None,
+            coverage_mode: crate::interesting_pool::CoverageMode::Branch,
+            write_artifacts: true,
+        };
+
+        let started = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            parallel_scan(&fe_config, &analyses, &config),
+        )
+        .await
+        .expect("function isolation scan should respect total timeout")
+        .expect("parallel_scan should return skipped results");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "function isolation scan should return before the outer test timeout"
+        );
+        assert!(result.function_results.is_empty());
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(
+            result.skipped[0].reason,
+            "timed out (total scan budget exceeded)"
+        );
+        assert_eq!(result.skipped[0].category, SkipCategory::Interrupted);
     }
 
     /// Regression test (str-quhk): when a frontend's response pipe is
