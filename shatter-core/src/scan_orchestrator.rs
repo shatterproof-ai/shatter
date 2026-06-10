@@ -1124,16 +1124,11 @@ fn summary_record_skipped(
         | SkipCategory::Interrupted
         | SkipCategory::Error => summary.skipped += 1,
     }
-    let artifact_filename = format!(
-        "{:05}_{}.json",
-        index,
-        sanitize_artifact_component(function_name)
-    );
     summary.functions.push(ScanSummaryEntry {
         function_name: function_name.to_string(),
         status: "skipped".to_string(),
         index,
-        artifact: Some(format!("functions/{artifact_filename}")),
+        artifact: None,
         reason: Some(reason.to_string()),
     });
 }
@@ -1148,16 +1143,11 @@ fn summary_record_failed(
 ) {
     summary.failed += 1;
     summary.elapsed_secs = elapsed.as_secs_f64();
-    let artifact_filename = format!(
-        "{:05}_{}.json",
-        index,
-        sanitize_artifact_component(function_name)
-    );
     summary.functions.push(ScanSummaryEntry {
         function_name: function_name.to_string(),
         status: "failed".to_string(),
         index,
-        artifact: Some(format!("functions/{artifact_filename}")),
+        artifact: None,
         reason: Some(reason.to_string()),
     });
 }
@@ -12653,6 +12643,68 @@ defaults:
         assert_eq!(
             targets[1].unavailable_reason.as_deref(),
             Some("unsupported: opaque parameter")
+        );
+
+        write_scan_summary(scan_root.path(), &summary);
+        let manifest = crate::run_manifest::RunManifest {
+            version: crate::run_manifest::RUN_MANIFEST_VERSION,
+            scan_id: "missing-artifacts".to_string(),
+            project_root: None,
+            repo_root: None,
+            cwd: scan_root.path().display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![
+                crate::run_manifest::SourceFileSnapshot {
+                    path: "pkg/fail.go".to_string(),
+                    size: 0,
+                    mtime_ns: None,
+                    content_hash: None,
+                    line_count: None,
+                },
+                crate::run_manifest::SourceFileSnapshot {
+                    path: "pkg/unsupported.go".to_string(),
+                    size: 0,
+                    mtime_ns: None,
+                    content_hash: None,
+                    line_count: None,
+                },
+            ],
+            captured_at_ns: 0,
+        };
+        let manifest_path = scan_root.path().join(crate::run_manifest::RUN_MANIFEST_FILENAME);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+        let summary_path = scan_root.path().join(SCAN_SUMMARY_FILENAME);
+        let artifacts = [StatusArtifactLink {
+            kind: "scan_summary",
+            path: &summary_path,
+        }];
+
+        crate::status_export::write_run_status_json(
+            scan_root.path(),
+            &StatusExportInput {
+                command: "scan",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &artifacts,
+                files: &[],
+                targets: &targets,
+                rollups: status_rollup_input_from_scan_summary(&summary),
+            },
+        )
+        .expect("status export should not require missing failed/skipped artifacts");
+
+        assert!(
+            scan_root
+                .path()
+                .join(crate::status_export::RUN_STATUS_FILENAME)
+                .exists(),
+            "run-status.json should be written"
         );
     }
 
