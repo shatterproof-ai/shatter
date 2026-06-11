@@ -369,11 +369,16 @@ func TestBuildWrapperTargets_ImportedValueParamUsesParameterlessConstructor(t *t
 	}
 	const depSrc = `package dep
 
+import "net/http"
+
 type Client struct {
 	baseURL string
+	http    *http.Client
 }
 
-func NewClient(baseURL string) Client { return Client{baseURL: baseURL} }
+func NewClient(baseURL string, httpClient *http.Client) Client {
+	return Client{baseURL: baseURL, http: httpClient}
+}
 func NewInertClient() Client { return Client{baseURL: "http://127.0.0.1:0"} }
 func NewPointerClient() *Client { return &Client{} }
 func NewErrorClient() (Client, error) { return Client{}, nil }
@@ -421,7 +426,7 @@ func Use(client safe.Client) string {
 	if len(target.Parameters) != 1 {
 		t.Fatalf("Use param count = %d, want 1", len(target.Parameters))
 	}
-	if got, want := target.Parameters[0].RuntimeValueExpr, "dep.NewInertClient()"; got != want {
+	if got, want := target.Parameters[0].RuntimeValueExpr, `dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`; got != want {
 		t.Fatalf("RuntimeValueExpr = %q, want %q", got, want)
 	}
 	if !slices.Contains(target.Imports, "example.com/ctorparam/dep") {
@@ -432,11 +437,17 @@ func Use(client safe.Client) string {
 	if !strings.Contains(out, `"example.com/ctorparam/dep"`) {
 		t.Fatalf("generated wrapper missing dep import:\n%s", out)
 	}
-	if !strings.Contains(out, "var client dep.Client = dep.NewInertClient()") {
+	if !strings.Contains(out, "func shatterHTTPClient() *http.Client") {
+		t.Fatalf("generated wrapper missing synthetic HTTP client helper:\n%s", out)
+	}
+	if !strings.Contains(out, `var client dep.Client = dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`) {
 		t.Fatalf("generated wrapper missing constructor-backed client assignment:\n%s", out)
 	}
 	if strings.Contains(out, "json.Unmarshal(_shatterInputs[0], &client)") {
 		t.Fatalf("generated wrapper still decodes constructor-backed client from JSON:\n%s", out)
+	}
+	if strings.Contains(out, "dep.NewInertClient()") {
+		t.Fatalf("generated wrapper still prefers inert constructor:\n%s", out)
 	}
 }
 
