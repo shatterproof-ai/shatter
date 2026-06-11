@@ -548,10 +548,19 @@ fn observed_branch_discoveries(
 ) -> Vec<(u32, crate::coverage_metrics::DiscoveryMethod)> {
     let mut seen: HashSet<u32> = HashSet::new();
     let mut discoveries = Vec::new();
-    let branch_lines: HashMap<u32, u32> = branches
-        .iter()
-        .filter_map(|branch| (branch.line > 0).then_some((branch.id, branch.line)))
-        .collect();
+    let mut branch_lines: HashMap<u32, u32> = HashMap::new();
+    let mut ambiguous_lines: HashSet<u32> = HashSet::new();
+    for branch in branches {
+        if branch.line == 0 {
+            continue;
+        }
+        if branch_lines.insert(branch.line, branch.id).is_some() {
+            ambiguous_lines.insert(branch.line);
+        }
+    }
+    for line in ambiguous_lines {
+        branch_lines.remove(&line);
+    }
 
     for (branch_id, method) in &observe.discoveries {
         if seen.insert(*branch_id) {
@@ -569,12 +578,15 @@ fn observed_branch_discoveries(
             }
         }
 
-        if branch_lines.is_empty() || result.lines_executed.is_empty() {
+        if branch_lines.is_empty()
+            || !result.branch_path.is_empty()
+            || result.lines_executed.is_empty()
+        {
             continue;
         }
 
         let executed_lines: HashSet<u32> = result.lines_executed.iter().copied().collect();
-        for (branch_id, line) in &branch_lines {
+        for (line, branch_id) in &branch_lines {
             if executed_lines.contains(line) && seen.insert(*branch_id) {
                 discoveries.push((*branch_id, crate::coverage_metrics::DiscoveryMethod::Random));
             }
@@ -1150,6 +1162,114 @@ mod tests {
         assert_eq!(
             output.coverage_metrics.random_found, 1,
             "a retained replay that executed a known branch line should count that branch"
+        );
+        assert_eq!(output.coverage_metrics.uncovered, 2);
+    }
+
+    #[test]
+    fn analyze_does_not_infer_branch_lines_when_branch_path_exists() {
+        let exec_result = ExecuteResult {
+            return_value: Some(json!("covered")),
+            thrown_error: None,
+            branch_path: vec![BranchDecision {
+                branch_id: 0,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "first runtime branch".into(),
+                },
+                conditions: None,
+            }],
+            lines_executed: vec![10, 20],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+        let observe = ObservationOutput {
+            function_name: "classify".into(),
+            iterations: 1,
+            unique_paths: 1,
+            lines_covered: 2,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![(vec![json!(5)], vec![], exec_result)],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            ..Default::default()
+        };
+
+        let analysis = stub_analysis("classify", 3);
+        let output = analyze(&observe, &analysis);
+
+        assert_eq!(output.coverage_metrics.random_found, 1);
+        assert_eq!(output.coverage_metrics.uncovered, 2);
+    }
+
+    #[test]
+    fn analyze_skips_ambiguous_same_line_branch_inference() {
+        let exec_result = ExecuteResult {
+            return_value: Some(json!("covered")),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![10],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+        let observe = ObservationOutput {
+            function_name: "classify".into(),
+            iterations: 1,
+            unique_paths: 1,
+            lines_covered: 1,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![(vec![json!(5)], vec![], exec_result)],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            ..Default::default()
+        };
+
+        let mut analysis = stub_analysis("classify", 2);
+        analysis.branches[0].line = 10;
+        analysis.branches[1].line = 10;
+
+        let output = analyze(&observe, &analysis);
+
+        assert_eq!(
+            output.coverage_metrics.random_found, 0,
+            "line fallback must not count multiple static branches sharing one line"
         );
         assert_eq!(output.coverage_metrics.uncovered, 2);
     }
