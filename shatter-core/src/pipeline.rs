@@ -568,7 +568,7 @@ fn observed_branch_discoveries(
         }
     }
 
-    for (_, _mocks, result) in &observe.raw_results {
+    for (inputs, _mocks, result) in &observe.raw_results {
         for decision in &result.branch_path {
             if seen.insert(decision.branch_id) {
                 discoveries.push((
@@ -579,7 +579,8 @@ fn observed_branch_discoveries(
         }
 
         if branch_lines.is_empty()
-            || !result.branch_path.is_empty()
+            || (!result.branch_path.is_empty()
+                && !crate::behavior::has_replayable_native_input(inputs))
             || result.lines_executed.is_empty()
         {
             continue;
@@ -1219,6 +1220,74 @@ mod tests {
 
         assert_eq!(output.coverage_metrics.random_found, 1);
         assert_eq!(output.coverage_metrics.uncovered, 2);
+    }
+
+    #[test]
+    fn analyze_infers_native_replay_branch_lines_with_partial_branch_path() {
+        let exec_result = ExecuteResult {
+            return_value: Some(json!({"status": 500, "body": {"error": "name is required"}})),
+            thrown_error: None,
+            branch_path: vec![BranchDecision {
+                branch_id: 0,
+                line: 10,
+                taken: true,
+                constraint: SymConstraint::Unknown {
+                    hint: "workspace access".into(),
+                },
+                conditions: None,
+            }],
+            lines_executed: vec![10, 20],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+        let observe = ObservationOutput {
+            function_name: "create_person".into(),
+            iterations: 1,
+            unique_paths: 1,
+            lines_covered: 2,
+            total_lines: 5,
+            new_path_executions: vec![],
+            raw_results: vec![(
+                vec![json!({
+                    "__shatter_native": true,
+                    "handle": "current-account",
+                    "__shatter_replay": {
+                        "language": "rust",
+                        "file": ".shatter/generators/current.rs",
+                        "name": "CurrentAccountGen",
+                        "recipe": null
+                    }
+                })],
+                vec![],
+                exec_result,
+            )],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            ..Default::default()
+        };
+
+        let analysis = stub_analysis("create_person", 3);
+        let output = analyze(&observe, &analysis);
+
+        assert_eq!(output.coverage_metrics.random_found, 2);
+        assert_eq!(output.coverage_metrics.uncovered, 1);
     }
 
     #[test]
