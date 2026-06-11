@@ -522,7 +522,7 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
         .collect();
     let all_constraints: Vec<SymConstraint> = unique_constraints.into_values().collect();
 
-    let observed_discoveries = observed_branch_discoveries(observe);
+    let observed_discoveries = observed_branch_discoveries(observe, &analysis.branches);
     let mut coverage_metrics = CoverageMetrics::from_exploration(
         analysis.branches.len(),
         &observed_discoveries,
@@ -544,9 +544,14 @@ pub fn analyze(observe: &ObservationOutput, analysis: &FunctionAnalysis) -> Anal
 
 fn observed_branch_discoveries(
     observe: &ObservationOutput,
+    branches: &[crate::protocol::BranchInfo],
 ) -> Vec<(u32, crate::coverage_metrics::DiscoveryMethod)> {
     let mut seen: HashSet<u32> = HashSet::new();
     let mut discoveries = Vec::new();
+    let branch_lines: HashMap<u32, u32> = branches
+        .iter()
+        .filter_map(|branch| (branch.line > 0).then_some((branch.id, branch.line)))
+        .collect();
 
     for (branch_id, method) in &observe.discoveries {
         if seen.insert(*branch_id) {
@@ -561,6 +566,17 @@ fn observed_branch_discoveries(
                     decision.branch_id,
                     crate::coverage_metrics::DiscoveryMethod::Random,
                 ));
+            }
+        }
+
+        if branch_lines.is_empty() || result.lines_executed.is_empty() {
+            continue;
+        }
+
+        let executed_lines: HashSet<u32> = result.lines_executed.iter().copied().collect();
+        for (branch_id, line) in &branch_lines {
+            if executed_lines.contains(line) && seen.insert(*branch_id) {
+                discoveries.push((*branch_id, crate::coverage_metrics::DiscoveryMethod::Random));
             }
         }
     }
