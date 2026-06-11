@@ -148,6 +148,24 @@ var registry = map[string][]Candidate{
 			Imports:    []string{"bytes", "net/http", "net/http/httptest"},
 		},
 	},
+	// str-21k7: HTTP client/transport values use a generated in-memory
+	// RoundTripper. It returns deterministic JSON responses and never delegates
+	// to http.DefaultTransport, so target code can exercise HTTP success paths
+	// without dialing the network.
+	"*http.Client": {
+		{
+			Expression: "shatterHTTPClient()",
+			TypeHint:   "*http.Client",
+			Imports:    []string{"io", "net/http", "strings"},
+		},
+	},
+	"http.RoundTripper": {
+		{
+			Expression: "shatterHTTPTransport()",
+			TypeHint:   "http.RoundTripper",
+			Imports:    []string{"io", "net/http", "strings"},
+		},
+	},
 	"*template.Template": {
 		{
 			Expression: `template.Must(template.New("shatter").Parse("{}"))`,

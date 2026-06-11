@@ -68,6 +68,8 @@ func TestLookupRuntimeValue_AllDefaults(t *testing.T) {
 		{"io.ReadCloser", []string{`io.NopCloser(strings.NewReader(""))`}, "io"},
 		{"http.ResponseWriter", []string{"httptest.NewRecorder()"}, "net/http/httptest"},
 		{"*http.Request", []string{`httptest.NewRequest("GET", "/", bytes.NewReader(nil))`}, "net/http/httptest"},
+		{"*http.Client", []string{"shatterHTTPClient()"}, "net/http"},
+		{"http.RoundTripper", []string{"shatterHTTPTransport()"}, "net/http"},
 		{"time.Time", []string{"time.Time{}", "time.Now()"}, "time"},
 		{"http.Header", []string{"http.Header{}"}, "net/http"},
 		{"*template.Template", []string{`template.Must(template.New("shatter").Parse("{}"))`}, "text/template"},

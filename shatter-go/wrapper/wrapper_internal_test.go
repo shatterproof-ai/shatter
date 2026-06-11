@@ -1,6 +1,8 @@
 package wrapper
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -8,6 +10,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -354,7 +357,7 @@ func Render(t *template.Template) error { return t.Execute(nil, nil) }
 	}
 }
 
-func TestBuildWrapperTargets_ImportedValueParamUsesParameterlessConstructor(t *testing.T) {
+func TestBuildWrapperTargets_ImportedValueParamUsesSafeHTTPConstructor(t *testing.T) {
 	modDir := t.TempDir()
 	depDir := filepath.Join(modDir, "dep")
 	appDir := filepath.Join(modDir, "app")
@@ -369,16 +372,136 @@ func TestBuildWrapperTargets_ImportedValueParamUsesParameterlessConstructor(t *t
 	}
 	const depSrc = `package dep
 
+import "encoding/json"
+import "net/http"
+
 type Client struct {
 	baseURL string
+	http    *http.Client
 }
 
-func NewClient(baseURL string) Client { return Client{baseURL: baseURL} }
+func DefaultClient() Client { return Client{baseURL: "http://127.0.0.1:0"} }
+func NewClient(baseURL string, httpClient *http.Client) Client {
+	return Client{baseURL: baseURL, http: httpClient}
+}
 func NewInertClient() Client { return Client{baseURL: "http://127.0.0.1:0"} }
 func NewPointerClient() *Client { return &Client{} }
 func NewErrorClient() (Client, error) { return Client{}, nil }
 
 func (c Client) BaseURL() string { return c.baseURL }
+
+func (c Client) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
+
+type ErrorClient struct {
+	baseURL string
+	http    *http.Client
+}
+
+func NewErrorHTTPClient(baseURL string, httpClient *http.Client) (ErrorClient, error) {
+	return ErrorClient{baseURL: baseURL, http: httpClient}, nil
+}
+
+func (c ErrorClient) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
+
+type PointerClient struct {
+	baseURL string
+	http    *http.Client
+}
+
+func NewPointerHTTPClient(baseURL string, httpClient *http.Client) (*PointerClient, error) {
+	return &PointerClient{baseURL: baseURL, http: httpClient}, nil
+}
+
+func (c *PointerClient) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
+
+type TransportClient struct {
+	baseURL   string
+	transport http.RoundTripper
+}
+
+func DefaultTransportClient() TransportClient {
+	return TransportClient{baseURL: "http://127.0.0.1:0", transport: http.DefaultTransport}
+}
+func NewTransportClient(baseURL string, transport http.RoundTripper) TransportClient {
+	return TransportClient{baseURL: baseURL, transport: transport}
+}
+
+func (c TransportClient) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	if c.transport == nil {
+		return "transport_error"
+	}
+	resp, err := c.transport.RoundTrip(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
 `
 	if err := os.WriteFile(filepath.Join(depDir, "dep.go"), []byte(depSrc), 0o644); err != nil {
 		t.Fatalf("write dep.go: %v", err)
@@ -387,8 +510,20 @@ func (c Client) BaseURL() string { return c.baseURL }
 
 import safe "example.com/ctorparam/dep"
 
-func Use(client safe.Client) string {
-	return client.BaseURL()
+func Use(client safe.Client, path string) string {
+	return client.Fetch(path)
+}
+
+func UseError(client safe.ErrorClient, path string) string {
+	return client.Fetch(path)
+}
+
+func UsePointer(client *safe.PointerClient, path string) string {
+	return client.Fetch(path)
+}
+
+func UseTransport(client safe.TransportClient, path string) string {
+	return client.Fetch(path)
 }
 `
 	if err := os.WriteFile(filepath.Join(appDir, "app.go"), []byte(appSrc), 0o644); err != nil {
@@ -414,15 +549,36 @@ func Use(client safe.Client) string {
 	}
 
 	targets := BuildWrapperTargets(pkgs[0])
-	if len(targets) != 1 {
-		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	if len(targets) != 4 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 4", len(targets))
 	}
-	target := targets[0]
-	if len(target.Parameters) != 1 {
-		t.Fatalf("Use param count = %d, want 1", len(target.Parameters))
+	target := findWrapperTargetBySymbol(t, targets, "Use")
+	if len(target.Parameters) != 2 {
+		t.Fatalf("Use param count = %d, want 2", len(target.Parameters))
 	}
-	if got, want := target.Parameters[0].RuntimeValueExpr, "dep.NewInertClient()"; got != want {
+	if got, want := target.Parameters[0].RuntimeValueExpr, `dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`; got != want {
 		t.Fatalf("RuntimeValueExpr = %q, want %q", got, want)
+	}
+	errorTarget := findWrapperTargetBySymbol(t, targets, "UseError")
+	if len(errorTarget.Parameters) != 2 {
+		t.Fatalf("UseError param count = %d, want 2", len(errorTarget.Parameters))
+	}
+	if got, want := errorTarget.Parameters[0].RuntimeValueExpr, `func() dep.ErrorClient { v, _ := dep.NewErrorHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`; got != want {
+		t.Fatalf("Error RuntimeValueExpr = %q, want %q", got, want)
+	}
+	pointerTarget := findWrapperTargetBySymbol(t, targets, "UsePointer")
+	if len(pointerTarget.Parameters) != 2 {
+		t.Fatalf("UsePointer param count = %d, want 2", len(pointerTarget.Parameters))
+	}
+	if got, want := pointerTarget.Parameters[0].RuntimeValueExpr, `func() *dep.PointerClient { v, _ := dep.NewPointerHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`; got != want {
+		t.Fatalf("Pointer RuntimeValueExpr = %q, want %q", got, want)
+	}
+	transportTarget := findWrapperTargetBySymbol(t, targets, "UseTransport")
+	if len(transportTarget.Parameters) != 2 {
+		t.Fatalf("UseTransport param count = %d, want 2", len(transportTarget.Parameters))
+	}
+	if got, want := transportTarget.Parameters[0].RuntimeValueExpr, `dep.NewTransportClient("http://127.0.0.1:0", shatterHTTPTransport())`; got != want {
+		t.Fatalf("Transport RuntimeValueExpr = %q, want %q", got, want)
 	}
 	if !slices.Contains(target.Imports, "example.com/ctorparam/dep") {
 		t.Fatalf("target.Imports = %v, want imported dep package", target.Imports)
@@ -432,12 +588,123 @@ func Use(client safe.Client) string {
 	if !strings.Contains(out, `"example.com/ctorparam/dep"`) {
 		t.Fatalf("generated wrapper missing dep import:\n%s", out)
 	}
-	if !strings.Contains(out, "var client dep.Client = dep.NewInertClient()") {
+	if !strings.Contains(out, "func shatterHTTPClient() *http.Client") {
+		t.Fatalf("generated wrapper missing synthetic HTTP client helper:\n%s", out)
+	}
+	if !strings.Contains(out, "func shatterHTTPTransport() http.RoundTripper") {
+		t.Fatalf("generated wrapper missing synthetic HTTP transport helper:\n%s", out)
+	}
+	if !strings.Contains(out, `var client dep.Client = dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`) {
 		t.Fatalf("generated wrapper missing constructor-backed client assignment:\n%s", out)
+	}
+	if !strings.Contains(out, `var client dep.ErrorClient = func() dep.ErrorClient { v, _ := dep.NewErrorHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`) {
+		t.Fatalf("generated wrapper missing error-returning constructor assignment:\n%s", out)
+	}
+	if !strings.Contains(out, `var client *dep.PointerClient = func() *dep.PointerClient { v, _ := dep.NewPointerHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`) {
+		t.Fatalf("generated wrapper missing pointer/error constructor assignment:\n%s", out)
+	}
+	if !strings.Contains(out, `var client dep.TransportClient = dep.NewTransportClient("http://127.0.0.1:0", shatterHTTPTransport())`) {
+		t.Fatalf("generated wrapper missing constructor-backed transport client assignment:\n%s", out)
 	}
 	if strings.Contains(out, "json.Unmarshal(_shatterInputs[0], &client)") {
 		t.Fatalf("generated wrapper still decodes constructor-backed client from JSON:\n%s", out)
 	}
+	if strings.Contains(out, "dep.DefaultClient()") || strings.Contains(out, "dep.DefaultTransportClient()") {
+		t.Fatalf("generated wrapper still prefers parameterless constructor:\n%s", out)
+	}
+	if strings.Contains(out, "dep.NewInertClient()") {
+		t.Fatalf("generated wrapper still prefers inert constructor:\n%s", out)
+	}
+
+	invokeTest := `package app
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestSyntheticHTTPClient(t *testing.T) {
+	got, err := ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:Use"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke /ok = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:Use"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/failure-counts\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke /failure-counts error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke /failure-counts = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseError"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke error-returning /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke error-returning /ok = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UsePointer"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke pointer /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke pointer /ok = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseTransport"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke transport /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke transport /ok = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseTransport"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/failure-counts\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke transport /failure-counts error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke transport /failure-counts = %#v, want ok", got)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(appDir, "invoke_test.go"), []byte(invokeTest), 0o644); err != nil {
+		t.Fatalf("write invoke_test.go: %v", err)
+	}
+	wrapperPath := filepath.Join(t.TempDir(), "shatter_wrapper.go")
+	if err := os.WriteFile(wrapperPath, []byte(out), 0o644); err != nil {
+		t.Fatalf("write wrapper: %v", err)
+	}
+	hash := DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(appDir, WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(t.TempDir(), "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+	cmd := exec.Command("go", "test", "-overlay", manifestPath, ".")
+	cmd.Dir = appDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go test generated wrapper: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), out)
+	}
+}
+
+func findWrapperTargetBySymbol(t *testing.T, targets []WrapperTarget, symbol string) WrapperTarget {
+	t.Helper()
+	for _, target := range targets {
+		if target.SymbolName == symbol {
+			return target
+		}
+	}
+	t.Fatalf("missing wrapper target for symbol %q; targets=%v", symbol, targets)
+	return WrapperTarget{}
 }
 
 func TestGenerateWrapper_RuntimeValueSubstitutesWazeroRuntime(t *testing.T) {

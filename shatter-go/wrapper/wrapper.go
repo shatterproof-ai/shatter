@@ -337,6 +337,10 @@ func GenerateWrapper(
 	}
 	b.WriteString(")\n\n")
 
+	if wrapperUsesSyntheticHTTPTransport(sorted, sortedCtors) {
+		writeSyntheticHTTPClientHelper(&b)
+	}
+
 	b.WriteString("// PlanDescriptor selects one invocation strategy for one ShatterInvoke call.\n")
 	b.WriteString("type PlanDescriptor struct {\n")
 	b.WriteString("\tTargetID     string `json:\"target_id\"`\n")
@@ -656,6 +660,52 @@ func applyRuntimeValueBindingsToConstructors(constructors []ConstructorCandidate
 			param.Imports = append([]string(nil), candidates[0].Imports...)
 		}
 	}
+}
+
+func wrapperUsesSyntheticHTTPTransport(targets []WrapperTarget, constructors []ConstructorCandidate) bool {
+	for _, target := range targets {
+		for _, param := range target.Parameters {
+			if runtimeExprUsesSyntheticHTTPTransport(param.RuntimeValueExpr) {
+				return true
+			}
+		}
+	}
+	for _, constructor := range constructors {
+		for _, param := range constructor.Parameters {
+			if runtimeExprUsesSyntheticHTTPTransport(constructorParamRuntimeValueExpr(param)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runtimeExprUsesSyntheticHTTPTransport(expr string) bool {
+	return strings.Contains(expr, "shatterHTTPClient()") || strings.Contains(expr, "shatterHTTPTransport()")
+}
+
+func writeSyntheticHTTPClientHelper(b *strings.Builder) {
+	b.WriteString("type shatterHTTPRoundTripper func(*http.Request) (*http.Response, error)\n\n")
+	b.WriteString("func (f shatterHTTPRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {\n")
+	b.WriteString("\treturn f(req)\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterHTTPTransport() http.RoundTripper {\n")
+	b.WriteString("\treturn shatterHTTPRoundTripper(shatterHTTPRoundTrip)\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterHTTPClient() *http.Client {\n")
+	b.WriteString("\treturn &http.Client{Transport: shatterHTTPTransport()}\n")
+	b.WriteString("}\n\n")
+	b.WriteString("func shatterHTTPRoundTrip(req *http.Request) (*http.Response, error) {\n")
+	b.WriteString("\tstatusCode := http.StatusOK\n")
+	b.WriteString("\tbody := \"null\\n\"\n")
+	b.WriteString("\treturn &http.Response{\n")
+	b.WriteString("\t\tStatusCode: statusCode,\n")
+	b.WriteString("\t\tStatus:     fmt.Sprintf(\"%d %s\", statusCode, http.StatusText(statusCode)),\n")
+	b.WriteString("\t\tHeader:     http.Header{\"Content-Type\": []string{\"application/json\"}},\n")
+	b.WriteString("\t\tBody:       io.NopCloser(strings.NewReader(body)),\n")
+	b.WriteString("\t\tRequest:    req,\n")
+	b.WriteString("\t}, nil\n")
+	b.WriteString("}\n\n")
 }
 
 func writeMapInputNormalizer(b *strings.Builder) {
@@ -1599,7 +1649,7 @@ func importedParameterConstructorBinding(
 	consumerPkgPath string,
 ) (constructorRuntimeBinding, bool) {
 	named, wantsPointer := resolveNamedConcreteWrapperType(expr, consumerPkg.TypesInfo)
-	if named == nil || wantsPointer || named.Obj() == nil || named.Obj().Pkg() == nil {
+	if named == nil || named.Obj() == nil || named.Obj().Pkg() == nil {
 		return constructorRuntimeBinding{}, false
 	}
 	if _, isInterface := named.Underlying().(*types.Interface); isInterface {
@@ -1618,15 +1668,63 @@ func importedParameterConstructorBinding(
 	if len(candidates) == 0 {
 		return constructorRuntimeBinding{}, false
 	}
-	sort.Strings(candidates)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].HasRuntime != candidates[j].HasRuntime {
+			return candidates[i].HasRuntime
+		}
+		if candidates[i].FuncName != candidates[j].FuncName {
+			return candidates[i].FuncName < candidates[j].FuncName
+		}
+		return strings.Join(candidates[i].ArgExprs, "\x00") < strings.Join(candidates[j].ArgExprs, "\x00")
+	})
 	pkgName := defPkg.Name
 	if defPkg.Types != nil && defPkg.Types.Name() != "" {
 		pkgName = defPkg.Types.Name()
 	}
+	constructor := candidates[0]
+	typeExpr := pkgName + "." + named.Obj().Name()
+	ctorCall := pkgName + "." + constructor.FuncName + "(" + strings.Join(constructor.ArgExprs, ", ") + ")"
+	ctorExpr := importedParameterConstructorExpression(typeExpr, ctorCall, wantsPointer, constructor)
+	imports := append([]string{defPkgPath}, constructor.Imports...)
 	return constructorRuntimeBinding{
-		Expression: pkgName + "." + candidates[0] + "()",
-		Imports:    []string{defPkgPath},
+		Expression: ctorExpr,
+		Imports:    sortedStrings(imports),
 	}, true
+}
+
+type importedParameterConstructorCandidate struct {
+	FuncName       string
+	ArgExprs       []string
+	Imports        []string
+	HasRuntime     bool
+	ReturnsPointer bool
+	ReturnsError   bool
+}
+
+func importedParameterConstructorExpression(
+	typeExpr string,
+	ctorCall string,
+	wantsPointer bool,
+	constructor importedParameterConstructorCandidate,
+) string {
+	switch {
+	case wantsPointer && constructor.ReturnsPointer && constructor.ReturnsError:
+		return fmt.Sprintf("func() *%s { v, _ := %s; return v }()", typeExpr, ctorCall)
+	case wantsPointer && constructor.ReturnsPointer:
+		return ctorCall
+	case wantsPointer && !constructor.ReturnsPointer && constructor.ReturnsError:
+		return fmt.Sprintf("func() *%s { v, _ := %s; return &v }()", typeExpr, ctorCall)
+	case wantsPointer && !constructor.ReturnsPointer:
+		return fmt.Sprintf("func() *%s { v := %s; return &v }()", typeExpr, ctorCall)
+	case !wantsPointer && constructor.ReturnsPointer && constructor.ReturnsError:
+		return fmt.Sprintf("func() %s { v, _ := %s; if v == nil { return %s{} }; return *v }()", typeExpr, ctorCall, typeExpr)
+	case !wantsPointer && constructor.ReturnsPointer:
+		return fmt.Sprintf("func() %s { v := %s; if v == nil { return %s{} }; return *v }()", typeExpr, ctorCall, typeExpr)
+	case constructor.ReturnsError:
+		return fmt.Sprintf("func() %s { v, _ := %s; return v }()", typeExpr, ctorCall)
+	default:
+		return ctorCall
+	}
 }
 
 func resolveNamedConcreteWrapperType(expr ast.Expr, info *types.Info) (*types.Named, bool) {
@@ -1649,11 +1747,11 @@ func resolveNamedConcreteWrapperType(expr ast.Expr, info *types.Info) (*types.Na
 	return named, wantsPointer
 }
 
-func importedParameterConstructorsForType(pkg *packages.Package, targetType string) []string {
+func importedParameterConstructorsForType(pkg *packages.Package, targetType string) []importedParameterConstructorCandidate {
 	if pkg == nil || pkg.TypesInfo == nil {
 		return nil
 	}
-	var candidates []string
+	var candidates []importedParameterConstructorCandidate
 	for _, file := range pkg.Syntax {
 		if file == nil {
 			continue
@@ -1666,24 +1764,132 @@ func importedParameterConstructorsForType(pkg *packages.Package, targetType stri
 			if !isImportedParameterConstructorName(fn.Name.Name) {
 				continue
 			}
-			if fn.Type.Params != nil && len(fn.Type.Params.List) > 0 {
-				continue
-			}
-			if constructorReturnsImportedParamType(fn, pkg, targetType) {
-				candidates = append(candidates, fn.Name.Name)
+			returnsPointer, returnsError, ok := constructorReturnsImportedParamType(fn, pkg, targetType)
+			if ok {
+				if candidate, ok := importedParameterConstructorCandidateForFunc(fn, pkg); ok {
+					candidate.ReturnsPointer = returnsPointer
+					candidate.ReturnsError = returnsError
+					candidates = append(candidates, candidate)
+				}
 			}
 		}
 	}
 	return candidates
 }
 
+func importedParameterConstructorCandidateForFunc(fn *ast.FuncDecl, pkg *packages.Package) (importedParameterConstructorCandidate, bool) {
+	candidate := importedParameterConstructorCandidate{FuncName: fn.Name.Name}
+	params := importedConstructorParamsForFunc(fn, pkg)
+	if len(params) == 0 {
+		return candidate, true
+	}
+
+	for _, param := range params {
+		arg, imports, runtimeValue, ok := importedConstructorArgExpression(param)
+		if !ok {
+			return importedParameterConstructorCandidate{}, false
+		}
+		candidate.ArgExprs = append(candidate.ArgExprs, arg)
+		candidate.Imports = append(candidate.Imports, imports...)
+		if runtimeValue {
+			candidate.HasRuntime = true
+		}
+	}
+	if !candidate.HasRuntime {
+		return importedParameterConstructorCandidate{}, false
+	}
+	candidate.Imports = sortedStrings(candidate.Imports)
+	return candidate, true
+}
+
+func importedConstructorParamsForFunc(fn *ast.FuncDecl, pkg *packages.Package) []ConstructorParam {
+	if fn == nil || fn.Type == nil || fn.Type.Params == nil || pkg == nil {
+		return nil
+	}
+	pkgTypesPath := pkg.PkgPath
+	if pkg.Types != nil {
+		pkgTypesPath = pkg.Types.Path()
+	}
+	var params []ConstructorParam
+	index := 0
+	for _, field := range fn.Type.Params.List {
+		fieldType := field.Type
+		if _, ok := fieldType.(*ast.Ellipsis); ok {
+			index += wrapperParamFieldCount(field)
+			continue
+		}
+		goType := wrapperGoType(fieldType, pkg.TypesInfo, pkg.Name, pkgTypesPath, nil)
+		if len(field.Names) == 0 {
+			params = append(params, ConstructorParam{
+				Name:   syntheticParamName(index),
+				GoType: goType,
+			})
+			index++
+			continue
+		}
+		for _, name := range field.Names {
+			paramName := name.Name
+			if paramName == "" || paramName == "_" {
+				paramName = syntheticParamName(index)
+			}
+			params = append(params, ConstructorParam{
+				Name:   paramName,
+				GoType: goType,
+			})
+			index++
+		}
+	}
+	return params
+}
+
+func importedConstructorArgExpression(param ConstructorParam) (string, []string, bool, bool) {
+	typeName := strings.TrimSpace(param.GoType)
+	if typeName != "" {
+		if candidates := runtimeval.Lookup(typeName); len(candidates) > 0 {
+			return candidates[0].Expression, candidates[0].Imports, true, true
+		}
+		switch typeName {
+		case "string":
+			return importedConstructorStringArgExpression(param.Name), nil, false, true
+		case "[]byte", "[]uint8":
+			return "nil", nil, false, true
+		case "bool":
+			return "false", nil, false, true
+		case "time.Duration":
+			return "0", nil, false, true
+		case "int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64",
+			"float32", "float64":
+			return "0", nil, false, true
+		}
+		if strings.HasSuffix(typeName, ".Duration") {
+			return "0", nil, false, true
+		}
+	}
+	return "", nil, false, false
+}
+
+func importedConstructorStringArgExpression(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "url"),
+		strings.Contains(lower, "endpoint"),
+		strings.Contains(lower, "addr"),
+		strings.Contains(lower, "address"),
+		strings.Contains(lower, "base"):
+		return `"http://127.0.0.1:0"`
+	default:
+		return `""`
+	}
+}
+
 func isImportedParameterConstructorName(name string) bool {
 	return strings.HasPrefix(name, "New") || strings.HasPrefix(name, "Default")
 }
 
-func constructorReturnsImportedParamType(fn *ast.FuncDecl, pkg *packages.Package, targetType string) bool {
+func constructorReturnsImportedParamType(fn *ast.FuncDecl, pkg *packages.Package, targetType string) (returnsPointer bool, returnsError bool, ok bool) {
 	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
-		return false
+		return false, false, false
 	}
 	var exprs []ast.Expr
 	for _, field := range fn.Type.Results.List {
@@ -1693,16 +1899,19 @@ func constructorReturnsImportedParamType(fn *ast.FuncDecl, pkg *packages.Package
 		}
 	}
 	if len(exprs) == 0 || len(exprs) > 2 {
-		return false
+		return false, false, false
 	}
 	name, isPtr, same := sameWrapperPackageTypeName(exprs[0], pkg)
-	if !same || isPtr || name != targetType {
-		return false
+	if !same || name != targetType {
+		return false, false, false
 	}
 	if len(exprs) == 2 {
-		return false
+		if !wrapperIsErrorExpr(exprs[1], pkg.TypesInfo) {
+			return false, false, false
+		}
+		return isPtr, true, true
 	}
-	return true
+	return isPtr, false, true
 }
 
 func sameWrapperPackageTypeName(expr ast.Expr, pkg *packages.Package) (string, bool, bool) {
@@ -1731,6 +1940,20 @@ func sameWrapperPackageTypeName(expr ast.Expr, pkg *packages.Package) (string, b
 		return "", false, false
 	}
 	return tn.Name(), isPointer, true
+}
+
+func wrapperIsErrorExpr(expr ast.Expr, info *types.Info) bool {
+	if info == nil {
+		return false
+	}
+	tv, ok := info.Types[expr]
+	if !ok {
+		if ident, ok := expr.(*ast.Ident); ok {
+			return ident.Name == "error"
+		}
+		return false
+	}
+	return tv.Type == types.Universe.Lookup("error").Type()
 }
 
 func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map[string]config.GoRuntimeValueConfig {
