@@ -677,6 +677,36 @@ fn cached_harness_matches(
     binary_path.exists()
         && std::fs::read_to_string(main_rs_path).ok().as_deref() == Some(main_rs_content)
         && std::fs::read_to_string(cargo_toml_path).ok().as_deref() == Some(cargo_toml_content)
+        && cargo_lock_cache_matches(cargo_toml_path)
+}
+
+fn cargo_lock_input_marker_path(cargo_toml_path: &Path) -> PathBuf {
+    cargo_toml_path.with_file_name(".shatter-cargo-lock-input-hash")
+}
+
+fn cargo_lock_built_marker_path(cargo_toml_path: &Path) -> PathBuf {
+    cargo_toml_path.with_file_name(".shatter-cargo-lock-built-hash")
+}
+
+fn cargo_lock_cache_matches(cargo_toml_path: &Path) -> bool {
+    let input_marker = cargo_lock_input_marker_path(cargo_toml_path);
+    let built_marker = cargo_lock_built_marker_path(cargo_toml_path);
+    match (
+        std::fs::read_to_string(input_marker),
+        std::fs::read_to_string(built_marker),
+    ) {
+        (Ok(input), Ok(built)) => input == built,
+        (Ok(_), Err(_)) => false,
+        _ => true,
+    }
+}
+
+fn mark_cargo_lock_built(cargo_toml_path: &Path) -> io::Result<()> {
+    let input_marker = cargo_lock_input_marker_path(cargo_toml_path);
+    if input_marker.exists() {
+        std::fs::copy(input_marker, cargo_lock_built_marker_path(cargo_toml_path))?;
+    }
+    Ok(())
 }
 
 /// Walk up from `file_path` to find the nearest directory containing a
@@ -2697,6 +2727,7 @@ fn build_and_spawn_harness(
             String::from_utf8_lossy(&build_output.stderr).into_owned(),
         ));
     }
+    mark_cargo_lock_built(&harness_dir.join("Cargo.toml"))?;
 
     // Locate binary
     let binary_name = if cfg!(windows) {
@@ -2845,6 +2876,7 @@ fn build_and_spawn_crate_harness(
             ));
         }
         copy_cargo_binary_to_harness(&cargo_binary_path, &binary_path)?;
+        mark_cargo_lock_built(&cargo_toml_path)?;
     }
 
     if !binary_path.exists() {
@@ -3032,8 +3064,14 @@ fn cargo_lock_source_for_crate(crate_root: &Path) -> Option<PathBuf> {
 
 fn copy_cargo_lock_for_driver(crate_root: &Path, driver_root: &Path) -> io::Result<()> {
     if let Some(lock_source) = cargo_lock_source_for_crate(crate_root) {
+        let lock_content = std::fs::read_to_string(&lock_source)?;
+        let lock_hash = source_hash(&lock_content).to_string();
         std::fs::create_dir_all(driver_root)?;
-        std::fs::copy(lock_source, driver_root.join("Cargo.lock"))?;
+        std::fs::write(driver_root.join("Cargo.lock"), lock_content)?;
+        std::fs::write(
+            cargo_lock_input_marker_path(&driver_root.join("Cargo.toml")),
+            lock_hash,
+        )?;
     }
     Ok(())
 }
@@ -4076,6 +4114,7 @@ fn build_and_spawn_crate_bridge_harness(
             ));
         }
         copy_cargo_binary_to_harness(&cargo_binary_path, &binary_path)?;
+        mark_cargo_lock_built(&cargo_toml_path)?;
     }
 
     if !binary_path.exists() {
@@ -8198,6 +8237,38 @@ pub struct Nested {
             ),
             "generated Cargo.toml changes must invalidate cached harness binaries"
         );
+
+        std::fs::write(&cargo_toml, "[dependencies]\nold = \"1\"\n").expect("cargo");
+        let lock_input = cargo_lock_input_marker_path(&cargo_toml);
+        let lock_built = cargo_lock_built_marker_path(&cargo_toml);
+        std::fs::write(&lock_input, "old-lock").expect("input marker");
+        std::fs::write(&lock_built, "old-lock").expect("built marker");
+        assert!(cached_harness_matches(
+            &binary,
+            &main_rs,
+            "fn main() {}\n",
+            &cargo_toml,
+            "[dependencies]\nold = \"1\"\n"
+        ));
+        std::fs::write(&lock_input, "new-lock").expect("updated input marker");
+        assert!(
+            !cached_harness_matches(
+                &binary,
+                &main_rs,
+                "fn main() {}\n",
+                &cargo_toml,
+                "[dependencies]\nold = \"1\"\n"
+            ),
+            "copied Cargo.lock changes must invalidate cached harness binaries",
+        );
+        mark_cargo_lock_built(&cargo_toml).expect("mark built");
+        assert!(cached_harness_matches(
+            &binary,
+            &main_rs,
+            "fn main() {}\n",
+            &cargo_toml,
+            "[dependencies]\nold = \"1\"\n"
+        ));
     }
 
     #[test]
