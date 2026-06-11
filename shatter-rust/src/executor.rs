@@ -3010,11 +3010,32 @@ fn create_crate_staging_copy(crate_root: &Path, staging_root: &Path) -> io::Resu
     if dot_cargo.is_dir() {
         copy_dir_recursive(&dot_cargo, &staging_crate.join(".cargo"))?;
     }
+    copy_cargo_lock_for_driver(crate_root, staging_root)?;
     // str-gc0r: copy non-Rust compile-time assets referenced by macros like
     // `include_str!`, `include_bytes!`, and `sqlx::migrate!`. Without these the
     // shadow fails to compile even though the original crate compiles fine.
     copy_compile_time_assets(crate_root, &staging_crate)?;
     Ok(staging_crate)
+}
+
+fn cargo_lock_source_for_crate(crate_root: &Path) -> Option<PathBuf> {
+    let crate_lock = crate_root.join("Cargo.lock");
+    if crate_lock.exists() {
+        return Some(crate_lock);
+    }
+
+    find_workspace_root(crate_root).and_then(|workspace_root| {
+        let workspace_lock = workspace_root.join("Cargo.lock");
+        workspace_lock.exists().then_some(workspace_lock)
+    })
+}
+
+fn copy_cargo_lock_for_driver(crate_root: &Path, driver_root: &Path) -> io::Result<()> {
+    if let Some(lock_source) = cargo_lock_source_for_crate(crate_root) {
+        std::fs::create_dir_all(driver_root)?;
+        std::fs::copy(lock_source, driver_root.join("Cargo.lock"))?;
+    }
+    Ok(())
 }
 
 /// str-gc0r: scan all `.rs` files under the crate root for compile-time macros
