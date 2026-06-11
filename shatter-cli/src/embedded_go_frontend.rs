@@ -43,9 +43,10 @@ fn ensure_extracted_with_fallback(primary_cache: &Path) -> Result<PathBuf, Strin
 
 /// Extract the binary to a specific cache directory. Returns the path to the binary.
 ///
-/// Mirrors `embedded_frontend::extract_to` — keep the two extraction paths in
-/// sync (parallel parity). Changes to the staging/rename strategy here should
-/// be reflected in the TS twin and vice versa.
+/// Shares the same atomic staging/rename strategy as
+/// `embedded_frontend::extract_to`. Unlike the TypeScript bundle extractor,
+/// this path intentionally preserves other versioned Go binaries because live
+/// scans from another CLI build may still need them for frontend respawns.
 fn extract_to(cache_dir: &Path) -> Result<PathBuf, String> {
     let binary_path = cache_dir.join(format!("go-frontend-{BINARY_HASH}"));
 
