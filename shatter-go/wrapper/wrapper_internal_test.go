@@ -380,6 +380,7 @@ type Client struct {
 	http    *http.Client
 }
 
+func DefaultClient() Client { return Client{baseURL: "http://127.0.0.1:0"} }
 func NewClient(baseURL string, httpClient *http.Client) Client {
 	return Client{baseURL: baseURL, http: httpClient}
 }
@@ -408,6 +409,41 @@ func (c Client) Fetch(path string) string {
 	}
 	return "ok"
 }
+
+type TransportClient struct {
+	baseURL   string
+	transport http.RoundTripper
+}
+
+func DefaultTransportClient() TransportClient {
+	return TransportClient{baseURL: "http://127.0.0.1:0", transport: http.DefaultTransport}
+}
+func NewTransportClient(baseURL string, transport http.RoundTripper) TransportClient {
+	return TransportClient{baseURL: baseURL, transport: transport}
+}
+
+func (c TransportClient) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	if c.transport == nil {
+		return "transport_error"
+	}
+	resp, err := c.transport.RoundTrip(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
 `
 	if err := os.WriteFile(filepath.Join(depDir, "dep.go"), []byte(depSrc), 0o644); err != nil {
 		t.Fatalf("write dep.go: %v", err)
@@ -417,6 +453,10 @@ func (c Client) Fetch(path string) string {
 import safe "example.com/ctorparam/dep"
 
 func Use(client safe.Client, path string) string {
+	return client.Fetch(path)
+}
+
+func UseTransport(client safe.TransportClient, path string) string {
 	return client.Fetch(path)
 }
 `
@@ -443,15 +483,22 @@ func Use(client safe.Client, path string) string {
 	}
 
 	targets := BuildWrapperTargets(pkgs[0])
-	if len(targets) != 1 {
-		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	if len(targets) != 2 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 2", len(targets))
 	}
-	target := targets[0]
+	target := findWrapperTargetBySymbol(t, targets, "Use")
 	if len(target.Parameters) != 2 {
 		t.Fatalf("Use param count = %d, want 2", len(target.Parameters))
 	}
 	if got, want := target.Parameters[0].RuntimeValueExpr, `dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`; got != want {
 		t.Fatalf("RuntimeValueExpr = %q, want %q", got, want)
+	}
+	transportTarget := findWrapperTargetBySymbol(t, targets, "UseTransport")
+	if len(transportTarget.Parameters) != 2 {
+		t.Fatalf("UseTransport param count = %d, want 2", len(transportTarget.Parameters))
+	}
+	if got, want := transportTarget.Parameters[0].RuntimeValueExpr, `dep.NewTransportClient("http://127.0.0.1:0", shatterHTTPTransport())`; got != want {
+		t.Fatalf("Transport RuntimeValueExpr = %q, want %q", got, want)
 	}
 	if !slices.Contains(target.Imports, "example.com/ctorparam/dep") {
 		t.Fatalf("target.Imports = %v, want imported dep package", target.Imports)
@@ -464,11 +511,20 @@ func Use(client safe.Client, path string) string {
 	if !strings.Contains(out, "func shatterHTTPClient() *http.Client") {
 		t.Fatalf("generated wrapper missing synthetic HTTP client helper:\n%s", out)
 	}
+	if !strings.Contains(out, "func shatterHTTPTransport() http.RoundTripper") {
+		t.Fatalf("generated wrapper missing synthetic HTTP transport helper:\n%s", out)
+	}
 	if !strings.Contains(out, `var client dep.Client = dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`) {
 		t.Fatalf("generated wrapper missing constructor-backed client assignment:\n%s", out)
 	}
+	if !strings.Contains(out, `var client dep.TransportClient = dep.NewTransportClient("http://127.0.0.1:0", shatterHTTPTransport())`) {
+		t.Fatalf("generated wrapper missing constructor-backed transport client assignment:\n%s", out)
+	}
 	if strings.Contains(out, "json.Unmarshal(_shatterInputs[0], &client)") {
 		t.Fatalf("generated wrapper still decodes constructor-backed client from JSON:\n%s", out)
+	}
+	if strings.Contains(out, "dep.DefaultClient()") || strings.Contains(out, "dep.DefaultTransportClient()") {
+		t.Fatalf("generated wrapper still prefers parameterless constructor:\n%s", out)
 	}
 	if strings.Contains(out, "dep.NewInertClient()") {
 		t.Fatalf("generated wrapper still prefers inert constructor:\n%s", out)
@@ -495,6 +551,20 @@ func TestSyntheticHTTPClient(t *testing.T) {
 	}
 	if got != "status_error" {
 		t.Fatalf("ShatterInvoke /fail = %#v, want status_error", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseTransport"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke transport /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke transport /ok = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseTransport"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/fail\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke transport /fail error: %v", err)
+	}
+	if got != "status_error" {
+		t.Fatalf("ShatterInvoke transport /fail = %#v, want status_error", got)
 	}
 }
 `
@@ -524,6 +594,17 @@ func TestSyntheticHTTPClient(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("go test generated wrapper: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), out)
 	}
+}
+
+func findWrapperTargetBySymbol(t *testing.T, targets []WrapperTarget, symbol string) WrapperTarget {
+	t.Helper()
+	for _, target := range targets {
+		if target.SymbolName == symbol {
+			return target
+		}
+	}
+	t.Fatalf("missing wrapper target for symbol %q; targets=%v", symbol, targets)
+	return WrapperTarget{}
 }
 
 func TestGenerateWrapper_RuntimeValueSubstitutesWazeroRuntime(t *testing.T) {

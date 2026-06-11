@@ -337,7 +337,7 @@ func GenerateWrapper(
 	}
 	b.WriteString(")\n\n")
 
-	if wrapperUsesSyntheticHTTPClient(sorted, sortedCtors) {
+	if wrapperUsesSyntheticHTTPTransport(sorted, sortedCtors) {
 		writeSyntheticHTTPClientHelper(&b)
 	}
 
@@ -662,17 +662,17 @@ func applyRuntimeValueBindingsToConstructors(constructors []ConstructorCandidate
 	}
 }
 
-func wrapperUsesSyntheticHTTPClient(targets []WrapperTarget, constructors []ConstructorCandidate) bool {
+func wrapperUsesSyntheticHTTPTransport(targets []WrapperTarget, constructors []ConstructorCandidate) bool {
 	for _, target := range targets {
 		for _, param := range target.Parameters {
-			if strings.Contains(param.RuntimeValueExpr, "shatterHTTPClient()") {
+			if runtimeExprUsesSyntheticHTTPTransport(param.RuntimeValueExpr) {
 				return true
 			}
 		}
 	}
 	for _, constructor := range constructors {
 		for _, param := range constructor.Parameters {
-			if strings.Contains(constructorParamRuntimeValueExpr(param), "shatterHTTPClient()") {
+			if runtimeExprUsesSyntheticHTTPTransport(constructorParamRuntimeValueExpr(param)) {
 				return true
 			}
 		}
@@ -680,13 +680,20 @@ func wrapperUsesSyntheticHTTPClient(targets []WrapperTarget, constructors []Cons
 	return false
 }
 
+func runtimeExprUsesSyntheticHTTPTransport(expr string) bool {
+	return strings.Contains(expr, "shatterHTTPClient()") || strings.Contains(expr, "shatterHTTPTransport()")
+}
+
 func writeSyntheticHTTPClientHelper(b *strings.Builder) {
 	b.WriteString("type shatterHTTPRoundTripper func(*http.Request) (*http.Response, error)\n\n")
 	b.WriteString("func (f shatterHTTPRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {\n")
 	b.WriteString("\treturn f(req)\n")
 	b.WriteString("}\n\n")
+	b.WriteString("func shatterHTTPTransport() http.RoundTripper {\n")
+	b.WriteString("\treturn shatterHTTPRoundTripper(shatterHTTPRoundTrip)\n")
+	b.WriteString("}\n\n")
 	b.WriteString("func shatterHTTPClient() *http.Client {\n")
-	b.WriteString("\treturn &http.Client{Transport: shatterHTTPRoundTripper(shatterHTTPRoundTrip)}\n")
+	b.WriteString("\treturn &http.Client{Transport: shatterHTTPTransport()}\n")
 	b.WriteString("}\n\n")
 	b.WriteString("func shatterHTTPRoundTrip(req *http.Request) (*http.Response, error) {\n")
 	b.WriteString("\tstatusCode := http.StatusOK\n")
@@ -1666,6 +1673,9 @@ func importedParameterConstructorBinding(
 		return constructorRuntimeBinding{}, false
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].HasRuntime != candidates[j].HasRuntime {
+			return candidates[i].HasRuntime
+		}
 		if candidates[i].FuncName != candidates[j].FuncName {
 			return candidates[i].FuncName < candidates[j].FuncName
 		}
