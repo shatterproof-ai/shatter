@@ -1080,6 +1080,65 @@ mod tests {
     }
 
     #[test]
+    fn analyze_counts_executed_branch_lines_without_branch_path() {
+        let exec_result = ExecuteResult {
+            return_value: Some(json!({"status": 500, "body": {"error": "name is required"}})),
+            thrown_error: None,
+            branch_path: vec![],
+            lines_executed: vec![30, 36, 37, 38, 39],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: empty_perf(),
+        };
+        let observe = ObservationOutput {
+            function_name: "create_person".into(),
+            iterations: 1,
+            unique_paths: 1,
+            lines_covered: 5,
+            total_lines: 45,
+            new_path_executions: vec![],
+            raw_results: vec![(vec![json!({"name": "   "})], vec![], exec_result)],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            ..Default::default()
+        };
+
+        let mut analysis = stub_analysis("create_person", 3);
+        analysis.branches[0].id = 0;
+        analysis.branches[0].line = 38;
+        analysis.branches[0].condition_text = "trimmed_name.is_empty()".to_string();
+        analysis.branches[1].id = 1;
+        analysis.branches[1].line = 45;
+        analysis.branches[2].id = 2;
+        analysis.branches[2].line = 52;
+
+        let output = analyze(&observe, &analysis);
+
+        assert_eq!(output.coverage_metrics.total_branches, 3);
+        assert_eq!(
+            output.coverage_metrics.random_found, 1,
+            "a retained replay that executed a known branch line should count that branch"
+        );
+        assert_eq!(output.coverage_metrics.uncovered, 2);
+    }
+
+    #[test]
     fn explore_result_conversion_recovers_lines_from_branch_decisions() {
         let branch_path = vec![
             BranchDecision {
