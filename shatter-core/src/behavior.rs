@@ -225,12 +225,28 @@ pub struct BehaviorMap {
     pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
 }
 
-fn has_native_replay_input(inputs: &[serde_json::Value]) -> bool {
+pub(crate) fn has_replayable_native_input(inputs: &[serde_json::Value]) -> bool {
     inputs.iter().any(|input| {
-        input
-            .as_object()
-            .is_some_and(|obj| obj.contains_key("__shatter_replay"))
+        input.as_object().is_some_and(|obj| {
+            obj.get("__shatter_native")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+                && obj
+                    .get("__shatter_replay")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some()
+        })
     })
+}
+
+fn is_http_error_response(result: &crate::protocol::ExecuteResult) -> bool {
+    result.thrown_error.is_none()
+        && result
+            .return_value
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|status| status >= 400)
 }
 
 impl BehaviorMap {
@@ -337,7 +353,7 @@ impl BehaviorMap {
             .collect();
 
         for (inputs, mocks, res) in &result.raw_results {
-            if !has_native_replay_input(inputs) {
+            if !has_replayable_native_input(inputs) || !is_http_error_response(res) {
                 continue;
             }
             let Ok(input_key) = serde_json::to_string(inputs) else {
@@ -961,6 +977,14 @@ mod tests {
         })]
     }
 
+    fn json_body_with_replay_key(id: &str) -> Vec<serde_json::Value> {
+        vec![json!({
+            "__shatter_replay": {
+                "user_payload": id
+            }
+        })]
+    }
+
     fn execute_result_with_response(
         status: u16,
         body: &str,
@@ -1124,6 +1148,74 @@ mod tests {
             behavior.input_args == validation_error_input
                 && behavior.return_value == Some(json!({"status": 400, "body": "name is required"}))
         }));
+    }
+
+    #[test]
+    fn behavior_map_ignores_native_success_variants_and_json_replay_keys() {
+        let success_input = native_replay_input("valid-name");
+        let same_path_success_input = native_replay_input("other-valid-name");
+        let json_body_input = json_body_with_replay_key("payload-field");
+        let shared_branch_path = vec![BranchDecision {
+            branch_id: 1,
+            line: 42,
+            taken: false,
+            constraint: SymConstraint::Unknown {
+                hint: "payload.name.trim().is_empty()".to_string(),
+            },
+            conditions: None,
+        }];
+
+        let result = ObservationOutput {
+            function_name: "create_person".to_string(),
+            iterations: 3,
+            unique_paths: 1,
+            lines_covered: 1,
+            total_lines: 5,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: success_input.clone(),
+                return_value: Some(json!({"status": 200, "body": "created"})),
+                thrown_error: None,
+                lines_executed: vec![40, 42],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![
+                (
+                    success_input,
+                    vec![],
+                    execute_result_with_response(200, "created", shared_branch_path.clone()),
+                ),
+                (
+                    same_path_success_input,
+                    vec![],
+                    execute_result_with_response(200, "created-other", shared_branch_path.clone()),
+                ),
+                (
+                    json_body_input,
+                    vec![],
+                    execute_result_with_response(500, "payload error", shared_branch_path),
+                ),
+            ],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            ..Default::default()
+        };
+
+        let map = BehaviorMap::from_exploration_result("create_person", &result);
+
+        assert_eq!(
+            map.behaviors.len(),
+            1,
+            "only new-path behavior should be retained; same-path native successes and plain JSON replay keys are not validation-error evidence"
+        );
     }
 
     #[test]
