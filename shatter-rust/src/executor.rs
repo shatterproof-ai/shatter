@@ -341,6 +341,7 @@ pub struct CrateHarnessKey {
     file_path: String,
     source_hash: u64,
     mocks_hash: u64,
+    cargo_lock_hash: u64,
     /// Hash of native generator replay metadata baked into the dispatch harness source.
     native_replay_hash: u64,
 }
@@ -363,6 +364,7 @@ impl CrateHarnessKey {
             file_path: file_path.to_string(),
             source_hash: 0,
             mocks_hash: 0,
+            cargo_lock_hash: 0,
             native_replay_hash: 0,
         }
     }
@@ -392,6 +394,7 @@ pub struct CrateBridgeHarnessKey {
     /// Hash of the generated `__shatter.rs` wrapper module content.
     wrapper_hash: u64,
     mocks_hash: u64,
+    cargo_lock_hash: u64,
 }
 
 impl CrateBridgeHarnessKey {
@@ -407,6 +410,7 @@ impl CrateBridgeHarnessKey {
             crate_root,
             wrapper_hash: 0,
             mocks_hash: 0,
+            cargo_lock_hash: 0,
         }
     }
 }
@@ -687,6 +691,8 @@ fn cargo_lock_input_marker_path(cargo_toml_path: &Path) -> PathBuf {
 fn cargo_lock_built_marker_path(cargo_toml_path: &Path) -> PathBuf {
     cargo_toml_path.with_file_name(".shatter-cargo-lock-built-hash")
 }
+
+const CARGO_LOCK_ABSENT_MARKER: &str = "absent";
 
 fn cargo_lock_cache_matches(cargo_toml_path: &Path) -> bool {
     let input_marker = cargo_lock_input_marker_path(cargo_toml_path);
@@ -3062,6 +3068,15 @@ fn cargo_lock_source_for_crate(crate_root: &Path) -> Option<PathBuf> {
     })
 }
 
+fn cargo_lock_hash_for_crate(crate_root: &Path) -> io::Result<u64> {
+    match cargo_lock_source_for_crate(crate_root) {
+        Some(lock_source) => {
+            std::fs::read_to_string(lock_source).map(|content| source_hash(&content))
+        }
+        None => Ok(0),
+    }
+}
+
 fn copy_cargo_lock_for_driver(crate_root: &Path, driver_root: &Path) -> io::Result<()> {
     if let Some(lock_source) = cargo_lock_source_for_crate(crate_root) {
         let lock_content = std::fs::read_to_string(&lock_source)?;
@@ -3072,8 +3087,25 @@ fn copy_cargo_lock_for_driver(crate_root: &Path, driver_root: &Path) -> io::Resu
             cargo_lock_input_marker_path(&driver_root.join("Cargo.toml")),
             lock_hash,
         )?;
+    } else {
+        let cargo_toml_path = driver_root.join("Cargo.toml");
+        std::fs::create_dir_all(driver_root)?;
+        remove_file_if_exists(&driver_root.join("Cargo.lock"))?;
+        std::fs::write(
+            cargo_lock_input_marker_path(&cargo_toml_path),
+            CARGO_LOCK_ABSENT_MARKER,
+        )?;
+        remove_file_if_exists(&cargo_lock_built_marker_path(&cargo_toml_path))?;
     }
     Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// str-gc0r: scan all `.rs` files under the crate root for compile-time macros
@@ -4262,11 +4294,14 @@ fn execute_function_crate_bridge(
     );
     let root_stub = generate_crate_bridge_root_stub();
     let wrapper_hash = source_hash(&format!("{in_module_wrapper}{root_stub}"));
+    let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
 
     let key = CrateBridgeHarnessKey {
         crate_root: crate_root.to_path_buf(),
         wrapper_hash,
         mocks_hash: mh,
+        cargo_lock_hash,
     };
 
     // Fast path: harness already running and function in dispatch table.
@@ -4448,11 +4483,14 @@ fn execute_function_crate_backed(
     let mh = mocks_hash(mocks);
     let native_replays = native_replay_specs(inputs)?;
     let native_replay_hash = native_replay_hash(&native_replays);
+    let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
 
     let key = CrateHarnessKey {
         file_path: file_path.to_string(),
         source_hash: src_hash,
         mocks_hash: mh,
+        cargo_lock_hash,
         native_replay_hash,
     };
 
@@ -11449,6 +11487,114 @@ edition = "2021"
 
         let _ = std::fs::remove_dir_all(&ws_root);
         let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    #[test]
+    fn copied_lockfile_removal_clears_reused_driver_state() {
+        let crate_root = unique_tmp_dir("crate-lock-removal-8j9k");
+        let driver_root = unique_tmp_dir("driver-lock-removal-8j9k");
+        let src_dir = driver_root.join("src");
+        std::fs::create_dir_all(&crate_root).unwrap();
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let cargo_toml = driver_root.join("Cargo.toml");
+        let main_rs = src_dir.join("main.rs");
+        let binary = driver_root.join("target/debug/driver");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, "binary").unwrap();
+        std::fs::write(&cargo_toml, "[package]\nname = \"driver\"\n").unwrap();
+        std::fs::write(&main_rs, "fn main() {}\n").unwrap();
+
+        std::fs::write(crate_root.join("Cargo.lock"), "version = 4\n").unwrap();
+        copy_cargo_lock_for_driver(&crate_root, &driver_root).unwrap();
+        mark_cargo_lock_built(&cargo_toml).unwrap();
+        assert!(cached_harness_matches(
+            &binary,
+            &main_rs,
+            "fn main() {}\n",
+            &cargo_toml,
+            "[package]\nname = \"driver\"\n",
+        ));
+
+        std::fs::remove_file(crate_root.join("Cargo.lock")).unwrap();
+        copy_cargo_lock_for_driver(&crate_root, &driver_root).unwrap();
+        assert!(
+            !driver_root.join("Cargo.lock").exists(),
+            "driver lockfile must be removed when source lockfile disappears",
+        );
+        assert!(
+            cargo_lock_input_marker_path(&cargo_toml).exists(),
+            "no-lock state must be represented by an input marker",
+        );
+        assert!(
+            !cargo_lock_built_marker_path(&cargo_toml).exists(),
+            "stale built marker must be removed when source lockfile disappears",
+        );
+        assert!(
+            !cached_harness_matches(
+                &binary,
+                &main_rs,
+                "fn main() {}\n",
+                &cargo_toml,
+                "[package]\nname = \"driver\"\n",
+            ),
+            "old lockfile-backed binary must rebuild before serving no-lock state",
+        );
+        mark_cargo_lock_built(&cargo_toml).unwrap();
+        assert!(cached_harness_matches(
+            &binary,
+            &main_rs,
+            "fn main() {}\n",
+            &cargo_toml,
+            "[package]\nname = \"driver\"\n",
+        ));
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+        let _ = std::fs::remove_dir_all(&driver_root);
+    }
+
+    #[test]
+    fn in_memory_harness_keys_include_cargo_lock_hash() {
+        let crate_root = unique_tmp_dir("key-lock-hash-8j9k");
+        std::fs::create_dir_all(&crate_root).unwrap();
+        std::fs::write(crate_root.join("Cargo.lock"), "version = 4\nold = 1\n").unwrap();
+
+        let old_hash = cargo_lock_hash_for_crate(&crate_root).unwrap();
+        let old_crate_key = CrateHarnessKey {
+            file_path: "src/lib.rs".to_string(),
+            source_hash: 1,
+            mocks_hash: 2,
+            cargo_lock_hash: old_hash,
+            native_replay_hash: 3,
+        };
+        let old_bridge_key = CrateBridgeHarnessKey {
+            crate_root: crate_root.clone(),
+            wrapper_hash: 4,
+            mocks_hash: 5,
+            cargo_lock_hash: old_hash,
+        };
+
+        std::fs::write(crate_root.join("Cargo.lock"), "version = 4\nnew = 1\n").unwrap();
+        let new_hash = cargo_lock_hash_for_crate(&crate_root).unwrap();
+        let new_crate_key = CrateHarnessKey {
+            cargo_lock_hash: new_hash,
+            ..old_crate_key.clone()
+        };
+        let new_bridge_key = CrateBridgeHarnessKey {
+            cargo_lock_hash: new_hash,
+            ..old_bridge_key.clone()
+        };
+
+        assert_ne!(old_hash, new_hash);
+        assert_ne!(
+            old_crate_key, new_crate_key,
+            "bin-only in-memory harness cache key must change when Cargo.lock changes",
+        );
+        assert_ne!(
+            old_bridge_key, new_bridge_key,
+            "crate-bridge in-memory harness cache key must change when Cargo.lock changes",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
     }
 
     /// str-n374: root-level crates without workspace inheritance still work.
