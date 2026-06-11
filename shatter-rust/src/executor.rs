@@ -4523,6 +4523,7 @@ fn execute_function_crate_backed(
 
     let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh, native_replay_hash);
     std::fs::create_dir_all(&harness_dir)?;
+    copy_cargo_lock_for_driver(crate_root, &harness_dir)?;
 
     let mut harness = if let Some(timing) = timing {
         timing.record("execute.build", |timing| {
