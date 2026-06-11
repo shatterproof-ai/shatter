@@ -826,10 +826,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::execution_record::ExternalCall;
+    use crate::execution_record::{ExternalCall, SymConstraint};
     use crate::explorer::{ExecutionSummary, ObservationOutput};
     use crate::protocol::{
-        DependencyKind, ExternalDependency, FunctionAnalysis, PerformanceMetrics,
+        DependencyKind, ExecuteResult, ExternalDependency, FunctionAnalysis, PerformanceMetrics,
     };
     use crate::types::TypeInfo;
 
@@ -908,6 +908,43 @@ mod tests {
         }
     }
 
+    fn native_replay_input(id: &str) -> Vec<serde_json::Value> {
+        vec![json!({
+            "__shatter_native": true,
+            "handle": id,
+            "__shatter_replay": {
+                "language": "rust",
+                "file": "generator.rs",
+                "name": "PickpackitPerson",
+                "recipe": {"id": id}
+            }
+        })]
+    }
+
+    fn execute_result_with_response(
+        status: u16,
+        body: &str,
+        branch_path: Vec<BranchDecision>,
+    ) -> ExecuteResult {
+        ExecuteResult {
+            return_value: Some(json!({"status": status, "body": body})),
+            thrown_error: None,
+            branch_path,
+            lines_executed: vec![40, 42],
+            calls_to_external: vec![],
+            path_constraints: vec![],
+            side_effects: vec![],
+            scope_events: vec![],
+            loop_body_states: vec![],
+            capture_truncation: None,
+            discovered_dependencies: vec![],
+            connection_failures: vec![],
+            runtime_crypto_boundaries: vec![],
+            outcome: None,
+            performance: PerformanceMetrics::default(),
+        }
+    }
+
     fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
         value: &T,
     ) {
@@ -981,6 +1018,72 @@ mod tests {
             map.behaviors[1].thrown_error.as_ref().unwrap().message,
             "Error: negative input"
         );
+    }
+
+    #[test]
+    fn behavior_map_retains_native_replay_error_response_variants() {
+        let success_input = native_replay_input("valid-name");
+        let validation_error_input = native_replay_input("blank-name");
+        let shared_branch_path = vec![BranchDecision {
+            branch_id: 1,
+            line: 42,
+            taken: true,
+            constraint: SymConstraint::Unknown {
+                hint: "payload.name.trim().is_empty()".to_string(),
+            },
+            conditions: None,
+        }];
+
+        let result = ObservationOutput {
+            function_name: "create_person".to_string(),
+            iterations: 2,
+            unique_paths: 1,
+            lines_covered: 1,
+            total_lines: 5,
+            new_path_executions: vec![ExecutionSummary {
+                inputs: success_input.clone(),
+                return_value: Some(json!({"status": 200, "body": "created"})),
+                thrown_error: None,
+                lines_executed: vec![40, 42],
+                is_new_path: true,
+                error_intent: None,
+            }],
+            raw_results: vec![
+                (
+                    success_input,
+                    vec![],
+                    execute_result_with_response(200, "created", shared_branch_path.clone()),
+                ),
+                (
+                    validation_error_input.clone(),
+                    vec![],
+                    execute_result_with_response(400, "name is required", shared_branch_path),
+                ),
+            ],
+            discoveries: vec![],
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            ..Default::default()
+        };
+
+        let map = BehaviorMap::from_exploration_result("create_person", &result);
+
+        assert_eq!(
+            map.behaviors.len(),
+            2,
+            "native replay validation-error responses should remain available for cached seed replay even when they share an already-seen path"
+        );
+        assert!(map.behaviors.iter().any(|behavior| {
+            behavior.input_args == validation_error_input
+                && behavior.return_value == Some(json!({"status": 400, "body": "name is required"}))
+        }));
     }
 
     #[test]
