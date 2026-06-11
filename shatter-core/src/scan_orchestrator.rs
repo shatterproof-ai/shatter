@@ -988,6 +988,11 @@ fn status_target_inputs_from_scan_summary(
                 .or_else(|| analysis.and_then(|analysis| analysis.source_file.clone()))
                 .unwrap_or_default();
             let (outcome, validity_impact) = status_target_outcome(entry);
+            let artifact_path = entry
+                .artifact
+                .as_ref()
+                .map(|artifact| scan_root.join(artifact))
+                .filter(|path| path.exists());
             StatusTargetInput {
                 target_id: entry.function_name.clone(),
                 name: entry.function_name.clone(),
@@ -995,13 +1000,9 @@ fn status_target_inputs_from_scan_summary(
                 start_line: analysis.map_or(0, |analysis| analysis.start_line),
                 end_line: analysis.map_or(0, |analysis| analysis.end_line),
                 outcome,
-                artifact_path: entry
-                    .artifact
-                    .as_ref()
-                    .map(|artifact| scan_root.join(artifact)),
+                artifact_path: artifact_path.clone(),
                 failure_reason: entry.reason.clone(),
-                unavailable_reason: entry
-                    .artifact
+                unavailable_reason: artifact_path
                     .is_none()
                     .then(|| target_unavailable_reason(entry)),
                 validity_impact,
@@ -12600,6 +12601,165 @@ defaults:
         assert_eq!(parsed.failed, 1);
         assert_eq!(parsed.skipped, 1);
         assert_eq!(parsed.functions.len(), 3);
+    }
+
+    #[test]
+    fn status_targets_do_not_link_missing_failure_artifacts() {
+        let scan_root = tempfile::tempdir().expect("scan root");
+        let mut summary = new_scan_summary("missing-artifacts", 2);
+        summary_record_failed(
+            &mut summary,
+            "pkg/fail.go::FailTarget",
+            1,
+            "error: failed to spawn frontend: No such file or directory (os error 2)",
+            Duration::from_secs(1),
+        );
+        summary_record_skipped(
+            &mut summary,
+            "pkg/unsupported.go::UnsupportedTarget",
+            2,
+            "unsupported: opaque parameter",
+            SkipCategory::Unsupported,
+            Duration::from_secs(1),
+        );
+
+        let file_map = HashMap::from([
+            (
+                "pkg/fail.go::FailTarget".to_string(),
+                "pkg/fail.go".to_string(),
+            ),
+            (
+                "pkg/unsupported.go::UnsupportedTarget".to_string(),
+                "pkg/unsupported.go".to_string(),
+            ),
+        ]);
+        let targets =
+            status_target_inputs_from_scan_summary(scan_root.path(), &summary, &file_map, &[]);
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].target_id, "pkg/fail.go::FailTarget");
+        assert!(
+            targets[0].artifact_path.is_none(),
+            "failed targets without function artifacts must not point status export at missing files"
+        );
+        assert_eq!(
+            targets[0].unavailable_reason.as_deref(),
+            Some("error: failed to spawn frontend: No such file or directory (os error 2)")
+        );
+        assert_eq!(
+            targets[1].target_id,
+            "pkg/unsupported.go::UnsupportedTarget"
+        );
+        assert!(
+            targets[1].artifact_path.is_none(),
+            "unsupported targets without function artifacts must not point status export at missing files"
+        );
+        assert_eq!(
+            targets[1].unavailable_reason.as_deref(),
+            Some("unsupported: opaque parameter")
+        );
+
+        write_scan_summary(scan_root.path(), &summary);
+        let manifest = crate::run_manifest::RunManifest {
+            version: crate::run_manifest::RUN_MANIFEST_VERSION,
+            scan_id: "missing-artifacts".to_string(),
+            project_root: None,
+            repo_root: None,
+            cwd: scan_root.path().display().to_string(),
+            git_commit: None,
+            git_dirty: Some(false),
+            scope_hash: "scope-hash".to_string(),
+            source_files: vec![
+                crate::run_manifest::SourceFileSnapshot {
+                    path: "pkg/fail.go".to_string(),
+                    size: 0,
+                    mtime_ns: None,
+                    content_hash: None,
+                    line_count: None,
+                },
+                crate::run_manifest::SourceFileSnapshot {
+                    path: "pkg/unsupported.go".to_string(),
+                    size: 0,
+                    mtime_ns: None,
+                    content_hash: None,
+                    line_count: None,
+                },
+            ],
+            captured_at_ns: 0,
+        };
+        let manifest_path = scan_root
+            .path()
+            .join(crate::run_manifest::RUN_MANIFEST_FILENAME);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+        let summary_path = scan_root.path().join(SCAN_SUMMARY_FILENAME);
+        let artifacts = [StatusArtifactLink {
+            kind: "scan_summary",
+            path: &summary_path,
+        }];
+
+        crate::status_export::write_run_status_json(
+            scan_root.path(),
+            &StatusExportInput {
+                command: "scan",
+                manifest: &manifest,
+                manifest_path: &manifest_path,
+                artifacts: &artifacts,
+                files: &[],
+                targets: &targets,
+                rollups: status_rollup_input_from_scan_summary(&summary),
+            },
+        )
+        .expect("status export should not require missing failed/skipped artifacts");
+
+        assert!(
+            scan_root
+                .path()
+                .join(crate::status_export::RUN_STATUS_FILENAME)
+                .exists(),
+            "run-status.json should be written"
+        );
+    }
+
+    #[test]
+    fn status_targets_preserve_written_failure_artifacts() {
+        let scan_root = tempfile::tempdir().expect("scan root");
+        let scan_root_path = scan_root.path().to_path_buf();
+        let functions_root = scan_root_path.join("functions");
+        let function_name = "pkg/fail.go::FailTarget";
+        let reason = "error: harness build failed";
+        write_failed_scan_artifact(Some(&functions_root), 1, 1, function_name, reason);
+
+        let mut summary = new_scan_summary("written-artifacts", 1);
+        summary_record_failed(
+            &mut summary,
+            function_name,
+            1,
+            reason,
+            Duration::from_secs(1),
+        );
+
+        let file_map = HashMap::from([(function_name.to_string(), "pkg/fail.go".to_string())]);
+        let targets =
+            status_target_inputs_from_scan_summary(scan_root.path(), &summary, &file_map, &[]);
+
+        assert_eq!(targets.len(), 1);
+        let artifact_path = targets[0]
+            .artifact_path
+            .as_ref()
+            .expect("written failed artifact should stay linked");
+        assert!(
+            artifact_path.exists(),
+            "linked failed artifact should exist: {}",
+            artifact_path.display()
+        );
+        assert!(
+            targets[0].unavailable_reason.is_none(),
+            "written failed artifact should not be reported unavailable"
+        );
     }
 
     #[test]
