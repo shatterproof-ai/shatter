@@ -184,7 +184,43 @@ fn rust_frontend_project_deps(project_root: &Path) -> String {
     deps
 }
 
-fn copy_project_cargo_lock(_project_root: &Path, _build_dir: &Path) -> Result<(), String> {
+fn project_cargo_lock_source(project_root: &Path) -> Option<PathBuf> {
+    let project_lock = project_root.join("Cargo.lock");
+    if project_lock.exists() {
+        return Some(project_lock);
+    }
+
+    let mut dir = project_root.parent()?;
+    loop {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.exists()
+            && std::fs::read_to_string(&manifest)
+                .ok()
+                .is_some_and(|content| {
+                    content.lines().any(|line| {
+                        line.trim() == "[workspace]" || line.trim().starts_with("[workspace]")
+                    })
+                })
+        {
+            let workspace_lock = dir.join("Cargo.lock");
+            return workspace_lock.exists().then_some(workspace_lock);
+        }
+        if dir.parent().is_none_or(|parent| parent == dir) {
+            return None;
+        }
+        dir = dir.parent().unwrap();
+    }
+}
+
+fn copy_project_cargo_lock(project_root: &Path, build_dir: &Path) -> Result<(), String> {
+    if let Some(lock_source) = project_cargo_lock_source(project_root) {
+        std::fs::copy(&lock_source, build_dir.join("Cargo.lock")).map_err(|e| {
+            format!(
+                "failed to copy Cargo.lock from {}: {e}",
+                lock_source.display()
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -422,6 +458,7 @@ fn build_rust_frontend(
 
     // Copy user generator files into src/
     let project_root = shatter_dir.parent().unwrap_or(Path::new("."));
+    copy_project_cargo_lock(project_root, build_dir)?;
     let mut mod_declarations = String::new();
     let mut registrations = String::new();
     for (idx, generator) in native_gens.iter().enumerate() {
