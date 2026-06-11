@@ -698,10 +698,6 @@ func writeSyntheticHTTPClientHelper(b *strings.Builder) {
 	b.WriteString("func shatterHTTPRoundTrip(req *http.Request) (*http.Response, error) {\n")
 	b.WriteString("\tstatusCode := http.StatusOK\n")
 	b.WriteString("\tbody := \"null\\n\"\n")
-	b.WriteString("\tif req != nil && req.URL != nil && strings.Contains(strings.ToLower(req.URL.Path), \"fail\") {\n")
-	b.WriteString("\t\tstatusCode = http.StatusInternalServerError\n")
-	b.WriteString("\t\tbody = \"{\\\"error\\\":\\\"shatter synthetic failure\\\"}\\n\"\n")
-	b.WriteString("\t}\n")
 	b.WriteString("\treturn &http.Response{\n")
 	b.WriteString("\t\tStatusCode: statusCode,\n")
 	b.WriteString("\t\tStatus:     fmt.Sprintf(\"%d %s\", statusCode, http.StatusText(statusCode)),\n")
@@ -1653,7 +1649,7 @@ func importedParameterConstructorBinding(
 	consumerPkgPath string,
 ) (constructorRuntimeBinding, bool) {
 	named, wantsPointer := resolveNamedConcreteWrapperType(expr, consumerPkg.TypesInfo)
-	if named == nil || wantsPointer || named.Obj() == nil || named.Obj().Pkg() == nil {
+	if named == nil || named.Obj() == nil || named.Obj().Pkg() == nil {
 		return constructorRuntimeBinding{}, false
 	}
 	if _, isInterface := named.Underlying().(*types.Interface); isInterface {
@@ -1686,7 +1682,9 @@ func importedParameterConstructorBinding(
 		pkgName = defPkg.Types.Name()
 	}
 	constructor := candidates[0]
-	ctorExpr := pkgName + "." + constructor.FuncName + "(" + strings.Join(constructor.ArgExprs, ", ") + ")"
+	typeExpr := pkgName + "." + named.Obj().Name()
+	ctorCall := pkgName + "." + constructor.FuncName + "(" + strings.Join(constructor.ArgExprs, ", ") + ")"
+	ctorExpr := importedParameterConstructorExpression(typeExpr, ctorCall, wantsPointer, constructor)
 	imports := append([]string{defPkgPath}, constructor.Imports...)
 	return constructorRuntimeBinding{
 		Expression: ctorExpr,
@@ -1695,10 +1693,38 @@ func importedParameterConstructorBinding(
 }
 
 type importedParameterConstructorCandidate struct {
-	FuncName   string
-	ArgExprs   []string
-	Imports    []string
-	HasRuntime bool
+	FuncName       string
+	ArgExprs       []string
+	Imports        []string
+	HasRuntime     bool
+	ReturnsPointer bool
+	ReturnsError   bool
+}
+
+func importedParameterConstructorExpression(
+	typeExpr string,
+	ctorCall string,
+	wantsPointer bool,
+	constructor importedParameterConstructorCandidate,
+) string {
+	switch {
+	case wantsPointer && constructor.ReturnsPointer && constructor.ReturnsError:
+		return fmt.Sprintf("func() *%s { v, _ := %s; return v }()", typeExpr, ctorCall)
+	case wantsPointer && constructor.ReturnsPointer:
+		return ctorCall
+	case wantsPointer && !constructor.ReturnsPointer && constructor.ReturnsError:
+		return fmt.Sprintf("func() *%s { v, _ := %s; return &v }()", typeExpr, ctorCall)
+	case wantsPointer && !constructor.ReturnsPointer:
+		return fmt.Sprintf("func() *%s { v := %s; return &v }()", typeExpr, ctorCall)
+	case !wantsPointer && constructor.ReturnsPointer && constructor.ReturnsError:
+		return fmt.Sprintf("func() %s { v, _ := %s; if v == nil { return %s{} }; return *v }()", typeExpr, ctorCall, typeExpr)
+	case !wantsPointer && constructor.ReturnsPointer:
+		return fmt.Sprintf("func() %s { v := %s; if v == nil { return %s{} }; return *v }()", typeExpr, ctorCall, typeExpr)
+	case constructor.ReturnsError:
+		return fmt.Sprintf("func() %s { v, _ := %s; return v }()", typeExpr, ctorCall)
+	default:
+		return ctorCall
+	}
 }
 
 func resolveNamedConcreteWrapperType(expr ast.Expr, info *types.Info) (*types.Named, bool) {
@@ -1738,8 +1764,11 @@ func importedParameterConstructorsForType(pkg *packages.Package, targetType stri
 			if !isImportedParameterConstructorName(fn.Name.Name) {
 				continue
 			}
-			if constructorReturnsImportedParamType(fn, pkg, targetType) {
+			returnsPointer, returnsError, ok := constructorReturnsImportedParamType(fn, pkg, targetType)
+			if ok {
 				if candidate, ok := importedParameterConstructorCandidateForFunc(fn, pkg); ok {
+					candidate.ReturnsPointer = returnsPointer
+					candidate.ReturnsError = returnsError
 					candidates = append(candidates, candidate)
 				}
 			}
@@ -1858,9 +1887,9 @@ func isImportedParameterConstructorName(name string) bool {
 	return strings.HasPrefix(name, "New") || strings.HasPrefix(name, "Default")
 }
 
-func constructorReturnsImportedParamType(fn *ast.FuncDecl, pkg *packages.Package, targetType string) bool {
+func constructorReturnsImportedParamType(fn *ast.FuncDecl, pkg *packages.Package, targetType string) (returnsPointer bool, returnsError bool, ok bool) {
 	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
-		return false
+		return false, false, false
 	}
 	var exprs []ast.Expr
 	for _, field := range fn.Type.Results.List {
@@ -1870,16 +1899,19 @@ func constructorReturnsImportedParamType(fn *ast.FuncDecl, pkg *packages.Package
 		}
 	}
 	if len(exprs) == 0 || len(exprs) > 2 {
-		return false
+		return false, false, false
 	}
 	name, isPtr, same := sameWrapperPackageTypeName(exprs[0], pkg)
-	if !same || isPtr || name != targetType {
-		return false
+	if !same || name != targetType {
+		return false, false, false
 	}
 	if len(exprs) == 2 {
-		return false
+		if !wrapperIsErrorExpr(exprs[1], pkg.TypesInfo) {
+			return false, false, false
+		}
+		return isPtr, true, true
 	}
-	return true
+	return isPtr, false, true
 }
 
 func sameWrapperPackageTypeName(expr ast.Expr, pkg *packages.Package) (string, bool, bool) {
@@ -1908,6 +1940,20 @@ func sameWrapperPackageTypeName(expr ast.Expr, pkg *packages.Package) (string, b
 		return "", false, false
 	}
 	return tn.Name(), isPointer, true
+}
+
+func wrapperIsErrorExpr(expr ast.Expr, info *types.Info) bool {
+	if info == nil {
+		return false
+	}
+	tv, ok := info.Types[expr]
+	if !ok {
+		if ident, ok := expr.(*ast.Ident); ok {
+			return ident.Name == "error"
+		}
+		return false
+	}
+	return tv.Type == types.Universe.Lookup("error").Type()
 }
 
 func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map[string]config.GoRuntimeValueConfig {

@@ -410,6 +410,64 @@ func (c Client) Fetch(path string) string {
 	return "ok"
 }
 
+type ErrorClient struct {
+	baseURL string
+	http    *http.Client
+}
+
+func NewErrorHTTPClient(baseURL string, httpClient *http.Client) (ErrorClient, error) {
+	return ErrorClient{baseURL: baseURL, http: httpClient}, nil
+}
+
+func (c ErrorClient) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
+
+type PointerClient struct {
+	baseURL string
+	http    *http.Client
+}
+
+func NewPointerHTTPClient(baseURL string, httpClient *http.Client) (*PointerClient, error) {
+	return &PointerClient{baseURL: baseURL, http: httpClient}, nil
+}
+
+func (c *PointerClient) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
+
 type TransportClient struct {
 	baseURL   string
 	transport http.RoundTripper
@@ -456,6 +514,14 @@ func Use(client safe.Client, path string) string {
 	return client.Fetch(path)
 }
 
+func UseError(client safe.ErrorClient, path string) string {
+	return client.Fetch(path)
+}
+
+func UsePointer(client *safe.PointerClient, path string) string {
+	return client.Fetch(path)
+}
+
 func UseTransport(client safe.TransportClient, path string) string {
 	return client.Fetch(path)
 }
@@ -483,8 +549,8 @@ func UseTransport(client safe.TransportClient, path string) string {
 	}
 
 	targets := BuildWrapperTargets(pkgs[0])
-	if len(targets) != 2 {
-		t.Fatalf("BuildWrapperTargets produced %d targets, want 2", len(targets))
+	if len(targets) != 4 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 4", len(targets))
 	}
 	target := findWrapperTargetBySymbol(t, targets, "Use")
 	if len(target.Parameters) != 2 {
@@ -492,6 +558,20 @@ func UseTransport(client safe.TransportClient, path string) string {
 	}
 	if got, want := target.Parameters[0].RuntimeValueExpr, `dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`; got != want {
 		t.Fatalf("RuntimeValueExpr = %q, want %q", got, want)
+	}
+	errorTarget := findWrapperTargetBySymbol(t, targets, "UseError")
+	if len(errorTarget.Parameters) != 2 {
+		t.Fatalf("UseError param count = %d, want 2", len(errorTarget.Parameters))
+	}
+	if got, want := errorTarget.Parameters[0].RuntimeValueExpr, `func() dep.ErrorClient { v, _ := dep.NewErrorHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`; got != want {
+		t.Fatalf("Error RuntimeValueExpr = %q, want %q", got, want)
+	}
+	pointerTarget := findWrapperTargetBySymbol(t, targets, "UsePointer")
+	if len(pointerTarget.Parameters) != 2 {
+		t.Fatalf("UsePointer param count = %d, want 2", len(pointerTarget.Parameters))
+	}
+	if got, want := pointerTarget.Parameters[0].RuntimeValueExpr, `func() *dep.PointerClient { v, _ := dep.NewPointerHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`; got != want {
+		t.Fatalf("Pointer RuntimeValueExpr = %q, want %q", got, want)
 	}
 	transportTarget := findWrapperTargetBySymbol(t, targets, "UseTransport")
 	if len(transportTarget.Parameters) != 2 {
@@ -516,6 +596,12 @@ func UseTransport(client safe.TransportClient, path string) string {
 	}
 	if !strings.Contains(out, `var client dep.Client = dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`) {
 		t.Fatalf("generated wrapper missing constructor-backed client assignment:\n%s", out)
+	}
+	if !strings.Contains(out, `var client dep.ErrorClient = func() dep.ErrorClient { v, _ := dep.NewErrorHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`) {
+		t.Fatalf("generated wrapper missing error-returning constructor assignment:\n%s", out)
+	}
+	if !strings.Contains(out, `var client *dep.PointerClient = func() *dep.PointerClient { v, _ := dep.NewPointerHTTPClient("http://127.0.0.1:0", shatterHTTPClient()); return v }()`) {
+		t.Fatalf("generated wrapper missing pointer/error constructor assignment:\n%s", out)
 	}
 	if !strings.Contains(out, `var client dep.TransportClient = dep.NewTransportClient("http://127.0.0.1:0", shatterHTTPTransport())`) {
 		t.Fatalf("generated wrapper missing constructor-backed transport client assignment:\n%s", out)
@@ -545,12 +631,26 @@ func TestSyntheticHTTPClient(t *testing.T) {
 	if got != "ok" {
 		t.Fatalf("ShatterInvoke /ok = %#v, want ok", got)
 	}
-	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:Use"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/fail\"`" + `)})
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:Use"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/failure-counts\"`" + `)})
 	if err != nil {
-		t.Fatalf("ShatterInvoke /fail error: %v", err)
+		t.Fatalf("ShatterInvoke /failure-counts error: %v", err)
 	}
-	if got != "status_error" {
-		t.Fatalf("ShatterInvoke /fail = %#v, want status_error", got)
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke /failure-counts = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseError"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke error-returning /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke error-returning /ok = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UsePointer"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke pointer /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke pointer /ok = %#v, want ok", got)
 	}
 	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseTransport"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
 	if err != nil {
@@ -559,12 +659,12 @@ func TestSyntheticHTTPClient(t *testing.T) {
 	if got != "ok" {
 		t.Fatalf("ShatterInvoke transport /ok = %#v, want ok", got)
 	}
-	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseTransport"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/fail\"`" + `)})
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:UseTransport"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/failure-counts\"`" + `)})
 	if err != nil {
-		t.Fatalf("ShatterInvoke transport /fail error: %v", err)
+		t.Fatalf("ShatterInvoke transport /failure-counts error: %v", err)
 	}
-	if got != "status_error" {
-		t.Fatalf("ShatterInvoke transport /fail = %#v, want status_error", got)
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke transport /failure-counts = %#v, want ok", got)
 	}
 }
 `
