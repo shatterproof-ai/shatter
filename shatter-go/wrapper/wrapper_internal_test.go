@@ -1,6 +1,8 @@
 package wrapper
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -8,6 +10,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -354,7 +357,7 @@ func Render(t *template.Template) error { return t.Execute(nil, nil) }
 	}
 }
 
-func TestBuildWrapperTargets_ImportedValueParamUsesParameterlessConstructor(t *testing.T) {
+func TestBuildWrapperTargets_ImportedValueParamUsesSafeHTTPConstructor(t *testing.T) {
 	modDir := t.TempDir()
 	depDir := filepath.Join(modDir, "dep")
 	appDir := filepath.Join(modDir, "app")
@@ -369,6 +372,7 @@ func TestBuildWrapperTargets_ImportedValueParamUsesParameterlessConstructor(t *t
 	}
 	const depSrc = `package dep
 
+import "encoding/json"
 import "net/http"
 
 type Client struct {
@@ -384,6 +388,26 @@ func NewPointerClient() *Client { return &Client{} }
 func NewErrorClient() (Client, error) { return Client{}, nil }
 
 func (c Client) BaseURL() string { return c.baseURL }
+
+func (c Client) Fetch(path string) string {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "request_error"
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "transport_error"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "status_error"
+	}
+	var payload struct{ Name string }
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "decode_error"
+	}
+	return "ok"
+}
 `
 	if err := os.WriteFile(filepath.Join(depDir, "dep.go"), []byte(depSrc), 0o644); err != nil {
 		t.Fatalf("write dep.go: %v", err)
@@ -392,8 +416,8 @@ func (c Client) BaseURL() string { return c.baseURL }
 
 import safe "example.com/ctorparam/dep"
 
-func Use(client safe.Client) string {
-	return client.BaseURL()
+func Use(client safe.Client, path string) string {
+	return client.Fetch(path)
 }
 `
 	if err := os.WriteFile(filepath.Join(appDir, "app.go"), []byte(appSrc), 0o644); err != nil {
@@ -423,8 +447,8 @@ func Use(client safe.Client) string {
 		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
 	}
 	target := targets[0]
-	if len(target.Parameters) != 1 {
-		t.Fatalf("Use param count = %d, want 1", len(target.Parameters))
+	if len(target.Parameters) != 2 {
+		t.Fatalf("Use param count = %d, want 2", len(target.Parameters))
 	}
 	if got, want := target.Parameters[0].RuntimeValueExpr, `dep.NewClient("http://127.0.0.1:0", shatterHTTPClient())`; got != want {
 		t.Fatalf("RuntimeValueExpr = %q, want %q", got, want)
@@ -448,6 +472,57 @@ func Use(client safe.Client) string {
 	}
 	if strings.Contains(out, "dep.NewInertClient()") {
 		t.Fatalf("generated wrapper still prefers inert constructor:\n%s", out)
+	}
+
+	invokeTest := `package app
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestSyntheticHTTPClient(t *testing.T) {
+	got, err := ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:Use"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/ok\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke /ok error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("ShatterInvoke /ok = %#v, want ok", got)
+	}
+	got, err = ShatterInvoke(PlanDescriptor{TargetID: "example.com/ctorparam/app:Use"}, []json.RawMessage{json.RawMessage(` + "`null`" + `), json.RawMessage(` + "`\"/fail\"`" + `)})
+	if err != nil {
+		t.Fatalf("ShatterInvoke /fail error: %v", err)
+	}
+	if got != "status_error" {
+		t.Fatalf("ShatterInvoke /fail = %#v, want status_error", got)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(appDir, "invoke_test.go"), []byte(invokeTest), 0o644); err != nil {
+		t.Fatalf("write invoke_test.go: %v", err)
+	}
+	wrapperPath := filepath.Join(t.TempDir(), "shatter_wrapper.go")
+	if err := os.WriteFile(wrapperPath, []byte(out), 0o644); err != nil {
+		t.Fatalf("write wrapper: %v", err)
+	}
+	hash := DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(appDir, WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(t.TempDir(), "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+	cmd := exec.Command("go", "test", "-overlay", manifestPath, ".")
+	cmd.Dir = appDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("go test generated wrapper: %v\nstderr: %s\ngenerated wrapper:\n%s", err, stderr.String(), out)
 	}
 }
 
