@@ -6381,6 +6381,235 @@ pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResu
     }
 
     #[test]
+    fn execute_axum_handler_retains_native_replay_validation_response() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::{extract::{FromRequestParts, State}, http::StatusCode, response::{IntoResponse, Response}, Json};
+use axum::http::request::Parts;
+
+#[derive(Clone)]
+pub struct AppStateLike {
+    pub prefix: String,
+}
+
+#[derive(Clone)]
+pub struct CurrentAccountLike {
+    pub id: u64,
+}
+
+impl<S> FromRequestParts<S> for CurrentAccountLike
+where
+    S: Send + Sync,
+{
+    type Rejection = &'static str;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(parts
+            .extensions
+            .get::<CurrentAccountLike>()
+            .cloned()
+            .ok_or("missing current account"))
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct Payload {
+    pub name: String,
+}
+
+pub struct ApiError {
+    pub message: &'static str,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (StatusCode::BAD_REQUEST, self.message).into_response()
+    }
+}
+
+pub async fn create_person(
+    State(state): State<AppStateLike>,
+    current: CurrentAccountLike,
+    Json(payload): Json<Payload>,
+) -> Result<String, ApiError> {
+    let trimmed = payload.name.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError { message: "name is required" });
+    }
+    Ok(format!("{}:{}:{}", state.prefix, current.id, trimmed))
+}
+"#,
+        )
+        .expect("write source");
+
+        let state_generator = dir.path().join("state_gen.rs");
+        std::fs::write(
+            &state_generator,
+            r#"
+use crate::user_code::AppStateLike;
+use shatter_rust::generators::GeneratorResult;
+
+pub fn AppStateLikeGen(_recipe: Option<serde_json::Value>) -> GeneratorResult {
+    GeneratorResult {
+        id: "app-state-like".to_string(),
+        value: Box::new(AppStateLike { prefix: "pack".to_string() }),
+        recipe: serde_json::Value::Null,
+    }
+}
+"#,
+        )
+        .expect("write state generator");
+
+        let current_generator = dir.path().join("current_gen.rs");
+        std::fs::write(
+            &current_generator,
+            r#"
+use crate::user_code::CurrentAccountLike;
+use shatter_rust::generators::GeneratorResult;
+
+pub fn CurrentAccountLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResult {
+    let id = recipe
+        .as_ref()
+        .and_then(|v| v.get("id"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    GeneratorResult {
+        id: "current-account-like".to_string(),
+        value: Box::new(CurrentAccountLike { id }),
+        recipe: recipe.unwrap_or(serde_json::Value::Null),
+    }
+}
+"#,
+        )
+        .expect("write current generator");
+
+        let state_input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-state",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": state_generator,
+                "name": "AppStateLikeGen",
+                "recipe": null
+            }
+        });
+        let current_input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "frontend-current",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": current_generator,
+                "name": "CurrentAccountLikeGen",
+                "recipe": {"id": 42}
+            }
+        });
+        let mappings = vec![
+            AxumExtractorMapping {
+                param_index: 0,
+                kind: AxumExtractorKind::AppState,
+                type_name: "State".to_string(),
+            },
+            AxumExtractorMapping {
+                param_index: 1,
+                kind: AxumExtractorKind::Unsupported,
+                type_name: "CurrentAccountLike".to_string(),
+            },
+            AxumExtractorMapping {
+                param_index: 2,
+                kind: AxumExtractorKind::JsonBody,
+                type_name: "Json".to_string(),
+            },
+        ];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let success = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "create_person",
+            &[
+                state_input.clone(),
+                current_input.clone(),
+                serde_json::json!({"name": " Ada "}),
+            ],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match success {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("pack:42:Ada"))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_retains_native_replay_validation_response: cargo unavailable ({msg})"
+                );
+                return;
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+
+        let validation_error = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "create_person",
+            &[
+                state_input,
+                current_input,
+                serde_json::json!({"name": "   "}),
+            ],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match validation_error {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(400)),
+                    "validation response should be retained as HTTP evidence, got {result:?}"
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("name is required"))
+                );
+                assert!(
+                    result.thrown_error.is_none(),
+                    "handler validation response must not be a dropped runtime error: {result:?}"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_retains_native_replay_validation_response validation check: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
     fn execute_axum_handler_replays_native_custom_extractor_only_value() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 

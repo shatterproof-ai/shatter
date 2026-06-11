@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::batch_state::BatchState;
+use crate::behavior::has_replayable_native_input;
 use crate::coverage_metrics::CoverageMetrics;
 use crate::explorer::ObservationOutput;
 use crate::protocol::OutcomeStatus;
@@ -929,14 +930,6 @@ fn recovered_branches_covered(
     }
 }
 
-fn has_native_replay_input(inputs: &[serde_json::Value]) -> bool {
-    inputs.iter().any(|input| {
-        input
-            .as_object()
-            .is_some_and(|obj| obj.contains_key("__shatter_replay"))
-    })
-}
-
 fn execute_result_lines(result: &crate::protocol::ExecuteResult) -> Vec<u32> {
     if !result.lines_executed.is_empty() {
         return result.lines_executed.clone();
@@ -1063,7 +1056,7 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
         });
     }
     for (raw_inputs, _mocks, raw_result) in &exploration.raw_results {
-        let is_native_replay = has_native_replay_input(raw_inputs);
+        let is_native_replay = has_replayable_native_input(raw_inputs);
         let is_policy_skip = raw_result.outcome.as_ref().is_some_and(|outcome| {
             outcome.status == crate::protocol::OutcomeStatus::SkippedByPolicy
         });
