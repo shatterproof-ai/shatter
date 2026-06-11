@@ -184,6 +184,10 @@ fn rust_frontend_project_deps(project_root: &Path) -> String {
     deps
 }
 
+fn copy_project_cargo_lock(_project_root: &Path, _build_dir: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 fn rust_string_literal(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
@@ -605,5 +609,36 @@ mod tests {
             generator.name == "current"
                 && generator.path == Path::new(".shatter/generators/bundle.rs")
         }));
+    }
+
+    #[test]
+    fn rust_custom_frontend_copies_workspace_lockfile_to_build_dir() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let project_root = workspace_root.path().join("api");
+        let build_dir = workspace_root.path().join("custom-build");
+        std::fs::create_dir_all(project_root.join(".shatter")).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+
+        std::fs::write(
+            workspace_root.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+"#,
+        )
+        .unwrap();
+        let lockfile = "# lock carried from project workspace\nversion = 4\n";
+        std::fs::write(workspace_root.path().join("Cargo.lock"), lockfile).unwrap();
+
+        copy_project_cargo_lock(&project_root, &build_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
+            lockfile,
+            "custom frontend build dir must inherit the project lockfile",
+        );
+        assert!(
+            !project_root.join("Cargo.lock").exists(),
+            "workspace member root must not receive a generated lockfile",
+        );
     }
 }
