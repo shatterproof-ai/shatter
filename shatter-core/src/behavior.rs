@@ -225,6 +225,14 @@ pub struct BehaviorMap {
     pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
 }
 
+fn has_native_replay_input(inputs: &[serde_json::Value]) -> bool {
+    inputs.iter().any(|input| {
+        input
+            .as_object()
+            .is_some_and(|obj| obj.contains_key("__shatter_replay"))
+    })
+}
+
 impl BehaviorMap {
     /// Attach a fingerprint to this map for staleness detection.
     ///
@@ -283,7 +291,7 @@ impl BehaviorMap {
         function_id: impl Into<String>,
         result: &crate::explorer::ObservationOutput,
     ) -> Self {
-        let behaviors = result
+        let mut behaviors: Vec<Behavior> = result
             .new_path_executions
             .iter()
             .enumerate()
@@ -323,6 +331,38 @@ impl BehaviorMap {
                 }
             })
             .collect();
+        let mut seen_inputs: HashSet<String> = behaviors
+            .iter()
+            .filter_map(|behavior| serde_json::to_string(&behavior.input_args).ok())
+            .collect();
+
+        for (inputs, mocks, res) in &result.raw_results {
+            if !has_native_replay_input(inputs) {
+                continue;
+            }
+            let Ok(input_key) = serde_json::to_string(inputs) else {
+                continue;
+            };
+            if !seen_inputs.insert(input_key) {
+                continue;
+            }
+            let dependency_trace =
+                if res.calls_to_external.is_empty() && res.side_effects.is_empty() {
+                    None
+                } else {
+                    Some(build_dependency_trace(res))
+                };
+            behaviors.push(Behavior {
+                id: behaviors.len() as u32,
+                input_args: inputs.clone(),
+                return_value: res.return_value.clone(),
+                thrown_error: res.thrown_error.clone(),
+                branch_path: res.branch_path.clone(),
+                side_effects: res.side_effects.clone(),
+                dependency_trace,
+                mock_values: mocks.clone(),
+            });
+        }
 
         Self {
             function_id: function_id.into(),
@@ -1002,7 +1042,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1128,11 +1168,7 @@ mod tests {
     /// Helper: build a `FunctionAnalysis` with a populated `source_file`.
     /// Mirrors [`make_analysis`] but sets the source file so the call graph
     /// produces qualified node IDs of the form `"<source_file>::<name>"`.
-    fn make_analysis_in(
-        source_file: &str,
-        name: &str,
-        deps: Vec<&str>,
-    ) -> FunctionAnalysis {
+    fn make_analysis_in(source_file: &str, name: &str, deps: Vec<&str>) -> FunctionAnalysis {
         let mut analysis = make_analysis(name, deps);
         analysis.source_file = Some(source_file.to_string());
         analysis
@@ -1895,7 +1931,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let map = BehaviorMap::from_exploration_result("classify", &result);
@@ -1960,7 +1996,7 @@ mod tests {
             abandoned_frontiers: vec![],
             opaque_suggestions: vec![],
             stubbed_modules: vec![],
-                    ..Default::default()
+            ..Default::default()
         };
 
         let map = BehaviorMap::from_exploration_result("fn1", &result);
