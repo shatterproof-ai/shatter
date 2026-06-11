@@ -153,28 +153,6 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 - an id appears in this document but not in `parity-matrix.yaml`, or vice versa;
 - a `resolved` entry remains in either file more than 30 days past its `resolved_at` date.
 
-### `ts-missing-teardown`
-
-**Description:** TypeScript does not advertise the `teardown` capability and does not implement a teardown handler. State initialized with `setup` in a TypeScript session is cleaned up at the process level rather than via an explicit teardown call.
-
-**Affected frontends:** typescript
-
-**Affected commands:** teardown
-
-**Status:** resolved
-
-**Resolved at:** 2026-05-11
-
-**Owner:** Ketan Gangatirkar
-
-**Tracking issue:** str-1hlk.13
-
-**Resolution condition:** `teardown` is present in `SUPPORTED_CAPABILITIES` in `shatter-ts/src/handlers.ts` and a teardown handler returns success.
-
-**Resolution:** Implement teardown in the TypeScript frontend and add `teardown` to its `SUPPORTED_CAPABILITIES`.
-
----
-
 ### `ts-rust-execute-plan-not-implemented`
 
 **Description:** The `Command::Execute.plan` field carries an optional `InvocationPlan` that Go consumes for method-receiver invocation. TypeScript and Rust accept the field on the wire but do not consume it; Execute behavior on those frontends is unchanged. Method targets observe a second axis: Go yields `runtime_failed`/`completed` based on plan presence; TS/Rust always yield `unsupported`/`method_not_supported`.
