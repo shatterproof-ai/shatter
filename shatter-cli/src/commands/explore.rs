@@ -1002,7 +1002,14 @@ async fn fetch_planner_extra_seeds(
                 bundle.unsatisfied.len(),
             );
             let first_plan = bundle.plans.into_iter().next();
-            (bundle.seeds, first_plan)
+            let seeds = first_plan
+                .as_ref()
+                .and_then(|plan| {
+                    shatter_core::planner_consumer::materialize_seed_for_plan(plan, &func.params)
+                })
+                .into_iter()
+                .collect();
+            (seeds, first_plan)
         }
         Err(e) => {
             tracing::warn!("planner: fetch failed for {}: {e}", func.name);

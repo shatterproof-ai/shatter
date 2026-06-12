@@ -731,6 +731,8 @@ fn is_fuzz_eligible(
 pub enum ExploreError {
     #[error("frontend error: {0}")]
     Frontend(#[from] FrontendError),
+    #[error("planner error: {0}")]
+    Planner(#[from] crate::planner_consumer::PlannerConsumerError),
     #[error("solver feedback error: {0}")]
     SolverFeedback(String),
 }
@@ -1299,7 +1301,7 @@ async fn observe_one(
         &entry.inputs,
         param_infos.len(),
         config.default_execute_plan.as_ref(),
-    );
+    )?;
     let response = match frontend
         .send(Command::Execute {
             function: function_name.to_string(),
@@ -2066,6 +2068,9 @@ async fn refine_boundaries_async(
                 param_infos.len(),
                 execute_plan.as_ref(),
             );
+            let Ok(execute_candidate) = execute_candidate else {
+                break;
+            };
             let response = match frontend
                 .send(Command::Execute {
                     function: function_name.to_string(),
@@ -2350,12 +2355,12 @@ pub async fn explore_with_oracle(
                     &float_inputs,
                     param_infos.len(),
                     config.default_execute_plan.as_ref(),
-                );
+                )?;
                 let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &floor_inputs,
                     param_infos.len(),
                     config.default_execute_plan.as_ref(),
-                );
+                )?;
                 let float_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
@@ -2691,7 +2696,7 @@ pub async fn explore_with_oracle(
                                 &mutated,
                                 param_infos.len(),
                                 config.default_execute_plan.as_ref(),
-                            );
+                            )?;
 
                             let response = frontend
                                 .send(Command::Execute {
@@ -3218,7 +3223,7 @@ pub async fn explore_with_oracle(
                     &bulk_trial,
                     param_infos.len(),
                     config.default_execute_plan.as_ref(),
-                );
+                )?;
                 let resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
@@ -3261,7 +3266,7 @@ pub async fn explore_with_oracle(
                         &trial,
                         param_infos.len(),
                         config.default_execute_plan.as_ref(),
-                    );
+                    )?;
                     let resp = frontend
                         .send(Command::Execute {
                             function: function_name.to_string(),
@@ -3313,7 +3318,7 @@ pub async fn explore_with_oracle(
                             &trial,
                             param_infos.len(),
                             config.default_execute_plan.as_ref(),
-                        );
+                        )?;
 
                         let resp = frontend
                             .send(Command::Execute {

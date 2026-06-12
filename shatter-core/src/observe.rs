@@ -52,6 +52,7 @@ impl From<ExploreError> for ObserveError {
     fn from(e: ExploreError) -> Self {
         match e {
             ExploreError::Frontend(fe) => Self::Frontend(fe),
+            ExploreError::Planner(err) => Self::UnexpectedResponse(err.to_string()),
             ExploreError::UnexpectedResponse(msg) => Self::UnexpectedResponse(msg),
             ExploreError::Unsupported(msg) => Self::Unsupported(msg),
         }

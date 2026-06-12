@@ -506,6 +506,8 @@ pub type ObserveResult = ObservationOutput;
 pub enum ExploreError {
     #[error("frontend error: {0}")]
     Frontend(#[from] FrontendError),
+    #[error("planner error: {0}")]
+    Planner(#[from] crate::planner_consumer::PlannerConsumerError),
     #[error("unexpected response from frontend: {0}")]
     UnexpectedResponse(String),
     /// Frontend reported the target as `not_supported` during execute. The
@@ -1481,7 +1483,7 @@ pub async fn explore_function(
             &inputs,
             analysis.params.len(),
             config.default_execute_plan.as_ref(),
-        );
+        )?;
         let strategy_feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
             execute_inputs.inputs(),
             analysis.params.len(),
@@ -2262,7 +2264,7 @@ async fn explore_function_with_observer_pool(
                 &inputs,
                 analysis.params.len(),
                 config.default_execute_plan.as_ref(),
-            );
+            )?;
             let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
                 execute_inputs.inputs(),
                 analysis.params.len(),
@@ -4902,7 +4904,8 @@ for line in sys.stdin:
         };
         let method_inputs = vec![serde_json::json!("default")];
         let prefixed =
-            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan));
+            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan))
+                .expect("constructor path seed should materialize");
         assert_eq!(prefixed.inputs().len(), 2);
         assert_eq!(
             prefixed.inputs().get(1),
@@ -4928,6 +4931,7 @@ for line in sys.stdin:
         );
         assert_eq!(
             crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), 1, Some(&plan))
+                .expect("already-prefixed inputs should pass through")
                 .inputs(),
             prefixed.inputs(),
             "already-prefixed planner seeds and path-feedback retries must not be prefixed twice"
