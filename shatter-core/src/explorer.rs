@@ -1173,10 +1173,15 @@ pub async fn explore_function(
             let mut divergent_values = Vec::new();
 
             for (float_inputs, floor_inputs) in pairs {
+                let float_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                    &float_inputs,
+                    analysis.params.len(),
+                    config.default_execute_plan.as_ref(),
+                )?;
                 let float_resp = frontend
                     .send(ProtoCommand::Execute {
                         function: analysis.name.clone(),
-                        inputs: float_inputs.clone(),
+                        inputs: float_execute_inputs.inputs().to_vec(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -1186,10 +1191,15 @@ pub async fn explore_function(
                     })
                     .await?;
 
+                let floor_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                    &floor_inputs,
+                    analysis.params.len(),
+                    config.default_execute_plan.as_ref(),
+                )?;
                 let floor_resp = frontend
                     .send(ProtoCommand::Execute {
                         function: analysis.name.clone(),
-                        inputs: floor_inputs,
+                        inputs: floor_execute_inputs.inputs().to_vec(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -1500,6 +1510,7 @@ pub async fn explore_function(
             aggregator.observe_state_mut(),
             config.capture_side_effects,
             prepare_id.as_deref(),
+            config.default_execute_plan.as_ref(),
         )
         .instrument(tracing::info_span!("explore.execute_round_trip"))
         .await
@@ -1669,10 +1680,15 @@ pub async fn explore_function(
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
             {
                 attempts += 1;
+                let bulk_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                    &bulk_trial,
+                    analysis.params.len(),
+                    config.default_execute_plan.as_ref(),
+                )?;
                 let resp = frontend
                     .send(ProtoCommand::Execute {
                         function: analysis.name.clone(),
-                        inputs: bulk_trial.clone(),
+                        inputs: bulk_execute_inputs.inputs().to_vec(),
                         mocks: effective_mocks.clone(),
                         setup_context: None,
                         capture: true,
@@ -1708,10 +1724,15 @@ pub async fn explore_function(
                         break;
                     }
                     attempts += 1;
+                    let trial_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                        &trial,
+                        analysis.params.len(),
+                        config.default_execute_plan.as_ref(),
+                    )?;
                     let resp = frontend
                         .send(ProtoCommand::Execute {
                             function: analysis.name.clone(),
-                            inputs: trial.clone(),
+                            inputs: trial_execute_inputs.inputs().to_vec(),
                             mocks: effective_mocks.clone(),
                             setup_context: None,
                             capture: false,
@@ -1753,10 +1774,16 @@ pub async fn explore_function(
                         trial[i] = candidate;
                         attempts += 1;
 
+                        let trial_execute_inputs =
+                            crate::planner_consumer::execute_inputs_for_plan(
+                                &trial,
+                                analysis.params.len(),
+                                config.default_execute_plan.as_ref(),
+                            )?;
                         let resp = frontend
                             .send(ProtoCommand::Execute {
                                 function: analysis.name.clone(),
-                                inputs: trial.clone(),
+                                inputs: trial_execute_inputs.inputs().to_vec(),
                                 mocks: effective_mocks.clone(),
                                 setup_context: None,
                                 capture: false,
