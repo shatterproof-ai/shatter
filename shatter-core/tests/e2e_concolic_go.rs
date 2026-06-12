@@ -379,6 +379,115 @@ async fn e2e_go_service_compute_discovers_branches() {
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_random_explorer_threads_default_execute_plan() {
+    let file = repo_examples_go_dir()
+        .join("path-constructor")
+        .join("recorder.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) =
+        spawn_go_frontend("random-explorer-constructor-plan").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Record").await;
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    let execute_plan = bundle
+        .plans
+        .into_iter()
+        .find(|p| {
+            !p.receiver_kind.is_empty()
+                && p.receiver_kind.starts_with("constructor:")
+                && !p.constructor_arg_plans.is_empty()
+                && p.argument_plans.len() == analysis.params.len()
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "PLANNER GAP: planner returned no constructor receiver plan with args for {target_id}; \
+                 unsatisfied={:?}",
+                bundle.unsatisfied
+            )
+        });
+
+    let config = shatter_core::explorer::ExploreConfig {
+        file: file_str,
+        max_iterations: Some(3),
+        observer_pool: 1,
+        observer_frontend_config: None,
+        candidate_queue_capacity: None,
+        seed: Some(7),
+        mocks: vec![],
+        mock_params: vec![],
+        setup_file: None,
+        setup_level: shatter_core::protocol::SetupLevel::Function,
+        value_sources: vec![],
+        capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+        user_seeds: vec![],
+        candidate_inputs: vec![],
+        pool_seeds: vec![],
+        project_root: None,
+        execution_profile: None,
+        loop_buckets: Default::default(),
+        timeout_explore: None,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
+        budget_surplus: None,
+        claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
+        default_execute_plan: Some(execute_plan),
+        prepare_id_override: None,
+    };
+
+    let result =
+        shatter_core::explorer::explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("random explorer should execute planner-shaped Go method");
+
+    for (_, _, exec) in &result.raw_results {
+        if let Some(ref err) = exec.thrown_error
+            && err.message.contains("unknown receiver kind")
+        {
+            panic!(
+                "str-gdti regression: (*Recorder).Record dispatch surfaced \
+                 \"unknown receiver kind\" — default_execute_plan was not threaded \
+                 into the random explorer Execute. thrown_error.message={:?}",
+                err.message
+            );
+        }
+        if let Some(ref outcome) = exec.outcome
+            && let Some(ref err) = outcome.thrown_error
+            && err.message.contains("unknown receiver kind")
+        {
+            panic!(
+                "str-gdti regression: (*Recorder).Record dispatch surfaced \
+                 \"unknown receiver kind\" — default_execute_plan was not threaded \
+                 into the random explorer Execute. outcome.thrown_error.message={:?}",
+                err.message
+            );
+        }
+    }
+    assert!(
+        result.raw_results.iter().any(|(_, _, exec)| {
+            exec.outcome.as_ref().is_some_and(|outcome| {
+                outcome.status == shatter_core::protocol::OutcomeStatus::Completed
+            })
+        }),
+        "at least one random explorer execution should complete with the selected plan"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 // ---------------------------------------------------------------------------
 // Test 3: variadic helper.
 //

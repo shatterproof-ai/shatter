@@ -436,22 +436,31 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			// mismatch.
 			switch {
 			case t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
-				fmt.Fprintf(b, "\t\t\t_recv, _ := %s(%s)\n", c.FuncName, ctorArgs)
+				fmt.Fprintf(b, "\t\t\t_recv, _constructorErr := %s(%s)\n", c.FuncName, ctorArgs)
+				writeConstructorErrorGuard(b, c.FuncName, "\t\t\t")
+				writeConstructorPointerGuard(b, c.FuncName, "_recv", "\t\t\t")
 			case t.IsPointerRecv && c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recv := %s(%s)\n", c.FuncName, ctorArgs)
+				writeConstructorPointerGuard(b, c.FuncName, "_recv", "\t\t\t")
 			case t.IsPointerRecv && !c.ReturnsPointer && c.ReturnsError:
-				fmt.Fprintf(b, "\t\t\t_recvVal, _ := %s(%s)\n", c.FuncName, ctorArgs)
+				fmt.Fprintf(b, "\t\t\t_recvVal, _constructorErr := %s(%s)\n", c.FuncName, ctorArgs)
+				writeConstructorErrorGuard(b, c.FuncName, "\t\t\t")
 				b.WriteString("\t\t\t_recv := &_recvVal\n")
 			case t.IsPointerRecv && !c.ReturnsPointer:
 				fmt.Fprintf(b, "\t\t\t_recvVal := %s(%s)\n", c.FuncName, ctorArgs)
 				b.WriteString("\t\t\t_recv := &_recvVal\n")
 			case !t.IsPointerRecv && c.ReturnsPointer && c.ReturnsError:
-				fmt.Fprintf(b, "\t\t\t_recvPtr, _ := %s(%s)\n", c.FuncName, ctorArgs)
+				fmt.Fprintf(b, "\t\t\t_recvPtr, _constructorErr := %s(%s)\n", c.FuncName, ctorArgs)
+				writeConstructorErrorGuard(b, c.FuncName, "\t\t\t")
+				writeConstructorPointerGuard(b, c.FuncName, "_recvPtr", "\t\t\t")
 				b.WriteString("\t\t\t_recv := *_recvPtr\n")
 			case !t.IsPointerRecv && c.ReturnsPointer:
-				fmt.Fprintf(b, "\t\t\t_recv := *%s(%s)\n", c.FuncName, ctorArgs)
+				fmt.Fprintf(b, "\t\t\t_recvPtr := %s(%s)\n", c.FuncName, ctorArgs)
+				writeConstructorPointerGuard(b, c.FuncName, "_recvPtr", "\t\t\t")
+				b.WriteString("\t\t\t_recv := *_recvPtr\n")
 			case c.ReturnsError: // !t.IsPointerRecv && !c.ReturnsPointer
-				fmt.Fprintf(b, "\t\t\t_recv, _ := %s(%s)\n", c.FuncName, ctorArgs)
+				fmt.Fprintf(b, "\t\t\t_recv, _constructorErr := %s(%s)\n", c.FuncName, ctorArgs)
+				writeConstructorErrorGuard(b, c.FuncName, "\t\t\t")
 			default: // !t.IsPointerRecv && !c.ReturnsPointer
 				fmt.Fprintf(b, "\t\t\t_recv := %s(%s)\n", c.FuncName, ctorArgs)
 			}
@@ -462,6 +471,18 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 
 	b.WriteString("\t\t}\n")
 	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"shatter: unknown receiver kind for %s: %%s\", d.ReceiverKind)\n", t.ID)
+}
+
+func writeConstructorErrorGuard(b *strings.Builder, funcName, indent string) {
+	fmt.Fprintf(b, "%sif _constructorErr != nil {\n", indent)
+	fmt.Fprintf(b, "%s\treturn nil, fmt.Errorf(\"shatter: receiver constructor %s failed: %%w\", _constructorErr)\n", indent, funcName)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+func writeConstructorPointerGuard(b *strings.Builder, funcName, ptrExpr, indent string) {
+	fmt.Fprintf(b, "%sif %s == nil {\n", indent, ptrExpr)
+	fmt.Fprintf(b, "%s\treturn nil, fmt.Errorf(\"shatter: receiver constructor %s returned nil receiver\")\n", indent, funcName)
+	fmt.Fprintf(b, "%s}\n", indent)
 }
 
 func writeReceiverMapFieldInitializers(b *strings.Builder, fields []ReceiverMapField, indent string) {

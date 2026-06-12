@@ -1278,9 +1278,11 @@ func main() {
 
 // TestGeneratedWrapperCompilesErrorReturningConstructor is the str-jeen.78
 // regression: when a constructor returns (T, error) or (*T, error), the
-// generated wrapper must use the two-assignment form (_recv, _ := NewT())
-// not _recv := NewT(). The latter produces "assignment mismatch: 1 variable
-// but NewEventID returns 2 values". Observed in api/internal/typedid/typedid.go.
+// generated wrapper must use the two-assignment form, check the constructor
+// error, and only dispatch the method on a valid receiver. A single assignment
+// produces "assignment mismatch: 1 variable but NewEventID returns 2 values";
+// discarding the error can turn a constructor failure into a receiver panic.
+// Observed in api/internal/typedid/typedid.go and Zolem jsonlRecorder.
 func TestGeneratedWrapperCompilesErrorReturningConstructor(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go binary not found")
@@ -1305,6 +1307,16 @@ func NewEventID() (EventID, error) {
 
 // String is the method target: the wrapper uses NewEventID as the receiver.
 func (e EventID) String() string { return e.val }
+
+type Session struct{ val string }
+
+// NewSession mirrors constructors that return (nil, error); the wrapper must
+// return the constructor error before invoking a pointer-receiver method.
+func NewSession() (*Session, error) {
+	return nil, fmt.Errorf("stub")
+}
+
+func (s *Session) Close() string { return s.val }
 `
 	if err := os.WriteFile(filepath.Join(modDir, "typedid2.go"), []byte(targetSrc), 0o644); err != nil {
 		t.Fatalf("write typedid2.go: %v", err)
@@ -1324,11 +1336,22 @@ func (e EventID) String() string { return e.val }
 			ResultGoType:  "string",
 			ResultCount:   1,
 		},
+		{
+			ID:            "example.com/typedid2:(*Session).Close",
+			SymbolName:    "Close",
+			Kind:          wrapper.TargetKindMethod,
+			ReceiverType:  "Session",
+			IsPointerRecv: true,
+			HasResult:     true,
+			ResultGoType:  "string",
+			ResultCount:   1,
+		},
 	}
 	ctors := []wrapper.ConstructorCandidate{
 		// ReturnsError=true is the bug trigger: previously the wrapper emitted
 		// "_recv := NewEventID()" which fails for a (T, error) return.
 		{FuncName: "NewEventID", TargetType: "EventID", ReturnsPointer: false, ReturnsError: true},
+		{FuncName: "NewSession", TargetType: "Session", ReturnsPointer: true, ReturnsError: true},
 	}
 
 	src := wrapper.GenerateWrapper("typedid2", targets, ctors)
@@ -1337,8 +1360,23 @@ func (e EventID) String() string { return e.val }
 	if strings.Contains(src, "_recv := NewEventID()") {
 		t.Errorf("wrapper uses single-assignment for error-returning constructor (compile error)\nsource:\n%s", src)
 	}
-	if !strings.Contains(src, "_recv, _ := NewEventID()") {
-		t.Errorf("wrapper missing two-assignment form '_recv, _ := NewEventID()'\nsource:\n%s", src)
+	if strings.Contains(src, "_recv, _ := NewEventID()") {
+		t.Errorf("wrapper discards error-returning constructor error\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, "_recv, _constructorErr := NewEventID()") {
+		t.Errorf("wrapper missing two-assignment form '_recv, _constructorErr := NewEventID()'\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, `return nil, fmt.Errorf("shatter: receiver constructor NewEventID failed: %w", _constructorErr)`) {
+		t.Errorf("wrapper missing constructor error guard\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, "_recv, _constructorErr := NewSession()") {
+		t.Errorf("wrapper missing pointer constructor two-assignment form\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, `return nil, fmt.Errorf("shatter: receiver constructor NewSession failed: %w", _constructorErr)`) {
+		t.Errorf("wrapper missing pointer constructor error guard\nsource:\n%s", src)
+	}
+	if !strings.Contains(src, `return nil, fmt.Errorf("shatter: receiver constructor NewSession returned nil receiver")`) {
+		t.Errorf("wrapper missing pointer constructor nil guard\nsource:\n%s", src)
 	}
 
 	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "typedid2", targets, ctors)
@@ -2079,8 +2117,10 @@ func (s *Service) IncS()     { s.n++ }
 		"_recv := DefaultRegistry()",
 		// pointer-return constructor + pointer receiver: direct use.
 		"_recv := NewService()",
-		// pointer-return constructor + value receiver: dereference.
-		"_recv := *NewService()",
+		// pointer-return constructor + value receiver: guard, then dereference.
+		"_recvPtr := NewService()",
+		"if _recvPtr == nil",
+		"_recv := *_recvPtr",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(src, want) {

@@ -27,7 +27,8 @@ use crate::explorer::{
 use crate::frontend::{Frontend, FrontendError};
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{
-    Command as ProtoCommand, ExecuteResult, FunctionAnalysis, MockConfig, ResponseResult,
+    Command as ProtoCommand, ExecuteResult, FunctionAnalysis, InvocationPlan, MockConfig,
+    ResponseResult,
 };
 use crate::protocol::{ExecutionProfile, SetupContextStack, SetupLevel};
 
@@ -52,6 +53,7 @@ impl From<ExploreError> for ObserveError {
     fn from(e: ExploreError) -> Self {
         match e {
             ExploreError::Frontend(fe) => Self::Frontend(fe),
+            ExploreError::Planner(err) => Self::UnexpectedResponse(err.to_string()),
             ExploreError::UnexpectedResponse(msg) => Self::UnexpectedResponse(msg),
             ExploreError::Unsupported(msg) => Self::Unsupported(msg),
         }
@@ -250,6 +252,7 @@ pub async fn observe_single(
     state: &mut ObserveState,
     capture: bool,
     prepare_id: Option<&str>,
+    plan: Option<&InvocationPlan>,
 ) -> Result<SingleObservation, ObserveError> {
     let response = frontend
         .send(ProtoCommand::Execute {
@@ -260,7 +263,7 @@ pub async fn observe_single(
             capture,
             prepare_id: prepare_id.map(|s| s.to_string()),
             execution_profile: execution_profile.cloned(),
-            plan: None,
+            plan: plan.cloned(),
         })
         .await?;
 
@@ -365,6 +368,7 @@ pub async fn observe_batch(
             &mut state,
             capture,
             prepare_id,
+            None,
         )
         .await?;
 
@@ -562,6 +566,7 @@ async fn observe_batch_with_per_execution_setup(
             &mut state,
             config.capture_side_effects,
             None,
+            None,
         )
         .await?;
 
@@ -593,7 +598,11 @@ async fn observe_batch_with_per_execution_setup(
 mod tests {
     use super::*;
     use crate::execution_record::{BranchDecision, SymConstraint};
-    use crate::protocol::{ExecuteResult, PerformanceMetrics};
+    use crate::frontend::{Frontend, FrontendConfig};
+    use crate::protocol::{
+        ExecuteResult, InvocationPlan, PerformanceMetrics, ValuePlan, ValuePlanKind,
+    };
+    use std::path::PathBuf;
 
     /// Build a minimal ExecuteResult with specified branch decisions and lines.
     fn make_exec_result(branch_ids: &[(u32, bool)], lines: &[u32]) -> ExecuteResult {
@@ -630,6 +639,123 @@ mod tests {
             runtime_crypto_boundaries: vec![],
             outcome: None,
         }
+    }
+
+    #[tokio::test]
+    async fn observe_single_threads_execute_plan() {
+        let tempdir = tempfile::tempdir().expect("create fake frontend dir");
+        let script_path = tempdir.path().join("fake_frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import sys
+
+for line in sys.stdin:
+    req = json.loads(line)
+    command = req.get("command")
+    if command == "handshake":
+        resp = {
+            "protocol_version": req["protocol_version"],
+            "id": req["id"],
+            "status": "handshake",
+            "frontend_version": req["protocol_version"],
+            "language": "fake",
+            "capabilities": [],
+        }
+    elif command == "execute":
+        if req.get("plan") is None:
+            resp = {
+                "protocol_version": req["protocol_version"],
+                "id": req["id"],
+                "status": "error",
+                "code": "invalid_request",
+                "message": "missing execute plan",
+            }
+        else:
+            resp = {
+                "protocol_version": req["protocol_version"],
+                "id": req["id"],
+                "status": "execute",
+                "return_value": "ok",
+                "thrown_error": None,
+                "branch_path": [],
+                "lines_executed": [1],
+                "calls_to_external": [],
+                "path_constraints": [],
+                "scope_events": [],
+                "loop_body_states": [],
+                "side_effects": [],
+                "performance": {
+                    "wall_time_ms": 1.0,
+                    "cpu_time_us": 1000,
+                    "heap_used_bytes": 0,
+                    "heap_allocated_bytes": 0,
+                },
+                "capture_truncation": None,
+                "discovered_dependencies": [],
+                "connection_failures": [],
+                "runtime_crypto_boundaries": [],
+                "outcome": None,
+            }
+    elif command == "shutdown":
+        resp = {
+            "protocol_version": req["protocol_version"],
+            "id": req["id"],
+            "status": "shutdown_ack",
+        }
+    else:
+        resp = {
+            "protocol_version": req["protocol_version"],
+            "id": req["id"],
+            "status": "error",
+            "code": "invalid_request",
+            "message": f"unexpected command {command}",
+        }
+    print(json.dumps(resp), flush=True)
+"#,
+        )
+        .expect("write fake frontend");
+
+        let mut config = FrontendConfig::new(PathBuf::from("python3"));
+        config.args = vec![script_path.display().to_string()];
+        config.request_timeout = Duration::from_secs(5);
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn fake frontend");
+
+        let plan = InvocationPlan {
+            target_id: ":Record".into(),
+            receiver_kind: "constructor:NewRecorder".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "path".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: "path constructor".into(),
+        };
+        let mut state = ObserveState::new();
+
+        observe_single(
+            &mut frontend,
+            "Record",
+            &[serde_json::json!("event")],
+            &[],
+            None,
+            None,
+            &LoopBuckets::none(),
+            &mut state,
+            false,
+            None,
+            Some(&plan),
+        )
+        .await
+        .expect("observe_single should pass execute plan to frontend");
+
+        frontend.shutdown().await.expect("shutdown fake frontend");
     }
 
     #[test]

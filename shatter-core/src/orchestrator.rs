@@ -731,6 +731,8 @@ fn is_fuzz_eligible(
 pub enum ExploreError {
     #[error("frontend error: {0}")]
     Frontend(#[from] FrontendError),
+    #[error("planner error: {0}")]
+    Planner(#[from] crate::planner_consumer::PlannerConsumerError),
     #[error("solver feedback error: {0}")]
     SolverFeedback(String),
 }
@@ -1299,11 +1301,11 @@ async fn observe_one(
         &entry.inputs,
         param_infos.len(),
         config.default_execute_plan.as_ref(),
-    );
+    )?;
     let response = match frontend
         .send(Command::Execute {
             function: function_name.to_string(),
-            inputs: execute_inputs,
+            inputs: execute_inputs.inputs().to_vec(),
             mocks: effective_mocks.clone(),
             setup_context: setup_context.clone(),
             capture: true,
@@ -1343,9 +1345,14 @@ async fn observe_one(
     if is_new_path {
         triage_state.update(&exec_result.branch_path);
     }
+    let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
+        execute_inputs.inputs(),
+        param_infos.len(),
+        config.default_execute_plan.as_ref(),
+    );
 
     Ok(ObserveOneResult::Observed(Box::new(Observation {
-        inputs: entry.inputs.clone(),
+        inputs: feedback_inputs,
         result: exec_result,
         source: entry.source,
         path_id,
@@ -2023,7 +2030,7 @@ async fn refine_boundaries_async(
     budget_per_boundary: usize,
     setup_context: &Option<SetupContextStack>,
     execute_plan: Option<crate::protocol::InvocationPlan>,
-) -> Vec<boundary_search::BoundaryResult> {
+) -> Result<Vec<boundary_search::BoundaryResult>, ExploreError> {
     // Collect branch IDs with witnesses on both sides.
     let mut branch_ids: Vec<u32> = Vec::new();
     let mut seen: HashSet<u32> = HashSet::new();
@@ -2065,11 +2072,11 @@ async fn refine_boundaries_async(
                 candidate,
                 param_infos.len(),
                 execute_plan.as_ref(),
-            );
+            )?;
             let response = match frontend
                 .send(Command::Execute {
                     function: function_name.to_string(),
-                    inputs: execute_candidate,
+                    inputs: execute_candidate.inputs().to_vec(),
                     mocks: mocks.clone(),
                     setup_context: setup_context.clone(),
                     capture: false,
@@ -2112,7 +2119,7 @@ async fn refine_boundaries_async(
         });
     }
 
-    results
+    Ok(results)
 }
 
 /// A gap in MC/DC coverage — a condition that still lacks an independence pair.
@@ -2350,16 +2357,16 @@ pub async fn explore_with_oracle(
                     &float_inputs,
                     param_infos.len(),
                     config.default_execute_plan.as_ref(),
-                );
+                )?;
                 let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &floor_inputs,
                     param_infos.len(),
                     config.default_execute_plan.as_ref(),
-                );
+                )?;
                 let float_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: execute_float_inputs,
+                        inputs: execute_float_inputs.inputs().to_vec(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -2372,7 +2379,7 @@ pub async fn explore_with_oracle(
                 let floor_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: execute_floor_inputs,
+                        inputs: execute_floor_inputs.inputs().to_vec(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -2691,12 +2698,12 @@ pub async fn explore_with_oracle(
                                 &mutated,
                                 param_infos.len(),
                                 config.default_execute_plan.as_ref(),
-                            );
+                            )?;
 
                             let response = frontend
                                 .send(Command::Execute {
                                     function: function_name.to_string(),
-                                    inputs: execute_mutated,
+                                    inputs: execute_mutated.inputs().to_vec(),
                                     mocks: config.mocks.clone(),
                                     setup_context: setup_context.clone(),
                                     capture: true,
@@ -3120,7 +3127,7 @@ pub async fn explore_with_oracle(
                 &setup_context,
                 config.default_execute_plan.clone(),
             )
-            .await
+            .await?
         } else {
             Vec::new()
         }
@@ -3218,11 +3225,11 @@ pub async fn explore_with_oracle(
                     &bulk_trial,
                     param_infos.len(),
                     config.default_execute_plan.as_ref(),
-                );
+                )?;
                 let resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: execute_bulk_trial,
+                        inputs: execute_bulk_trial.inputs().to_vec(),
                         mocks: effective_mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: true,
@@ -3261,11 +3268,11 @@ pub async fn explore_with_oracle(
                         &trial,
                         param_infos.len(),
                         config.default_execute_plan.as_ref(),
-                    );
+                    )?;
                     let resp = frontend
                         .send(Command::Execute {
                             function: function_name.to_string(),
-                            inputs: execute_trial,
+                            inputs: execute_trial.inputs().to_vec(),
                             mocks: effective_mocks.clone(),
                             setup_context: setup_context.clone(),
                             capture: false,
@@ -3313,12 +3320,12 @@ pub async fn explore_with_oracle(
                             &trial,
                             param_infos.len(),
                             config.default_execute_plan.as_ref(),
-                        );
+                        )?;
 
                         let resp = frontend
                             .send(Command::Execute {
                                 function: function_name.to_string(),
-                                inputs: execute_trial,
+                                inputs: execute_trial.inputs().to_vec(),
                                 mocks: effective_mocks.clone(),
                                 setup_context: setup_context.clone(),
                                 capture: false,
