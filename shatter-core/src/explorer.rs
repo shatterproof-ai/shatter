@@ -2032,7 +2032,6 @@ fn candidate_fingerprint(inputs: &[serde_json::Value], mocks: &[MockConfig]) -> 
 }
 
 struct ObserverObservation {
-    inputs: Vec<serde_json::Value>,
     feedback_inputs: Vec<serde_json::Value>,
     mocks: Vec<MockConfig>,
     result: ExecuteResult,
@@ -2330,7 +2329,8 @@ async fn explore_function_with_observer_pool(
                 }
 
                 update_live_first_states(&observation.result, &mut live_first_states);
-                path_feedback.enqueue_from_result(&observation.inputs, &observation.result);
+                let feedback_inputs = observation.feedback_inputs;
+                path_feedback.enqueue_from_result(&feedback_inputs, &observation.result);
                 let discovery_method = observation
                     .strategy_idx
                     .map(|idx| meta_strategy.strategy_kind(idx).explorer_discovery_method())
@@ -2339,17 +2339,13 @@ async fn explore_function_with_observer_pool(
                             .explorer_discovery_method(),
                     );
                 let event = crate::observation_aggregator::ObservationEvent {
-                    inputs: observation.inputs,
+                    inputs: feedback_inputs.clone(),
                     mocks: observation.mocks,
                     result: observation.result,
                     discovery_method,
                 };
                 let outcome = aggregator.aggregate(event.clone());
-                meta_strategy.feedback(
-                    &observation.feedback_inputs,
-                    &event.result,
-                    outcome.is_new_path,
-                );
+                meta_strategy.feedback(&feedback_inputs, &event.result, outcome.is_new_path);
                 if let Some(idx) = observation.strategy_idx {
                     meta_strategy.record_outcome(idx, outcome.is_new_path);
                 }
@@ -2571,7 +2567,6 @@ async fn run_observer_worker_inner(
 
         if result_tx
             .send(ObserverMessage::Observed(Box::new(ObserverObservation {
-                inputs: job.inputs,
                 feedback_inputs: job.feedback_inputs,
                 mocks: job.mocks,
                 result: exec_result,
