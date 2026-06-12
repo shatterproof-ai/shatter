@@ -1001,15 +1001,14 @@ async fn fetch_planner_extra_seeds(
                 bundle.plans.len(),
                 bundle.unsatisfied.len(),
             );
-            let first_plan = bundle.plans.into_iter().next();
-            let seeds = first_plan
-                .as_ref()
-                .and_then(|plan| {
-                    shatter_core::planner_consumer::materialize_seed_for_plan(plan, &func.params)
-                })
-                .into_iter()
-                .collect();
-            (seeds, first_plan)
+            let selected = bundle.plans.into_iter().find_map(|plan| {
+                shatter_core::planner_consumer::materialize_seed_for_plan(&plan, &func.params)
+                    .map(|seed| (plan, seed))
+            });
+            match selected {
+                Some((plan, seed)) => (vec![seed], Some(plan)),
+                None => (Vec::new(), None),
+            }
         }
         Err(e) => {
             tracing::warn!("planner: fetch failed for {}: {e}", func.name);

@@ -2025,7 +2025,7 @@ async fn refine_boundaries_async(
     budget_per_boundary: usize,
     setup_context: &Option<SetupContextStack>,
     execute_plan: Option<crate::protocol::InvocationPlan>,
-) -> Vec<boundary_search::BoundaryResult> {
+) -> Result<Vec<boundary_search::BoundaryResult>, ExploreError> {
     // Collect branch IDs with witnesses on both sides.
     let mut branch_ids: Vec<u32> = Vec::new();
     let mut seen: HashSet<u32> = HashSet::new();
@@ -2067,10 +2067,7 @@ async fn refine_boundaries_async(
                 candidate,
                 param_infos.len(),
                 execute_plan.as_ref(),
-            );
-            let Ok(execute_candidate) = execute_candidate else {
-                break;
-            };
+            )?;
             let response = match frontend
                 .send(Command::Execute {
                     function: function_name.to_string(),
@@ -2117,7 +2114,7 @@ async fn refine_boundaries_async(
         });
     }
 
-    results
+    Ok(results)
 }
 
 /// A gap in MC/DC coverage — a condition that still lacks an independence pair.
@@ -3125,7 +3122,7 @@ pub async fn explore_with_oracle(
                 &setup_context,
                 config.default_execute_plan.clone(),
             )
-            .await
+            .await?
         } else {
             Vec::new()
         }

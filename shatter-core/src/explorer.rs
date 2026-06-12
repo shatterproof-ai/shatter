@@ -4929,12 +4929,27 @@ for line in sys.stdin:
             std::path::Path::new(dir).is_dir(),
             "directory-like constructor prefix should be a usable directory",
         );
-        assert_eq!(
+        let refreshed =
             crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), 1, Some(&plan))
-                .expect("already-prefixed inputs should pass through")
-                .inputs(),
-            prefixed.inputs(),
-            "already-prefixed planner seeds and path-feedback retries must not be prefixed twice"
+                .expect("already-prefixed inputs should refresh constructor scratch");
+        assert_eq!(refreshed.inputs().len(), 2);
+        assert_eq!(
+            refreshed.inputs().get(1),
+            Some(&serde_json::json!("default")),
+            "already-prefixed planner seeds and path-feedback retries must preserve method inputs"
+        );
+        let refreshed_dir = refreshed
+            .inputs()
+            .first()
+            .and_then(serde_json::Value::as_str)
+            .expect("expected refreshed constructor prefix");
+        assert_ne!(
+            dir, refreshed_dir,
+            "already-prefixed inputs should get fresh constructor scratch"
+        );
+        assert!(
+            std::path::Path::new(refreshed_dir).is_dir(),
+            "refreshed constructor prefix should be a usable directory",
         );
     }
 

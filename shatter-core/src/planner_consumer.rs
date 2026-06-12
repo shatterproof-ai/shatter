@@ -199,8 +199,9 @@ fn plan_requires_execution_scoped_constructor_scratch(plan: &InvocationPlan) -> 
 /// Return the concrete input vector to send to the frontend for a method plan.
 ///
 /// Planner-generated constructor args are encoded as an input prefix before
-/// method arguments. If the caller already provided that prefixed shape, the
-/// vector is returned unchanged.
+/// method arguments. If the caller already provided that prefixed shape, stale
+/// prefixes are stripped and rematerialized so path scratch is fresh for this
+/// execution.
 pub fn execute_inputs_for_plan(
     inputs: &[Value],
     method_param_count: usize,
@@ -212,14 +213,25 @@ pub fn execute_inputs_for_plan(
             _scratch: Vec::new(),
         });
     };
-    if plan.constructor_arg_plans.is_empty() || inputs.len() != method_param_count {
+    let constructor_arg_count = plan.constructor_arg_plans.len();
+    if constructor_arg_count == 0 {
         return Ok(PlannedExecuteInputs {
             inputs: inputs.to_vec(),
             _scratch: Vec::new(),
         });
     }
+    let method_inputs = if inputs.len() == method_param_count {
+        inputs
+    } else if inputs.len() == method_param_count + constructor_arg_count {
+        &inputs[constructor_arg_count..]
+    } else {
+        return Ok(PlannedExecuteInputs {
+            inputs: inputs.to_vec(),
+            _scratch: Vec::new(),
+        });
+    };
     let (mut prefixed, scratch) = materialize_execute_constructor_arg_values(plan)?;
-    prefixed.extend_from_slice(inputs);
+    prefixed.extend_from_slice(method_inputs);
     Ok(PlannedExecuteInputs {
         inputs: prefixed,
         _scratch: scratch,
@@ -530,6 +542,30 @@ mod tests {
         assert!(
             dir.is_dir(),
             "directory-like constructor string should materialize as a usable directory",
+        );
+        let refreshed = execute_inputs_for_plan(planned.inputs(), 1, Some(&plan))
+            .expect("stale constructor prefix should rematerialize");
+        assert_eq!(refreshed.inputs().len(), 2);
+        assert_eq!(refreshed.inputs().get(1), Some(&json!("default")));
+        let refreshed_dir = std::path::PathBuf::from(
+            refreshed
+                .inputs()
+                .first()
+                .and_then(Value::as_str)
+                .expect("expected refreshed constructor seed"),
+        );
+        assert_ne!(
+            dir, refreshed_dir,
+            "stale constructor prefixes should be replaced with fresh scratch",
+        );
+        assert!(
+            refreshed_dir.is_dir(),
+            "refreshed constructor prefix should be a usable directory",
+        );
+        drop(refreshed);
+        assert!(
+            !refreshed_dir.exists(),
+            "refreshed directory scratch should be removed when planned inputs drop",
         );
         drop(planned);
         assert!(
