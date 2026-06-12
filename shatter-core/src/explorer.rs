@@ -4874,9 +4874,14 @@ for line in sys.stdin:
         let method_inputs = vec![serde_json::json!("default")];
         let prefixed =
             crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan));
-        assert_eq!(
-            prefixed,
-            vec![serde_json::json!(""), serde_json::json!("default")]
+        assert_eq!(prefixed.len(), 2);
+        assert_eq!(prefixed.get(1), Some(&serde_json::json!("default")));
+        let Some(dir) = prefixed.first().and_then(serde_json::Value::as_str) else {
+            panic!("expected string constructor prefix, got {prefixed:?}");
+        };
+        assert!(
+            !dir.is_empty(),
+            "directory-like constructor prefix should not be empty",
         );
         assert_eq!(
             crate::planner_consumer::execute_inputs_for_plan(&prefixed, 1, Some(&plan)),
