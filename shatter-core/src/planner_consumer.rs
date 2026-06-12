@@ -199,7 +199,7 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
 fn materialize_constructor_value(value_plan: &ValuePlan) -> Option<Value> {
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
-        ValuePlanKind::Zero => Some(zero_value_for_type_hint(&value_plan.type_hint)),
+        ValuePlanKind::Zero => Some(zero_constructor_value(value_plan)),
         ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
     }
 }
@@ -229,6 +229,47 @@ fn zero_value_for_type_hint(type_hint: &str) -> Value {
         other if other.ends_with(".Duration") => Value::from(0),
         _ => Value::Null,
     }
+}
+
+fn zero_constructor_value(value_plan: &ValuePlan) -> Value {
+    if is_path_like_string_constructor_arg(value_plan) {
+        return Value::from(format!(
+            "{}/shatter-ctor-{}",
+            std::env::temp_dir().display(),
+            sanitize_path_seed_component(&value_plan.param_name)
+        ));
+    }
+    zero_value_for_type_hint(&value_plan.type_hint)
+}
+
+fn is_path_like_string_constructor_arg(value_plan: &ValuePlan) -> bool {
+    let type_hint = value_plan.type_hint.trim();
+    if type_hint != "string" {
+        return false;
+    }
+    let name = value_plan.param_name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "path" | "file" | "filename" | "filepath" | "file_path" | "dir" | "directory"
+    ) || name.ends_with("_path")
+        || name.ends_with("path")
+        || name.ends_with("_file")
+        || name.ends_with("_dir")
+}
+
+fn sanitize_path_seed_component(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().max(1));
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("path");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -321,7 +362,15 @@ mod tests {
             label: String::new(),
         };
         let seeds = materialize_seeds(&[plan], &[str_param("ns")]);
-        assert_eq!(seeds, vec![vec![json!(""), json!("default")]]);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].get(1), Some(&json!("default")));
+        let Some(dir) = seeds[0].first().and_then(Value::as_str) else {
+            panic!("expected a string constructor seed, got {seeds:?}");
+        };
+        assert!(
+            !dir.is_empty(),
+            "directory-like constructor string should not materialize as empty string",
+        );
     }
 
     #[test]
@@ -353,6 +402,27 @@ mod tests {
             !path.is_empty(),
             "path-like constructor string should not materialize as empty string",
         );
+    }
+
+    #[test]
+    fn materialize_non_path_constructor_string_stays_empty() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewProfile".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "profile".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds = materialize_seeds(&[plan], &[]);
+        assert_eq!(seeds, vec![vec![json!("")]]);
     }
 
     #[test]
