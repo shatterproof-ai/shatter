@@ -325,6 +325,37 @@ mod tests {
     }
 
     #[test]
+    fn materialize_path_like_constructor_string_uses_non_empty_seed() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:newJSONLRecorder".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "path".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds = materialize_seeds(&[plan], &[]);
+        let Some(path) = seeds
+            .first()
+            .and_then(|seed| seed.first())
+            .and_then(Value::as_str)
+        else {
+            panic!("expected a string constructor seed, got {seeds:?}");
+        };
+        assert!(
+            !path.is_empty(),
+            "path-like constructor string should not materialize as empty string",
+        );
+    }
+
+    #[test]
     fn symbolic_plan_is_skipped() {
         let plan = InvocationPlan {
             target_id: "t".into(),
