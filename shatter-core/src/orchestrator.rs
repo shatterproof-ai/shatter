@@ -1345,9 +1345,14 @@ async fn observe_one(
     if is_new_path {
         triage_state.update(&exec_result.branch_path);
     }
+    let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
+        execute_inputs.inputs(),
+        param_infos.len(),
+        config.default_execute_plan.as_ref(),
+    );
 
     Ok(ObserveOneResult::Observed(Box::new(Observation {
-        inputs: entry.inputs.clone(),
+        inputs: feedback_inputs,
         result: exec_result,
         source: entry.source,
         path_id,

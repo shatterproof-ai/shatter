@@ -1001,12 +1001,20 @@ async fn fetch_planner_extra_seeds(
                 bundle.plans.len(),
                 bundle.unsatisfied.len(),
             );
-            let selected = bundle.plans.into_iter().find_map(|plan| {
-                shatter_core::planner_consumer::materialize_seed_for_plan(&plan, &func.params)
-                    .map(|seed| (plan, seed))
+            let selected_plan = bundle.plans.iter().find_map(|plan| {
+                shatter_core::planner_consumer::materialize_seed_for_plan(plan, &func.params)
+                    .map(|_| plan.clone())
             });
-            match selected {
-                Some((plan, seed)) => (vec![seed], Some(plan)),
+            match selected_plan {
+                Some(plan) => {
+                    let seeds =
+                        shatter_core::planner_consumer::materialize_seeds_compatible_with_plan(
+                            &bundle.plans,
+                            &plan,
+                            &func.params,
+                        );
+                    (seeds, Some(plan))
+                }
                 None => (Vec::new(), None),
             }
         }

@@ -175,6 +175,36 @@ pub fn materialize_seed_for_plan(
     Some(values)
 }
 
+/// Materialize all seeds that can safely execute under `selected_plan`.
+///
+/// The explorer/orchestrator currently install a single default execute plan
+/// for planner-seeded execution. Seeds from other plans are safe to preserve
+/// only when they share the same receiver construction shape and constructor
+/// argument plans; otherwise the default plan could execute a method seed with
+/// the wrong receiver setup.
+#[must_use]
+pub fn materialize_seeds_compatible_with_plan(
+    plans: &[InvocationPlan],
+    selected_plan: &InvocationPlan,
+    param_infos: &[ParamInfo],
+) -> Vec<Vec<Value>> {
+    plans
+        .iter()
+        .filter(|plan| plan_compatible_with_default_execute_plan(plan, selected_plan))
+        .filter_map(|plan| materialize_seed_for_plan(plan, param_infos))
+        .collect()
+}
+
+fn plan_compatible_with_default_execute_plan(
+    plan: &InvocationPlan,
+    selected_plan: &InvocationPlan,
+) -> bool {
+    plan.target_id == selected_plan.target_id
+        && plan.receiver_kind == selected_plan.receiver_kind
+        && plan.generic_type_args == selected_plan.generic_type_args
+        && plan.constructor_arg_plans == selected_plan.constructor_arg_plans
+}
+
 /// Materialize constructor argument plans into stored seed inputs.
 ///
 /// Path-like constructor strings are intentionally skipped here. These seeds
@@ -509,6 +539,44 @@ mod tests {
         };
         let seeds = materialize_seeds(&[plan], &[str_param("s")]);
         assert_eq!(seeds, vec![vec![json!("")]]);
+    }
+
+    #[test]
+    fn materialize_compatible_seeds_preserves_matching_constructor_shape_only() {
+        let selected = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewThing".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![literal_plan(0, "event", json!("first"))],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "path".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let compatible = InvocationPlan {
+            argument_plans: vec![literal_plan(0, "event", json!("second"))],
+            priority: 1,
+            ..selected.clone()
+        };
+        let incompatible = InvocationPlan {
+            receiver_kind: "constructor:OtherThing".into(),
+            argument_plans: vec![literal_plan(0, "event", json!("wrong"))],
+            priority: 2,
+            ..selected.clone()
+        };
+
+        let seeds = materialize_seeds_compatible_with_plan(
+            &[selected.clone(), compatible, incompatible],
+            &selected,
+            &[str_param("event")],
+        );
+
+        assert_eq!(seeds, vec![vec![json!("first")], vec![json!("second")]]);
     }
 
     #[test]
