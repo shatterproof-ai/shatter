@@ -153,9 +153,10 @@ fn materialize_plan(plan: &InvocationPlan, param_infos: &[ParamInfo]) -> Option<
     if plan.argument_plans.len() != param_infos.len() {
         return None;
     }
-    let mut values =
-        Vec::with_capacity(plan.constructor_arg_plans.len() + plan.argument_plans.len());
-    values.extend(materialize_stored_constructor_arg_values(plan)?);
+    let mut values = Vec::with_capacity(plan.argument_plans.len());
+    if !plan_requires_execution_scoped_constructor_scratch(plan) {
+        values.extend(materialize_stored_constructor_arg_values(plan)?);
+    }
     for (value_plan, param) in plan.argument_plans.iter().zip(param_infos.iter()) {
         let v = materialize_value(value_plan, param)?;
         values.push(v);
@@ -176,6 +177,12 @@ pub fn materialize_stored_constructor_arg_values(plan: &InvocationPlan) -> Optio
         values.push(materialize_stored_constructor_value(value_plan)?);
     }
     Some(values)
+}
+
+fn plan_requires_execution_scoped_constructor_scratch(plan: &InvocationPlan) -> bool {
+    plan.constructor_arg_plans
+        .iter()
+        .any(|value_plan| constructor_path_seed_kind(value_plan).is_some())
 }
 
 /// Return the concrete input vector to send to the frontend for a method plan.
@@ -561,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn materialize_path_like_constructor_string_skips_stored_seed() {
+    fn materialize_path_like_constructor_string_stores_method_shape_seed() {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: "constructor:newJSONLRecorder".into(),
@@ -578,10 +585,32 @@ mod tests {
             label: String::new(),
         };
         let seeds = materialize_seeds(&[plan], &[]);
-        assert!(
-            seeds.is_empty(),
-            "stored planner seeds cannot own temp path scratch",
+        assert_eq!(
+            seeds,
+            vec![Vec::<Value>::new()],
+            "stored planner seeds must omit constructor temp path prefixes",
         );
+    }
+
+    #[test]
+    fn materialize_path_like_constructor_string_keeps_method_seed() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:newJSONLRecorder".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![literal_plan(0, "event", json!({"Listener": "\n"}))],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "path".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds = materialize_seeds(&[plan], &[str_param("event")]);
+        assert_eq!(seeds, vec![vec![json!({"Listener": "\n"})]]);
     }
 
     #[test]

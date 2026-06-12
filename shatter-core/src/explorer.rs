@@ -1514,7 +1514,7 @@ pub async fn explore_function(
         // Check connection_failures reported by the frontend and transition
         // per-dep states accordingly.
         update_live_first_states(&obs.exec_result, &mut live_first_states);
-        path_feedback.enqueue_from_result(execute_inputs.inputs(), &obs.exec_result);
+        path_feedback.enqueue_from_result(&strategy_feedback_inputs, &obs.exec_result);
 
         // --- Crypto boundary logging ---
         // When the frontend intercepts known encrypt/decrypt calls, log them.
@@ -1566,9 +1566,8 @@ pub async fn explore_function(
             recent_hits.push(obs.is_new_path);
         }
 
-        let (execute_inputs, _constructor_scratch) = execute_inputs.into_parts();
         aggregator.record_post_observe(
-            execute_inputs,
+            strategy_feedback_inputs.clone(),
             iteration_mocks,
             obs.exec_result,
             discovery_method,
@@ -2271,7 +2270,7 @@ async fn explore_function_with_observer_pool(
                 config.default_execute_plan.as_ref(),
             );
 
-            if queue_policy.should_enqueue(execute_inputs.inputs(), &iteration_mocks) {
+            if queue_policy.should_enqueue(&feedback_inputs, &iteration_mocks) {
                 let (execute_inputs, constructor_scratch) = execute_inputs.into_parts();
                 if job_tx
                     .send(ObserverJob {
