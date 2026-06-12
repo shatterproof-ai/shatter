@@ -4883,11 +4883,16 @@ for line in sys.stdin:
             !dir.is_empty(),
             "directory-like constructor prefix should not be empty",
         );
+        assert!(
+            std::path::Path::new(dir).is_dir(),
+            "directory-like constructor prefix should be a usable directory",
+        );
         assert_eq!(
             crate::planner_consumer::execute_inputs_for_plan(&prefixed, 1, Some(&plan)),
             prefixed,
             "already-prefixed planner seeds and path-feedback retries must not be prefixed twice"
         );
+        std::fs::remove_dir_all(dir).expect("remove constructor directory seed");
     }
 
     #[tokio::test]

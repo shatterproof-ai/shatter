@@ -24,6 +24,9 @@ use crate::protocol::{
 };
 use crate::types::{ParamInfo, TypeInfo};
 
+const CONSTRUCTOR_FILE_SEED_PREFIX: &str = "shatter-ctor-file-";
+const CONSTRUCTOR_DIR_SEED_PREFIX: &str = "shatter-ctor-dir-";
+
 /// Error returned when consulting the planner fails.
 #[derive(Debug, thiserror::Error)]
 pub enum PlannerConsumerError {
@@ -199,7 +202,7 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
 fn materialize_constructor_value(value_plan: &ValuePlan) -> Option<Value> {
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
-        ValuePlanKind::Zero => Some(zero_constructor_value(value_plan)),
+        ValuePlanKind::Zero => zero_constructor_value(value_plan),
         ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
     }
 }
@@ -231,46 +234,94 @@ fn zero_value_for_type_hint(type_hint: &str) -> Value {
     }
 }
 
-fn zero_constructor_value(value_plan: &ValuePlan) -> Value {
-    if is_path_like_string_constructor_arg(value_plan) {
-        return Value::from(format!(
-            "{}/shatter-ctor-{}-{}",
-            std::env::temp_dir().display(),
-            std::process::id(),
-            sanitize_path_seed_component(&value_plan.param_name)
-        ));
+fn zero_constructor_value(value_plan: &ValuePlan) -> Option<Value> {
+    if let Some(kind) = constructor_path_seed_kind(value_plan) {
+        return create_constructor_path_seed(kind).map(Value::from);
     }
-    zero_value_for_type_hint(&value_plan.type_hint)
+    Some(zero_value_for_type_hint(&value_plan.type_hint))
 }
 
-fn is_path_like_string_constructor_arg(value_plan: &ValuePlan) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstructorPathSeedKind {
+    File,
+    Dir,
+}
+
+fn constructor_path_seed_kind(value_plan: &ValuePlan) -> Option<ConstructorPathSeedKind> {
     let type_hint = value_plan.type_hint.trim();
     if type_hint != "string" {
-        return false;
+        return None;
     }
     let name = value_plan.param_name.to_ascii_lowercase();
-    matches!(
+    if matches!(name.as_str(), "dir" | "directory") || name.ends_with("_dir") {
+        return Some(ConstructorPathSeedKind::Dir);
+    }
+    if matches!(
         name.as_str(),
-        "path" | "file" | "filename" | "filepath" | "file_path" | "dir" | "directory"
+        "path" | "file" | "filename" | "filepath" | "file_path"
     ) || name.ends_with("_path")
         || name.ends_with("path")
         || name.ends_with("_file")
-        || name.ends_with("_dir")
+    {
+        return Some(ConstructorPathSeedKind::File);
+    }
+    None
 }
 
-fn sanitize_path_seed_component(name: &str) -> String {
-    let mut out = String::with_capacity(name.len().max(1));
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            out.push(ch);
-        } else {
-            out.push('_');
+fn create_constructor_path_seed(kind: ConstructorPathSeedKind) -> Option<String> {
+    let path = match kind {
+        ConstructorPathSeedKind::File => {
+            let file = tempfile::Builder::new()
+                .prefix(CONSTRUCTOR_FILE_SEED_PREFIX)
+                .tempfile()
+                .map_err(|err| {
+                    log::debug!("failed to create constructor file seed: {err}");
+                    err
+                })
+                .ok()?;
+            let (_file, path) = file
+                .keep()
+                .map_err(|err| {
+                    log::debug!("failed to keep constructor file seed: {err}");
+                    err
+                })
+                .ok()?;
+            path
+        }
+        ConstructorPathSeedKind::Dir => tempfile::Builder::new()
+            .prefix(CONSTRUCTOR_DIR_SEED_PREFIX)
+            .tempdir()
+            .map_err(|err| {
+                log::debug!("failed to create constructor directory seed: {err}");
+                err
+            })
+            .ok()?
+            .keep(),
+    };
+    Some(path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+fn remove_constructor_path_seed(path: &str) {
+    let path = std::path::Path::new(path);
+    if path.is_dir() {
+        if let Err(err) = std::fs::remove_dir_all(path) {
+            eprintln!("failed to remove constructor directory seed {path:?}: {err}");
+        }
+    } else if path.exists()
+        && let Err(err) = std::fs::remove_file(path)
+    {
+        eprintln!("failed to remove constructor file seed {path:?}: {err}");
+    }
+}
+
+#[cfg(test)]
+fn remove_constructor_path_seeds<'a>(paths: impl IntoIterator<Item = &'a str>) {
+    for path in paths {
+        if path.starts_with(std::env::temp_dir().to_string_lossy().as_ref()) {
+            remove_constructor_path_seed(path);
         }
     }
-    if out.is_empty() {
-        out.push_str("path");
-    }
-    out
 }
 
 #[cfg(test)]
@@ -372,10 +423,15 @@ mod tests {
             !dir.is_empty(),
             "directory-like constructor string should not materialize as empty string",
         );
+        assert!(
+            std::path::Path::new(dir).is_dir(),
+            "directory-like constructor string should materialize as a usable directory",
+        );
+        remove_constructor_path_seed(dir);
     }
 
     #[test]
-    fn materialize_path_like_constructor_string_uses_non_empty_seed() {
+    fn materialize_path_like_constructor_string_creates_unique_file_seeds() {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: "constructor:newJSONLRecorder".into(),
@@ -391,18 +447,27 @@ mod tests {
             priority: 0,
             label: String::new(),
         };
-        let seeds = materialize_seeds(&[plan], &[]);
-        let Some(path) = seeds
-            .first()
-            .and_then(|seed| seed.first())
-            .and_then(Value::as_str)
-        else {
-            panic!("expected a string constructor seed, got {seeds:?}");
-        };
-        assert!(
-            !path.is_empty(),
-            "path-like constructor string should not materialize as empty string",
+        let seeds = materialize_seeds(&[plan.clone(), plan], &[]);
+        let paths: Vec<&str> = seeds
+            .iter()
+            .map(|seed| {
+                seed.first()
+                    .and_then(Value::as_str)
+                    .expect("expected a string constructor seed")
+            })
+            .collect();
+        assert_eq!(paths.len(), 2);
+        assert_ne!(
+            paths[0], paths[1],
+            "path-like constructor strings should use unique temp resources",
         );
+        for path in &paths {
+            assert!(
+                std::path::Path::new(path).is_file(),
+                "path-like constructor string should materialize as a usable file: {path}",
+            );
+        }
+        remove_constructor_path_seeds(paths);
     }
 
     #[test]
