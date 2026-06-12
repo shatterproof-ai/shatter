@@ -504,6 +504,72 @@ func TestPlanRequirements_ParameterizedConstructor_EmitsConstructorArgPlans(t *t
 	}
 }
 
+func TestPlanRequirements_MethodComplexParamStillEmitsConstructorArgPlans(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*Recorder).Record"
+	analysis := &protocol.FunctionAnalysis{
+		Name: "(*Recorder).Record",
+		Params: []protocol.ParamInfo{{
+			Name: "call",
+			Type: protocol.TypeInfo{Kind: "opaque", Label: "RecordedCall"},
+		}},
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "Record",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "Recorder", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "NewRecorder",
+		TargetType: "Recorder",
+		Parameters: []protocol.ParamInfo{
+			{Name: "listener", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")},
+			{Name: "score", Type: protocol.TypeInfo{Kind: "float"}, TypeName: strPtr("float64")},
+			{Name: "timeout", Type: protocol.TypeInfo{Kind: "complex", ComplexKind: "go_duration"}, TypeName: strPtr("time.Duration")},
+		},
+		ReturnsPointer: true,
+	}}
+	lookup := richLookup(func(id string) *protocol.TargetContext {
+		if id != targetID {
+			return nil
+		}
+		return &protocol.TargetContext{Analysis: analysis, Target: target, Constructors: ctors}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) == 0 {
+		t.Fatalf("expected method parameter unsatisfied requirement, got none")
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:NewRecorder" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no receiver construction plan emitted alongside param unsatisfied=%+v; plans=%+v", unsat, plans)
+	}
+	if len(ctorPlan.ArgumentPlans) != 0 {
+		t.Fatalf("receiver-only fallback plan ArgumentPlans len = %d, want 0", len(ctorPlan.ArgumentPlans))
+	}
+	gotHints := make([]string, len(ctorPlan.ConstructorArgPlans))
+	for i, cap := range ctorPlan.ConstructorArgPlans {
+		gotHints[i] = cap.TypeHint
+	}
+	wantHints := []string{"string", "float64", "time.Duration"}
+	if strings.Join(gotHints, ",") != strings.Join(wantHints, ",") {
+		t.Fatalf("ConstructorArgPlans type hints = %v, want %v; plan=%+v", gotHints, wantHints, ctorPlan)
+	}
+}
+
 func TestPlanRequirements_ConstructorRuntimeValueParamsDoNotConsumeInputPrefix(t *testing.T) {
 	t.Parallel()
 
