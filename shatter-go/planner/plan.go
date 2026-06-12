@@ -291,6 +291,13 @@ func planWithGenericArgs(
 		plans, groupUnsat := Compose(req.TargetID, receiverPlans, paramMatrix, paramUnsat, composeOpts)
 		if len(groupUnsat) > 0 {
 			allUnsat = append(allUnsat, groupUnsat...)
+			if isMethod {
+				receiverOnly := receiverOnlyPlans(req.TargetID, receiverPlans, opts.MaxPlansPerTarget)
+				for i := range receiverOnly {
+					receiverOnly[i].GenericTypeArgs = genericTypeNamesToStrings(typeArgs)
+				}
+				groups = append(groups, receiverOnly)
+			}
 			continue
 		}
 		for i := range plans {
@@ -313,7 +320,31 @@ func planWithGenericArgs(
 	for i := range plans {
 		plans[i].Priority = i
 	}
-	return plans, nil
+	return plans, allUnsat
+}
+
+func receiverOnlyPlans(targetID string, receiverPlans []ReceiverPlan, maxPlans int) []protocol.InvocationPlan {
+	if len(receiverPlans) == 0 {
+		return nil
+	}
+	if maxPlans <= 0 {
+		maxPlans = DefaultMaxPlansPerRequirement
+	}
+	if len(receiverPlans) > maxPlans {
+		receiverPlans = receiverPlans[:maxPlans]
+	}
+	plans := make([]protocol.InvocationPlan, len(receiverPlans))
+	for i, recv := range receiverPlans {
+		plans[i] = protocol.InvocationPlan{
+			TargetID:            targetID,
+			ReceiverKind:        recv.ReceiverKind,
+			ArgumentPlans:       []protocol.ValuePlan{},
+			ConstructorArgPlans: constructorArgPlansForReceiver(recv),
+			Priority:            i,
+			Label:               labelForReceiver(recv, false),
+		}
+	}
+	return plans
 }
 
 func typeArgSetsForTarget(targetID string, target *protocol.DiscoveredTarget) ([][]GenericTypeName, *protocol.UnsatisfiedRequirement) {
