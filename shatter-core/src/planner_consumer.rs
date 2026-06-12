@@ -234,8 +234,9 @@ fn zero_value_for_type_hint(type_hint: &str) -> Value {
 fn zero_constructor_value(value_plan: &ValuePlan) -> Value {
     if is_path_like_string_constructor_arg(value_plan) {
         return Value::from(format!(
-            "{}/shatter-ctor-{}",
+            "{}/shatter-ctor-{}-{}",
             std::env::temp_dir().display(),
+            std::process::id(),
             sanitize_path_seed_component(&value_plan.param_name)
         ));
     }
