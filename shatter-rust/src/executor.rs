@@ -9691,7 +9691,7 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         // Execute `add` twice with different inputs via the same CrateHarnessCache.
         // Verifies: the second call hits the in-memory cache (no recompilation)
         // and returns the correct result.
-        let dir = std::env::temp_dir().join("shatter-test-crate-cache");
+        let dir = unique_tmp_dir("crate-cache");
         let src_file = write_test_crate(&dir, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
 
         let cache: HarnessCache = Mutex::new(HashMap::new());
