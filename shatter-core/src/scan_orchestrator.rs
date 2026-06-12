@@ -5095,6 +5095,24 @@ async fn fetch_default_execute_plan_for_method(
     }
 }
 
+async fn attach_default_execute_plan_for_method(
+    frontend: &mut Frontend,
+    analysis: &FunctionAnalysis,
+    config: &mut ExploreConfig,
+) {
+    if config.default_execute_plan.is_none()
+        && let Some(plan) = fetch_default_execute_plan_for_method(
+            frontend,
+            analysis,
+            &config.file,
+            config.project_root.as_deref(),
+        )
+        .await
+    {
+        config.default_execute_plan = Some(plan);
+    }
+}
+
 /// Build an [`ExecutionProfile`] from a [`FunctionAnalysis`]'s invocation model.
 ///
 /// When the frontend marks a target as `InvocationModel::Adapter`, the execute
@@ -5270,6 +5288,7 @@ async fn run_phased(
     explore_timeout: Duration,
 ) -> PhasedOutcome {
     let mut effective = explore_config.clone();
+    attach_default_execute_plan_for_method(frontend, analysis, &mut effective).await;
     if effective.prepare_id_override.is_none()
         && explorer::frontend_supports(&effective.capabilities, "prepare")
     {
@@ -5366,17 +5385,7 @@ async fn explore_single_function(
     // No-op for free functions, frontends without `get_invocation_plan`,
     // and callers that already attached a plan upstream.
     let mut effective_config = explore_config.clone();
-    if effective_config.default_execute_plan.is_none()
-        && let Some(plan) = fetch_default_execute_plan_for_method(
-            frontend,
-            analysis,
-            &effective_config.file,
-            effective_config.project_root.as_deref(),
-        )
-        .await
-    {
-        effective_config.default_execute_plan = Some(plan);
-    }
+    attach_default_execute_plan_for_method(frontend, analysis, &mut effective_config).await;
     let explore_config = &effective_config;
     let explore_started = Instant::now();
     let exploration = explore_with_scan_mode(frontend, analysis, concolic, explore_config).await?;
@@ -6302,6 +6311,245 @@ mod tests {
     fn execution_profile_from_direct_invocation_model_is_none() {
         let analysis = make_analysis("plain_fn", vec![]);
         assert!(execution_profile_from_analysis(&analysis).is_none());
+    }
+
+    #[tokio::test]
+    async fn phased_scan_prepares_methods_with_default_execute_plan() {
+        use crate::behavior::BehaviorMap;
+        use crate::frontend::{Frontend, FrontendConfig};
+        use crate::types::{ParamInfo, TypeInfo};
+        use std::path::PathBuf;
+
+        let tempdir = tempfile::tempdir().expect("create fake frontend dir");
+        let script_path = tempdir.path().join("fake_planner_frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import sys
+
+for line in sys.stdin:
+    req = json.loads(line)
+    command = req.get("command")
+    base = {
+        "protocol_version": req.get("protocol_version", "0.1.0"),
+        "id": req.get("id"),
+    }
+    if command == "handshake":
+        resp = {
+            **base,
+            "status": "handshake",
+            "frontend_version": req.get("protocol_version", "0.1.0"),
+            "language": "fake-go",
+            "capabilities": ["analyze", "instrument", "prepare", "get_invocation_plan"],
+        }
+    elif command == "analyze":
+        resp = {
+            **base,
+            "status": "analysis",
+            "functions": [],
+        }
+    elif command == "get_invocation_plan":
+        resp = {
+            **base,
+            "status": "invocation_plan",
+            "invocation_plans": [{
+                "target_id": ":(*Recorder).Record",
+                "receiver_kind": "constructor:NewRecorder",
+                "generic_type_args": [],
+                "argument_plans": [{
+                    "param_index": 0,
+                    "param_name": "event",
+                    "kind": "zero",
+                    "type_hint": "string",
+                }],
+                "constructor_arg_plans": [{
+                    "param_index": 0,
+                    "param_name": "path",
+                    "kind": "zero",
+                    "type_hint": "string",
+                }],
+                "priority": 0,
+                "label": "recorder",
+            }],
+            "unsatisfied_requirements": [],
+        }
+    elif command == "instrument":
+        resp = {**base, "status": "instrument", "instrumented": True, "output_file": None}
+    elif command == "prepare":
+        receiver_kind = ""
+        if req.get("plan") is not None:
+            receiver_kind = req["plan"].get("receiver_kind", "")
+        prepare_id = "with-plan" if receiver_kind == "constructor:NewRecorder" else "without-plan"
+        resp = {**base, "status": "prepare", "prepare_id": prepare_id}
+    elif command == "execute":
+        receiver_kind = ""
+        if req.get("plan") is not None:
+            receiver_kind = req["plan"].get("receiver_kind", "")
+        ok = req.get("prepare_id") == "with-plan" and receiver_kind == "constructor:NewRecorder"
+        err = None if ok else {
+            "error_type": "missing_plan",
+            "message": "executed without constructor plan",
+        }
+        outcome = {
+            "status": "completed" if ok else "runtime_failed",
+            "short_reason": "ok" if ok else "executed without constructor plan",
+            "thrown_error": err,
+        }
+        resp = {
+            **base,
+            "status": "execute",
+            "return_value": "ok" if ok else None,
+            "thrown_error": err,
+            "branch_path": [],
+            "lines_executed": [1],
+            "calls_to_external": [],
+            "path_constraints": [],
+            "scope_events": [],
+            "loop_body_states": [],
+            "side_effects": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 1000,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0,
+            },
+            "capture_truncation": None,
+            "discovered_dependencies": [],
+            "connection_failures": [],
+            "runtime_crypto_boundaries": [],
+            "outcome": outcome,
+        }
+    elif command == "shutdown":
+        resp = {**base, "status": "shutdown_ack"}
+    else:
+        resp = {
+            **base,
+            "status": "error",
+            "code": "invalid_request",
+            "message": f"unexpected command {command}",
+        }
+    print(json.dumps(resp), flush=True)
+"#,
+        )
+        .expect("write fake frontend");
+
+        let mut frontend_config = FrontendConfig::new(PathBuf::from("python3"));
+        frontend_config.args = vec![script_path.display().to_string()];
+        frontend_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        let mut frontend = Frontend::spawn(&frontend_config)
+            .await
+            .expect("spawn fake frontend");
+
+        let analysis = FunctionAnalysis {
+            name: "(*Recorder).Record".into(),
+            exported: false,
+            params: vec![ParamInfo {
+                name: "event".into(),
+                typ: TypeInfo::Str,
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Str,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        };
+
+        let explore_config = ExploreConfig {
+            file: "recorder.go".into(),
+            max_iterations: Some(1),
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(7),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: crate::protocol::SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: crate::orchestrator::FrontendCapabilities {
+                commands: ["analyze", "instrument", "prepare", "get_invocation_plan"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                complex_types: Default::default(),
+            },
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: Default::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+        let behavior_maps = tokio::sync::Mutex::new(HashMap::<String, BehaviorMap>::new());
+        let input_pool = tokio::sync::Mutex::new(InterestingPool::default());
+        let genetic_config = crate::config::GeneticConfig::default();
+
+        let outcome = run_phased(
+            &mut frontend,
+            &analysis.name,
+            &analysis,
+            false,
+            &explore_config,
+            &[],
+            &std::collections::HashSet::new(),
+            &behavior_maps,
+            None,
+            &input_pool,
+            &genetic_config,
+            &None,
+            TEST_REQUEST_TIMEOUT,
+            TEST_REQUEST_TIMEOUT,
+        )
+        .await;
+
+        let PhasedOutcome::Success(result) = outcome else {
+            match outcome {
+                PhasedOutcome::Failed(error) => {
+                    panic!("phased scan should succeed, got failure: {error:?}")
+                }
+                PhasedOutcome::BuildTimedOut(duration) => {
+                    panic!("phased scan should not time out during build: {duration:?}")
+                }
+                PhasedOutcome::ExploreTimedOut(duration) => {
+                    panic!("phased scan should not time out during explore: {duration:?}")
+                }
+                PhasedOutcome::Success(_) => unreachable!(),
+            }
+        };
+        assert!(
+            result
+                .exploration
+                .raw_results
+                .iter()
+                .any(|(inputs, _, exec)| {
+                    inputs == &[serde_json::json!("")]
+                        && exec.outcome.as_ref().is_some_and(|outcome| {
+                            outcome.status == crate::protocol::OutcomeStatus::Completed
+                        })
+                }),
+            "method execution should use a prepare_id built with the constructor plan; raw_results={:?}",
+            result.exploration.raw_results
+        );
+
+        frontend.shutdown().await.expect("shutdown fake frontend");
     }
 
     /// str-v5qe / str-6sie regression: a Go scan with a tiny per-fn timeout
