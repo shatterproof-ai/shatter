@@ -1,4 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::sync::Mutex;
 
 use shatter_core::config::{self as shatter_config, ShatterConfig};
 
@@ -185,26 +188,9 @@ fn rust_frontend_project_deps(project_root: &Path) -> String {
 }
 
 fn project_cargo_lock_source(project_root: &Path) -> Option<PathBuf> {
-    if let Some(mut dir) = project_root.parent() {
-        loop {
-            let manifest = dir.join("Cargo.toml");
-            if manifest.exists()
-                && std::fs::read_to_string(&manifest)
-                    .ok()
-                    .is_some_and(|content| {
-                        content.lines().any(|line| {
-                            line.trim() == "[workspace]" || line.trim().starts_with("[workspace]")
-                        })
-                    })
-            {
-                let workspace_lock = dir.join("Cargo.lock");
-                return workspace_lock.exists().then_some(workspace_lock);
-            }
-            if dir.parent().is_none_or(|parent| parent == dir) {
-                break;
-            }
-            dir = dir.parent().unwrap();
-        }
+    if let Some(workspace_root) = project_metadata_workspace_root(project_root) {
+        let workspace_lock = workspace_root.join("Cargo.lock");
+        return workspace_lock.exists().then_some(workspace_lock);
     }
 
     let project_lock = project_root.join("Cargo.lock");
@@ -212,6 +198,35 @@ fn project_cargo_lock_source(project_root: &Path) -> Option<PathBuf> {
         return Some(project_lock);
     }
     None
+}
+
+fn project_metadata_workspace_root(project_root: &Path) -> Option<PathBuf> {
+    let project_root = std::fs::canonicalize(project_root).ok()?;
+    let manifest_path = project_root.join("Cargo.toml");
+    if !manifest_path.exists() {
+        return None;
+    }
+
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--no-deps")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .current_dir(project_root)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    metadata
+        .get("workspace_root")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
 }
 
 fn copy_project_cargo_lock(project_root: &Path, build_dir: &Path) -> Result<(), String> {
@@ -607,6 +622,26 @@ mod tests {
     use shatter_core::config::{DefaultsConfig, FunctionConfig};
     use std::collections::HashMap;
 
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CwdGuard {
+        previous_dir: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Self {
+            let previous_dir = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { previous_dir }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous_dir);
+        }
+    }
+
     #[test]
     fn collect_native_generators_includes_function_level_entries() {
         let shatter_dir = Path::new(".shatter");
@@ -655,6 +690,7 @@ mod tests {
         let workspace_root = tempfile::tempdir().unwrap();
         let project_root = workspace_root.path().join("api");
         let build_dir = workspace_root.path().join("custom-build");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
         std::fs::create_dir_all(project_root.join(".shatter")).unwrap();
         std::fs::create_dir_all(&build_dir).unwrap();
 
@@ -665,6 +701,16 @@ members = ["api"]
 "#,
         )
         .unwrap();
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
         let lockfile = "# lock carried from project workspace\nversion = 4\n";
         std::fs::write(workspace_root.path().join("Cargo.lock"), lockfile).unwrap();
 
@@ -686,7 +732,7 @@ members = ["api"]
         let workspace_root = tempfile::tempdir().unwrap();
         let project_root = workspace_root.path().join("api");
         let build_dir = workspace_root.path().join("custom-build");
-        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
         std::fs::create_dir_all(&build_dir).unwrap();
 
         std::fs::write(
@@ -696,6 +742,16 @@ members = ["api"]
 "#,
         )
         .unwrap();
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
         let workspace_lockfile = "version = 4\nworkspace = true\n";
         std::fs::write(workspace_root.path().join("Cargo.lock"), workspace_lockfile).unwrap();
         std::fs::write(
@@ -710,6 +766,133 @@ members = ["api"]
             std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
             workspace_lockfile,
             "custom frontend build dir must use the workspace lockfile Cargo uses for a member crate",
+        );
+    }
+
+    #[test]
+    fn rust_custom_frontend_uses_workspace_lockfile_for_relative_member_path() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let project_root = workspace_root.path().join("api");
+        let build_dir = workspace_root.path().join("custom-build");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+
+        std::fs::write(
+            workspace_root.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+"#,
+        )
+        .unwrap();
+        let workspace_lockfile = "version = 4\nworkspace = true\n";
+        std::fs::write(workspace_root.path().join("Cargo.lock"), workspace_lockfile).unwrap();
+        std::fs::write(project_root.join("Cargo.lock"), "version = 4\nstale = true\n").unwrap();
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::enter(workspace_root.path());
+        copy_project_cargo_lock(Path::new("api"), &build_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
+            workspace_lockfile,
+            "relative workspace member paths must use the effective workspace lockfile",
+        );
+    }
+
+    #[test]
+    fn rust_custom_frontend_uses_local_lockfile_for_nested_standalone_workspace() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let project_root = workspace_root.path().join("tools").join("standalone");
+        let build_dir = workspace_root.path().join("custom-build");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+
+        std::fs::write(
+            workspace_root.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            workspace_root.path().join("Cargo.lock"),
+            "version = 4\nparent = true\n",
+        )
+        .unwrap();
+        let local_lockfile = "version = 4\nlocal = true\n";
+        std::fs::write(project_root.join("Cargo.lock"), local_lockfile).unwrap();
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            r#"[workspace]
+
+[package]
+name = "standalone"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        copy_project_cargo_lock(&project_root, &build_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
+            local_lockfile,
+            "nested standalone workspace crates must keep their own lockfile",
+        );
+    }
+
+    #[test]
+    fn rust_custom_frontend_uses_local_lockfile_for_workspace_exclude() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let project_root = workspace_root.path().join("excluded");
+        let build_dir = workspace_root.path().join("custom-build");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+
+        std::fs::write(
+            workspace_root.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+exclude = ["excluded"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            workspace_root.path().join("Cargo.lock"),
+            "version = 4\nparent = true\n",
+        )
+        .unwrap();
+        let local_lockfile = "version = 4\nexcluded = true\n";
+        std::fs::write(project_root.join("Cargo.lock"), local_lockfile).unwrap();
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            r#"[package]
+name = "excluded"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        copy_project_cargo_lock(&project_root, &build_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
+            local_lockfile,
+            "workspace-excluded crates must keep their own lockfile",
         );
     }
 }
