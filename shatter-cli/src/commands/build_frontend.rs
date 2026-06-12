@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::sync::Mutex;
 
 use shatter_core::config::{self as shatter_config, ShatterConfig};
 
@@ -620,6 +622,26 @@ mod tests {
     use shatter_core::config::{DefaultsConfig, FunctionConfig};
     use std::collections::HashMap;
 
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CwdGuard {
+        previous_dir: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Self {
+            let previous_dir = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { previous_dir }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous_dir);
+        }
+    }
+
     #[test]
     fn collect_native_generators_includes_function_level_entries() {
         let shatter_dir = Path::new(".shatter");
@@ -776,10 +798,9 @@ edition = "2021"
         .unwrap();
         std::fs::write(project_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
 
-        let previous_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(workspace_root.path()).unwrap();
+        let _cwd_lock = CWD_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::enter(workspace_root.path());
         copy_project_cargo_lock(Path::new("api"), &build_dir).unwrap();
-        std::env::set_current_dir(previous_dir).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),

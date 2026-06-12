@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::Mutex as StdMutex;
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -10965,6 +10967,26 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
     // str-31j.1: BridgeSourceBackup invariants — restore must return touched
     // files byte-for-byte and remove any path that did not exist before.
 
+    static CWD_LOCK: StdMutex<()> = StdMutex::new(());
+
+    struct CwdGuard {
+        previous_dir: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Self {
+            let previous_dir = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { previous_dir }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous_dir);
+        }
+    }
+
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
@@ -11590,10 +11612,9 @@ edition = "2021"
         .unwrap();
         std::fs::write(member_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
 
-        let previous_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&ws_root).unwrap();
+        let _cwd_lock = CWD_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::enter(&ws_root);
         let lock_source = cargo_lock_source_for_crate(Path::new("api"));
-        std::env::set_current_dir(previous_dir).unwrap();
 
         assert_eq!(
             lock_source,
