@@ -27,6 +27,32 @@ use crate::types::{ParamInfo, TypeInfo};
 const CONSTRUCTOR_FILE_SEED_PREFIX: &str = "shatter-ctor-file-";
 const CONSTRUCTOR_DIR_SEED_PREFIX: &str = "shatter-ctor-dir-";
 
+/// Execute inputs plus scratch resources that must stay alive for the
+/// frontend call using those inputs.
+pub struct PlannedExecuteInputs {
+    inputs: Vec<Value>,
+    _scratch: Vec<ConstructorPathScratch>,
+}
+
+impl PlannedExecuteInputs {
+    /// Borrow the concrete input vector.
+    #[must_use]
+    pub fn inputs(&self) -> &[Value] {
+        &self.inputs
+    }
+
+    /// Split the concrete inputs from their scratch owners.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<Value>, Vec<ConstructorPathScratch>) {
+        (self.inputs, self._scratch)
+    }
+}
+
+pub enum ConstructorPathScratch {
+    File { _file: tempfile::NamedTempFile },
+    Dir { _dir: tempfile::TempDir },
+}
+
 /// Error returned when consulting the planner fails.
 #[derive(Debug, thiserror::Error)]
 pub enum PlannerConsumerError {
@@ -129,7 +155,7 @@ fn materialize_plan(plan: &InvocationPlan, param_infos: &[ParamInfo]) -> Option<
     }
     let mut values =
         Vec::with_capacity(plan.constructor_arg_plans.len() + plan.argument_plans.len());
-    values.extend(materialize_constructor_arg_values(plan)?);
+    values.extend(materialize_stored_constructor_arg_values(plan)?);
     for (value_plan, param) in plan.argument_plans.iter().zip(param_infos.iter()) {
         let v = materialize_value(value_plan, param)?;
         values.push(v);
@@ -137,13 +163,17 @@ fn materialize_plan(plan: &InvocationPlan, param_infos: &[ParamInfo]) -> Option<
     Some(values)
 }
 
-/// Materialize constructor argument plans into the input prefix expected by
-/// Go wrapper parameterized-constructor dispatch.
+/// Materialize constructor argument plans into stored seed inputs.
+///
+/// Path-like constructor strings are intentionally skipped here. These seeds
+/// can be cached and replayed later, but real temp file/dir resources need an
+/// execution-scoped owner. [`execute_inputs_for_plan`] handles those prefixes
+/// when an Execute request is actually sent.
 #[must_use]
-pub fn materialize_constructor_arg_values(plan: &InvocationPlan) -> Option<Vec<Value>> {
+pub fn materialize_stored_constructor_arg_values(plan: &InvocationPlan) -> Option<Vec<Value>> {
     let mut values = Vec::with_capacity(plan.constructor_arg_plans.len());
     for value_plan in &plan.constructor_arg_plans {
-        values.push(materialize_constructor_value(value_plan)?);
+        values.push(materialize_stored_constructor_value(value_plan)?);
     }
     Some(values)
 }
@@ -158,18 +188,30 @@ pub fn execute_inputs_for_plan(
     inputs: &[Value],
     method_param_count: usize,
     plan: Option<&InvocationPlan>,
-) -> Vec<Value> {
+) -> PlannedExecuteInputs {
     let Some(plan) = plan else {
-        return inputs.to_vec();
+        return PlannedExecuteInputs {
+            inputs: inputs.to_vec(),
+            _scratch: Vec::new(),
+        };
     };
     if plan.constructor_arg_plans.is_empty() || inputs.len() != method_param_count {
-        return inputs.to_vec();
+        return PlannedExecuteInputs {
+            inputs: inputs.to_vec(),
+            _scratch: Vec::new(),
+        };
     }
-    let Some(mut prefixed) = materialize_constructor_arg_values(plan) else {
-        return inputs.to_vec();
+    let Some((mut prefixed, scratch)) = materialize_execute_constructor_arg_values(plan) else {
+        return PlannedExecuteInputs {
+            inputs: inputs.to_vec(),
+            _scratch: Vec::new(),
+        };
     };
     prefixed.extend_from_slice(inputs);
-    prefixed
+    PlannedExecuteInputs {
+        inputs: prefixed,
+        _scratch: scratch,
+    }
 }
 
 /// Strip a constructor-arg prefix from an executed vector for strategy feedback.
@@ -199,10 +241,40 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
     }
 }
 
-fn materialize_constructor_value(value_plan: &ValuePlan) -> Option<Value> {
+fn materialize_stored_constructor_value(value_plan: &ValuePlan) -> Option<Value> {
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
+        ValuePlanKind::Zero if constructor_path_seed_kind(value_plan).is_some() => None,
         ValuePlanKind::Zero => zero_constructor_value(value_plan),
+        ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
+    }
+}
+
+fn materialize_execute_constructor_arg_values(
+    plan: &InvocationPlan,
+) -> Option<(Vec<Value>, Vec<ConstructorPathScratch>)> {
+    let mut values = Vec::with_capacity(plan.constructor_arg_plans.len());
+    let mut scratch = Vec::new();
+    for value_plan in &plan.constructor_arg_plans {
+        let (value, mut owned) = materialize_execute_constructor_value(value_plan)?;
+        values.push(value);
+        scratch.append(&mut owned);
+    }
+    Some((values, scratch))
+}
+
+fn materialize_execute_constructor_value(
+    value_plan: &ValuePlan,
+) -> Option<(Value, Vec<ConstructorPathScratch>)> {
+    match value_plan.kind {
+        ValuePlanKind::Literal => value_plan.literal.clone().map(|value| (value, Vec::new())),
+        ValuePlanKind::Zero => {
+            if let Some(kind) = constructor_path_seed_kind(value_plan) {
+                let (path, scratch) = create_constructor_path_seed(kind)?;
+                return Some((Value::from(path), vec![scratch]));
+            }
+            Some((zero_value_for_type_hint(&value_plan.type_hint), Vec::new()))
+        }
         ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
     }
 }
@@ -235,9 +307,6 @@ fn zero_value_for_type_hint(type_hint: &str) -> Value {
 }
 
 fn zero_constructor_value(value_plan: &ValuePlan) -> Option<Value> {
-    if let Some(kind) = constructor_path_seed_kind(value_plan) {
-        return create_constructor_path_seed(kind).map(Value::from);
-    }
     Some(zero_value_for_type_hint(&value_plan.type_hint))
 }
 
@@ -253,7 +322,9 @@ fn constructor_path_seed_kind(value_plan: &ValuePlan) -> Option<ConstructorPathS
         return None;
     }
     let name = value_plan.param_name.to_ascii_lowercase();
-    if matches!(name.as_str(), "dir" | "directory") || name.ends_with("_dir") {
+    if name_has_path_token(&value_plan.param_name, "dir")
+        || name_has_path_token(&value_plan.param_name, "directory")
+    {
         return Some(ConstructorPathSeedKind::Dir);
     }
     if matches!(
@@ -268,8 +339,10 @@ fn constructor_path_seed_kind(value_plan: &ValuePlan) -> Option<ConstructorPathS
     None
 }
 
-fn create_constructor_path_seed(kind: ConstructorPathSeedKind) -> Option<String> {
-    let path = match kind {
+fn create_constructor_path_seed(
+    kind: ConstructorPathSeedKind,
+) -> Option<(String, ConstructorPathScratch)> {
+    let (path, scratch) = match kind {
         ConstructorPathSeedKind::File => {
             let file = tempfile::Builder::new()
                 .prefix(CONSTRUCTOR_FILE_SEED_PREFIX)
@@ -279,49 +352,53 @@ fn create_constructor_path_seed(kind: ConstructorPathSeedKind) -> Option<String>
                     err
                 })
                 .ok()?;
-            let (_file, path) = file
-                .keep()
+            let path = file.path().to_path_buf();
+            (path, ConstructorPathScratch::File { _file: file })
+        }
+        ConstructorPathSeedKind::Dir => {
+            let dir = tempfile::Builder::new()
+                .prefix(CONSTRUCTOR_DIR_SEED_PREFIX)
+                .tempdir()
                 .map_err(|err| {
-                    log::debug!("failed to keep constructor file seed: {err}");
+                    log::debug!("failed to create constructor directory seed: {err}");
                     err
                 })
                 .ok()?;
-            path
+            let path = dir.path().to_path_buf();
+            (path, ConstructorPathScratch::Dir { _dir: dir })
         }
-        ConstructorPathSeedKind::Dir => tempfile::Builder::new()
-            .prefix(CONSTRUCTOR_DIR_SEED_PREFIX)
-            .tempdir()
-            .map_err(|err| {
-                log::debug!("failed to create constructor directory seed: {err}");
-                err
-            })
-            .ok()?
-            .keep(),
     };
-    Some(path.to_string_lossy().into_owned())
+    Some((path.to_string_lossy().into_owned(), scratch))
 }
 
-#[cfg(test)]
-fn remove_constructor_path_seed(path: &str) {
-    let path = std::path::Path::new(path);
-    if path.is_dir() {
-        if let Err(err) = std::fs::remove_dir_all(path) {
-            eprintln!("failed to remove constructor directory seed {path:?}: {err}");
-        }
-    } else if path.exists()
-        && let Err(err) = std::fs::remove_file(path)
+fn name_has_path_token(name: &str, token: &str) -> bool {
+    let lower_name = name.to_ascii_lowercase();
+    if lower_name == token
+        || lower_name.starts_with(&format!("{token}_"))
+        || lower_name.ends_with(&format!("_{token}"))
     {
-        eprintln!("failed to remove constructor file seed {path:?}: {err}");
+        return true;
     }
-}
-
-#[cfg(test)]
-fn remove_constructor_path_seeds<'a>(paths: impl IntoIterator<Item = &'a str>) {
-    for path in paths {
-        if path.starts_with(std::env::temp_dir().to_string_lossy().as_ref()) {
-            remove_constructor_path_seed(path);
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+        } else if ch.is_ascii_uppercase() {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            current.push(ch.to_ascii_lowercase());
+        } else {
+            current.push(ch.to_ascii_lowercase());
         }
     }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words.iter().any(|word| word == token)
 }
 
 #[cfg(test)]
@@ -397,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn materialize_constructor_arg_plans_prefixes_method_inputs() {
+    fn execute_constructor_arg_plans_prefixes_method_inputs_with_owned_dir() {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: "constructor:NewLoader".into(),
@@ -413,25 +490,29 @@ mod tests {
             priority: 0,
             label: String::new(),
         };
-        let seeds = materialize_seeds(&[plan], &[str_param("ns")]);
-        assert_eq!(seeds.len(), 1);
-        assert_eq!(seeds[0].get(1), Some(&json!("default")));
-        let Some(dir) = seeds[0].first().and_then(Value::as_str) else {
-            panic!("expected a string constructor seed, got {seeds:?}");
+        let planned = execute_inputs_for_plan(&[json!("default")], 1, Some(&plan));
+        assert_eq!(planned.inputs().len(), 2);
+        assert_eq!(planned.inputs().get(1), Some(&json!("default")));
+        let Some(dir) = planned.inputs().first().and_then(Value::as_str) else {
+            panic!(
+                "expected a string constructor seed, got {:?}",
+                planned.inputs()
+            );
         };
+        let dir = std::path::PathBuf::from(dir);
         assert!(
-            !dir.is_empty(),
-            "directory-like constructor string should not materialize as empty string",
-        );
-        assert!(
-            std::path::Path::new(dir).is_dir(),
+            dir.is_dir(),
             "directory-like constructor string should materialize as a usable directory",
         );
-        remove_constructor_path_seed(dir);
+        drop(planned);
+        assert!(
+            !dir.exists(),
+            "directory constructor scratch should be removed when planned inputs drop",
+        );
     }
 
     #[test]
-    fn materialize_path_like_constructor_string_creates_unique_file_seeds() {
+    fn execute_path_like_constructor_string_creates_unique_file_seeds() {
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: "constructor:newJSONLRecorder".into(),
@@ -447,27 +528,88 @@ mod tests {
             priority: 0,
             label: String::new(),
         };
-        let seeds = materialize_seeds(&[plan.clone(), plan], &[]);
-        let paths: Vec<&str> = seeds
-            .iter()
+        let first = execute_inputs_for_plan(&[], 0, Some(&plan));
+        let second = execute_inputs_for_plan(&[], 0, Some(&plan));
+        let paths: Vec<std::path::PathBuf> = [first.inputs(), second.inputs()]
+            .into_iter()
             .map(|seed| {
-                seed.first()
-                    .and_then(Value::as_str)
-                    .expect("expected a string constructor seed")
+                std::path::PathBuf::from(
+                    seed.first()
+                        .and_then(Value::as_str)
+                        .expect("expected a string constructor seed"),
+                )
             })
             .collect();
-        assert_eq!(paths.len(), 2);
         assert_ne!(
             paths[0], paths[1],
             "path-like constructor strings should use unique temp resources",
         );
         for path in &paths {
             assert!(
-                std::path::Path::new(path).is_file(),
-                "path-like constructor string should materialize as a usable file: {path}",
+                path.is_file(),
+                "path-like constructor string should materialize as a usable file: {path:?}",
             );
         }
-        remove_constructor_path_seeds(paths);
+        drop(first);
+        drop(second);
+        for path in &paths {
+            assert!(
+                !path.exists(),
+                "file constructor scratch should be removed when planned inputs drop: {path:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn materialize_path_like_constructor_string_skips_stored_seed() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:newJSONLRecorder".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "path".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds = materialize_seeds(&[plan], &[]);
+        assert!(
+            seeds.is_empty(),
+            "stored planner seeds cannot own temp path scratch",
+        );
+    }
+
+    #[test]
+    fn execute_dir_path_constructor_string_creates_directory_seed() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewLoader".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![],
+            constructor_arg_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "dirPath".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "string".into(),
+            }],
+            priority: 0,
+            label: String::new(),
+        };
+        let planned = execute_inputs_for_plan(&[], 0, Some(&plan));
+        let path = std::path::PathBuf::from(
+            planned
+                .inputs()
+                .first()
+                .and_then(Value::as_str)
+                .expect("expected a string constructor seed"),
+        );
+        assert!(path.is_dir(), "dirPath should materialize as a directory");
     }
 
     #[test]

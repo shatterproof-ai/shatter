@@ -267,6 +267,7 @@ impl PathFeedbackQueue {
         if lower.contains("readdir")
             || lower.contains("read directory")
             || lower.contains("read fixture dir")
+            || lower.contains("not a directory")
             || (!path.is_empty()
                 && (message.contains(&format!("{path}/"))
                     || message.contains(&format!("{path}\\"))))
@@ -340,7 +341,9 @@ fn path_feedback_kind_hint(
 
 fn is_enoent_message(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
-    lower.contains("no such file or directory") || lower.contains("enoent")
+    lower.contains("no such file or directory")
+        || lower.contains("enoent")
+        || lower.contains("not a directory")
 }
 
 fn enoent_message_references_path(message: &str, path: &str) -> bool {
@@ -1480,14 +1483,14 @@ pub async fn explore_function(
             config.default_execute_plan.as_ref(),
         );
         let strategy_feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
-            &execute_inputs,
+            execute_inputs.inputs(),
             analysis.params.len(),
             config.default_execute_plan.as_ref(),
         );
         let obs = crate::observe::observe_single(
             frontend,
             &analysis.name,
-            &execute_inputs,
+            execute_inputs.inputs(),
             &iteration_mocks,
             setup_context.as_ref(),
             config.execution_profile.as_ref(),
@@ -1511,7 +1514,7 @@ pub async fn explore_function(
         // Check connection_failures reported by the frontend and transition
         // per-dep states accordingly.
         update_live_first_states(&obs.exec_result, &mut live_first_states);
-        path_feedback.enqueue_from_result(&execute_inputs, &obs.exec_result);
+        path_feedback.enqueue_from_result(execute_inputs.inputs(), &obs.exec_result);
 
         // --- Crypto boundary logging ---
         // When the frontend intercepts known encrypt/decrypt calls, log them.
@@ -1563,6 +1566,7 @@ pub async fn explore_function(
             recent_hits.push(obs.is_new_path);
         }
 
+        let (execute_inputs, _constructor_scratch) = execute_inputs.into_parts();
         aggregator.record_post_observe(
             execute_inputs,
             iteration_mocks,
@@ -1845,6 +1849,7 @@ fn should_run_shrink_pass(
 
 struct ObserverJob {
     inputs: Vec<serde_json::Value>,
+    _constructor_scratch: Vec<crate::planner_consumer::ConstructorPathScratch>,
     feedback_inputs: Vec<serde_json::Value>,
     mocks: Vec<MockConfig>,
     strategy_idx: Option<usize>,
@@ -2261,15 +2266,17 @@ async fn explore_function_with_observer_pool(
                 config.default_execute_plan.as_ref(),
             );
             let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
-                &execute_inputs,
+                execute_inputs.inputs(),
                 analysis.params.len(),
                 config.default_execute_plan.as_ref(),
             );
 
-            if queue_policy.should_enqueue(&execute_inputs, &iteration_mocks) {
+            if queue_policy.should_enqueue(execute_inputs.inputs(), &iteration_mocks) {
+                let (execute_inputs, constructor_scratch) = execute_inputs.into_parts();
                 if job_tx
                     .send(ObserverJob {
                         inputs: execute_inputs,
+                        _constructor_scratch: constructor_scratch,
                         feedback_inputs,
                         mocks: iteration_mocks,
                         strategy_idx,
@@ -4630,7 +4637,9 @@ def execute_response(request_id, value):
             "side_effects": [],
             "performance": {"wall_time_ms": 0.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0},
         }
-    if mode == "dir" and value == "":
+    if mode == "dir_not_directory":
+        message = f"readdirent {value}: not a directory"
+    elif mode == "dir" and value == "":
         message = 'read fixture dir "": open : no such file or directory'
     else:
         op = "open" if mode == "file" else "readdirent"
@@ -4848,6 +4857,32 @@ for line in sys.stdin:
         );
     }
 
+    #[tokio::test]
+    async fn explore_function_seeds_temp_dir_after_go_not_directory_path() {
+        let (result, target_root, _log_path) =
+            run_path_feedback_fixture("dir_not_directory", "os.ReadDir", "file-shaped-path").await;
+
+        assert_eq!(result.iterations, 2);
+        let advanced = result.raw_results.iter().find(|(inputs, _, exec)| {
+            inputs.first().and_then(|input| input.as_str()) != Some("file-shaped-path")
+                && exec.return_value == Some(serde_json::json!("advanced"))
+        });
+        assert!(
+            advanced.is_some(),
+            "not-a-directory feedback should schedule a real temp-directory input; raw={:?}",
+            result.raw_results
+        );
+
+        let generated_path = advanced
+            .and_then(|(inputs, _, _)| inputs.first())
+            .and_then(|input| input.as_str())
+            .expect("advanced input should be a path string");
+        assert!(
+            !generated_path.starts_with(&target_root.path().to_string_lossy().to_string()),
+            "path feedback must not create directories in the target project: {generated_path}"
+        );
+    }
+
     #[test]
     fn execute_inputs_prepend_constructor_arg_plan_once() {
         let plan = crate::protocol::InvocationPlan {
@@ -4874,10 +4909,20 @@ for line in sys.stdin:
         let method_inputs = vec![serde_json::json!("default")];
         let prefixed =
             crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan));
-        assert_eq!(prefixed.len(), 2);
-        assert_eq!(prefixed.get(1), Some(&serde_json::json!("default")));
-        let Some(dir) = prefixed.first().and_then(serde_json::Value::as_str) else {
-            panic!("expected string constructor prefix, got {prefixed:?}");
+        assert_eq!(prefixed.inputs().len(), 2);
+        assert_eq!(
+            prefixed.inputs().get(1),
+            Some(&serde_json::json!("default"))
+        );
+        let Some(dir) = prefixed
+            .inputs()
+            .first()
+            .and_then(serde_json::Value::as_str)
+        else {
+            panic!(
+                "expected string constructor prefix, got {:?}",
+                prefixed.inputs()
+            );
         };
         assert!(
             !dir.is_empty(),
@@ -4888,11 +4933,11 @@ for line in sys.stdin:
             "directory-like constructor prefix should be a usable directory",
         );
         assert_eq!(
-            crate::planner_consumer::execute_inputs_for_plan(&prefixed, 1, Some(&plan)),
-            prefixed,
+            crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), 1, Some(&plan))
+                .inputs(),
+            prefixed.inputs(),
             "already-prefixed planner seeds and path-feedback retries must not be prefixed twice"
         );
-        std::fs::remove_dir_all(dir).expect("remove constructor directory seed");
     }
 
     #[tokio::test]

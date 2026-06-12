@@ -1303,7 +1303,7 @@ async fn observe_one(
     let response = match frontend
         .send(Command::Execute {
             function: function_name.to_string(),
-            inputs: execute_inputs,
+            inputs: execute_inputs.inputs().to_vec(),
             mocks: effective_mocks.clone(),
             setup_context: setup_context.clone(),
             capture: true,
@@ -2069,7 +2069,7 @@ async fn refine_boundaries_async(
             let response = match frontend
                 .send(Command::Execute {
                     function: function_name.to_string(),
-                    inputs: execute_candidate,
+                    inputs: execute_candidate.inputs().to_vec(),
                     mocks: mocks.clone(),
                     setup_context: setup_context.clone(),
                     capture: false,
@@ -2359,7 +2359,7 @@ pub async fn explore_with_oracle(
                 let float_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: execute_float_inputs,
+                        inputs: execute_float_inputs.inputs().to_vec(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -2372,7 +2372,7 @@ pub async fn explore_with_oracle(
                 let floor_resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: execute_floor_inputs,
+                        inputs: execute_floor_inputs.inputs().to_vec(),
                         mocks: config.mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: false,
@@ -2696,7 +2696,7 @@ pub async fn explore_with_oracle(
                             let response = frontend
                                 .send(Command::Execute {
                                     function: function_name.to_string(),
-                                    inputs: execute_mutated,
+                                    inputs: execute_mutated.inputs().to_vec(),
                                     mocks: config.mocks.clone(),
                                     setup_context: setup_context.clone(),
                                     capture: true,
@@ -3222,7 +3222,7 @@ pub async fn explore_with_oracle(
                 let resp = frontend
                     .send(Command::Execute {
                         function: function_name.to_string(),
-                        inputs: execute_bulk_trial,
+                        inputs: execute_bulk_trial.inputs().to_vec(),
                         mocks: effective_mocks.clone(),
                         setup_context: setup_context.clone(),
                         capture: true,
@@ -3265,7 +3265,7 @@ pub async fn explore_with_oracle(
                     let resp = frontend
                         .send(Command::Execute {
                             function: function_name.to_string(),
-                            inputs: execute_trial,
+                            inputs: execute_trial.inputs().to_vec(),
                             mocks: effective_mocks.clone(),
                             setup_context: setup_context.clone(),
                             capture: false,
@@ -3318,7 +3318,7 @@ pub async fn explore_with_oracle(
                         let resp = frontend
                             .send(Command::Execute {
                                 function: function_name.to_string(),
-                                inputs: execute_trial,
+                                inputs: execute_trial.inputs().to_vec(),
                                 mocks: effective_mocks.clone(),
                                 setup_context: setup_context.clone(),
                                 capture: false,
