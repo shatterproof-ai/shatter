@@ -3070,6 +3070,7 @@ fn cargo_lock_source_for_crate(crate_root: &Path) -> Option<PathBuf> {
 }
 
 fn cargo_metadata_workspace_root(crate_root: &Path) -> Option<PathBuf> {
+    let crate_root = std::fs::canonicalize(crate_root).ok()?;
     let manifest_path = crate_root.join("Cargo.toml");
     if !manifest_path.exists() {
         return None;
@@ -11560,6 +11561,47 @@ edition = "2021"
 
         let _ = std::fs::remove_dir_all(&ws_root);
         let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    #[test]
+    fn cargo_lock_source_uses_workspace_lockfile_for_relative_member_path() {
+        let ws_root = unique_tmp_dir("ws-lock-relative-8j9k");
+        let member_root = ws_root.join("api");
+        std::fs::create_dir_all(member_root.join("src")).unwrap();
+
+        std::fs::write(
+            ws_root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+"#,
+        )
+        .unwrap();
+        let workspace_lockfile = "version = 4\nworkspace = true\n";
+        std::fs::write(ws_root.join("Cargo.lock"), workspace_lockfile).unwrap();
+        std::fs::write(member_root.join("Cargo.lock"), "version = 4\nstale = true\n").unwrap();
+        std::fs::write(
+            member_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(member_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let previous_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&ws_root).unwrap();
+        let lock_source = cargo_lock_source_for_crate(Path::new("api"));
+        std::env::set_current_dir(previous_dir).unwrap();
+
+        assert_eq!(
+            lock_source,
+            Some(ws_root.join("Cargo.lock")),
+            "relative workspace member paths must use the effective workspace lockfile",
+        );
+
+        let _ = std::fs::remove_dir_all(&ws_root);
     }
 
     #[test]

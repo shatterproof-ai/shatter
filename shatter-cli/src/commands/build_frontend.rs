@@ -199,6 +199,7 @@ fn project_cargo_lock_source(project_root: &Path) -> Option<PathBuf> {
 }
 
 fn project_metadata_workspace_root(project_root: &Path) -> Option<PathBuf> {
+    let project_root = std::fs::canonicalize(project_root).ok()?;
     let manifest_path = project_root.join("Cargo.toml");
     if !manifest_path.exists() {
         return None;
@@ -743,6 +744,47 @@ edition = "2021"
             std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
             workspace_lockfile,
             "custom frontend build dir must use the workspace lockfile Cargo uses for a member crate",
+        );
+    }
+
+    #[test]
+    fn rust_custom_frontend_uses_workspace_lockfile_for_relative_member_path() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let project_root = workspace_root.path().join("api");
+        let build_dir = workspace_root.path().join("custom-build");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+
+        std::fs::write(
+            workspace_root.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+"#,
+        )
+        .unwrap();
+        let workspace_lockfile = "version = 4\nworkspace = true\n";
+        std::fs::write(workspace_root.path().join("Cargo.lock"), workspace_lockfile).unwrap();
+        std::fs::write(project_root.join("Cargo.lock"), "version = 4\nstale = true\n").unwrap();
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(project_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let previous_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(workspace_root.path()).unwrap();
+        copy_project_cargo_lock(Path::new("api"), &build_dir).unwrap();
+        std::env::set_current_dir(previous_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
+            workspace_lockfile,
+            "relative workspace member paths must use the effective workspace lockfile",
         );
     }
 
