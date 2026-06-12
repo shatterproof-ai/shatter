@@ -3057,15 +3057,16 @@ fn create_crate_staging_copy(crate_root: &Path, staging_root: &Path) -> io::Resu
 }
 
 fn cargo_lock_source_for_crate(crate_root: &Path) -> Option<PathBuf> {
+    if let Some(workspace_root) = find_workspace_root(crate_root) {
+        let workspace_lock = workspace_root.join("Cargo.lock");
+        return workspace_lock.exists().then_some(workspace_lock);
+    }
+
     let crate_lock = crate_root.join("Cargo.lock");
     if crate_lock.exists() {
         return Some(crate_lock);
     }
-
-    find_workspace_root(crate_root).and_then(|workspace_root| {
-        let workspace_lock = workspace_root.join("Cargo.lock");
-        workspace_lock.exists().then_some(workspace_lock)
-    })
+    None
 }
 
 fn cargo_lock_hash_for_crate(crate_root: &Path) -> io::Result<u64> {
@@ -11483,6 +11484,50 @@ edition = "2021"
         assert!(
             !member_root.join("Cargo.lock").exists(),
             "workspace member root should not be mutated with a new lockfile",
+        );
+
+        let _ = std::fs::remove_dir_all(&ws_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    #[test]
+    fn staging_copy_prefers_workspace_lockfile_over_member_lockfile() {
+        let ws_root = unique_tmp_dir("ws-lock-precedence-8j9k");
+        let member_root = ws_root.join("api");
+        std::fs::create_dir_all(member_root.join("src")).unwrap();
+
+        std::fs::write(
+            ws_root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+"#,
+        )
+        .unwrap();
+        let workspace_lockfile = "version = 4\nworkspace = true\n";
+        std::fs::write(ws_root.join("Cargo.lock"), workspace_lockfile).unwrap();
+        std::fs::write(
+            member_root.join("Cargo.lock"),
+            "version = 4\nstale = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            member_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(member_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let staging_root = unique_tmp_dir("staging-lock-precedence-8j9k");
+        let _staging_crate = create_crate_staging_copy(&member_root, &staging_root).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(staging_root.join("Cargo.lock")).unwrap(),
+            workspace_lockfile,
+            "crate-bridge driver must use the workspace lockfile Cargo uses for a member crate",
         );
 
         let _ = std::fs::remove_dir_all(&ws_root);

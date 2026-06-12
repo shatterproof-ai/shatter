@@ -185,31 +185,33 @@ fn rust_frontend_project_deps(project_root: &Path) -> String {
 }
 
 fn project_cargo_lock_source(project_root: &Path) -> Option<PathBuf> {
+    if let Some(mut dir) = project_root.parent() {
+        loop {
+            let manifest = dir.join("Cargo.toml");
+            if manifest.exists()
+                && std::fs::read_to_string(&manifest)
+                    .ok()
+                    .is_some_and(|content| {
+                        content.lines().any(|line| {
+                            line.trim() == "[workspace]" || line.trim().starts_with("[workspace]")
+                        })
+                    })
+            {
+                let workspace_lock = dir.join("Cargo.lock");
+                return workspace_lock.exists().then_some(workspace_lock);
+            }
+            if dir.parent().is_none_or(|parent| parent == dir) {
+                break;
+            }
+            dir = dir.parent().unwrap();
+        }
+    }
+
     let project_lock = project_root.join("Cargo.lock");
     if project_lock.exists() {
         return Some(project_lock);
     }
-
-    let mut dir = project_root.parent()?;
-    loop {
-        let manifest = dir.join("Cargo.toml");
-        if manifest.exists()
-            && std::fs::read_to_string(&manifest)
-                .ok()
-                .is_some_and(|content| {
-                    content.lines().any(|line| {
-                        line.trim() == "[workspace]" || line.trim().starts_with("[workspace]")
-                    })
-                })
-        {
-            let workspace_lock = dir.join("Cargo.lock");
-            return workspace_lock.exists().then_some(workspace_lock);
-        }
-        if dir.parent().is_none_or(|parent| parent == dir) {
-            return None;
-        }
-        dir = dir.parent().unwrap();
-    }
+    None
 }
 
 fn copy_project_cargo_lock(project_root: &Path, build_dir: &Path) -> Result<(), String> {
@@ -676,6 +678,38 @@ members = ["api"]
         assert!(
             !project_root.join("Cargo.lock").exists(),
             "workspace member root must not receive a generated lockfile",
+        );
+    }
+
+    #[test]
+    fn rust_custom_frontend_prefers_workspace_lockfile_over_member_lockfile() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let project_root = workspace_root.path().join("api");
+        let build_dir = workspace_root.path().join("custom-build");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&build_dir).unwrap();
+
+        std::fs::write(
+            workspace_root.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+"#,
+        )
+        .unwrap();
+        let workspace_lockfile = "version = 4\nworkspace = true\n";
+        std::fs::write(workspace_root.path().join("Cargo.lock"), workspace_lockfile).unwrap();
+        std::fs::write(
+            project_root.join("Cargo.lock"),
+            "version = 4\nstale = true\n",
+        )
+        .unwrap();
+
+        copy_project_cargo_lock(&project_root, &build_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
+            workspace_lockfile,
+            "custom frontend build dir must use the workspace lockfile Cargo uses for a member crate",
         );
     }
 }
