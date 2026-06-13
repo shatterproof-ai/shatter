@@ -1,7 +1,9 @@
 package planner
 
 import (
+	"encoding/json"
 	"sort"
+	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 )
@@ -9,6 +11,8 @@ import (
 // DefaultMaxComposedPlansPerTarget caps the number of composed
 // InvocationPlans returned per target when ComposeOptions.MaxPlans is zero.
 const DefaultMaxComposedPlansPerTarget = 5
+
+const constructorExpressionParamJSONLiteral = `"true"`
 
 // ComposeOptions bundles caller-supplied knobs for Compose.
 type ComposeOptions struct {
@@ -273,6 +277,16 @@ func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 			continue
 		}
 		typeHint := typeHintForParam(p)
+		if literal, ok := constructorLiteralSeedForParam(p, typeHint); ok {
+			plans = append(plans, protocol.ValuePlan{
+				Kind:       protocol.ValuePlanKindLiteral,
+				ParamIndex: i,
+				ParamName:  p.Name,
+				Literal:    literal,
+				TypeHint:   typeHint,
+			})
+			continue
+		}
 		plans = append(plans, protocol.ValuePlan{
 			Kind:       protocol.ValuePlanKindZero,
 			ParamIndex: i,
@@ -281,6 +295,29 @@ func constructorArgPlansForReceiver(recv ReceiverPlan) []protocol.ValuePlan {
 		})
 	}
 	return plans
+}
+
+func constructorLiteralSeedForParam(p protocol.ParamInfo, typeHint string) (json.RawMessage, bool) {
+	if !constructorParamAcceptsString(p, typeHint) {
+		return nil, false
+	}
+	if !constructorParamNamesExpression(p.Name) {
+		return nil, false
+	}
+	return json.RawMessage(constructorExpressionParamJSONLiteral), true
+}
+
+func constructorParamAcceptsString(p protocol.ParamInfo, typeHint string) bool {
+	return p.Type.Kind == "str" || typeHint == "string"
+}
+
+func constructorParamNamesExpression(name string) bool {
+	switch strings.ToLower(name) {
+	case "expr", "expression", "condition", "predicate":
+		return true
+	default:
+		return false
+	}
 }
 
 func constructorAggregateParamSatisfiable(p protocol.ParamInfo) bool {
