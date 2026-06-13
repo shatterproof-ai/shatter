@@ -16,7 +16,7 @@
 //!   symbolic conditions. Deeply nested or guarded patterns may still produce `None`.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
 use syn::spanned::Spanned;
@@ -73,7 +73,8 @@ pub fn analyze_file_with_timing(
         std::fs::read_to_string(file_path).map_err(|e| AnalyzeError::ReadError(e.to_string()))?
     };
 
-    analyze_source_with_timing(&source, function_name, timing)
+    let registry = build_crate_type_registry(file_path);
+    analyze_source_with_timing_defs(&source, function_name, timing, Some(&registry))
 }
 
 /// Analyze Rust source code from a string.
@@ -87,7 +88,20 @@ pub fn analyze_source(
 pub fn analyze_source_with_timing(
     source: &str,
     function_name: Option<&str>,
+    timing: Option<&mut TimingCollector>,
+) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
+    analyze_source_with_timing_defs(source, function_name, timing, None)
+}
+
+/// Like [`analyze_source_with_timing`] but with an optional cross-file type
+/// registry (built from the analyzed file's crate) merged under the file's own
+/// definitions. The file-based entry points pass `Some(..)`; pure-source and
+/// test callers pass `None` (single-file behavior, unchanged).
+fn analyze_source_with_timing_defs(
+    source: &str,
+    function_name: Option<&str>,
     mut timing: Option<&mut TimingCollector>,
+    extra_defs: Option<&CrateTypeRegistry>,
 ) -> Result<Vec<FunctionAnalysis>, AnalyzeError> {
     let file = if let Some(timing) = timing.as_deref_mut() {
         timing.record("analyze.parse", |_| {
@@ -99,8 +113,7 @@ pub fn analyze_source_with_timing(
 
     let results = if let Some(timing) = timing.as_mut() {
         timing.record("analyze.walk", |_| {
-            let structs = collect_struct_defs(&file);
-            let enums = collect_enum_defs(&file);
+            let (structs, enums) = merge_type_defs(extra_defs, &file);
             let mut results = Vec::new();
 
             for item in &file.items {
@@ -120,8 +133,7 @@ pub fn analyze_source_with_timing(
             results
         })
     } else {
-        let structs = collect_struct_defs(&file);
-        let enums = collect_enum_defs(&file);
+        let (structs, enums) = merge_type_defs(extra_defs, &file);
         let mut results = Vec::new();
 
         for item in &file.items {
@@ -179,7 +191,8 @@ pub fn analyze_file_with_context_and_timing(
         std::fs::read_to_string(file_path).map_err(|e| AnalyzeError::ReadError(e.to_string()))?
     };
 
-    analyze_source_with_context_and_timing(&source, function_name, timing)
+    let registry = build_crate_type_registry(file_path);
+    analyze_source_with_context_and_timing_defs(&source, function_name, timing, Some(&registry))
 }
 
 /// Analyze Rust source code from a string, returning both function analyses
@@ -188,13 +201,14 @@ pub fn analyze_source_with_context(
     source: &str,
     function_name: Option<&str>,
 ) -> Result<(Vec<FunctionAnalysis>, FileContext), AnalyzeError> {
-    analyze_source_with_context_and_timing(source, function_name, None)
+    analyze_source_with_context_and_timing_defs(source, function_name, None, None)
 }
 
-fn analyze_source_with_context_and_timing(
+fn analyze_source_with_context_and_timing_defs(
     source: &str,
     function_name: Option<&str>,
     mut timing: Option<&mut TimingCollector>,
+    extra_defs: Option<&CrateTypeRegistry>,
 ) -> Result<(Vec<FunctionAnalysis>, FileContext), AnalyzeError> {
     let file = if let Some(timing) = timing.as_deref_mut() {
         timing.record("analyze.parse", |_| {
@@ -208,8 +222,7 @@ fn analyze_source_with_context_and_timing(
 
     let results = if let Some(timing) = timing.as_mut() {
         timing.record("analyze.walk", |_| {
-            let structs = collect_struct_defs(&file);
-            let enums = collect_enum_defs(&file);
+            let (structs, enums) = merge_type_defs(extra_defs, &file);
             let mut results = Vec::new();
 
             for item in &file.items {
@@ -227,8 +240,7 @@ fn analyze_source_with_context_and_timing(
             results
         })
     } else {
-        let structs = collect_struct_defs(&file);
-        let enums = collect_enum_defs(&file);
+        let (structs, enums) = merge_type_defs(extra_defs, &file);
         let mut results = Vec::new();
 
         for item in &file.items {
@@ -376,6 +388,125 @@ fn collect_enum_defs(file: &syn::File) -> EnumDefs {
         }
     }
     defs
+}
+
+/// Cross-file (same-crate) struct/enum definitions, keyed by bare type name.
+///
+/// Built once per file-based analyze call by walking every `.rs` file in the
+/// crate that contains the analyzed file. This lifts the historical single-file
+/// limitation: a function taking a type defined in another module of the same
+/// crate (e.g. `use crate::domain::Trip`) can now be synthesized instead of
+/// classified `Opaque` and skipped. See str-do53.
+///
+/// Resolution is by bare name (the last path segment), matching how
+/// `convert_type_path` already keys lookups, so `crate::domain::Trip`,
+/// `domain::Trip`, and `Trip` all resolve identically. Bare names defined in
+/// more than one file are AMBIGUOUS and are dropped from the registry — they
+/// stay `Opaque` rather than risk synthesizing the wrong type. Definitions in
+/// the file being analyzed always take precedence over the registry.
+type CrateTypeRegistry = (StructDefs, EnumDefs);
+
+/// Find the crate root for `file_path`: the nearest ancestor directory that
+/// contains a `Cargo.toml`. Returns `None` if none is found (e.g. a bare file
+/// outside any crate), in which case cross-file resolution is skipped.
+fn find_crate_root(file_path: &Path) -> Option<PathBuf> {
+    let mut dir = file_path.parent();
+    while let Some(d) = dir {
+        if d.join("Cargo.toml").is_file() {
+            return Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// Recursively collect `.rs` files under `dir`, skipping `target/` and hidden
+/// directories. Bounded to keep the per-call cost proportional to crate size.
+fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if path.is_dir() {
+            if name == "target" || name.starts_with('.') {
+                continue;
+            }
+            collect_rust_files(&path, out);
+        } else if name.ends_with(".rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Build the cross-file type registry for the crate containing `file_path`.
+///
+/// Walks the crate's `src/` (falling back to the crate root) and collects all
+/// struct/enum definitions. Bare names that appear in more than one file are
+/// dropped so ambiguous types stay `Opaque`. Returns empty maps when no crate
+/// root is found or the crate has no parseable sources.
+fn build_crate_type_registry(file_path: &Path) -> CrateTypeRegistry {
+    let Some(crate_root) = find_crate_root(file_path) else {
+        return (HashMap::new(), HashMap::new());
+    };
+    let src = crate_root.join("src");
+    let scan_root = if src.is_dir() { src } else { crate_root };
+
+    let mut files = Vec::new();
+    collect_rust_files(&scan_root, &mut files);
+
+    let mut structs: StructDefs = HashMap::new();
+    let mut enums: EnumDefs = HashMap::new();
+    let mut struct_dupes: HashSet<String> = HashSet::new();
+    let mut enum_dupes: HashSet<String> = HashSet::new();
+
+    for rs in files {
+        let Ok(source) = std::fs::read_to_string(&rs) else {
+            continue;
+        };
+        let Ok(parsed) = syn::parse_file(&source) else {
+            continue;
+        };
+        for (name, fields) in collect_struct_defs(&parsed) {
+            if structs.insert(name.clone(), fields).is_some() {
+                struct_dupes.insert(name);
+            }
+        }
+        for (name, variants) in collect_enum_defs(&parsed) {
+            if enums.insert(name.clone(), variants).is_some() {
+                enum_dupes.insert(name);
+            }
+        }
+    }
+
+    for name in struct_dupes {
+        structs.remove(&name);
+    }
+    for name in enum_dupes {
+        enums.remove(&name);
+    }
+
+    (structs, enums)
+}
+
+/// Merge the cross-file registry under the definitions found in the analyzed
+/// file. The current file always wins so a local type shadows a same-named type
+/// elsewhere in the crate.
+fn merge_type_defs(extra: Option<&CrateTypeRegistry>, file: &syn::File) -> CrateTypeRegistry {
+    let (mut structs, mut enums) = match extra {
+        Some((s, e)) => (s.clone(), e.clone()),
+        None => (HashMap::new(), HashMap::new()),
+    };
+    for (name, fields) in collect_struct_defs(file) {
+        structs.insert(name, fields);
+    }
+    for (name, variants) in collect_enum_defs(file) {
+        enums.insert(name, variants);
+    }
+    (structs, enums)
 }
 
 /// Convert an enum variant's fields to a TypeInfo.
@@ -775,9 +906,14 @@ fn convert_type_path(
             if generic_params.contains(&name) {
                 return TypeInfo::Unknown;
             }
-            // Struct defined in same file → Object
+            // Struct defined in this file or elsewhere in the crate → Object
             if let Some(fields) = structs.get(&name) {
-                TypeInfo::Object {
+                // Guard against self-referential / mutually-recursive structs,
+                // whose blast radius widens once cross-file types are resolved.
+                if !converting.insert(name.clone()) {
+                    return TypeInfo::Opaque { label: name };
+                }
+                let object = TypeInfo::Object {
                     fields: fields
                         .iter()
                         .map(|(n, t)| {
@@ -787,8 +923,10 @@ fn convert_type_path(
                             )
                         })
                         .collect(),
-                }
-            // Enum defined in same file → Union
+                };
+                converting.remove(&name);
+                object
+            // Enum defined in this file or elsewhere in the crate → Union
             } else if let Some(variants) = enums.get(&name) {
                 // Guard against recursive enums
                 if !converting.insert(name.clone()) {
@@ -2131,6 +2269,124 @@ mod tests {
             TypeInfo::Opaque {
                 label: "MyStruct".to_string()
             }
+        );
+    }
+
+    // ── Cross-file (same-crate) struct/enum resolution (str-do53) ──
+
+    /// Build a throwaway crate on disk: `Cargo.toml` + `src/<file>.rs` for each
+    /// (name, source) pair. Returns the crate root tempdir (keep it alive) and
+    /// the path to the first file.
+    fn make_crate(files: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::TempDir::new().expect("create tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"xcrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("write Cargo.toml");
+        let src = root.join("src");
+        std::fs::create_dir(&src).expect("create src");
+        let mut first = None;
+        for (fname, source) in files {
+            let path = src.join(fname);
+            std::fs::write(&path, source).expect("write source file");
+            if first.is_none() {
+                first = Some(path);
+            }
+        }
+        let first = first.expect("at least one file");
+        (dir, first)
+    }
+
+    #[test]
+    fn cross_file_struct_resolves_to_object() {
+        let (_dir, logic) = make_crate(&[
+            (
+                "logic.rs",
+                "use crate::domain::Widget;\npub fn describe(w: &Widget) -> usize { w.tags.len() }",
+            ),
+            (
+                "domain.rs",
+                "pub struct Widget { pub id: u32, pub name: String, pub tags: Vec<String> }",
+            ),
+        ]);
+        let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
+        let f = &fns[0];
+        match &f.params[0].typ {
+            TypeInfo::Object { fields } => {
+                let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                assert!(
+                    names.contains(&"id") && names.contains(&"name") && names.contains(&"tags"),
+                    "expected id/name/tags fields, got {names:?}"
+                );
+            }
+            other => panic!("expected Object from cross-file struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_file_ambiguous_bare_name_stays_opaque() {
+        // Two files define `Widget`; the bare name is ambiguous and must not be
+        // synthesized cross-file (could be the wrong type). It stays Opaque.
+        let (_dir, logic) = make_crate(&[
+            (
+                "logic.rs",
+                "use crate::a::Widget;\npub fn describe(w: &Widget) -> u32 { w.id }",
+            ),
+            ("a.rs", "pub struct Widget { pub id: u32 }"),
+            ("b.rs", "pub struct Widget { pub other: String }"),
+        ]);
+        let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
+        assert_eq!(
+            fns[0].params[0].typ,
+            TypeInfo::Opaque {
+                label: "Widget".to_string()
+            },
+            "ambiguous cross-file bare name must stay Opaque"
+        );
+    }
+
+    #[test]
+    fn same_file_struct_wins_over_cross_file() {
+        // `logic.rs` defines its own `Widget`; a different `Widget` in another
+        // file must not shadow it. The local definition (field `local`) wins.
+        let (_dir, logic) = make_crate(&[
+            (
+                "logic.rs",
+                "pub struct Widget { pub local: bool }\npub fn describe(w: &Widget) -> bool { w.local }",
+            ),
+            ("domain.rs", "pub struct Widget { pub remote: u32 }"),
+        ]);
+        let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
+        match &fns[0].params[0].typ {
+            TypeInfo::Object { fields } => {
+                let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["local"], "same-file struct must win");
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_file_self_referential_struct_terminates() {
+        // A self-referential cross-file struct must not infinitely recurse.
+        let (_dir, logic) = make_crate(&[
+            (
+                "logic.rs",
+                "use crate::domain::Node;\npub fn depth(n: &Node) -> u32 { 0 }",
+            ),
+            (
+                "domain.rs",
+                "pub struct Node { pub value: i32, pub next: Option<Box<Node>> }",
+            ),
+        ]);
+        let fns = analyze_file(&logic, Some("depth")).expect("analysis should succeed");
+        // Must resolve to an Object (top level) without hanging.
+        assert!(
+            matches!(fns[0].params[0].typ, TypeInfo::Object { .. }),
+            "expected Object for self-referential struct, got {:?}",
+            fns[0].params[0].typ
         );
     }
 
