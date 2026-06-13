@@ -504,6 +504,68 @@ func TestPlanRequirements_ParameterizedConstructor_EmitsConstructorArgPlans(t *t
 	}
 }
 
+func TestPlanRequirements_ExpressionConstructorSeedsValidBooleanLiteral(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*CompiledCELMatcher).Score"
+	analysis := &protocol.FunctionAnalysis{Name: "(*CompiledCELMatcher).Score"}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "Score",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "CompiledCELMatcher", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:   "CompileCELMatcher",
+		TargetType: "CompiledCELMatcher",
+		Parameters: []protocol.ParamInfo{
+			{Name: "expr", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")},
+			{Name: "score", Type: protocol.TypeInfo{Kind: "float"}, TypeName: strPtr("float64")},
+		},
+		ReturnsPointer: true,
+		ReturnsError:   true,
+	}}
+	lookup := richLookup(func(id string) *protocol.TargetContext {
+		if id != targetID {
+			return nil
+		}
+		return &protocol.TargetContext{Analysis: analysis, Target: target, Constructors: ctors}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:CompileCELMatcher" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:CompileCELMatcher found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 2 {
+		t.Fatalf("expected 2 ConstructorArgPlans, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	}
+	exprPlan := ctorPlan.ConstructorArgPlans[0]
+	if exprPlan.Kind != protocol.ValuePlanKindLiteral {
+		t.Fatalf("expr constructor arg kind = %q, want literal; plan=%+v", exprPlan.Kind, exprPlan)
+	}
+	if string(exprPlan.Literal) != `"true"` {
+		t.Fatalf("expr constructor arg literal = %s, want %q", string(exprPlan.Literal), `"true"`)
+	}
+	if exprPlan.TypeHint != "string" {
+		t.Fatalf("expr constructor arg type_hint = %q, want string", exprPlan.TypeHint)
+	}
+}
+
 func TestPlanRequirements_MethodComplexParamStillEmitsConstructorArgPlans(t *testing.T) {
 	t.Parallel()
 
