@@ -41,3 +41,19 @@ func TestAcquireLauncherBuildLockRemovesFreshDeadPIDLock(t *testing.T) {
 		t.Fatal("fresh lock from dead PID blocked instead of being removed")
 	}
 }
+
+func TestLauncherBuildLockOwnedByLivePIDIsNotStaleAfterAgeThreshold(t *testing.T) {
+	binaryPath := filepath.Join(t.TempDir(), "shatter_launcher_livepid")
+	lockPath := binaryPath + ".lock"
+	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	old := time.Now().Add(-(launcherBuildLockStaleAfter + time.Minute))
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatalf("age lock: %v", err)
+	}
+
+	if lockIsStale(lockPath) {
+		t.Fatal("lock owned by a live process must not be treated as stale")
+	}
+}
