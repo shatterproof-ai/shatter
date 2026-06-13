@@ -425,23 +425,38 @@ fn find_crate_root(file_path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Maximum directory recursion depth when walking a crate for source files.
+/// A cheap backstop against pathological trees; real crate layouts are shallow.
+const MAX_CRATE_WALK_DEPTH: usize = 64;
+
 /// Recursively collect `.rs` files under `dir`, skipping `target/` and hidden
-/// directories. Bounded to keep the per-call cost proportional to crate size.
-fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// directories. Symlinked directories are NOT followed (uses `file_type()`,
+/// which does not traverse symlinks) so a symlink loop cannot cause unbounded
+/// recursion; a depth cap is a further backstop. Bounded to keep the per-call
+/// cost proportional to crate size.
+fn collect_rust_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth >= MAX_CRATE_WALK_DEPTH {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        // `file_type()` from the dir entry does not follow symlinks, so a
+        // symlinked directory reports as a symlink (not a dir) and is skipped.
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if path.is_dir() {
+        if file_type.is_dir() {
             if name == "target" || name.starts_with('.') {
                 continue;
             }
-            collect_rust_files(&path, out);
-        } else if name.ends_with(".rs") {
+            collect_rust_files(&path, depth + 1, out);
+        } else if file_type.is_file() && name.ends_with(".rs") {
             out.push(path);
         }
     }
@@ -461,12 +476,11 @@ fn build_crate_type_registry(file_path: &Path) -> CrateTypeRegistry {
     let scan_root = if src.is_dir() { src } else { crate_root };
 
     let mut files = Vec::new();
-    collect_rust_files(&scan_root, &mut files);
+    collect_rust_files(&scan_root, 0, &mut files);
 
     let mut structs: StructDefs = HashMap::new();
     let mut enums: EnumDefs = HashMap::new();
-    let mut struct_dupes: HashSet<String> = HashSet::new();
-    let mut enum_dupes: HashSet<String> = HashSet::new();
+    let mut dupes: HashSet<String> = HashSet::new();
 
     for rs in files {
         let Ok(source) = std::fs::read_to_string(&rs) else {
@@ -477,20 +491,24 @@ fn build_crate_type_registry(file_path: &Path) -> CrateTypeRegistry {
         };
         for (name, fields) in collect_struct_defs(&parsed) {
             if structs.insert(name.clone(), fields).is_some() {
-                struct_dupes.insert(name);
+                dupes.insert(name);
             }
         }
         for (name, variants) in collect_enum_defs(&parsed) {
             if enums.insert(name.clone(), variants).is_some() {
-                enum_dupes.insert(name);
+                dupes.insert(name);
             }
         }
     }
 
-    for name in struct_dupes {
-        structs.remove(&name);
+    // Drop any name that is ambiguous — defined more than once, whether across
+    // files or across the struct/enum kinds (a `struct Widget` in one file and
+    // an `enum Widget` in another must not silently resolve to the struct).
+    for name in structs.keys().filter(|n| enums.contains_key(*n)) {
+        dupes.insert(name.clone());
     }
-    for name in enum_dupes {
+    for name in dupes {
+        structs.remove(&name);
         enums.remove(&name);
     }
 
@@ -2349,6 +2367,28 @@ mod tests {
                 label: "Widget".to_string()
             },
             "ambiguous cross-file bare name must stay Opaque"
+        );
+    }
+
+    #[test]
+    fn cross_file_struct_enum_name_collision_stays_opaque() {
+        // `Widget` is a struct in one file and an enum in another. The bare name
+        // is ambiguous across kinds and must not silently resolve to either.
+        let (_dir, logic) = make_crate(&[
+            (
+                "logic.rs",
+                "use crate::a::Widget;\npub fn describe(w: &Widget) -> u32 { 0 }",
+            ),
+            ("a.rs", "pub struct Widget { pub id: u32 }"),
+            ("b.rs", "pub enum Widget { On, Off }"),
+        ]);
+        let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
+        assert_eq!(
+            fns[0].params[0].typ,
+            TypeInfo::Opaque {
+                label: "Widget".to_string()
+            },
+            "struct/enum cross-kind name collision must stay Opaque"
         );
     }
 
