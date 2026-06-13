@@ -646,14 +646,18 @@ fn project_storage_for_env(project_root: &Path) -> shatter_core::harness_storage
 /// Used by the scan command when the caller asked for clean external-audit
 /// behavior (explicit external `-o` outputs together with `--no-cache
 /// --no-seeds`, str-1wcl). The directories are created under
-/// `<tempdir>/shatter-audit-<pid>-<counter>/{harness,scratch,artifacts}` and
-/// inherit the OS tempdir's normal cleanup policy.
+/// the OS tempdir and inherit its normal cleanup policy. Harness cache is
+/// stable per current working directory so analysis/execution frontends and
+/// repeated external-audit runs can reuse expensive build artifacts without
+/// writing to the audited project tree. Scratch and artifact roots remain
+/// per-session.
 ///
 /// Also points the Go frontend's workspace root
 /// (`SHATTER_GO_WORKSPACE_ROOT`) at a sibling tempdir so the Go frontend's
 /// per-package analysis cache and generated harness outputs do not land in
 /// `<project>/.shatter-cache/go-workspace/`.
 pub(crate) fn apply_external_audit_storage(config: &mut FrontendConfig) {
+    use shatter_core::harness_storage::{ENV_HARNESS_CACHE, HarnessStorage};
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -663,18 +667,32 @@ pub(crate) fn apply_external_audit_storage(config: &mut FrontendConfig) {
         COUNTER.fetch_add(1, Ordering::Relaxed),
     );
     let base = std::env::temp_dir().join(session_id);
-    let cache_root = base.join("harness");
+    let cache_root = std::env::var_os(ENV_HARNESS_CACHE)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(external_audit_cache_root);
     let scratch_root = base.join("scratch");
     let artifact_root = base.join("artifacts");
     let go_workspace_root = base.join("go-workspace");
 
-    let storage =
-        shatter_core::harness_storage::HarnessStorage::new(cache_root, scratch_root, artifact_root);
+    let storage = HarnessStorage::new(cache_root, scratch_root, artifact_root);
     apply_storage_env(config, &storage);
     config.env_vars.push((
         "SHATTER_GO_WORKSPACE_ROOT".to_string(),
         go_workspace_root.to_string_lossy().into_owned(),
     ));
+}
+
+fn external_audit_cache_root() -> PathBuf {
+    use std::hash::{Hash, Hasher};
+
+    let identity = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    identity.hash(&mut hasher);
+    std::env::temp_dir()
+        .join("shatter-audit-cache")
+        .join(format!("{:016x}", hasher.finish()))
+        .join("harness")
 }
 
 /// Disable the Go frontend's per-package discovery / analysis cache for
@@ -1381,6 +1399,56 @@ mod cli_parity_tests {
             value,
             Some(&"/tmp/project/.shatter/cache/harness".to_string()),
             "project storage should keep the project-local harness cache default when no override is set"
+        );
+    }
+
+    #[test]
+    fn apply_external_audit_storage_reuses_cache_across_frontends() {
+        use shatter_core::harness_storage::{
+            ENV_ARTIFACT_DIR, ENV_HARNESS_CACHE, ENV_HARNESS_SCRATCH,
+        };
+
+        let _guard = HARNESS_CACHE_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os(ENV_HARNESS_CACHE);
+        unsafe {
+            std::env::remove_var(ENV_HARNESS_CACHE);
+        }
+
+        let mut first = FrontendConfig::new(PathBuf::from("dummy"));
+        let mut second = FrontendConfig::new(PathBuf::from("dummy"));
+        apply_external_audit_storage(&mut first);
+        apply_external_audit_storage(&mut second);
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(ENV_HARNESS_CACHE, value),
+                None => std::env::remove_var(ENV_HARNESS_CACHE),
+            }
+        }
+
+        let env_value = |config: &FrontendConfig, key: &str| -> String {
+            config
+                .env_vars
+                .iter()
+                .rev()
+                .find_map(|(env_key, value)| (env_key == key).then_some(value.clone()))
+                .expect("expected env var")
+        };
+
+        assert_eq!(
+            env_value(&first, ENV_HARNESS_CACHE),
+            env_value(&second, ENV_HARNESS_CACHE),
+            "external-audit analysis and execution frontends should share harness build cache"
+        );
+        assert_ne!(
+            env_value(&first, ENV_HARNESS_SCRATCH),
+            env_value(&second, ENV_HARNESS_SCRATCH),
+            "external-audit scratch dirs should stay per frontend session"
+        );
+        assert_ne!(
+            env_value(&first, ENV_ARTIFACT_DIR),
+            env_value(&second, ENV_ARTIFACT_DIR),
+            "external-audit artifact dirs should stay per frontend session"
         );
     }
 
