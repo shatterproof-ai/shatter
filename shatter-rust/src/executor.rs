@@ -980,19 +980,23 @@ fn standalone_target_dir() -> Option<PathBuf> {
 }
 
 /// Check if `cargo check` should be skipped before build.
-/// Reads `SHATTER_SKIP_CHECK` env var — `"1"` or `"true"` (case-insensitive) skips check.
+///
+/// Skipping is the default because a required `cargo build` already reports
+/// compile errors, and running both commands doubles successful harness
+/// compilation work in whole-corpus scans. Set `SHATTER_SKIP_CHECK=0` when a
+/// caller wants the older pre-build validation step.
 fn skip_cargo_check() -> bool {
     std::env::var("SHATTER_SKIP_CHECK")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// Run `cargo check` for fast type/borrow validation before a full build.
 ///
 /// Catches errors ~3x faster than `cargo build` by skipping codegen and linking.
 /// Shares the same `CARGO_TARGET_DIR` so check metadata is reused by the subsequent build.
-/// Set `SHATTER_SKIP_CHECK=1` to bypass the check step.
+/// Skipped by default; set `SHATTER_SKIP_CHECK=0` to run this validation step.
 fn cargo_check_before_build(
     working_dir: &Path,
     target_dir: &Path,
@@ -2763,7 +2767,8 @@ fn build_and_spawn_harness(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
+    // Optional validation: successful scans skip this by default to avoid
+    // compiling each harness twice.
     cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
 
     let build_start = Instant::now();
@@ -2897,7 +2902,8 @@ fn build_and_spawn_crate_harness(
         std::fs::write(&cargo_toml_path, cargo_toml_content)?;
         std::fs::write(&main_rs_path, harness_source)?;
 
-        // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
+        // Optional validation: successful scans skip this by default to avoid
+        // compiling each harness twice.
         cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
 
         let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
@@ -10067,7 +10073,10 @@ fn enabled(config: Config) -> bool {
     fn skip_cargo_check_env_parsing() {
         // SAFETY: test-only env mutation; single test avoids parallel races.
         unsafe { std::env::remove_var("SHATTER_SKIP_CHECK") };
-        assert!(!skip_cargo_check(), "default should be false");
+        assert!(
+            skip_cargo_check(),
+            "default should skip cargo check so successful scans do not compile each harness twice"
+        );
 
         unsafe { std::env::set_var("SHATTER_SKIP_CHECK", "1") };
         assert!(skip_cargo_check(), "'1' should enable skip");
