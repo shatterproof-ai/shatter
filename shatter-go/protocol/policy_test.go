@@ -39,6 +39,7 @@ func TestClassifyFunction_SafeHTTPRuntimeValueParamsAreNotNetwork(t *testing.T) 
 		Params: []ParamInfo{
 			{Name: "w", Type: TypeInfo{Kind: "unknown", Label: "http.ResponseWriter"}, TypeName: ptr("http.ResponseWriter")},
 			{Name: "r", Type: TypeInfo{Kind: "unknown", Label: "http.Request"}, TypeName: ptr("*http.Request")},
+			{Name: "h", Type: TypeInfo{Kind: "unknown", Label: "http.Handler"}, TypeName: ptr("http.Handler")},
 		},
 	}
 	if uses := classifyFunction(fa); len(uses) != 0 {
@@ -610,6 +611,21 @@ func TestExecute_DefaultPolicy_AllowsResponseWriterRuntimeValueTarget(t *testing
 	})
 	if resp.Outcome != nil && resp.Outcome.Status == OutcomeStatusSkippedByPolicy {
 		t.Fatalf("http.ResponseWriter should reach runtime-value planning/execution, got skipped_by_policy: %v", resp.Outcome.ShortReason)
+	}
+}
+
+func TestExecute_DefaultPolicy_AllowsHTTPHandlerRuntimeValueTarget(t *testing.T) {
+	resp := runExecuteWithLoader(t, "testdata/opaque.go", "AcceptsHTTPHandler", func(string) (config.File, error) {
+		return config.File{}, nil
+	})
+	if resp.Outcome == nil {
+		t.Fatalf("expected invocation outcome, got response: %+v", resp)
+	}
+	if resp.Outcome.Status == OutcomeStatusSkippedByPolicy {
+		t.Fatalf("http.Handler should reach runtime-value planning/execution, got skipped_by_policy: %v", resp.Outcome.ShortReason)
+	}
+	if resp.Outcome.Status != OutcomeStatusCompleted {
+		t.Fatalf("outcome.status = %q, want %q (thrown: %v)", resp.Outcome.Status, OutcomeStatusCompleted, resp.Outcome.ThrownError)
 	}
 }
 

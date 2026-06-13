@@ -980,6 +980,7 @@ var synthesizableStdlibTypes = map[string]map[string]string{
 	},
 	"net/http": {
 		"ResponseWriter": "http.ResponseWriter",
+		"Handler":        "http.Handler",
 	},
 	"github.com/tetratelabs/wazero": {
 		"Runtime":        "wazero.Runtime",

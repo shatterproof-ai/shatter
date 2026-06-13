@@ -60,6 +60,12 @@ func AcceptsResponseWriter(w http.ResponseWriter) {
 	w.WriteHeader(200)
 }
 
+// AcceptsHTTPHandler takes an http.Handler, which the runtime-value registry
+// can synthesize with http.NewServeMux().
+func AcceptsHTTPHandler(h http.Handler) bool {
+	return h != nil
+}
+
 // AcceptsNetListener takes a net.Listener.
 func AcceptsNetListener(ln net.Listener) error {
 	return ln.Close()
