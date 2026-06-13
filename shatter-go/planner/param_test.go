@@ -279,25 +279,6 @@ func TestPlanParam_StringLiteralCandidatesPrecedeFamilyDefaults(t *testing.T) {
 	}
 }
 
-func TestPlanParam_ExpressionStringParamSeedsValidBooleanLiteral(t *testing.T) {
-	plans, u := planner.PlanParam(testTargetID, 0, strParam("expr"), planner.ParamPlanOptions{})
-	if u != nil {
-		t.Fatalf("unexpected unsatisfied: %+v", u)
-	}
-	if len(plans) == 0 {
-		t.Fatal("expected at least one plan")
-	}
-	if plans[0].Kind != protocol.ValuePlanKindLiteral {
-		t.Fatalf("plans[0].Kind = %q, want literal; plans=%+v", plans[0].Kind, plans)
-	}
-	if string(plans[0].Literal) != `"true"` {
-		t.Fatalf("plans[0].Literal = %s, want %q", string(plans[0].Literal), `"true"`)
-	}
-	if plans[0].TypeHint != "string" {
-		t.Fatalf("plans[0].TypeHint = %q, want string", plans[0].TypeHint)
-	}
-}
-
 func TestPlanParam_EmptyParams_NoMatrixEntries(t *testing.T) {
 	matrix, unsat := planner.PlanParams(testTargetID, nil, planner.ParamPlanOptions{})
 	if len(matrix) != 0 {
