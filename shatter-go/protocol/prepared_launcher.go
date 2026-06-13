@@ -431,7 +431,8 @@ func toWrapperConstructorsWithBindings(
 			// str-jeen.78: propagate ReturnsError so wrapper generation can
 			// use the two-assignment form (_recv, _ := ctor()) for constructors
 			// that return (T, error) or (*T, error).
-			ReturnsError: candidate.ReturnsError,
+			ReturnsError:     candidate.ReturnsError,
+			ReturnsInterface: candidate.ReturnsInterface,
 		}
 	}
 	return constructors

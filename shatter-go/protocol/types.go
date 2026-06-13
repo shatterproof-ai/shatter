@@ -78,6 +78,11 @@ type ConstructorCandidate struct {
 	// compile when the constructor returns the value form. See
 	// str-jeen.49.
 	ReturnsPointer bool `json:"returns_pointer,omitempty"`
+	// ReturnsInterface is true when the constructor's first result is an
+	// interface whose returned concrete composite literal has TargetType.
+	// Wrapper generation then type-asserts the interface result to the
+	// receiver type before invoking the method.
+	ReturnsInterface bool `json:"returns_interface,omitempty"`
 }
 
 // SetupLevel defines the lifecycle granularity for setup/teardown.

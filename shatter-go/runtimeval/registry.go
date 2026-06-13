@@ -137,6 +137,13 @@ var registry = map[string][]Candidate{
 			Imports:    []string{"net/http", "net/http/httptest"},
 		},
 	},
+	"http.Handler": {
+		{
+			Expression: "http.NewServeMux()",
+			TypeHint:   "http.Handler",
+			Imports:    []string{"net/http"},
+		},
+	},
 	// str-gxjs: *http.Request goes through httptest.NewRequest so the
 	// Body / URL / method fields are populated by the stdlib's own
 	// constructor rather than by composite-literal synthesis (which
