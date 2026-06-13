@@ -1569,10 +1569,14 @@ fn is_input_dependent_prepare_error(err: &ExecuteError) -> bool {
 /// Simple cases like `&str` → `String` with `&name_owned`.
 /// Slice cases like `&[&str]` → `Vec<String>` need a two-step conversion.
 struct OwnedTypeMapping {
-    /// Type to deserialize into (e.g., `String`, `Vec<String>`)
-    deser_type: &'static str,
-    /// Whether the function call needs a slice borrow (e.g., `&name_owned` vs
-    /// a more complex conversion for `&[&str]`)
+    /// Type to deserialize into (e.g., `String`, `Vec<String>`, `Widget`,
+    /// `Vec<Item>`). Owned so it can carry an arbitrary inner type derived from
+    /// a `&T` parameter, not just the fixed str/slice special cases.
+    deser_type: String,
+    /// True only for `&[&str]`, where the deserialized `Vec<String>` must be
+    /// re-borrowed as a `Vec<&str>` before the call. For plain `&T` and `&[T]`
+    /// (owned element) the owned value is borrowed directly (`&name_owned`),
+    /// relying on deref coercion (`&String`→`&str`, `&Vec<T>`→`&[T]`).
     needs_slice_conversion: bool,
 }
 
@@ -2062,21 +2066,77 @@ fn is_result_return_shape(return_type: &str) -> bool {
         .is_some_and(|segment| segment.ident.to_string().ends_with("Result"))
 }
 
+/// Returns true if `path`'s final segment ident equals `name`.
+fn type_path_leaf_is(path: &syn::TypePath, name: &str) -> bool {
+    path.path
+        .segments
+        .last()
+        .is_some_and(|seg| seg.ident == name)
+}
+
+/// Map a by-reference parameter type to an owned type to deserialize into and a
+/// borrowing strategy for the call site. Returns `None` for non-reference types
+/// and for references that other branches handle specially (runtime params like
+/// `&PgPool`, Axum extractors) or cannot be synthesized (`&dyn Trait`, `&mut`).
+///
+/// Handled (the owned value is later passed as `&name_owned`, relying on deref
+/// coercion `&String`→`&str` and `&Vec<T>`→`&[T]`):
+/// - `&str` / `&String` → deserialize `String`
+/// - `&T` (any other path type, e.g. `Widget`, `crate::domain::Trip`) → `T`
+/// - `&[&str]` → deserialize `Vec<String>` then re-borrow as `Vec<&str>`
+/// - `&[T]` (owned element) → deserialize `Vec<T>`
 fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
-    let normalized = ty.replace(' ', "");
-    match normalized.as_str() {
-        "&str" | "&'staticstr" => Some(OwnedTypeMapping {
-            deser_type: "String",
+    use quote::ToTokens;
+    // `&PgPool` and similar runtime params are materialized by a dedicated
+    // branch; do not route them through JSON deserialization.
+    if classify_crate_bridge_runtime_param(ty).is_some() {
+        return None;
+    }
+    let parsed: syn::Type = syn::parse_str(ty).ok()?;
+    let syn::Type::Reference(reference) = parsed else {
+        return None;
+    };
+    // `&mut T` is not supported (would need a mutable owned local and back-copy
+    // semantics the harness does not model); leave it to the fallback.
+    if reference.mutability.is_some() {
+        return None;
+    }
+    match &*reference.elem {
+        // &str / &String → owned String
+        syn::Type::Path(p) if type_path_leaf_is(p, "str") || type_path_leaf_is(p, "String") => {
+            Some(OwnedTypeMapping {
+                deser_type: "String".to_string(),
+                needs_slice_conversion: false,
+            })
+        }
+        // &dyn Trait / &impl Trait — not deserializable.
+        syn::Type::TraitObject(_) | syn::Type::ImplTrait(_) => None,
+        // &[E]
+        syn::Type::Slice(slice) => match &*slice.elem {
+            // &[&str] → Vec<String>, re-borrowed as Vec<&str>.
+            syn::Type::Reference(inner)
+                if matches!(&*inner.elem, syn::Type::Path(p) if type_path_leaf_is(p, "str")) =>
+            {
+                Some(OwnedTypeMapping {
+                    deser_type: "Vec<String>".to_string(),
+                    needs_slice_conversion: true,
+                })
+            }
+            // &[&T] for non-str element: not supported here.
+            syn::Type::Reference(_) | syn::Type::TraitObject(_) | syn::Type::ImplTrait(_) => None,
+            // &[T] owned element → Vec<T>, passed as &owned (coerces to &[T]).
+            elem => Some(OwnedTypeMapping {
+                deser_type: format!("Vec<{}>", elem.to_token_stream()),
+                needs_slice_conversion: false,
+            }),
+        },
+        // &T for any other named/owned type → deserialize owned T.
+        syn::Type::Path(p) => Some(OwnedTypeMapping {
+            deser_type: p.to_token_stream().to_string(),
             needs_slice_conversion: false,
         }),
-        "&String" | "&'staticString" => Some(OwnedTypeMapping {
-            deser_type: "String",
-            needs_slice_conversion: false,
-        }),
-        "&[&str]" | "&[&'staticstr]" => Some(OwnedTypeMapping {
-            deser_type: "Vec<String>",
-            needs_slice_conversion: true,
-        }),
+        // &(T, U), &[T; N], etc. — leave to the fallback (owned tuples/arrays
+        // deserialize fine without the reference wrapper).
         _ => None,
     }
 }
@@ -8623,6 +8683,36 @@ fn main() {
         check("&[&str]", "Vec<String>");
         assert!(owned_type_for_ref("i32").is_none());
         assert!(owned_type_for_ref("String").is_none());
+    }
+
+    #[test]
+    fn owned_type_for_ref_maps_struct_refs() {
+        // str-osr7: a plain `&T` (struct/enum from any module) deserializes the
+        // owned `T` and is borrowed at the call site.
+        let m = owned_type_for_ref("&Widget").expect("expected Some for &Widget");
+        assert_eq!(m.deser_type, "Widget");
+        assert!(!m.needs_slice_conversion);
+
+        let m = owned_type_for_ref("& crate :: domain :: Trip").expect("expected Some for &Trip");
+        assert_eq!(m.deser_type, "crate :: domain :: Trip");
+        assert!(!m.needs_slice_conversion);
+
+        // &[T] with an owned element → Vec<T>, borrowed directly (no as_str).
+        let m = owned_type_for_ref("&[Item]").expect("expected Some for &[Item]");
+        assert_eq!(m.deser_type, "Vec<Item>");
+        assert!(!m.needs_slice_conversion);
+    }
+
+    #[test]
+    fn owned_type_for_ref_rejects_unsupported_refs() {
+        // &mut, trait objects, and runtime params (&PgPool) must not route
+        // through JSON deserialization.
+        assert!(owned_type_for_ref("&mut Widget").is_none());
+        assert!(owned_type_for_ref("& dyn std::fmt::Debug").is_none());
+        assert!(owned_type_for_ref("&PgPool").is_none());
+        assert!(owned_type_for_ref("& sqlx :: PgPool").is_none());
+        // &[&T] for a non-str element is not supported.
+        assert!(owned_type_for_ref("&[&Item]").is_none());
     }
 
     #[test]
