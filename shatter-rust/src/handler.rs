@@ -555,6 +555,13 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             "prepare".to_string(),
             "setup".to_string(),
             "teardown".to_string(),
+            // Complex types whose `__complex_type` envelopes the harness
+            // materializes into serde-native JSON before deserialization
+            // (`shatter_rust_runtime::materialize_complex`, str-8euf). Declaring
+            // these makes the orchestrator emit proper envelopes instead of
+            // degrading to a random string that fails strong-typed deser.
+            "complex_type:uuid".to_string(),
+            "complex_type:url".to_string(),
         ]);
         resp
     }

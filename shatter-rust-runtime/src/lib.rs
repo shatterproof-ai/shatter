@@ -438,6 +438,52 @@ pub fn build_result_json(
 /// The `handler` receives the `"inputs"` array from each request and must
 /// return a complete result JSON `Value` (typically built via
 /// [`build_result_json`]).
+/// Convert a single `{"__complex_type": K, ...}` envelope (produced by the
+/// input generator for a complex-typed value the Rust frontend declared support
+/// for) into the serde-native JSON the target Rust type expects to deserialize
+/// from. Returns `None` for tags this runtime does not materialize, leaving the
+/// envelope untouched (so an unexpected envelope surfaces as a clear deser
+/// error rather than silently wrong data). See str-8euf.
+fn complex_envelope_to_native(tag: &str, map: &serde_json::Map<String, Value>) -> Option<Value> {
+    match tag {
+        // `uuid`/`url` carry their canonical string under `value`; the target
+        // types (`uuid::Uuid`, `url::Url`) deserialize from that string.
+        "uuid" | "url" => map.get("value").cloned(),
+        _ => None,
+    }
+}
+
+/// Recursively rewrite `__complex_type` envelopes anywhere in `value` into their
+/// serde-native form (see [`complex_envelope_to_native`]). Applied to every
+/// generated input before it is deserialized into the target parameter types,
+/// so complex-typed struct fields (e.g. a `uuid::Uuid` field of a synthesized
+/// struct) deserialize correctly instead of receiving a raw envelope object.
+pub fn materialize_complex(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let tag = map
+                .get("__complex_type")
+                .and_then(|t| t.as_str())
+                .map(str::to_owned);
+            if let Some(tag) = tag {
+                if let Some(native) = complex_envelope_to_native(&tag, map) {
+                    *value = native;
+                    return;
+                }
+            }
+            for child in map.values_mut() {
+                materialize_complex(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                materialize_complex(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn run_harness_loop<F>(mocks_json: &str, mut handler: F)
 where
     F: FnMut(&[Value]) -> Value,
@@ -458,7 +504,10 @@ where
             continue;
         }
         let req: Value = serde_json::from_str(line).unwrap_or_default();
-        let inputs = req["inputs"].as_array().cloned().unwrap_or_default();
+        let mut inputs = req["inputs"].as_array().cloned().unwrap_or_default();
+        for input in inputs.iter_mut() {
+            materialize_complex(input);
+        }
 
         reset();
 
@@ -510,7 +559,10 @@ where
         }
         let req: Value = serde_json::from_str(line).unwrap_or_default();
         let function_name = req["function"].as_str().unwrap_or("");
-        let inputs = req["inputs"].as_array().cloned().unwrap_or_default();
+        let mut inputs = req["inputs"].as_array().cloned().unwrap_or_default();
+        for input in inputs.iter_mut() {
+            materialize_complex(input);
+        }
 
         reset();
 
@@ -918,5 +970,35 @@ mod tests {
             assert_eq!(state.branch_path.len(), 1);
             assert_eq!(state.branch_path[0].branch_id, 1);
         });
+    }
+
+    #[test]
+    fn materialize_complex_unwraps_uuid_and_url_envelopes() {
+        // A struct-shaped input with a nested uuid envelope field becomes a
+        // plain string the target `uuid::Uuid` field can deserialize.
+        let mut v = serde_json::json!({
+            "id": {"__complex_type": "uuid", "value": "550e8400-e29b-41d4-a716-446655440000"},
+            "site": {"__complex_type": "url", "value": "https://example.test/x"},
+            "weight": 42,
+            "nested": [{"__complex_type": "uuid", "value": "00000000-0000-0000-0000-000000000001"}]
+        });
+        materialize_complex(&mut v);
+        assert_eq!(v["id"], serde_json::json!("550e8400-e29b-41d4-a716-446655440000"));
+        assert_eq!(v["site"], serde_json::json!("https://example.test/x"));
+        assert_eq!(v["weight"], serde_json::json!(42));
+        assert_eq!(
+            v["nested"][0],
+            serde_json::json!("00000000-0000-0000-0000-000000000001")
+        );
+    }
+
+    #[test]
+    fn materialize_complex_leaves_unknown_envelopes_untouched() {
+        // A tag this runtime does not materialize is left as-is (surfaces as a
+        // clear deser error rather than silently wrong data).
+        let mut v = serde_json::json!({"__complex_type": "big_int", "value": "12345"});
+        let original = v.clone();
+        materialize_complex(&mut v);
+        assert_eq!(v, original);
     }
 }
