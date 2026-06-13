@@ -11,9 +11,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,19 +202,45 @@ func buildGenerationLockIsStale(lockPath string) bool {
 	if err != nil {
 		return false
 	}
-	if time.Since(info.ModTime()) <= buildGenerationLockStaleAfter {
-		return false
-	}
 	data, readErr := os.ReadFile(lockPath)
 	if readErr != nil {
 		return true
 	}
 	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
-	if parseErr != nil || pid <= 0 || pid == os.Getpid() {
-		return true
+	if parseErr != nil || pid <= 0 {
+		return time.Since(info.ModTime()) > buildGenerationLockStaleAfter
 	}
+	switch buildProcessStatus(pid) {
+	case buildProcessDead:
+		return true
+	case buildProcessUnknown:
+		return time.Since(info.ModTime()) > buildGenerationLockStaleAfter
+	default:
+		return false
+	}
+}
+
+type buildProcessLiveness int
+
+const (
+	buildProcessAlive buildProcessLiveness = iota
+	buildProcessDead
+	buildProcessUnknown
+)
+
+func buildProcessStatus(pid int) buildProcessLiveness {
 	proc, findErr := os.FindProcess(pid)
-	return findErr != nil || proc.Signal(syscall.Signal(0)) != nil
+	if findErr != nil {
+		return buildProcessDead
+	}
+	signalErr := proc.Signal(syscall.Signal(0))
+	if signalErr == nil || errors.Is(signalErr, os.ErrPermission) {
+		return buildProcessAlive
+	}
+	if runtime.GOOS == "windows" {
+		return buildProcessUnknown
+	}
+	return buildProcessDead
 }
 
 func (b *Builder) compileLauncher(

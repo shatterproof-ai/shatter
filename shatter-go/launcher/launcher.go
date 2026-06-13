@@ -21,6 +21,7 @@ package launcher
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -140,18 +141,34 @@ func sweepOrphanedLauncherDirs(launchersParent string) {
 	}
 }
 
-// processIsAlive reports whether `pid` refers to a process this OS user can
-// signal. Uses signal 0 which performs the permission/existence check without
-// delivering a signal. On error, the pid is treated as dead so the cleanup
-// proceeds (the worst case is a false positive that removes a transient dir
-// owned by a process this user cannot signal — that build will fail at the
-// next file access, surfacing the conflict instead of silently leaking).
+// processIsAlive reports whether `pid` definitely refers to a live process.
+// Unknown platform results are treated as live so cleanup never removes a
+// directory that could still be owned by another process.
 func processIsAlive(pid int) bool {
+	return processStatus(pid) != processDead
+}
+
+type processLiveness int
+
+const (
+	processAlive processLiveness = iota
+	processDead
+	processUnknown
+)
+
+func processStatus(pid int) processLiveness {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
-		return false
+		return processDead
 	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	signalErr := proc.Signal(syscall.Signal(0))
+	if signalErr == nil || errors.Is(signalErr, os.ErrPermission) {
+		return processAlive
+	}
+	if runtime.GOOS == "windows" {
+		return processUnknown
+	}
+	return processDead
 }
 
 // BuildOptions are the inputs required to build a launcher binary.
@@ -620,7 +637,25 @@ func acquireLauncherBuildLock(binaryPath string) (release func(), acquired bool,
 
 func lockIsStale(lockPath string) bool {
 	info, err := os.Stat(lockPath)
-	return err == nil && time.Since(info.ModTime()) > launcherBuildLockStaleAfter
+	if err != nil {
+		return false
+	}
+	data, readErr := os.ReadFile(lockPath)
+	if readErr != nil {
+		return true
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if parseErr != nil || pid <= 0 {
+		return time.Since(info.ModTime()) > launcherBuildLockStaleAfter
+	}
+	switch processStatus(pid) {
+	case processDead:
+		return true
+	case processUnknown:
+		return time.Since(info.ModTime()) > launcherBuildLockStaleAfter
+	default:
+		return false
+	}
 }
 
 // GenerateLauncherMain generates the main.go source for a launcher binary.
