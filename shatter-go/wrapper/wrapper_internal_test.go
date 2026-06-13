@@ -357,6 +357,69 @@ func Handle(h http.Handler) bool { return h != nil }
 	}
 }
 
+// TestGenerateWrapper_HTTPRequestBodyIsSymbolic is the str-e41w regression:
+// a direct *http.Request parameter must be constructed from a symbolic body
+// input (so the solver can drive request payloads into handlers) rather than
+// the fixed empty-body runtime value httptest.NewRequest("GET","/",nil). The
+// param must consume one string input slot and feed it through
+// httptest.NewRequest(..., strings.NewReader(<body>)).
+func TestGenerateWrapper_HTTPRequestBodyIsSymbolic(t *testing.T) {
+	const src = `package svc
+
+import "net/http"
+
+func Handle(r *http.Request) bool { return r != nil }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "h.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("svc", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "svc",
+		PkgPath:   "example.com/svc",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("len(targets) = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	// The body is symbolic, so the param must NOT be bound to the fixed
+	// empty-body runtime value.
+	if got := target.Parameters[0].RuntimeValueExpr; got != "" {
+		t.Fatalf("RuntimeValueExpr = %q, want empty (symbolic body); the fixed httptest.NewRequest binding should be skipped for direct *http.Request params", got)
+	}
+
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, "httptest.NewRequest(") {
+		t.Fatalf("wrapper missing httptest.NewRequest construction; source:\n%s", out)
+	}
+	if !strings.Contains(out, "strings.NewReader(") {
+		t.Fatalf("wrapper missing strings.NewReader body wrapper; source:\n%s", out)
+	}
+	if strings.Contains(out, "bytes.NewReader(nil)") {
+		t.Fatalf("wrapper still uses fixed empty body bytes.NewReader(nil); body must be symbolic; source:\n%s", out)
+	}
+	// The body must come from a symbolic input slot.
+	if !strings.Contains(out, "json.Unmarshal(_shatterInputs[0]") {
+		t.Fatalf("wrapper does not decode the request body from _shatterInputs[0]; body is not symbolic; source:\n%s", out)
+	}
+}
+
 func TestGenerateWrapper_RuntimeValueSubstitutesTemplate(t *testing.T) {
 	const src = `package svc
 

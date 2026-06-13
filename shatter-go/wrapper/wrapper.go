@@ -556,6 +556,10 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 		fmt.Fprintf(b, "%svar %s %s = %s\n", indent, p.Name, p.GoType, p.RuntimeValueExpr)
 		return
 	}
+	if isSymbolicHTTPRequestParam(p.GoType) {
+		writeSymbolicHTTPRequestDeserialization(b, p.Name, inputIndex, indent)
+		return
+	}
 	if p.GoType == "time.Duration" {
 		writeDurationParamDeserialization(b, p.Name, inputIndex, indent)
 		return
@@ -587,6 +591,33 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 	fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, p.Name)
 	fmt.Fprintf(b, "%s\t}\n", indent)
 	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+// isSymbolicHTTPRequestParam reports whether goType is a direct *http.Request
+// parameter. str-e41w synthesizes these from a symbolic request body input so
+// the solver can drive request payloads into HTTP handlers, instead of binding
+// the fixed empty-body runtime value. The check is intentionally narrow:
+// *http.Request used as a constructor argument or struct field still uses the
+// runtimeval registry's fixed expression (per-input variation there is out of
+// scope and routed through different machinery).
+func isSymbolicHTTPRequestParam(goType string) bool {
+	return strings.TrimSpace(goType) == "*http.Request"
+}
+
+// writeSymbolicHTTPRequestDeserialization emits a *http.Request whose body is
+// read from the param's symbolic input slot (str-e41w). The method and path are
+// fixed ("POST" "/") so httptest.NewRequest cannot panic on an invalid verb;
+// only the body is symbolic, which is what handler bodies read and branch on.
+// Making method/path/headers symbolic is deferred follow-up work.
+func writeSymbolicHTTPRequestDeserialization(b *strings.Builder, name string, inputIndex int, indent string) {
+	bodyVar := fmt.Sprintf("_shatterReqBody%d", inputIndex)
+	fmt.Fprintf(b, "%svar %s string\n", indent, bodyVar)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, inputIndex)
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, inputIndex, bodyVar)
+	fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s body: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+	fmt.Fprintf(b, "%svar %s *http.Request = httptest.NewRequest(\"POST\", \"/\", strings.NewReader(%s))\n", indent, name, bodyVar)
 }
 
 func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {
@@ -1624,6 +1655,18 @@ func applyRuntimeValueBindingsForPackage(
 ) {
 	for i := range params {
 		if params[i].IsVariadic {
+			continue
+		}
+		if isSymbolicHTTPRequestParam(params[i].GoType) {
+			// str-e41w: a direct *http.Request parameter is constructed from a
+			// symbolic body input in writeParamDeserializationAtInputIndex,
+			// rather than bound to the fixed empty-body runtime value
+			// (httptest.NewRequest("GET","/",nil)). Leave RuntimeValueExpr empty
+			// so the param consumes its input slot, and record the imports the
+			// construction needs.
+			for _, imp := range []string{"net/http", "net/http/httptest", "strings"} {
+				importSet[imp] = struct{}{}
+			}
 			continue
 		}
 		candidates := runtimeval.Lookup(params[i].GoType)

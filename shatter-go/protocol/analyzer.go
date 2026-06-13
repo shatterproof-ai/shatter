@@ -798,6 +798,17 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 				}
 			}
 		}
+		// str-e41w: a direct *http.Request param is synthesized from a symbolic
+		// request body (a string input) rather than the fixed empty-body runtime
+		// value httptest.NewRequest("GET","/",nil). Report it as a string so the
+		// explorer/solver generate body payloads that drive handlers past their
+		// decode/validation guards; the wrapper recognizes the *http.Request
+		// TypeName (carried below) and wraps the symbolic string via
+		// httptest.NewRequest. Nested *http.Request (struct fields, slice
+		// elements) keep the runtime-value path in goTypeToTypeInfoRec.
+		if synthSpelling == "*http.Request" {
+			ti = TypeInfo{Kind: "str", Label: "*http.Request"}
+		}
 		for _, name := range field.Names {
 			param := ParamInfo{
 				Name: name.Name,
