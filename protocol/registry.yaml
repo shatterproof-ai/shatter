@@ -464,5 +464,7 @@ frontends:
       - prepare
       - setup
       - teardown
-    complex_type_capabilities: []
+    complex_type_capabilities:
+      - uuid
+      - url
     default_exec_timeout_s: 5

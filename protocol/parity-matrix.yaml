@@ -338,7 +338,7 @@ complex_type_capabilities:
     frontends:
       typescript: supported
       go: supported
-      rust: not_supported
+      rust: supported
 
   ip_address:
     status: optional
@@ -354,7 +354,7 @@ complex_type_capabilities:
     frontends:
       typescript: not_supported
       go: not_supported
-      rust: not_supported
+      rust: supported
 
   path:
     status: optional

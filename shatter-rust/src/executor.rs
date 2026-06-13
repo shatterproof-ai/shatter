@@ -3979,7 +3979,8 @@ fn generate_crate_bridge_wrapper(
     w.push_str("        if line.is_empty() { continue; }\n");
     w.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
     w.push_str("        let function_name = req[\"function\"].as_str().unwrap_or(\"\");\n");
-    w.push_str("        let inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n");
+    w.push_str("        let mut inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n");
+    w.push_str("        for __input in inputs.iter_mut() { shatter_rust_runtime::materialize_complex(__input); }\n");
     w.push_str("        let exec_result = match function_name {\n");
     for fn_info in fns {
         let fn_name = &fn_info.name;
