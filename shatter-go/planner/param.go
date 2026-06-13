@@ -3,6 +3,7 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
@@ -11,6 +12,8 @@ import (
 // DefaultMaxParamValuePlans caps the number of ValuePlans produced for a
 // single parameter when ParamPlanOptions.MaxPlansPerParam is zero.
 const DefaultMaxParamValuePlans = 4
+
+const expressionParamJSONLiteral = `"true"`
 
 // paramTypeHint is the Go type string emitted on ValuePlan.TypeHint for a
 // given primitive family.
@@ -211,6 +214,13 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 				break
 			}
 		}
+		if literal, ok := expressionLiteralSeedForParam(p, family.typeHint); ok {
+			add(protocol.ValuePlan{
+				Kind:     protocol.ValuePlanKindLiteral,
+				Literal:  literal,
+				TypeHint: family.typeHint,
+			})
+		}
 	}
 
 	for _, cand := range family.candidates {
@@ -303,6 +313,29 @@ func classifyParamFamily(p protocol.ParamInfo) (paramFamily, bool) {
 		return paramFamily{}, false
 	default:
 		return paramFamily{}, false
+	}
+}
+
+func expressionLiteralSeedForParam(p protocol.ParamInfo, typeHint string) (json.RawMessage, bool) {
+	if !paramAcceptsString(p, typeHint) {
+		return nil, false
+	}
+	if !paramNameSuggestsExpression(p.Name) {
+		return nil, false
+	}
+	return json.RawMessage(expressionParamJSONLiteral), true
+}
+
+func paramAcceptsString(p protocol.ParamInfo, typeHint string) bool {
+	return p.Type.Kind == "str" || typeHint == paramTypeHintString
+}
+
+func paramNameSuggestsExpression(name string) bool {
+	switch strings.ToLower(name) {
+	case "expr", "expression", "condition", "predicate":
+		return true
+	default:
+		return false
 	}
 }
 
