@@ -5,8 +5,13 @@
 //!
 //! ## Limitations
 //!
-//! - **No cross-file type resolution**: `syn` parses a single file. Struct definitions
-//!   from other modules/crates are not available — named types become `Opaque`.
+//! - **Same-crate cross-file type resolution only** (str-do53): when analyzing
+//!   a file inside a crate, struct/enum definitions from other files of the
+//!   *same crate* are resolved via a crate-wide registry (see
+//!   `build_crate_type_registry`), so `use crate::module::Type` synthesizes
+//!   instead of becoming `Opaque`. Types from *other crates* (dependencies) are
+//!   still `Opaque`, as are bare names defined ambiguously in multiple files.
+//!   Pure string-source analysis (no file path) remains single-file.
 //! - **No trait resolution**: Cannot determine which trait impl a method call resolves to.
 //! - **No macro expansion**: Macros are not expanded; generated code is invisible.
 //! - **No const evaluation**: Constant references in conditions appear as `Unknown`.
