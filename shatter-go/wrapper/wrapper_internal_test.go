@@ -306,6 +306,57 @@ func Ping(ctx context.Context) int { return 1 }
 	}
 }
 
+func TestGenerateWrapper_RuntimeValueSubstitutesHTTPHandler(t *testing.T) {
+	const src = `package svc
+
+import "net/http"
+
+func Handle(h http.Handler) bool { return h != nil }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "h.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("svc", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "svc",
+		PkgPath:   "example.com/svc",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("len(targets) = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	if got := target.Parameters[0].RuntimeValueExpr; got != "http.NewServeMux()" {
+		t.Fatalf("RuntimeValueExpr = %q, want http.NewServeMux()", got)
+	}
+	if !slices.Contains(target.Imports, "net/http") {
+		t.Fatalf("target.Imports = %v, want net/http", target.Imports)
+	}
+
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, "var h http.Handler = http.NewServeMux()") {
+		t.Fatalf("wrapper missing direct http.NewServeMux assignment; source:\n%s", out)
+	}
+	if strings.Contains(out, "json.Unmarshal(_shatterInputs[0], &h)") {
+		t.Fatalf("wrapper still decodes h from inputs; runtime-value substitution should bypass json.Unmarshal; source:\n%s", out)
+	}
+}
+
 func TestGenerateWrapper_RuntimeValueSubstitutesTemplate(t *testing.T) {
 	const src = `package svc
 

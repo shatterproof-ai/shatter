@@ -172,6 +172,8 @@ func isSafeRuntimeValueParam(label, typeName string) bool {
 	switch {
 	case isHTTPResponseWriterType(label) || isHTTPResponseWriterType(typeName):
 		return true
+	case isHTTPHandlerType(label) || isHTTPHandlerType(typeName):
+		return true
 	case isHTTPRequestType(label) || isHTTPRequestType(typeName):
 		return true
 	default:
@@ -181,6 +183,10 @@ func isSafeRuntimeValueParam(label, typeName string) bool {
 
 func isHTTPResponseWriterType(typeName string) bool {
 	return strings.TrimLeft(typeName, "*[]") == "http.ResponseWriter"
+}
+
+func isHTTPHandlerType(typeName string) bool {
+	return strings.TrimLeft(typeName, "*[]") == "http.Handler"
 }
 
 func classifyReturnType(t TypeInfo) (ClassifiedUse, bool) {

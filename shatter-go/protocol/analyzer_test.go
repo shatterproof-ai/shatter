@@ -1116,6 +1116,7 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 		{"AcceptsIOReader", "io.Reader"},
 		{"AcceptsIOWriter", "io.Writer"},
 		{"AcceptsResponseWriter", "http.ResponseWriter"},
+		{"AcceptsHTTPHandler", "http.Handler"},
 		{"AcceptsRequestPointer", "*http.Request"},
 		{"AcceptsIOReadCloser", "io.ReadCloser"},
 		{"AcceptsContext", "context.Context"},
