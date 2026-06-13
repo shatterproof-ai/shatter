@@ -620,7 +620,24 @@ func acquireLauncherBuildLock(binaryPath string) (release func(), acquired bool,
 
 func lockIsStale(lockPath string) bool {
 	info, err := os.Stat(lockPath)
-	return err == nil && time.Since(info.ModTime()) > launcherBuildLockStaleAfter
+	if err != nil {
+		return false
+	}
+	data, readErr := os.ReadFile(lockPath)
+	if readErr != nil {
+		return true
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if parseErr != nil || pid <= 0 {
+		return time.Since(info.ModTime()) > launcherBuildLockStaleAfter
+	}
+	if pid == os.Getpid() {
+		return time.Since(info.ModTime()) > launcherBuildLockStaleAfter
+	}
+	if !processIsAlive(pid) {
+		return true
+	}
+	return time.Since(info.ModTime()) > launcherBuildLockStaleAfter
 }
 
 // GenerateLauncherMain generates the main.go source for a launcher binary.

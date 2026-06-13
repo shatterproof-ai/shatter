@@ -200,19 +200,22 @@ func buildGenerationLockIsStale(lockPath string) bool {
 	if err != nil {
 		return false
 	}
-	if time.Since(info.ModTime()) <= buildGenerationLockStaleAfter {
-		return false
-	}
 	data, readErr := os.ReadFile(lockPath)
 	if readErr != nil {
 		return true
 	}
 	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
-	if parseErr != nil || pid <= 0 || pid == os.Getpid() {
-		return true
+	if parseErr != nil || pid <= 0 {
+		return time.Since(info.ModTime()) > buildGenerationLockStaleAfter
+	}
+	if pid == os.Getpid() {
+		return time.Since(info.ModTime()) > buildGenerationLockStaleAfter
 	}
 	proc, findErr := os.FindProcess(pid)
-	return findErr != nil || proc.Signal(syscall.Signal(0)) != nil
+	if findErr != nil || proc.Signal(syscall.Signal(0)) != nil {
+		return true
+	}
+	return time.Since(info.ModTime()) > buildGenerationLockStaleAfter
 }
 
 func (b *Builder) compileLauncher(
