@@ -385,6 +385,74 @@ func (r *Recorder) Write(payload []byte) (int, error) {
 	compileWrapperFixture(t, "ctoragg", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
 }
 
+func TestInterfaceReturningConstructorCompilesForConcreteReceiver(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	wrapperTarget := wrapper.WrapperTarget{
+		ID:            "example.com/ifacector:(*httpLocalServer).Addr",
+		SymbolName:    "Addr",
+		Kind:          wrapper.TargetKindMethod,
+		ReceiverType:  "httpLocalServer",
+		IsPointerRecv: true,
+		HasResult:     true,
+		ResultGoType:  "string",
+		ResultCount:   1,
+	}
+	wrapperCtors := []wrapper.ConstructorCandidate{
+		{
+			FuncName:         "startLocalHTTPServer",
+			TargetType:       "httpLocalServer",
+			HasParams:        true,
+			ReturnsPointer:   true,
+			ReturnsError:     true,
+			ReturnsInterface: true,
+			Parameters: []wrapper.ConstructorParam{
+				{Name: "addr", GoType: "string"},
+				{Name: "handler", GoType: "http.Handler"},
+			},
+		},
+	}
+
+	src := wrapper.GenerateWrapper("ifacector", []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+	if !strings.Contains(src, "var _shatterCtorArg1 http.Handler = http.NewServeMux()") {
+		t.Fatalf("wrapper did not bind http.Handler constructor arg from runtime value; source:\n%s", src)
+	}
+	if strings.Contains(src, "json.Unmarshal(_shatterInputs[1], &_shatterCtorArg1)") {
+		t.Fatalf("wrapper decoded runtime-value http.Handler constructor arg from inputs; source:\n%s", src)
+	}
+	if !strings.Contains(src, "_recvIface, _constructorErr := startLocalHTTPServer(_shatterCtorArg0, _shatterCtorArg1)") {
+		t.Fatalf("wrapper did not bind interface-returning constructor result separately; source:\n%s", src)
+	}
+	if !strings.Contains(src, "_recv, _constructorOK := _recvIface.(*httpLocalServer)") {
+		t.Fatalf("wrapper did not assert constructor interface result to *httpLocalServer; source:\n%s", src)
+	}
+
+	const targetSrc = `package ifacector
+
+import "net/http"
+
+type localServer interface {
+	Addr() string
+	Close() error
+}
+
+type httpLocalServer struct {
+	addr string
+	handler http.Handler
+}
+
+func startLocalHTTPServer(addr string, handler http.Handler) (localServer, error) {
+	return &httpLocalServer{addr: addr, handler: handler}, nil
+}
+
+func (s *httpLocalServer) Addr() string { return s.addr }
+func (s *httpLocalServer) Close() error { return nil }
+`
+	compileWrapperFixture(t, "ifacector", targetSrc, []wrapper.WrapperTarget{wrapperTarget}, wrapperCtors)
+}
+
 // TestReceiverArity_PointerReceiverNoCtor_FallbackPlanCompiles regresses the
 // `(*Config).Server` symptom (str-qo1.9 (b)). A pointer-receiver method
 // with no discovered constructor must yield an executable plan (zero-value

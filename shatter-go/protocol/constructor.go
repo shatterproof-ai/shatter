@@ -49,20 +49,29 @@ func ScanConstructors(pkg *packages.Package) []ConstructorCandidate {
 
 // classifyConstructor tests whether fn is a constructor candidate in pkg.
 func classifyConstructor(fn *ast.FuncDecl, pkg *packages.Package) (ConstructorCandidate, bool) {
-	targetType, returnsPointer, returnsError, ok := returnsPackageType(fn, pkg)
+	targetType, returnsPointer, returnsError, returnsInterface, ok := returnsPackageType(fn, pkg)
 	if !ok {
 		return ConstructorCandidate{}, false
 	}
 	if !isConstructorName(fn.Name.Name) && !bodyReturnsComposite(fn) {
 		return ConstructorCandidate{}, false
 	}
+	if returnsInterface {
+		concreteType, concreteReturnsPointer, concreteOK := concreteCompositeReturnType(fn, pkg, targetType)
+		if !concreteOK {
+			return ConstructorCandidate{}, false
+		}
+		targetType = concreteType
+		returnsPointer = concreteReturnsPointer
+	}
 	params := extractConstructorParams(fn, pkg)
 	return ConstructorCandidate{
-		FuncName:       fn.Name.Name,
-		TargetType:     targetType,
-		Parameters:     params,
-		ReturnsError:   returnsError,
-		ReturnsPointer: returnsPointer,
+		FuncName:         fn.Name.Name,
+		TargetType:       targetType,
+		Parameters:       params,
+		ReturnsError:     returnsError,
+		ReturnsPointer:   returnsPointer,
+		ReturnsInterface: returnsInterface,
 	}, true
 }
 
@@ -132,10 +141,10 @@ func constructorParamASTTypeName(expr ast.Expr) string {
 // whether the first result was a pointer (`*T`), whether the second result
 // is error, and whether the signature matches. The pointer flag drives
 // wrapper-side dereference choices (str-jeen.49).
-func returnsPackageType(fn *ast.FuncDecl, pkg *packages.Package) (typeName string, returnsPointer bool, returnsError bool, ok bool) {
+func returnsPackageType(fn *ast.FuncDecl, pkg *packages.Package) (typeName string, returnsPointer bool, returnsError bool, returnsInterface bool, ok bool) {
 	results := fn.Type.Results
 	if results == nil || len(results.List) == 0 {
-		return "", false, false, false
+		return "", false, false, false, false
 	}
 
 	// Flatten the result field list into individual expressions.
@@ -151,21 +160,88 @@ func returnsPackageType(fn *ast.FuncDecl, pkg *packages.Package) (typeName strin
 	}
 
 	if len(exprs) == 0 || len(exprs) > 2 {
-		return "", false, false, false
+		return "", false, false, false, false
 	}
 
 	name, isPtr, same := samePackageTypeName(exprs[0], pkg)
 	if !same {
-		return "", false, false, false
+		return "", false, false, false, false
+	}
+	isInterface := samePackageTypeIsInterface(pkg, name)
+	if isPtr && isInterface {
+		return "", false, false, false, false
 	}
 
 	if len(exprs) == 2 {
 		if !isErrorExpr(exprs[1], pkg.TypesInfo) {
-			return "", false, false, false
+			return "", false, false, false, false
 		}
-		return name, isPtr, true, true
+		return name, isPtr, true, isInterface, true
 	}
-	return name, isPtr, false, true
+	return name, isPtr, false, isInterface, true
+}
+
+func samePackageTypeIsInterface(pkg *packages.Package, name string) bool {
+	typ := lookupNamedType(pkg, name)
+	named, ok := typ.(*types.Named)
+	if !ok {
+		return false
+	}
+	_, ok = named.Underlying().(*types.Interface)
+	return ok
+}
+
+func concreteCompositeReturnType(fn *ast.FuncDecl, pkg *packages.Package, interfaceType string) (string, bool, bool) {
+	if fn.Body == nil {
+		return "", false, false
+	}
+	iface := lookupNamedType(pkg, interfaceType)
+	if iface == nil {
+		return "", false, false
+	}
+	for _, stmt := range fn.Body.List {
+		ret, ok := stmt.(*ast.ReturnStmt)
+		if !ok {
+			continue
+		}
+		for _, result := range ret.Results {
+			name, returnsPointer, ok := concreteCompositeExprType(result, pkg)
+			if !ok {
+				continue
+			}
+			typ := lookupNamedType(pkg, name)
+			if typ == nil {
+				continue
+			}
+			if returnsPointer {
+				if types.AssignableTo(types.NewPointer(typ), iface) {
+					return name, true, true
+				}
+				continue
+			}
+			if types.AssignableTo(typ, iface) {
+				return name, false, true
+			}
+		}
+	}
+	return "", false, false
+}
+
+func concreteCompositeExprType(expr ast.Expr, pkg *packages.Package) (string, bool, bool) {
+	returnsPointer := false
+	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		returnsPointer = true
+		expr = unary.X
+	}
+	composite, ok := expr.(*ast.CompositeLit)
+	if !ok {
+		return "", false, false
+	}
+	name, _, same := samePackageTypeName(composite.Type, pkg)
+	if !same || samePackageTypeIsInterface(pkg, name) {
+		return "", false, false
+	}
+	return name, returnsPointer, true
 }
 
 // samePackageTypeName reports whether expr resolves to a named type whose

@@ -229,7 +229,11 @@ func constructorSignature(c ConstructorCandidate) string {
 	if c.ReturnsError {
 		returnsErr = "1"
 	}
-	sig := c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr + ":" + returnsErr
+	returnsIface := "0"
+	if c.ReturnsInterface {
+		returnsIface = "1"
+	}
+	sig := c.FuncName + ":" + c.TargetType + ":" + hasParams + ":" + returnsPtr + ":" + returnsErr + ":" + returnsIface
 	// str-5ac4: include actual parameter types so that constructor
 	// signature changes invalidate the cached wrapper.
 	if len(c.Parameters) > 0 {
@@ -428,6 +432,12 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			fmt.Fprintf(b, "\t\tcase %q:\n", recvKind)
 			writeConstructorParamDeserialization(b, c.Parameters, "\t\t\t")
 			ctorArgs := constructorInputArgExpr(c)
+			if c.ReturnsInterface {
+				writeInterfaceConstructorReceiver(b, t, c, ctorArgs)
+				writeParamDeserializationAtOffset(b, t.Parameters, "\t\t\t", constructorInputSlotCount(c.Parameters))
+				writeCall(b, t, "_recv", nil, "\t\t\t")
+				continue
+			}
 			// str-jeen.49: choose the call shape from the cross product
 			// of (target receiver kind) × (constructor return kind).
 			//
@@ -482,6 +492,40 @@ func writeConstructorErrorGuard(b *strings.Builder, funcName, indent string) {
 func writeConstructorPointerGuard(b *strings.Builder, funcName, ptrExpr, indent string) {
 	fmt.Fprintf(b, "%sif %s == nil {\n", indent, ptrExpr)
 	fmt.Fprintf(b, "%s\treturn nil, fmt.Errorf(\"shatter: receiver constructor %s returned nil receiver\")\n", indent, funcName)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+func writeInterfaceConstructorReceiver(b *strings.Builder, t WrapperTarget, c ConstructorCandidate, ctorArgs string) {
+	if c.ReturnsError {
+		fmt.Fprintf(b, "\t\t\t_recvIface, _constructorErr := %s(%s)\n", c.FuncName, ctorArgs)
+		writeConstructorErrorGuard(b, c.FuncName, "\t\t\t")
+	} else {
+		fmt.Fprintf(b, "\t\t\t_recvIface := %s(%s)\n", c.FuncName, ctorArgs)
+	}
+
+	switch {
+	case t.IsPointerRecv && c.ReturnsPointer:
+		fmt.Fprintf(b, "\t\t\t_recv, _constructorOK := _recvIface.(*%s)\n", t.ReceiverType)
+		writeConstructorTypeAssertionGuard(b, c.FuncName, "_recvIface", "*"+t.ReceiverType, "\t\t\t")
+		writeConstructorPointerGuard(b, c.FuncName, "_recv", "\t\t\t")
+	case t.IsPointerRecv && !c.ReturnsPointer:
+		fmt.Fprintf(b, "\t\t\t_recvVal, _constructorOK := _recvIface.(%s)\n", t.ReceiverType)
+		writeConstructorTypeAssertionGuard(b, c.FuncName, "_recvIface", t.ReceiverType, "\t\t\t")
+		b.WriteString("\t\t\t_recv := &_recvVal\n")
+	case !t.IsPointerRecv && c.ReturnsPointer:
+		fmt.Fprintf(b, "\t\t\t_recvPtr, _constructorOK := _recvIface.(*%s)\n", t.ReceiverType)
+		writeConstructorTypeAssertionGuard(b, c.FuncName, "_recvIface", "*"+t.ReceiverType, "\t\t\t")
+		writeConstructorPointerGuard(b, c.FuncName, "_recvPtr", "\t\t\t")
+		b.WriteString("\t\t\t_recv := *_recvPtr\n")
+	default:
+		fmt.Fprintf(b, "\t\t\t_recv, _constructorOK := _recvIface.(%s)\n", t.ReceiverType)
+		writeConstructorTypeAssertionGuard(b, c.FuncName, "_recvIface", t.ReceiverType, "\t\t\t")
+	}
+}
+
+func writeConstructorTypeAssertionGuard(b *strings.Builder, funcName, valueExpr, wantType, indent string) {
+	fmt.Fprintf(b, "%sif !_constructorOK {\n", indent)
+	fmt.Fprintf(b, "%s\treturn nil, fmt.Errorf(\"shatter: receiver constructor %s returned %%T, want %s\", %s)\n", indent, funcName, wantType, valueExpr)
 	fmt.Fprintf(b, "%s}\n", indent)
 }
 

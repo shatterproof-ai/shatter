@@ -46,6 +46,10 @@ type ConstructorCandidate struct {
 	//   assignment mismatch: 1 variable but ctor returns 2 values
 	// See str-jeen.78.
 	ReturnsError bool
+	// ReturnsInterface is true when the constructor returns an interface
+	// value backed by TargetType. Wrapper generation type-asserts the
+	// interface result to the concrete receiver before invoking the method.
+	ReturnsInterface bool
 }
 
 // ConstructorParam describes a single constructor argument for wrapper

@@ -631,6 +631,71 @@ func TestPlanRequirements_ConstructorRuntimeValueParamsDoNotConsumeInputPrefix(t
 	}
 }
 
+func TestPlanRequirements_HTTPHandlerConstructorRuntimeValue(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:(*httpLocalServer).Addr"
+	analysis := &protocol.FunctionAnalysis{Name: "(*httpLocalServer).Addr"}
+	target := &protocol.DiscoveredTarget{
+		ID:         targetID,
+		SymbolName: "Addr",
+		Kind:       protocol.TargetKindMethod,
+		Receiver:   &protocol.ReceiverShape{TypeName: "httpLocalServer", IsPointer: true},
+	}
+	ctors := []protocol.ConstructorCandidate{{
+		FuncName:         "startLocalHTTPServer",
+		TargetType:       "httpLocalServer",
+		ReturnsPointer:   true,
+		ReturnsError:     true,
+		ReturnsInterface: true,
+		Parameters: []protocol.ParamInfo{
+			{Name: "addr", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")},
+			{Name: "handler", Type: protocol.TypeInfo{Kind: "opaque"}, TypeName: strPtr("http.Handler")},
+		},
+	}}
+	lookup := richLookup(func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{
+			Analysis:                     analysis,
+			Target:                       target,
+			Constructors:                 ctors,
+			ReceiverRequiresConstruction: true,
+			ConstructorRuntimeValuesByParam: map[string]protocol.ConstructorRuntimeValue{
+				"handler": {Expression: "http.NewServeMux()", Imports: []string{"net/http"}},
+			},
+		}
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+	if len(unsat) > 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+
+	var ctorPlan *protocol.InvocationPlan
+	for i, p := range plans {
+		if p.ReceiverKind == "constructor:startLocalHTTPServer" {
+			ctorPlan = &plans[i]
+			break
+		}
+	}
+	if ctorPlan == nil {
+		t.Fatalf("no plan with ReceiverKind=constructor:startLocalHTTPServer found; plans=%+v", plans)
+	}
+	if len(ctorPlan.ConstructorArgPlans) != 1 {
+		t.Fatalf("expected only addr to consume a constructor input slot, got %d; plan=%+v", len(ctorPlan.ConstructorArgPlans), ctorPlan)
+	}
+	cap := ctorPlan.ConstructorArgPlans[0]
+	if cap.ParamName != "addr" {
+		t.Errorf("constructor arg plan param_name=%q, want addr", cap.ParamName)
+	}
+	if cap.TypeHint != "string" {
+		t.Errorf("constructor arg plan type_hint=%q, want string", cap.TypeHint)
+	}
+}
+
 func TestPlanRequirements_ConstructorInterfaceImplParamsDoNotConsumeInputPrefix(t *testing.T) {
 	t.Parallel()
 

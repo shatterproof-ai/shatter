@@ -311,6 +311,71 @@ func NewWidget(id int) (*Widget, error) {
 	}
 }
 
+func TestScanConstructorsInterfaceReturnConcreteReceiver(t *testing.T) {
+	ldr, cleanup, err := newTransientLoader()
+	if err != nil {
+		t.Fatalf("newTransientLoader: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	tmpFile := filepath.Join(t.TempDir(), "local.go")
+	src := `package testdata
+
+import "net/http"
+
+type localServer interface {
+	Addr() string
+	Close() error
+}
+
+type httpLocalServer struct {
+	handler http.Handler
+}
+
+func startLocalHTTPServer(addr string, handler http.Handler) (localServer, error) {
+	return &httpLocalServer{handler: handler}, nil
+}
+
+func (s *httpLocalServer) Addr() string { return "" }
+func (s *httpLocalServer) Close() error { return nil }
+`
+	if err := os.WriteFile(tmpFile, []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	pkg, err := loadPackageForAnalysis(ldr, tmpFile)
+	if err != nil {
+		t.Fatalf("loadPackageForAnalysis: %v", err)
+	}
+
+	candidates := ScanConstructors(pkg)
+	var found bool
+	for _, c := range candidates {
+		if c.FuncName != "startLocalHTTPServer" || c.TargetType != "httpLocalServer" {
+			continue
+		}
+		found = true
+		if !c.ReturnsInterface {
+			t.Errorf("startLocalHTTPServer.ReturnsInterface = false, want true")
+		}
+		if !c.ReturnsPointer {
+			t.Errorf("startLocalHTTPServer.ReturnsPointer = false, want true for &httpLocalServer return")
+		}
+		if !c.ReturnsError {
+			t.Errorf("startLocalHTTPServer.ReturnsError = false, want true")
+		}
+		if len(c.Parameters) != 2 {
+			t.Fatalf("Parameters len = %d, want 2: %+v", len(c.Parameters), c.Parameters)
+		}
+		if c.Parameters[1].TypeName == nil || *c.Parameters[1].TypeName != "http.Handler" {
+			t.Fatalf("handler TypeName = %v, want http.Handler", c.Parameters[1].TypeName)
+		}
+	}
+	if !found {
+		t.Fatalf("startLocalHTTPServer concrete receiver candidate not found; candidates=%+v", candidates)
+	}
+}
+
 func TestConstructorCandidateJSONRoundtrip(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		c := genConstructorCandidate().Draw(rt, "candidate")
@@ -334,6 +399,9 @@ func TestConstructorCandidateJSONRoundtrip(t *testing.T) {
 		if got.ReturnsPointer != c.ReturnsPointer {
 			rt.Errorf("ReturnsPointer: got %v, want %v", got.ReturnsPointer, c.ReturnsPointer)
 		}
+		if got.ReturnsInterface != c.ReturnsInterface {
+			rt.Errorf("ReturnsInterface: got %v, want %v", got.ReturnsInterface, c.ReturnsInterface)
+		}
 	})
 }
 
@@ -342,11 +410,12 @@ func genConstructorCandidate() *rapid.Generator[ConstructorCandidate] {
 		prefix := rapid.SampledFrom([]string{"New", "MustNew", "Default"}).Draw(rt, "prefix")
 		suffix := rapid.StringMatching(`[A-Z][a-z]{1,8}`).Draw(rt, "suffix")
 		return ConstructorCandidate{
-			FuncName:       prefix + suffix,
-			TargetType:     rapid.StringMatching(`[A-Z][a-z]{2,8}`).Draw(rt, "type"),
-			Parameters:     []ParamInfo{},
-			ReturnsError:   rapid.Bool().Draw(rt, "returns_error"),
-			ReturnsPointer: rapid.Bool().Draw(rt, "returns_pointer"),
+			FuncName:         prefix + suffix,
+			TargetType:       rapid.StringMatching(`[A-Z][a-z]{2,8}`).Draw(rt, "type"),
+			Parameters:       []ParamInfo{},
+			ReturnsError:     rapid.Bool().Draw(rt, "returns_error"),
+			ReturnsPointer:   rapid.Bool().Draw(rt, "returns_pointer"),
+			ReturnsInterface: rapid.Bool().Draw(rt, "returns_interface"),
 		}
 	})
 }
