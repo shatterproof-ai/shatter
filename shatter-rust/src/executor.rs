@@ -3219,6 +3219,12 @@ fn crate_bridge_source_hash(
             .or_else(|| dependency_name_from_line(line))
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    struct PathDependencyInput {
+        root: PathBuf,
+        workspace_manifest: Option<(PathBuf, String)>,
+    }
+
     fn workspace_dependency_path(
         workspace_root: &Path,
         workspace_manifest: &str,
@@ -3263,23 +3269,31 @@ fn crate_bridge_source_hash(
     fn workspace_path_dependency(
         manifest_dir: &Path,
         dependency_name: &str,
-    ) -> Option<PathBuf> {
+    ) -> Option<PathDependencyInput> {
         if let Ok(manifest) = std::fs::read_to_string(manifest_dir.join("Cargo.toml"))
             && manifest.lines().any(|line| line.trim().starts_with("[workspace]"))
             && let Some(path) = workspace_dependency_path(manifest_dir, &manifest, dependency_name)
         {
-            return Some(path);
+            return Some(PathDependencyInput {
+                root: path,
+                workspace_manifest: Some((manifest_dir.join("Cargo.toml"), manifest)),
+            });
         }
         let workspace_root = find_workspace_root(manifest_dir)?;
         let workspace_manifest =
             std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok()?;
-        workspace_dependency_path(&workspace_root, &workspace_manifest, dependency_name)
+        workspace_dependency_path(&workspace_root, &workspace_manifest, dependency_name).map(
+            |root| PathDependencyInput {
+                root,
+                workspace_manifest: Some((workspace_root.join("Cargo.toml"), workspace_manifest)),
+            },
+        )
     }
 
     fn collect_cargo_toml_path_dependencies(
         content: &str,
         manifest_dir: &Path,
-    ) -> Vec<PathBuf> {
+    ) -> Vec<PathDependencyInput> {
         let mut dependencies = Vec::new();
         let mut in_dependency_section = false;
         let mut section_dependency_name = None::<String>;
@@ -3300,15 +3314,18 @@ fn crate_bridge_source_hash(
                 } else {
                     dependency_path.to_path_buf()
                 };
-                dependencies.push(dependency_root);
+                dependencies.push(PathDependencyInput {
+                    root: dependency_root,
+                    workspace_manifest: None,
+                });
             }
             if in_dependency_section
                 && let Some(dependency_name) =
                     workspace_dependency_name(trimmed, section_dependency_name.as_deref())
-                && let Some(dependency_root) =
+                && let Some(dependency_input) =
                     workspace_path_dependency(manifest_dir, &dependency_name)
             {
-                dependencies.push(dependency_root);
+                dependencies.push(dependency_input);
             }
         }
         dependencies.sort();
@@ -3374,18 +3391,29 @@ fn crate_bridge_source_hash(
 
     fn hash_path_dependency_crate(
         hasher: &mut std::collections::hash_map::DefaultHasher,
-        dependency_root: &Path,
+        dependency: &PathDependencyInput,
         visited: &mut std::collections::HashSet<PathBuf>,
     ) -> io::Result<()> {
-        let dependency_root = dependency_root
+        let dependency_root = dependency
+            .root
             .canonicalize()
-            .unwrap_or_else(|_| dependency_root.to_path_buf());
+            .unwrap_or_else(|_| dependency.root.to_path_buf());
         if !visited.insert(dependency_root.clone()) {
             return Ok(());
         }
 
         "path-dependency-root".hash(hasher);
         dependency_root.to_string_lossy().hash(hasher);
+        if let Some((workspace_manifest_path, workspace_manifest)) =
+            dependency.workspace_manifest.as_ref()
+        {
+            hash_bytes(
+                hasher,
+                "path-dependency-workspace-manifest",
+                workspace_manifest_path,
+                workspace_manifest.as_bytes(),
+            );
+        }
         hash_dependency_root_files(hasher, &dependency_root)?;
 
         let cargo_toml = dependency_root.join("Cargo.toml");
@@ -3410,8 +3438,8 @@ fn crate_bridge_source_hash(
         crate_root: &Path,
     ) -> io::Result<()> {
         let mut visited = std::collections::HashSet::new();
-        for dependency_root in collect_cargo_toml_path_dependencies(content, crate_root) {
-            hash_path_dependency_crate(hasher, &dependency_root, &mut visited)?;
+        for dependency in collect_cargo_toml_path_dependencies(content, crate_root) {
+            hash_path_dependency_crate(hasher, &dependency, &mut visited)?;
         }
         Ok(())
     }
@@ -12728,7 +12756,7 @@ path = "lib.rs"
 members = ["app", "helper", "leaf"]
 
 [workspace.dependencies]
-leaf = { path = "leaf" }
+leaf = { path = "leaf", features = ["old"] }
 "#,
         )
         .unwrap();
@@ -12805,6 +12833,32 @@ edition = "2021"
         assert_ne!(
             old_hash, changed_leaf_hash,
             "crate-bridge cache keys must invalidate when workspace path dependency sources change",
+        );
+
+        std::fs::write(leaf_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+        std::fs::write(
+            workspace_root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["app", "helper", "leaf"]
+
+[workspace.dependencies]
+leaf = { path = "leaf", features = ["new"] }
+"#,
+        )
+        .unwrap();
+        let changed_workspace_metadata_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_workspace_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_workspace_metadata_hash,
+            "crate-bridge cache keys must invalidate when workspace path dependency metadata changes",
         );
 
         let _ = std::fs::remove_dir_all(&workspace_root);
