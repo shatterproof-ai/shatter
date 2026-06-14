@@ -3247,6 +3247,9 @@ fn crate_bridge_source_hash(
         let mut section_dependency_name = None::<String>;
         for line in workspace_manifest.lines() {
             let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
             if let Some(section) = toml_section_name(trimmed) {
                 in_workspace_dependencies = section == "workspace.dependencies"
                     || section.starts_with("workspace.dependencies.");
@@ -3312,6 +3315,9 @@ fn crate_bridge_source_hash(
         let mut section_dependency_name = None::<String>;
         for line in content.lines() {
             let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
             if let Some(section) = toml_section_name(trimmed) {
                 in_dependency_section = is_dependency_section(section);
                 section_dependency_name = dependency_name_from_section(section);
@@ -3488,12 +3494,13 @@ fn crate_bridge_source_hash(
     let cargo_toml = crate_root.join("Cargo.toml");
     if cargo_toml.exists() {
         let content = std::fs::read_to_string(&cargo_toml)?;
-        let ws_pkg = if has_workspace_inheritance(&content) {
-            find_workspace_root(crate_root).and_then(|ws| extract_workspace_package_section(&ws))
+        let workspace_sections = if has_workspace_inheritance(&content) {
+            find_workspace_root(crate_root).and_then(|ws| extract_workspace_inherited_sections(&ws))
         } else {
             None
         };
-        let resolved = resolve_cargo_toml_paths(&content, crate_root, ws_pkg.as_deref());
+        let resolved =
+            resolve_cargo_toml_paths(&content, crate_root, workspace_sections.as_deref());
         let injected = crate_bridge_feature_content(&resolved, runtime_path);
         hash_bytes(
             &mut hasher,
@@ -3618,12 +3625,13 @@ fn create_crate_staging_copy(crate_root: &Path, staging_root: &Path) -> io::Resu
     let cargo_toml_path = crate_root.join("Cargo.toml");
     if cargo_toml_path.exists() {
         let content = std::fs::read_to_string(&cargo_toml_path)?;
-        let ws_pkg = if has_workspace_inheritance(&content) {
-            find_workspace_root(crate_root).and_then(|ws| extract_workspace_package_section(&ws))
+        let workspace_sections = if has_workspace_inheritance(&content) {
+            find_workspace_root(crate_root).and_then(|ws| extract_workspace_inherited_sections(&ws))
         } else {
             None
         };
-        let resolved = resolve_cargo_toml_paths(&content, crate_root, ws_pkg.as_deref());
+        let resolved =
+            resolve_cargo_toml_paths(&content, crate_root, workspace_sections.as_deref());
         std::fs::create_dir_all(&staging_crate)?;
         std::fs::write(staging_crate.join("Cargo.toml"), resolved)?;
     }
@@ -3973,26 +3981,20 @@ fn find_workspace_root(crate_root: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Extract the `[workspace.package]` section from a workspace root Cargo.toml.
-/// Returns lines like `edition = "2021"\nrust-version = "1.70"\n`.
-fn extract_workspace_package_section(workspace_root: &Path) -> Option<String> {
+fn extract_workspace_inherited_sections(workspace_root: &Path) -> Option<String> {
     let content = std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok()?;
-    let mut in_section = false;
+    let mut include_section = false;
     let mut result = String::new();
     for line in content.lines() {
-        let t = line.trim();
-        if t == "[workspace.package]" {
-            in_section = true;
-            continue;
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            include_section = trimmed == "[workspace.package]"
+                || trimmed == "[workspace.dependencies]"
+                || trimmed.starts_with("[workspace.dependencies.");
         }
-        if in_section {
-            if t.starts_with('[') {
-                break;
-            }
-            if !t.is_empty() {
-                result.push_str(line);
-                result.push('\n');
-            }
+        if include_section {
+            result.push_str(line);
+            result.push('\n');
         }
     }
     if result.is_empty() {
@@ -4012,13 +4014,53 @@ fn has_workspace_inheritance(content: &str) -> bool {
 
 /// Resolve relative `path = "..."` entries in a Cargo.toml to absolute paths
 /// based on `crate_root`, and inject `[workspace]` to prevent workspace
-/// auto-discovery from the staging location. When `ws_pkg_fields` is provided,
-/// includes a `[workspace.package]` section so inherited fields resolve.
+/// auto-discovery from the staging location. When workspace inherited sections
+/// are provided, includes them so inherited fields and dependencies resolve.
 fn resolve_cargo_toml_paths(
     content: &str,
     crate_root: &Path,
-    ws_pkg_fields: Option<&str>,
+    workspace_inherited_sections: Option<&str>,
 ) -> String {
+    fn section_name(line: &str) -> Option<&str> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('[') {
+            return None;
+        }
+        let end = trimmed.find(']')?;
+        Some(trimmed[..=end].trim_matches(&['[', ']'][..]).trim())
+    }
+
+    fn is_path_dependency_section(section: &str) -> bool {
+        !section.starts_with("workspace.dependencies")
+            && (section.contains("dependencies")
+                || section.starts_with("patch.")
+                || section == "replace")
+    }
+
+    fn quoted_path_value(line: &str) -> Option<(&str, char)> {
+        let mut search_start = 0;
+        while let Some(idx) = line[search_start..].find("path") {
+            let path_idx = search_start + idx;
+            let before = line[..path_idx].chars().rev().find(|ch| !ch.is_whitespace());
+            let valid_key_start = before.is_none_or(|ch| ch == '{' || ch == ',' || ch == '.');
+            let after_path = line[path_idx + "path".len()..].trim_start();
+            if valid_key_start
+                && let Some(rest) = after_path.strip_prefix('=')
+            {
+                let rest = rest.trim_start();
+                let quote = rest.chars().next()?;
+                if quote != '"' && quote != '\'' {
+                    return None;
+                }
+                let rest = &rest[quote.len_utf8()..];
+                let value_end = rest.find(quote)?;
+                return Some((&rest[..value_end], quote));
+            }
+            search_start = path_idx + "path".len();
+        }
+        None
+    }
+
     let mut result = String::with_capacity(content.len() + 256);
     let mut has_workspace = false;
     // Track whether we are inside a dependency section where `path = "..."`
@@ -4032,40 +4074,30 @@ fn resolve_cargo_toml_paths(
         if trimmed == "[workspace]" || trimmed.starts_with("[workspace]") {
             has_workspace = true;
         }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
         // Detect section headers.
-        if trimmed.starts_with('[') {
-            in_dep_section = trimmed.contains("dependencies");
+        if let Some(section) = section_name(trimmed) {
+            in_dep_section = is_path_dependency_section(section);
         }
         // Resolve relative path deps: `path = "..."` or `path = '...'`
-        // Only inside [dependencies], [dev-dependencies], [build-dependencies],
-        // or inline dep tables — NOT in [lib], [[bin]], etc.
-        if in_dep_section && let Some(idx) = trimmed.find("path") {
-            let after_path = trimmed[idx + 4..].trim();
-            if let Some(rest) = after_path.strip_prefix('=') {
-                let rest = rest.trim();
-                let (quote, path_val) = if let Some(s) = rest.strip_prefix('"') {
-                    ('"', s.split('"').next().unwrap_or(""))
-                } else if let Some(s) = rest.strip_prefix('\'') {
-                    ('\'', s.split('\'').next().unwrap_or(""))
-                } else {
-                    // Not a quoted path, pass through.
-                    result.push_str(line);
-                    result.push('\n');
-                    continue;
-                };
-                let dep_path = Path::new(path_val);
-                if dep_path.is_relative() && !path_val.is_empty() {
-                    let abs = crate_root.join(dep_path);
-                    let abs_str = abs.display().to_string().replace('\\', "/");
-                    let new_line = line.replacen(
-                        &format!("{quote}{path_val}{quote}"),
-                        &format!("{quote}{abs_str}{quote}"),
-                        1,
-                    );
-                    result.push_str(&new_line);
-                    result.push('\n');
-                    continue;
-                }
+        // Only inside dependency/patch sections — NOT in [lib], [[bin]], etc.
+        if in_dep_section && let Some((path_val, quote)) = quoted_path_value(trimmed) {
+            let dep_path = Path::new(path_val);
+            if dep_path.is_relative() && !path_val.is_empty() {
+                let abs = crate_root.join(dep_path);
+                let abs_str = abs.display().to_string().replace('\\', "/");
+                let new_line = line.replacen(
+                    &format!("{quote}{path_val}{quote}"),
+                    &format!("{quote}{abs_str}{quote}"),
+                    1,
+                );
+                result.push_str(&new_line);
+                result.push('\n');
+                continue;
             }
         }
         result.push_str(line);
@@ -4074,9 +4106,9 @@ fn resolve_cargo_toml_paths(
     // Add [workspace] if not present, to isolate the staging copy from
     // any workspace root above the original crate.
     if !has_workspace {
-        if let Some(fields) = ws_pkg_fields {
-            result.push_str("\n[workspace]\nmembers = []\n\n[workspace.package]\n");
-            result.push_str(fields);
+        if let Some(sections) = workspace_inherited_sections {
+            result.push_str("\n[workspace]\nmembers = []\n\n");
+            result.push_str(sections);
         } else {
             result.push_str("\n[workspace]\nmembers = []\n");
         }
@@ -12067,6 +12099,23 @@ runtime = { path = "../runtime" }
     }
 
     #[test]
+    fn resolve_cargo_toml_paths_absolutises_patch_paths() {
+        let crate_root = Path::new("/home/user/project/my-crate");
+        let input = r#"[package]
+name = "my-crate"
+version = "0.1.0"
+
+[patch.crates-io]
+helper = { path = "../helper" }
+"#;
+        let result = resolve_cargo_toml_paths(input, crate_root, None);
+        assert!(
+            result.contains("/home/user/project/my-crate/../helper"),
+            "patch path must be absolutised for staging: {result}",
+        );
+    }
+
+    #[test]
     fn has_workspace_inheritance_detects_dotted_fields() {
         assert!(has_workspace_inheritance("edition.workspace = true\n"));
         assert!(has_workspace_inheritance(
@@ -12088,8 +12137,9 @@ edition.workspace = true
 
 [dependencies]
 "#;
-        let ws_fields = "edition = \"2021\"\nrust-version = \"1.70\"\n";
-        let result = resolve_cargo_toml_paths(input, crate_root, Some(ws_fields));
+        let ws_sections =
+            "[workspace.package]\nedition = \"2021\"\nrust-version = \"1.70\"\n";
+        let result = resolve_cargo_toml_paths(input, crate_root, Some(ws_sections));
         assert!(
             result.contains("[workspace.package]"),
             "must inject [workspace.package]: {result}",
@@ -12101,6 +12151,33 @@ edition.workspace = true
         assert!(
             result.contains("rust-version = \"1.70\""),
             "must include inherited rust-version: {result}",
+        );
+    }
+
+    #[test]
+    fn resolve_cargo_toml_paths_injects_workspace_dependency_fields() {
+        let crate_root = Path::new("/tmp/member");
+        let input = r#"[package]
+name = "member"
+edition.workspace = true
+
+[dependencies]
+helper = { workspace = true }
+"#;
+        let ws_sections = r#"[workspace.package]
+edition = "2021"
+
+[workspace.dependencies]
+helper = { path = "/tmp/helper", features = ["serde"] }
+"#;
+        let result = resolve_cargo_toml_paths(input, crate_root, Some(ws_sections));
+        assert!(
+            result.contains("[workspace.dependencies]"),
+            "must inject [workspace.dependencies]: {result}",
+        );
+        assert!(
+            result.contains(r#"helper = { path = "/tmp/helper", features = ["serde"] }"#),
+            "must include inherited dependency metadata: {result}",
         );
     }
 
@@ -13147,6 +13224,70 @@ edition = "2021"
         assert_ne!(
             old_hash, changed_helper_hash,
             "crate-bridge cache keys must invalidate when commented dependency section path sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_ignores_commented_path_dependencies() {
+        let workspace_root = unique_tmp_dir("bridge-commented-path-dep-hash");
+        let crate_root = workspace_root.join("app");
+        let helper_root = workspace_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_commented_path_dep"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# helper = { path = "../helper" }
+"#,
+        )
+        .unwrap();
+        std::fs::write(crate_root.join("src/lib.rs"), "pub fn target() -> u64 { 1 }\n").unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 1 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_commented_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 1 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_commented_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_eq!(
+            old_hash, changed_helper_hash,
+            "commented-out path dependencies must not affect crate-bridge cache keys",
         );
 
         let _ = std::fs::remove_dir_all(&workspace_root);
