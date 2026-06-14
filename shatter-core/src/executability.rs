@@ -488,14 +488,14 @@ fn find_blocking_opaque_node(
             }
             None
         }
-        TypeInfo::Nullable { inner } => {
-            path.push(PathSegment::NullableInner);
-            if let Some(result) = find_blocking_opaque_node(inner, path) {
-                Some(result)
-            } else {
-                path.pop();
-                None
-            }
+        TypeInfo::Nullable { .. } => {
+            // An optional value is always synthesizable as `None`, regardless of
+            // whether its inner type is opaque — so an `Option<Opaque>` field
+            // (e.g. a struct's `Option<serde_json::Value>`) must NOT make the
+            // whole function non-executable. input_gen already emits `null` for
+            // an opaque inner; when the inner IS synthesizable it still explores
+            // the `Some(..)` arm. Never block on a nullable. (str-orku)
+            None
         }
         TypeInfo::Complex { inner, .. } => {
             if let Some(inner_type) = inner.as_deref() {
@@ -677,6 +677,31 @@ mod tests {
             vec![PathSegment::Param("conn".into())]
         );
         assert_eq!(reasons[0].user_reason, None);
+    }
+
+    #[test]
+    fn object_with_nullable_opaque_field_does_not_block() {
+        // A struct whose only opaque content is behind an Option (e.g. Trip's
+        // weather_summary: Option<serde_json::Value>) stays executable.
+        let params = vec![param(
+            "trip",
+            TypeInfo::Object {
+                fields: vec![
+                    ("name".into(), TypeInfo::Str),
+                    (
+                        "weather_summary".into(),
+                        TypeInfo::Nullable {
+                            inner: Box::new(TypeInfo::Opaque {
+                                label: "serde_json::Value".into(),
+                                static_opacity: None,
+                                medium_opacity: None,
+                            }),
+                        },
+                    ),
+                ],
+            },
+        )];
+        assert!(check_executability(&params, &[]).is_empty());
     }
 
     #[test]
@@ -898,7 +923,10 @@ mod tests {
     }
 
     #[test]
-    fn nullable_opaque_returns_reason() {
+    fn nullable_opaque_does_not_return_reason() {
+        // str-orku: Option<Opaque> is synthesizable as None, so it does NOT make
+        // the function non-executable (previously this returned a blocking
+        // reason; that was over-eager — None is always a valid synthesis).
         let params = vec![param(
             "maybe_conn",
             TypeInfo::Nullable {
@@ -909,18 +937,7 @@ mod tests {
                 }),
             },
         )];
-        let reasons = check_executability(&params, &[]);
-        assert_eq!(reasons.len(), 1);
-        assert_eq!(reasons[0].param_name, "maybe_conn");
-        assert_eq!(reasons[0].opaque_label, "pg.Pool");
-        assert_eq!(reasons[0].category, OpaqueCategory::DatabaseConnection);
-        assert_eq!(
-            reasons[0].nesting_path,
-            vec![
-                PathSegment::Param("maybe_conn".into()),
-                PathSegment::NullableInner,
-            ]
-        );
+        assert!(check_executability(&params, &[]).is_empty());
     }
 
     #[test]

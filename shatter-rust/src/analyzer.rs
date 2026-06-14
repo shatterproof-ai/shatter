@@ -979,6 +979,19 @@ fn convert_type_path(
                 TypeInfo::Union {
                     variants: variant_types,
                 }
+            } else if name == "Value" {
+                // serde_json::Value (and other dynamic-JSON value types): ANY
+                // JSON deserializes into it, so it is freely synthesizable.
+                // Unknown lets input_gen emit an arbitrary value without making
+                // the enclosing struct non-executable (str-orku). The cross-file
+                // struct/enum registry is checked above, so a user-defined
+                // `Value` type still resolves to its real shape.
+                TypeInfo::Unknown
+            } else if name == "Map" {
+                // serde_json::Map<String, Value>: a JSON object. An empty object
+                // always deserializes; precise key/value typing is unnecessary
+                // for synthesis (and `serde(flatten)` fields accept any object).
+                TypeInfo::Object { fields: Vec::new() }
             } else {
                 TypeInfo::Opaque { label: name }
             }
@@ -2295,6 +2308,27 @@ mod tests {
                 metadata: HashMap::new(),
                 inner: None,
             }
+        );
+    }
+
+    #[test]
+    fn serde_json_value_synthesizes_as_unknown() {
+        // serde_json::Value (bare or qualified) is dynamic JSON — synthesizable,
+        // never opaque (str-orku).
+        assert_eq!(analyze_fn("fn f(x: Value) {}", "f").params[0].typ, TypeInfo::Unknown);
+        assert_eq!(
+            analyze_fn("fn f(x: serde_json::Value) {}", "f").params[0].typ,
+            TypeInfo::Unknown
+        );
+    }
+
+    #[test]
+    fn serde_json_map_synthesizes_as_object() {
+        let f = analyze_fn("fn f(x: Map<String, Value>) {}", "f");
+        assert!(
+            matches!(f.params[0].typ, TypeInfo::Object { .. }),
+            "expected Object for serde_json::Map, got {:?}",
+            f.params[0].typ
         );
     }
 
