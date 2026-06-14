@@ -3,6 +3,7 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
@@ -197,6 +198,22 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		})
 	}
 
+	if family.typeHint == paramTypeHintString && isHTTPRequestBodyParam(p) {
+		for _, literal := range httpRequestBodySeeds {
+			encoded, err := json.Marshal(literal)
+			if err != nil {
+				continue
+			}
+			if !add(protocol.ValuePlan{
+				Kind:     protocol.ValuePlanKindLiteral,
+				Literal:  encoded,
+				TypeHint: family.typeHint,
+			}) {
+				break
+			}
+		}
+	}
+
 	if family.typeHint == paramTypeHintString {
 		for _, literal := range opts.StringLiteralsByParam[p.Name] {
 			encoded, err := json.Marshal(literal)
@@ -233,6 +250,20 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		}
 	}
 	return plans, nil
+}
+
+var httpRequestBodySeeds = []string{
+	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`,
+	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
+	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"system":"be concise","messages":[{"role":"user","content":"hello"}]}`,
+	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":true}`,
+}
+
+func isHTTPRequestBodyParam(p protocol.ParamInfo) bool {
+	if p.TypeName != nil && strings.TrimSpace(*p.TypeName) == "*http.Request" {
+		return true
+	}
+	return strings.TrimSpace(p.Type.Label) == "*http.Request"
 }
 
 // paramFamily carries the code-generation type hint plus the ordered

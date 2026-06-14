@@ -3,6 +3,7 @@ package planner_test
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/planner"
@@ -235,6 +236,35 @@ func TestPlanParam_HTTPRequestBodySymbolicStringPlans(t *testing.T) {
 		if plan.TypeHint != "string" {
 			t.Fatalf("plan[%d].TypeHint = %q, want string", i, plan.TypeHint)
 		}
+	}
+}
+
+func TestPlanParam_HTTPRequestBodyIncludesJSONRequestSeeds(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		StringLiteralsByParam: map[string][]string{"r": {"x-api-key", "invalid JSON: "}},
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatalf("no plans produced")
+	}
+	var seededBody string
+	if err := json.Unmarshal(plans[0].Literal, &seededBody); err != nil {
+		t.Fatalf("first plan literal does not decode as string: %v; literal=%s", err, plans[0].Literal)
+	}
+	if !strings.Contains(seededBody, `"messages"`) || !strings.Contains(seededBody, `"max_tokens"`) {
+		t.Fatalf("first request body seed = %q, want valid provider-style JSON body before target-local string literals", seededBody)
+	}
+	if plans[0].TypeHint != "string" {
+		t.Fatalf("first plan TypeHint = %q, want string", plans[0].TypeHint)
 	}
 }
 
