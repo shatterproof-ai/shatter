@@ -1175,7 +1175,7 @@ pub async fn explore_function(
             for (float_inputs, floor_inputs) in pairs {
                 let float_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &float_inputs,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let float_resp = frontend
@@ -1193,7 +1193,7 @@ pub async fn explore_function(
 
                 let floor_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &floor_inputs,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let floor_resp = frontend
@@ -1491,7 +1491,7 @@ pub async fn explore_function(
         // already computed.
         let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
             &inputs,
-            analysis.params.len(),
+            &analysis.params,
             config.default_execute_plan.as_ref(),
         )?;
         let strategy_feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
@@ -1682,7 +1682,7 @@ pub async fn explore_function(
                 attempts += 1;
                 let bulk_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &bulk_trial,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let resp = frontend
@@ -1726,7 +1726,7 @@ pub async fn explore_function(
                     attempts += 1;
                     let trial_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                         &trial,
-                        analysis.params.len(),
+                        &analysis.params,
                         config.default_execute_plan.as_ref(),
                     )?;
                     let resp = frontend
@@ -1777,7 +1777,7 @@ pub async fn explore_function(
                         let trial_execute_inputs =
                             crate::planner_consumer::execute_inputs_for_plan(
                                 &trial,
-                                analysis.params.len(),
+                                &analysis.params,
                                 config.default_execute_plan.as_ref(),
                             )?;
                         let resp = frontend
@@ -2289,7 +2289,7 @@ async fn explore_function_with_observer_pool(
 
             let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                 &inputs,
-                analysis.params.len(),
+                &analysis.params,
                 config.default_execute_plan.as_ref(),
             )?;
             let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(

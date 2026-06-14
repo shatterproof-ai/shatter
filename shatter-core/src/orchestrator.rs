@@ -1297,22 +1297,11 @@ async fn observe_one(
     // an error — when the frontend is slow to respond (e.g., long compile
     // times in the Rust harness), the orchestrator should stop scheduling
     // new work and report a timeout, not a protocol ID mismatch.
-    // Repair each input against its parameter type before execution so eroded
-    // struct inputs (missing required fields from upstream mutation/crossover/
-    // shrinking) still deserialize and the function actually runs (str-kn3f).
-    // Purely additive — present fields keep their solved/mutated values.
-    let repaired_inputs: Vec<serde_json::Value> = entry
-        .inputs
-        .iter()
-        .enumerate()
-        .map(|(i, value)| match param_infos.get(i) {
-            Some(param) => crate::input_gen::repair_required_fields(value, &param.typ),
-            None => value.clone(),
-        })
-        .collect();
+    // execute_inputs_for_plan repairs each input against its parameter type
+    // (str-kn3f) — the single funnel point for all execute paths.
     let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
-        &repaired_inputs,
-        param_infos.len(),
+        &entry.inputs,
+        param_infos,
         config.default_execute_plan.as_ref(),
     )?;
     let response = match frontend
@@ -2083,7 +2072,7 @@ async fn refine_boundaries_async(
             let candidate = &candidates[0];
             let execute_candidate = crate::planner_consumer::execute_inputs_for_plan(
                 candidate,
-                param_infos.len(),
+                param_infos,
                 execute_plan.as_ref(),
             )?;
             let response = match frontend
@@ -2368,12 +2357,12 @@ pub async fn explore_with_oracle(
                 }
                 let execute_float_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &float_inputs,
-                    param_infos.len(),
+                    param_infos,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &floor_inputs,
-                    param_infos.len(),
+                    param_infos,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let float_resp = frontend
@@ -2709,7 +2698,7 @@ pub async fn explore_with_oracle(
                             );
                             let execute_mutated = crate::planner_consumer::execute_inputs_for_plan(
                                 &mutated,
-                                param_infos.len(),
+                                param_infos,
                                 config.default_execute_plan.as_ref(),
                             )?;
 
@@ -3236,7 +3225,7 @@ pub async fn explore_with_oracle(
                 attempts += 1;
                 let execute_bulk_trial = crate::planner_consumer::execute_inputs_for_plan(
                     &bulk_trial,
-                    param_infos.len(),
+                    param_infos,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let resp = frontend
@@ -3279,7 +3268,7 @@ pub async fn explore_with_oracle(
                     attempts += 1;
                     let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
                         &trial,
-                        param_infos.len(),
+                        param_infos,
                         config.default_execute_plan.as_ref(),
                     )?;
                     let resp = frontend
@@ -3331,7 +3320,7 @@ pub async fn explore_with_oracle(
                         attempts += 1;
                         let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
                             &trial,
-                            param_infos.len(),
+                            param_infos,
                             config.default_execute_plan.as_ref(),
                         )?;
 
