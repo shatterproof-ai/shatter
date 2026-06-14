@@ -213,6 +213,31 @@ func TestPlanParam_PrimitiveFamilies(t *testing.T) {
 	}
 }
 
+func TestPlanParam_HTTPRequestBodySymbolicStringPlans(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatalf("no plans produced")
+	}
+	for i, plan := range plans {
+		if plan.Kind == protocol.ValuePlanKindRuntimeValue {
+			t.Fatalf("plan[%d] is runtime-value plan; direct *http.Request must consume a symbolic body input", i)
+		}
+		if plan.TypeHint != "string" {
+			t.Fatalf("plan[%d].TypeHint = %q, want string", i, plan.TypeHint)
+		}
+	}
+}
+
 func TestPlanParam_Cap(t *testing.T) {
 	plans, _ := planner.PlanParam(testTargetID, 0, intParam("n"), planner.ParamPlanOptions{MaxPlansPerParam: 2})
 	if len(plans) != 2 {
