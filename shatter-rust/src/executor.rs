@@ -3171,14 +3171,25 @@ fn crate_bridge_source_hash(
                 return Some(name.trim_matches(&['"', '\''][..]).to_string());
             }
         }
+        for marker in [
+            ".dependencies.",
+            ".dev-dependencies.",
+            ".build-dependencies.",
+        ] {
+            if let Some((_, name)) = section.rsplit_once(marker) {
+                return Some(name.trim_matches(&['"', '\''][..]).to_string());
+            }
+        }
         None
     }
 
     fn is_dependency_section(section: &str) -> bool {
-        matches!(
-            section,
-            "dependencies" | "dev-dependencies" | "build-dependencies"
-        ) || dependency_name_from_section(section).is_some()
+        !section.starts_with("workspace.dependencies")
+            && (matches!(
+                section,
+                "dependencies" | "dev-dependencies" | "build-dependencies"
+            ) || section.contains("dependencies")
+                || dependency_name_from_section(section).is_some())
     }
 
     fn dependency_name_from_line(line: &str) -> Option<String> {
@@ -3252,6 +3263,12 @@ fn crate_bridge_source_hash(
         manifest_dir: &Path,
         dependency_name: &str,
     ) -> Option<PathBuf> {
+        if let Ok(manifest) = std::fs::read_to_string(manifest_dir.join("Cargo.toml"))
+            && manifest.lines().any(|line| line.trim().starts_with("[workspace]"))
+            && let Some(path) = workspace_dependency_path(manifest_dir, &manifest, dependency_name)
+        {
+            return Some(path);
+        }
         let workspace_root = find_workspace_root(manifest_dir)?;
         let workspace_manifest =
             std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok()?;
@@ -12790,6 +12807,147 @@ edition = "2021"
         );
 
         let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_target_path_dependency_source_changes() {
+        let workspace_root = unique_tmp_dir("bridge-target-path-dep-hash");
+        let crate_root = workspace_root.join("app");
+        let helper_root = workspace_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_target_path_dep"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(unix)'.dependencies]
+helper = { path = "../helper" }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_target_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_target_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when target-specific path dependency sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_root_workspace_dependency_source_changes() {
+        let crate_root = unique_tmp_dir("bridge-root-workspace-dep-hash");
+        let helper_root = crate_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_root_workspace_dep"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["helper"]
+
+[workspace.dependencies]
+helper = { path = "helper" }
+
+[dependencies]
+helper = { workspace = true }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_root_workspace_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_root_workspace_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when root workspace path dependency sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
     }
 
     #[test]
