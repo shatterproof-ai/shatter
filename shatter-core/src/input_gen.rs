@@ -2992,6 +2992,54 @@ use crate::boundary_dict::get_boundary_values;
 use crate::protocol::LiteralValue;
 use crate::types::ParamInfo;
 
+fn default_candidate_values(params: &[ParamInfo]) -> Vec<Value> {
+    params
+        .iter()
+        .map(|p| {
+            get_boundary_values(&p.typ)
+                .into_iter()
+                .next()
+                .map(|e| e.value)
+                .unwrap_or(Value::Null)
+        })
+        .collect()
+}
+
+/// Generate high-priority candidates for expression-like string parameters.
+///
+/// Direct scan targets such as `CompileCELMatcher(expr string, score float64)`
+/// need a syntactically valid expression before the random string generator
+/// has enough iterations to stumble into one. This remains intentionally
+/// narrow: only exact expression-like parameter names receive the `true` seed,
+/// while other parameters use the same boundary defaults as literal and pool
+/// candidate rows.
+pub fn expression_string_candidate_inputs(params: &[ParamInfo]) -> Vec<Vec<Value>> {
+    if params.is_empty() {
+        return Vec::new();
+    }
+
+    let defaults = default_candidate_values(params);
+    let mut inputs = Vec::new();
+    for (idx, param) in params.iter().enumerate() {
+        if is_expression_string_param(param) {
+            let mut row = defaults.clone();
+            row[idx] = Value::from("true");
+            inputs.push(row);
+        }
+    }
+    inputs
+}
+
+fn is_expression_string_param(param: &ParamInfo) -> bool {
+    if !matches!(param.typ, TypeInfo::Str) {
+        return false;
+    }
+    matches!(
+        param.name.to_ascii_lowercase().as_str(),
+        "expr" | "expression" | "condition" | "predicate"
+    )
+}
+
 /// Convert extracted literal values from static analysis into candidate input vectors.
 ///
 /// For each `LiteralValue`, produces one input vector per parameter whose type
@@ -3008,16 +3056,7 @@ pub fn literals_to_candidate_inputs(
     }
 
     // Neutral default per parameter: first boundary value or null
-    let defaults: Vec<Value> = params
-        .iter()
-        .map(|p| {
-            get_boundary_values(&p.typ)
-                .into_iter()
-                .next()
-                .map(|e| e.value)
-                .unwrap_or(Value::Null)
-        })
-        .collect();
+    let defaults = default_candidate_values(params);
 
     // Deduplicate literals first
     let mut lit_seen = std::collections::HashSet::new();
@@ -3070,16 +3109,7 @@ pub fn pool_to_candidate_inputs(
         return Vec::new();
     }
 
-    let defaults: Vec<Value> = params
-        .iter()
-        .map(|p| {
-            get_boundary_values(&p.typ)
-                .into_iter()
-                .next()
-                .map(|e| e.value)
-                .unwrap_or(Value::Null)
-        })
-        .collect();
+    let defaults = default_candidate_values(params);
 
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
@@ -3142,16 +3172,7 @@ pub fn pool_to_candidate_inputs_for_callees(
         return candidates;
     }
 
-    let defaults: Vec<Value> = params
-        .iter()
-        .map(|p| {
-            get_boundary_values(&p.typ)
-                .into_iter()
-                .next()
-                .map(|e| e.value)
-                .unwrap_or(Value::Null)
-        })
-        .collect();
+    let defaults = default_candidate_values(params);
 
     let mut seen = std::collections::HashSet::new();
     let mut callee_rows = Vec::new();

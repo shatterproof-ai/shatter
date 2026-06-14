@@ -1673,7 +1673,9 @@ pub async fn scan(
             config.timeout_per_fn.as_secs(),
         );
         let mut candidate_inputs = config_function_inputs.candidate_inputs;
-        candidate_inputs.extend(scan_expression_candidate_inputs(&analysis.params));
+        candidate_inputs.extend(crate::input_gen::expression_string_candidate_inputs(
+            &analysis.params,
+        ));
         // Extend with cached seeds from prior exploration runs.
         if let Some(ref cache) = config.cache
             && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -4188,7 +4190,9 @@ pub async fn parallel_scan_with_progress(
             };
 
             let mut candidate_inputs = config_function_inputs.candidate_inputs;
-            candidate_inputs.extend(scan_expression_candidate_inputs(&analysis.params));
+            candidate_inputs.extend(crate::input_gen::expression_string_candidate_inputs(
+                &analysis.params,
+            ));
             // Extend with cached seeds from prior exploration runs.
             if let Some(ref cache) = config.cache
                 && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -5094,47 +5098,6 @@ async fn fetch_default_execute_plan_for_method(
             log::debug!("[scan] planner fetch failed for {}: {e}", analysis.name,);
             None
         }
-    }
-}
-
-fn scan_expression_candidate_inputs(
-    params: &[crate::types::ParamInfo],
-) -> Vec<Vec<serde_json::Value>> {
-    if params.is_empty() {
-        return Vec::new();
-    }
-    let defaults: Vec<serde_json::Value> = params
-        .iter()
-        .map(|param| scan_default_input_value(&param.typ))
-        .collect();
-    let mut inputs = Vec::new();
-    for (idx, param) in params.iter().enumerate() {
-        if scan_param_is_expression_string(param) {
-            let mut row = defaults.clone();
-            row[idx] = serde_json::Value::from("true");
-            inputs.push(row);
-        }
-    }
-    inputs
-}
-
-fn scan_param_is_expression_string(param: &crate::types::ParamInfo) -> bool {
-    if !matches!(param.typ, TypeInfo::Str) {
-        return false;
-    }
-    matches!(
-        param.name.to_ascii_lowercase().as_str(),
-        "expr" | "expression" | "condition" | "predicate"
-    )
-}
-
-fn scan_default_input_value(typ: &TypeInfo) -> serde_json::Value {
-    match typ {
-        TypeInfo::Int => serde_json::Value::from(0),
-        TypeInfo::Float => serde_json::Value::from(0.0),
-        TypeInfo::Str => serde_json::Value::from(""),
-        TypeInfo::Bool => serde_json::Value::from(false),
-        _ => serde_json::Value::Null,
     }
 }
 
@@ -6595,13 +6558,7 @@ for line in sys.stdin:
         frontend.shutdown().await.expect("shutdown fake frontend");
     }
 
-    #[tokio::test]
-    async fn phased_scan_runs_expression_string_candidate_in_one_iteration() {
-        use crate::behavior::BehaviorMap;
-        use crate::frontend::{Frontend, FrontendConfig};
-        use crate::types::{ParamInfo, TypeInfo};
-        use std::path::PathBuf;
-
+    fn fake_expr_frontend_config() -> (tempfile::TempDir, crate::frontend::FrontendConfig) {
         let tempdir = tempfile::tempdir().expect("create fake frontend dir");
         let script_path = tempdir.path().join("fake_expr_frontend.py");
         std::fs::write(
@@ -6684,14 +6641,16 @@ for line in sys.stdin:
         )
         .expect("write fake frontend");
 
-        let mut frontend_config = FrontendConfig::new(PathBuf::from("python3"));
+        let mut frontend_config = crate::frontend::FrontendConfig::new(std::path::PathBuf::from(
+            "python3",
+        ));
         frontend_config.args = vec![script_path.display().to_string()];
         frontend_config.request_timeout = TEST_REQUEST_TIMEOUT;
-        let mut frontend = Frontend::spawn(&frontend_config)
-            .await
-            .expect("spawn fake frontend");
+        (tempdir, frontend_config)
+    }
 
-        let analysis = FunctionAnalysis {
+    fn expr_scan_analysis() -> FunctionAnalysis {
+        FunctionAnalysis {
             name: "CompileCELMatcher".into(),
             exported: true,
             params: vec![
@@ -6719,80 +6678,14 @@ for line in sys.stdin:
             source_file: None,
             adapter_hints: vec![],
             invocation_model: crate::protocol::InvocationModel::Direct,
-        };
+        }
+    }
 
-        let explore_config = ExploreConfig {
-            file: "cel.go".into(),
-            max_iterations: Some(1),
-            observer_pool: 1,
-            observer_frontend_config: None,
-            candidate_queue_capacity: None,
-            seed: Some(7),
-            mocks: vec![],
-            mock_params: vec![],
-            setup_file: None,
-            setup_level: crate::protocol::SetupLevel::Function,
-            value_sources: vec![],
-            capabilities: crate::orchestrator::FrontendCapabilities {
-                commands: ["analyze", "instrument", "prepare"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-                complex_types: Default::default(),
-            },
-            user_seeds: vec![],
-            candidate_inputs: scan_expression_candidate_inputs(&analysis.params),
-            pool_seeds: vec![],
-            project_root: None,
-            execution_profile: None,
-            loop_buckets: Default::default(),
-            timeout_explore: None,
-            meta_config: crate::strategy::MetaConfig::default(),
-            shrink_budget: 0,
-            isolation: IsolationMode::None,
-            capture_side_effects: false,
-            budget_surplus: None,
-            claim_policy: ClaimPolicy::default(),
-            planner: None,
-            default_execute_plan: None,
-            prepare_id_override: None,
-        };
-        let behavior_maps = tokio::sync::Mutex::new(HashMap::<String, BehaviorMap>::new());
-        let input_pool = tokio::sync::Mutex::new(InterestingPool::default());
-        let genetic_config = crate::config::GeneticConfig::default();
+    fn expr_scan_file_map() -> HashMap<String, String> {
+        HashMap::from([("CompileCELMatcher".to_string(), "cel.go".to_string())])
+    }
 
-        let outcome = run_phased(
-            &mut frontend,
-            &analysis.name,
-            &analysis,
-            false,
-            &explore_config,
-            &[],
-            &std::collections::HashSet::new(),
-            &behavior_maps,
-            None,
-            &input_pool,
-            &genetic_config,
-            &None,
-            TEST_REQUEST_TIMEOUT,
-            TEST_REQUEST_TIMEOUT,
-        )
-        .await;
-
-        let PhasedOutcome::Success(result) = outcome else {
-            match outcome {
-                PhasedOutcome::Failed(error) => {
-                    panic!("phased scan should succeed, got failure: {error:?}")
-                }
-                PhasedOutcome::BuildTimedOut(duration) => {
-                    panic!("phased scan should not time out during build: {duration:?}")
-                }
-                PhasedOutcome::ExploreTimedOut(duration) => {
-                    panic!("phased scan should not time out during explore: {duration:?}")
-                }
-                PhasedOutcome::Success(_) => unreachable!(),
-            }
-        };
+    fn assert_expr_scan_completed(result: &FunctionResult) {
         assert!(
             result
                 .exploration
@@ -6807,8 +6700,43 @@ for line in sys.stdin:
             "one-iteration scan should execute a valid expression seed; raw_results={:?}",
             result.exploration.raw_results
         );
+    }
+
+    #[tokio::test]
+    async fn serial_scan_runs_expression_string_candidate_in_one_iteration() {
+        let (_tempdir, frontend_config) = fake_expr_frontend_config();
+        let mut frontend = crate::frontend::Frontend::spawn(&frontend_config)
+            .await
+            .expect("spawn fake frontend");
+        let analysis = expr_scan_analysis();
+        let config = ScanConfig {
+            seed: Some(7),
+            ..minimal_scan_config(expr_scan_file_map())
+        };
+
+        let result = scan(&mut frontend, &[analysis], &config)
+            .await
+            .expect("serial scan should succeed");
+        assert_eq!(result.function_results.len(), 1);
+        assert_expr_scan_completed(&result.function_results[0]);
 
         frontend.shutdown().await.expect("shutdown fake frontend");
+    }
+
+    #[tokio::test]
+    async fn phased_scan_runs_expression_string_candidate_in_one_iteration() {
+        let (_tempdir, frontend_config) = fake_expr_frontend_config();
+        let analysis = expr_scan_analysis();
+        let config = ScanConfig {
+            seed: Some(7),
+            ..minimal_scan_config(expr_scan_file_map())
+        };
+
+        let result = parallel_scan_with_progress(&frontend_config, &[analysis], &config, None)
+            .await
+            .expect("phased scan should succeed");
+        assert_eq!(result.function_results.len(), 1);
+        assert_expr_scan_completed(&result.function_results[0]);
     }
 
     /// str-v5qe / str-6sie regression: a Go scan with a tiny per-fn timeout
