@@ -3086,11 +3086,13 @@ fn crate_bridge_source_hash(
         lib_rel_file: Option<&Path>,
         crate_alias: &str,
         include_generated_stub: bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         let mut hashed_generated_stub = false;
+        let mut hashed_target = false;
         for path in collect_files(dir)? {
             let rel = path.strip_prefix(crate_root).unwrap_or(path.as_path());
             let mut content = if rel == target_rel_file {
+                hashed_target = true;
                 target_contents.as_bytes().to_vec()
             } else if rel == Path::new("src").join("__shatter.rs") {
                 hashed_generated_stub = true;
@@ -3113,7 +3115,7 @@ fn crate_bridge_source_hash(
                 root_stub.as_bytes(),
             );
         }
-        Ok(())
+        Ok(hashed_target)
     }
 
     fn hash_compile_time_assets(
@@ -3199,7 +3201,7 @@ fn crate_bridge_source_hash(
         "path-dependency-root".hash(hasher);
         dependency_root.to_string_lossy().hash(hasher);
 
-        hash_dir(
+        let _ = hash_dir(
             hasher,
             &dependency_root,
             &dependency_root.join("src"),
@@ -3247,7 +3249,7 @@ fn crate_bridge_source_hash(
             );
         }
 
-        hash_dir(
+        let _ = hash_dir(
             hasher,
             &dependency_root,
             &dependency_root.join(".cargo"),
@@ -3292,7 +3294,7 @@ fn crate_bridge_source_hash(
             .ok()
             .map(std::path::Path::to_path_buf)
     });
-    hash_dir(
+    let hashed_target = hash_dir(
         &mut hasher,
         crate_root,
         &crate_root.join("src"),
@@ -3303,6 +3305,14 @@ fn crate_bridge_source_hash(
         crate_alias,
         true,
     )?;
+    if !hashed_target {
+        hash_bytes(
+            &mut hasher,
+            "file",
+            target_rel_file,
+            target_contents.as_bytes(),
+        );
+    }
 
     let cargo_toml = crate_root.join("Cargo.toml");
     if cargo_toml.exists() {
@@ -3335,7 +3345,7 @@ fn crate_bridge_source_hash(
         );
     }
 
-    hash_dir(
+    let _ = hash_dir(
         &mut hasher,
         crate_root,
         &crate_root.join(".cargo"),
@@ -12500,6 +12510,62 @@ edition = "2021"
         );
 
         let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_external_target_source_changes() {
+        let crate_root = unique_tmp_dir("bridge-external-target-hash");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(crate_root.join("api/src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_external_target"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "#[path = \"../api/src/target.rs\"]\npub mod target;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("api/src/target.rs"),
+            "pub fn target() -> u64 { 1 }\n",
+        )
+        .unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("api/src/target.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 1 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_external_target",
+            runtime_path,
+        )
+        .unwrap();
+        let changed_target_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 2 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_external_target",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_target_hash,
+            "crate-bridge cache keys must invalidate when an in-crate target outside src changes",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
     }
 
     /// str-n374: root-level crates without workspace inheritance still work.
