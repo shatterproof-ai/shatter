@@ -279,7 +279,42 @@ pub fn repair_required_fields(value: &Value, typ: &TypeInfo) -> Value {
                 repair_required_fields(value, inner)
             }
         }
+        // A malformed uuid value (e.g. a non-canonical string written by the
+        // solver overlay) fails `from_value::<Uuid>`; replace it with a valid
+        // default rather than letting the whole struct fail to deserialize.
+        TypeInfo::Complex {
+            kind: ComplexKind::Uuid,
+            ..
+        } => {
+            if uuid_value_is_valid(value) {
+                value.clone()
+            } else {
+                default_for_type(typ)
+            }
+        }
         _ => value.clone(),
+    }
+}
+
+/// True when `value` is (or wraps, via a `__complex_type` envelope) a canonical
+/// 8-4-4-4-12 hex uuid string.
+fn uuid_value_is_valid(value: &Value) -> bool {
+    let candidate = value
+        .as_str()
+        .or_else(|| value.get("value").and_then(Value::as_str));
+    match candidate {
+        Some(s) => {
+            let bytes = s.as_bytes();
+            bytes.len() == 36
+                && bytes.iter().enumerate().all(|(i, &c)| {
+                    if matches!(i, 8 | 13 | 18 | 23) {
+                        c == b'-'
+                    } else {
+                        c.is_ascii_hexdigit()
+                    }
+                })
+        }
+        None => false,
     }
 }
 
