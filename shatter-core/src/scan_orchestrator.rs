@@ -1673,6 +1673,9 @@ pub async fn scan(
             config.timeout_per_fn.as_secs(),
         );
         let mut candidate_inputs = config_function_inputs.candidate_inputs;
+        candidate_inputs.extend(crate::input_gen::expression_string_candidate_inputs(
+            &analysis.params,
+        ));
         // Extend with cached seeds from prior exploration runs.
         if let Some(ref cache) = config.cache
             && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -4187,6 +4190,9 @@ pub async fn parallel_scan_with_progress(
             };
 
             let mut candidate_inputs = config_function_inputs.candidate_inputs;
+            candidate_inputs.extend(crate::input_gen::expression_string_candidate_inputs(
+                &analysis.params,
+            ));
             // Extend with cached seeds from prior exploration runs.
             if let Some(ref cache) = config.cache
                 && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -6550,6 +6556,187 @@ for line in sys.stdin:
         );
 
         frontend.shutdown().await.expect("shutdown fake frontend");
+    }
+
+    fn fake_expr_frontend_config() -> (tempfile::TempDir, crate::frontend::FrontendConfig) {
+        let tempdir = tempfile::tempdir().expect("create fake frontend dir");
+        let script_path = tempdir.path().join("fake_expr_frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import sys
+
+for line in sys.stdin:
+    req = json.loads(line)
+    command = req.get("command")
+    base = {
+        "protocol_version": req.get("protocol_version", "0.1.0"),
+        "id": req.get("id"),
+    }
+    if command == "handshake":
+        resp = {
+            **base,
+            "status": "handshake",
+            "frontend_version": req.get("protocol_version", "0.1.0"),
+            "language": "fake-go",
+            "capabilities": ["analyze", "instrument", "prepare"],
+        }
+    elif command == "analyze":
+        resp = {
+            **base,
+            "status": "analysis",
+            "functions": [],
+        }
+    elif command == "instrument":
+        resp = {**base, "status": "instrument", "instrumented": True, "output_file": None}
+    elif command == "prepare":
+        resp = {**base, "status": "prepare", "prepare_id": "prepared"}
+    elif command == "execute":
+        ok = req.get("inputs") == ["true", 0.0]
+        err = None if ok else {
+            "error_type": "invalid_expr",
+            "message": "invalid expression",
+        }
+        outcome = {
+            "status": "completed" if ok else "runtime_failed",
+            "short_reason": "ok" if ok else "invalid expression",
+            "thrown_error": err,
+        }
+        resp = {
+            **base,
+            "status": "execute",
+            "return_value": "matcher" if ok else None,
+            "thrown_error": err,
+            "branch_path": [],
+            "lines_executed": [1],
+            "calls_to_external": [],
+            "path_constraints": [],
+            "scope_events": [],
+            "loop_body_states": [],
+            "side_effects": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 1000,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0,
+            },
+            "capture_truncation": None,
+            "discovered_dependencies": [],
+            "connection_failures": [],
+            "runtime_crypto_boundaries": [],
+            "outcome": outcome,
+        }
+    elif command == "shutdown":
+        resp = {**base, "status": "shutdown_ack"}
+    else:
+        resp = {
+            **base,
+            "status": "error",
+            "code": "invalid_request",
+            "message": f"unexpected command {command}",
+        }
+    print(json.dumps(resp), flush=True)
+"#,
+        )
+        .expect("write fake frontend");
+
+        let mut frontend_config = crate::frontend::FrontendConfig::new(std::path::PathBuf::from(
+            "python3",
+        ));
+        frontend_config.args = vec![script_path.display().to_string()];
+        frontend_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        (tempdir, frontend_config)
+    }
+
+    fn expr_scan_analysis() -> FunctionAnalysis {
+        FunctionAnalysis {
+            name: "CompileCELMatcher".into(),
+            exported: true,
+            params: vec![
+                ParamInfo {
+                    name: "expr".into(),
+                    typ: TypeInfo::Str,
+                    type_name: Some("string".into()),
+                },
+                ParamInfo {
+                    name: "score".into(),
+                    typ: TypeInfo::Float,
+                    type_name: Some("float64".into()),
+                },
+            ],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Object {
+                fields: Default::default(),
+            },
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        }
+    }
+
+    fn expr_scan_file_map() -> HashMap<String, String> {
+        HashMap::from([("CompileCELMatcher".to_string(), "cel.go".to_string())])
+    }
+
+    fn assert_expr_scan_completed(result: &FunctionResult) {
+        assert!(
+            result
+                .exploration
+                .raw_results
+                .iter()
+                .any(|(inputs, _, exec)| {
+                    inputs == &[serde_json::json!("true"), serde_json::json!(0.0)]
+                        && exec.outcome.as_ref().is_some_and(|outcome| {
+                            outcome.status == crate::protocol::OutcomeStatus::Completed
+                        })
+                }),
+            "one-iteration scan should execute a valid expression seed; raw_results={:?}",
+            result.exploration.raw_results
+        );
+    }
+
+    #[tokio::test]
+    async fn serial_scan_runs_expression_string_candidate_in_one_iteration() {
+        let (_tempdir, frontend_config) = fake_expr_frontend_config();
+        let mut frontend = crate::frontend::Frontend::spawn(&frontend_config)
+            .await
+            .expect("spawn fake frontend");
+        let analysis = expr_scan_analysis();
+        let config = ScanConfig {
+            seed: Some(7),
+            ..minimal_scan_config(expr_scan_file_map())
+        };
+
+        let result = scan(&mut frontend, &[analysis], &config)
+            .await
+            .expect("serial scan should succeed");
+        assert_eq!(result.function_results.len(), 1);
+        assert_expr_scan_completed(&result.function_results[0]);
+
+        frontend.shutdown().await.expect("shutdown fake frontend");
+    }
+
+    #[tokio::test]
+    async fn phased_scan_runs_expression_string_candidate_in_one_iteration() {
+        let (_tempdir, frontend_config) = fake_expr_frontend_config();
+        let analysis = expr_scan_analysis();
+        let config = ScanConfig {
+            seed: Some(7),
+            ..minimal_scan_config(expr_scan_file_map())
+        };
+
+        let result = parallel_scan_with_progress(&frontend_config, &[analysis], &config, None)
+            .await
+            .expect("phased scan should succeed");
+        assert_eq!(result.function_results.len(), 1);
+        assert_expr_scan_completed(&result.function_results[0]);
     }
 
     /// str-v5qe / str-6sie regression: a Go scan with a tiny per-fn timeout
