@@ -363,16 +363,100 @@ type StructDefs = HashMap<String, Vec<(String, syn::Type)>>;
 /// Collected enum definitions: maps enum name → Vec of (variant_name, fields).
 type EnumDefs = HashMap<String, Vec<(String, syn::Fields)>>;
 
+/// Read a `#[serde(rename_all = "…")]` value from a set of attributes, if present.
+fn serde_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
+    serde_string_arg(attrs, "rename_all")
+}
+
+/// Read a field-level `#[serde(rename = "…")]` value, if present.
+fn serde_field_rename(attrs: &[syn::Attribute]) -> Option<String> {
+    serde_string_arg(attrs, "rename")
+}
+
+/// Extract the string value of a `#[serde(<key> = "…")]` argument.
+fn serde_string_arg(attrs: &[syn::Attribute], key: &str) -> Option<String> {
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let mut found = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident(key) {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                found = Some(lit.value());
+            }
+            Ok(())
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+fn capitalize_word(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+        None => String::new(),
+    }
+}
+
+/// Apply a serde `rename_all` rule to a (snake_case) Rust field name, producing
+/// the JSON key serde would expect. Unknown rules leave the name unchanged.
+fn apply_rename_all(field: &str, rule: &str) -> String {
+    let words: Vec<&str> = field.split('_').filter(|w| !w.is_empty()).collect();
+    match rule {
+        "lowercase" => words.concat().to_lowercase(),
+        "UPPERCASE" => words.concat().to_uppercase(),
+        "PascalCase" => words.iter().map(|w| capitalize_word(w)).collect(),
+        "camelCase" => words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                if i == 0 {
+                    w.to_lowercase()
+                } else {
+                    capitalize_word(w)
+                }
+            })
+            .collect(),
+        "snake_case" => words.join("_").to_lowercase(),
+        "SCREAMING_SNAKE_CASE" => words.join("_").to_uppercase(),
+        "kebab-case" => words.join("-").to_lowercase(),
+        "SCREAMING-KEBAB-CASE" => words.join("-").to_uppercase(),
+        _ => field.to_string(),
+    }
+}
+
+/// Resolve the JSON key for a struct field, honoring serde `rename`/`rename_all`
+/// (str-55ep). Without this, synthesized struct inputs use raw snake_case Rust
+/// field names and fail to deserialize into structs declaring a different
+/// `rename_all` (e.g. `camelCase`).
+fn field_json_key(field: &syn::Field, rename_all: Option<&str>) -> String {
+    let raw = field
+        .ident
+        .as_ref()
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    serde_field_rename(&field.attrs)
+        .or_else(|| rename_all.map(|rule| apply_rename_all(&raw, rule)))
+        .unwrap_or(raw)
+}
+
 fn collect_struct_defs(file: &syn::File) -> StructDefs {
     let mut defs = HashMap::new();
     for item in &file.items {
         if let syn::Item::Struct(s) = item
             && let syn::Fields::Named(fields) = &s.fields
         {
+            let rename_all = serde_rename_all(&s.attrs);
             let field_list: Vec<(String, syn::Type)> = fields
                 .named
                 .iter()
-                .filter_map(|f| f.ident.as_ref().map(|id| (id.to_string(), f.ty.clone())))
+                .filter(|f| f.ident.is_some())
+                .map(|f| (field_json_key(f, rename_all.as_deref()), f.ty.clone()))
                 .collect();
             defs.insert(s.ident.to_string(), field_list);
         }
@@ -2330,6 +2414,53 @@ mod tests {
             "expected Object for serde_json::Map, got {:?}",
             f.params[0].typ
         );
+    }
+
+    #[test]
+    fn apply_rename_all_conventions() {
+        assert_eq!(apply_rename_all("workspace_id", "camelCase"), "workspaceId");
+        assert_eq!(apply_rename_all("workspace_id", "PascalCase"), "WorkspaceId");
+        assert_eq!(apply_rename_all("workspace_id", "snake_case"), "workspace_id");
+        assert_eq!(
+            apply_rename_all("workspace_id", "SCREAMING_SNAKE_CASE"),
+            "WORKSPACE_ID"
+        );
+        assert_eq!(apply_rename_all("workspace_id", "kebab-case"), "workspace-id");
+        assert_eq!(apply_rename_all("workspace_id", "lowercase"), "workspaceid");
+        assert_eq!(apply_rename_all("id", "camelCase"), "id");
+    }
+
+    #[test]
+    fn struct_fields_honor_serde_rename_all() {
+        // str-55ep: a struct declaring rename_all="camelCase" must synthesize
+        // camelCase JSON keys, or crate_bridge deserialization fails.
+        let code = "#[serde(rename_all = \"camelCase\")] struct Item { workspace_id: u32, item_category_id: u32, name: String } fn f(x: Item) {}";
+        let f = analyze_fn(code, "f");
+        match &f.params[0].typ {
+            TypeInfo::Object { fields } => {
+                let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+                assert!(keys.contains(&"workspaceId"), "got {keys:?}");
+                assert!(keys.contains(&"itemCategoryId"), "got {keys:?}");
+                assert!(keys.contains(&"name"), "got {keys:?}");
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn field_serde_rename_overrides_rename_all() {
+        let code = "#[serde(rename_all = \"camelCase\")] struct S { #[serde(rename = \"customKey\")] my_field: u32 } fn f(x: S) {}";
+        let f = analyze_fn(code, "f");
+        match &f.params[0].typ {
+            TypeInfo::Object { fields } => {
+                assert!(
+                    fields.iter().any(|(k, _)| k == "customKey"),
+                    "expected customKey, got {:?}",
+                    fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                );
+            }
+            other => panic!("expected Object, got {other:?}"),
+        }
     }
 
     #[test]
