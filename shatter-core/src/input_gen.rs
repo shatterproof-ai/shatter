@@ -374,7 +374,8 @@ fn generate_complex_value(
     rng: &mut impl Rng,
 ) -> Value {
     match kind {
-        ComplexKind::Date | ComplexKind::DateTime => generate_date(rng),
+        ComplexKind::Date => generate_date(rng, "date"),
+        ComplexKind::DateTime => generate_date(rng, "date_time"),
         ComplexKind::Duration => generate_duration(rng),
         ComplexKind::Time => generate_time(rng),
         ComplexKind::RegExp => generate_regexp(rng),
@@ -409,10 +410,14 @@ fn generate_complex_value(
     }
 }
 
-/// Generate a Date value as `{"__complex_type": "date", "value": <epoch_ms>}`.
+/// Generate a date value as `{"__complex_type": <tag>, "value": <epoch_ms>}`.
+///
+/// `tag` is `"date"` for calendar-date types (e.g. chrono `NaiveDate`) and
+/// `"date_time"` for types carrying a time component (e.g. `DateTime<Utc>`), so
+/// a materializing frontend can emit the correct ISO format for each.
 ///
 /// Biased toward boundary values: epoch 0, Y2K38, month/year boundaries, etc.
-fn generate_date(rng: &mut impl Rng) -> Value {
+fn generate_date(rng: &mut impl Rng, tag: &str) -> Value {
     let choice: u8 = rng.random_range(0..12);
     let epoch_ms: i64 = match choice {
         0 => 0,                   // Unix epoch
@@ -438,7 +443,7 @@ fn generate_date(rng: &mut impl Rng) -> Value {
             rng.random_range(0..1_893_456_000_000_i64)
         }
     };
-    json!({"__complex_type": "date", "value": epoch_ms})
+    json!({"__complex_type": tag, "value": epoch_ms})
 }
 
 /// Generate a Duration value as `{"__complex_type": "duration", "ms": <millis>}`.
@@ -3726,13 +3731,16 @@ mod tests {
     fn generate_date_produces_tagged_json() {
         let mut rng = seeded_rng();
         for _ in 0..50 {
-            let val = generate_date(&mut rng);
+            let val = generate_date(&mut rng, "date");
             let obj = val.as_object().expect("date should be an object");
             assert_eq!(obj.get("__complex_type").unwrap(), "date");
             assert!(
                 obj.get("value").unwrap().is_i64(),
                 "value should be epoch ms"
             );
+            // date_time uses the same epoch-ms shape but a distinct tag.
+            let dt = generate_date(&mut rng, "date_time");
+            assert_eq!(dt.as_object().unwrap().get("__complex_type").unwrap(), "date_time");
         }
     }
 
@@ -3753,7 +3761,7 @@ mod tests {
         let mut saw_epoch = false;
         let mut saw_y2k38 = false;
         for _ in 0..500 {
-            let val = generate_date(&mut rng);
+            let val = generate_date(&mut rng, "date");
             let ms = val["value"].as_i64().unwrap();
             if ms == 0 {
                 saw_epoch = true;

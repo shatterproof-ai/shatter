@@ -184,7 +184,7 @@ complex_type_capabilities:
     frontends:
       typescript: supported
       go: supported
-      rust: not_supported
+      rust: supported
 
   date_time:
     status: optional
@@ -192,7 +192,7 @@ complex_type_capabilities:
     frontends:
       typescript: supported
       go: not_supported
-      rust: not_supported
+      rust: supported
 
   time:
     status: optional
