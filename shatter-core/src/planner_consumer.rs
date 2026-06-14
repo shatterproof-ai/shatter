@@ -234,34 +234,49 @@ fn plan_requires_execution_scoped_constructor_scratch(plan: &InvocationPlan) -> 
 /// execution.
 pub fn execute_inputs_for_plan(
     inputs: &[Value],
-    method_param_count: usize,
+    param_infos: &[ParamInfo],
     plan: Option<&InvocationPlan>,
 ) -> Result<PlannedExecuteInputs, PlannerConsumerError> {
-    let Some(plan) = plan else {
-        return Ok(PlannedExecuteInputs {
-            inputs: inputs.to_vec(),
-            _scratch: Vec::new(),
-        });
+    let method_param_count = param_infos.len();
+    // Repair a parameter-aligned input slice against its declared types so eroded
+    // struct inputs (missing required fields, malformed uuids) still deserialize
+    // and the function actually executes (str-kn3f). This is the single funnel
+    // point for ALL execute paths — both the orchestrator's observe loop and the
+    // explorer's strategy loops route through here. Purely additive on objects.
+    let repair = |method: &[Value]| -> Vec<Value> {
+        method
+            .iter()
+            .enumerate()
+            .map(|(i, value)| match param_infos.get(i) {
+                Some(param) => crate::input_gen::repair_required_fields(value, &param.typ),
+                None => value.clone(),
+            })
+            .collect()
     };
-    let constructor_arg_count = plan.constructor_arg_plans.len();
-    if constructor_arg_count == 0 {
+
+    let constructor_arg_count = plan.map_or(0, |p| p.constructor_arg_plans.len());
+    if plan.is_none() || constructor_arg_count == 0 {
+        // No constructor prefix: every input is a method argument.
         return Ok(PlannedExecuteInputs {
-            inputs: inputs.to_vec(),
+            inputs: repair(inputs),
             _scratch: Vec::new(),
         });
     }
+    let plan = plan.expect("checked plan.is_some above");
     let method_inputs = if inputs.len() == method_param_count {
         inputs
     } else if inputs.len() == method_param_count + constructor_arg_count {
         &inputs[constructor_arg_count..]
     } else {
+        // Arity mismatch — best-effort positional repair, no prefix surgery.
         return Ok(PlannedExecuteInputs {
-            inputs: inputs.to_vec(),
+            inputs: repair(inputs),
             _scratch: Vec::new(),
         });
     };
+    let repaired_method = repair(method_inputs);
     let (mut prefixed, scratch) = materialize_execute_constructor_arg_values(plan)?;
-    prefixed.extend_from_slice(method_inputs);
+    prefixed.extend_from_slice(&repaired_method);
     Ok(PlannedExecuteInputs {
         inputs: prefixed,
         _scratch: scratch,
@@ -596,7 +611,7 @@ mod tests {
             priority: 0,
             label: String::new(),
         };
-        let planned = execute_inputs_for_plan(&[json!("default")], 1, Some(&plan))
+        let planned = execute_inputs_for_plan(&[json!("default")], &[ParamInfo { name: String::new(), typ: TypeInfo::Str, type_name: None }], Some(&plan))
             .expect("constructor directory seed should materialize");
         assert_eq!(planned.inputs().len(), 2);
         assert_eq!(planned.inputs().get(1), Some(&json!("default")));
@@ -611,7 +626,7 @@ mod tests {
             dir.is_dir(),
             "directory-like constructor string should materialize as a usable directory",
         );
-        let refreshed = execute_inputs_for_plan(planned.inputs(), 1, Some(&plan))
+        let refreshed = execute_inputs_for_plan(planned.inputs(), &[ParamInfo { name: String::new(), typ: TypeInfo::Str, type_name: None }], Some(&plan))
             .expect("stale constructor prefix should rematerialize");
         assert_eq!(refreshed.inputs().len(), 2);
         assert_eq!(refreshed.inputs().get(1), Some(&json!("default")));
@@ -660,9 +675,9 @@ mod tests {
             label: String::new(),
         };
         let first =
-            execute_inputs_for_plan(&[], 0, Some(&plan)).expect("first file seed materializes");
+            execute_inputs_for_plan(&[], &[], Some(&plan)).expect("first file seed materializes");
         let second =
-            execute_inputs_for_plan(&[], 0, Some(&plan)).expect("second file seed materializes");
+            execute_inputs_for_plan(&[], &[], Some(&plan)).expect("second file seed materializes");
         let paths: Vec<std::path::PathBuf> = [first.inputs(), second.inputs()]
             .into_iter()
             .map(|seed| {
@@ -756,7 +771,7 @@ mod tests {
             priority: 0,
             label: String::new(),
         };
-        let planned = execute_inputs_for_plan(&[], 0, Some(&plan))
+        let planned = execute_inputs_for_plan(&[], &[], Some(&plan))
             .expect("constructor directory seed should materialize");
         let path = std::path::PathBuf::from(
             planned

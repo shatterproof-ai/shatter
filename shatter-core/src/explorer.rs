@@ -1175,7 +1175,7 @@ pub async fn explore_function(
             for (float_inputs, floor_inputs) in pairs {
                 let float_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &float_inputs,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let float_resp = frontend
@@ -1193,7 +1193,7 @@ pub async fn explore_function(
 
                 let floor_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &floor_inputs,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let floor_resp = frontend
@@ -1491,7 +1491,7 @@ pub async fn explore_function(
         // already computed.
         let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
             &inputs,
-            analysis.params.len(),
+            &analysis.params,
             config.default_execute_plan.as_ref(),
         )?;
         let strategy_feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
@@ -1682,7 +1682,7 @@ pub async fn explore_function(
                 attempts += 1;
                 let bulk_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                     &bulk_trial,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
                 )?;
                 let resp = frontend
@@ -1726,7 +1726,7 @@ pub async fn explore_function(
                     attempts += 1;
                     let trial_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                         &trial,
-                        analysis.params.len(),
+                        &analysis.params,
                         config.default_execute_plan.as_ref(),
                     )?;
                     let resp = frontend
@@ -1777,7 +1777,7 @@ pub async fn explore_function(
                         let trial_execute_inputs =
                             crate::planner_consumer::execute_inputs_for_plan(
                                 &trial,
-                                analysis.params.len(),
+                                &analysis.params,
                                 config.default_execute_plan.as_ref(),
                             )?;
                         let resp = frontend
@@ -2289,7 +2289,7 @@ async fn explore_function_with_observer_pool(
 
             let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
                 &inputs,
-                analysis.params.len(),
+                &analysis.params,
                 config.default_execute_plan.as_ref(),
             )?;
             let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
@@ -4931,7 +4931,7 @@ for line in sys.stdin:
         };
         let method_inputs = vec![serde_json::json!("default")];
         let prefixed =
-            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan))
+            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, &[crate::types::ParamInfo { name: String::new(), typ: crate::types::TypeInfo::Str, type_name: None }], Some(&plan))
                 .expect("constructor path seed should materialize");
         assert_eq!(prefixed.inputs().len(), 2);
         assert_eq!(
@@ -4957,7 +4957,7 @@ for line in sys.stdin:
             "directory-like constructor prefix should be a usable directory",
         );
         let refreshed =
-            crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), 1, Some(&plan))
+            crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), &[crate::types::ParamInfo { name: String::new(), typ: crate::types::TypeInfo::Str, type_name: None }], Some(&plan))
                 .expect("already-prefixed inputs should refresh constructor scratch");
         assert_eq!(refreshed.inputs().len(), 2);
         assert_eq!(
