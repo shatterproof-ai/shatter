@@ -2966,9 +2966,13 @@ fn shrink_object(value: &Value, fields: &[(String, TypeInfo)]) -> Vec<Value> {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(fields.len() * 2);
-    // Remove each field one at a time
-    for (name, _) in fields {
-        if obj.contains_key(name) {
+    // Remove each OPTIONAL field one at a time. Removing a required
+    // (non-nullable) struct field produces an object that fails
+    // deserialization with "missing field X" — a useless shrink candidate that
+    // also pollutes the behavior map with deser errors (str-55ep). Optional
+    // fields deserialize as None when absent, so they are valid to drop.
+    for (name, typ) in fields {
+        if matches!(typ, TypeInfo::Nullable { .. }) && obj.contains_key(name) {
             let mut reduced = obj.clone();
             reduced.remove(name);
             out.push(Value::Object(reduced));
@@ -5783,14 +5787,35 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     }
 
     #[test]
-    fn shrink_object_removes_fields() {
+    fn shrink_object_removes_only_optional_fields() {
+        // str-55ep: required (non-nullable) fields must never be removed by
+        // shrinking (that yields "missing field" deser failures); optional
+        // (Nullable) fields may be dropped (deserialize as None).
         let typ = TypeInfo::Object {
-            fields: vec![("a".into(), TypeInfo::Int), ("b".into(), TypeInfo::Str)],
+            fields: vec![
+                ("a".into(), TypeInfo::Int),
+                (
+                    "note".into(),
+                    TypeInfo::Nullable {
+                        inner: Box::new(TypeInfo::Str),
+                    },
+                ),
+            ],
         };
-        let val = json!({"a": 10, "b": "hi"});
+        let val = json!({"a": 10, "note": "hi"});
         let candidates = shrink_candidates(&val, &typ);
-        assert!(candidates.contains(&json!({"b": "hi"})), "remove field a");
-        assert!(candidates.contains(&json!({"a": 10})), "remove field b");
+        // Optional field may be dropped.
+        assert!(
+            candidates.contains(&json!({"a": 10})),
+            "should drop optional 'note'"
+        );
+        // Required field 'a' must never be removed.
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.as_object().is_some_and(|o| !o.contains_key("a"))),
+            "required field 'a' must never be removed"
+        );
     }
 
     #[test]
