@@ -1802,6 +1802,10 @@ func applyImportedConstructorBindingsForPackage(
 			if paramIndex >= len(params) {
 				return
 			}
+			if isSymbolicHTTPRequestParam(params[paramIndex].GoType) {
+				paramIndex++
+				continue
+			}
 			if params[paramIndex].RuntimeValueExpr == "" {
 				if binding, ok := importedParameterConstructorBinding(fieldType, pkg, pkgPath); ok {
 					params[paramIndex].RuntimeValueExpr = binding.Expression
