@@ -3131,6 +3131,159 @@ fn crate_bridge_source_hash(
         Ok(())
     }
 
+    fn quoted_path_value(line: &str) -> Option<&str> {
+        let mut search_start = 0;
+        while let Some(idx) = line[search_start..].find("path") {
+            let path_idx = search_start + idx;
+            let before = line[..path_idx].chars().rev().find(|ch| !ch.is_whitespace());
+            let valid_key_start = before.is_none_or(|ch| ch == '{' || ch == ',');
+            let after_path = line[path_idx + "path".len()..].trim_start();
+            if valid_key_start
+                && let Some(rest) = after_path.strip_prefix('=')
+            {
+                let rest = rest.trim_start();
+                let quote = rest.chars().next()?;
+                if quote != '"' && quote != '\'' {
+                    return None;
+                }
+                let rest = &rest[quote.len_utf8()..];
+                let value_end = rest.find(quote)?;
+                return Some(&rest[..value_end]);
+            }
+            search_start = path_idx + "path".len();
+        }
+        None
+    }
+
+    fn collect_cargo_toml_path_dependencies(
+        content: &str,
+        manifest_dir: &Path,
+    ) -> Vec<PathBuf> {
+        let mut dependencies = Vec::new();
+        let mut in_dependency_section = false;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_dependency_section = trimmed.contains("dependencies");
+            }
+            if in_dependency_section
+                && let Some(path_value) = quoted_path_value(trimmed)
+                && !path_value.is_empty()
+            {
+                let dependency_path = Path::new(path_value);
+                let dependency_root = if dependency_path.is_relative() {
+                    manifest_dir.join(dependency_path)
+                } else {
+                    dependency_path.to_path_buf()
+                };
+                dependencies.push(dependency_root);
+            }
+        }
+        dependencies.sort();
+        dependencies.dedup();
+        dependencies
+    }
+
+    fn hash_path_dependency_crate(
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+        dependency_root: &Path,
+        visited: &mut std::collections::HashSet<PathBuf>,
+    ) -> io::Result<()> {
+        let dependency_root = dependency_root
+            .canonicalize()
+            .unwrap_or_else(|_| dependency_root.to_path_buf());
+        if !visited.insert(dependency_root.clone()) {
+            return Ok(());
+        }
+
+        "path-dependency-root".hash(hasher);
+        dependency_root.to_string_lossy().hash(hasher);
+
+        hash_dir(
+            hasher,
+            &dependency_root,
+            &dependency_root.join("src"),
+            Path::new(""),
+            "",
+            "",
+            None,
+            "",
+            false,
+        )?;
+
+        let cargo_toml = dependency_root.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let content = std::fs::read_to_string(&cargo_toml)?;
+            let ws_pkg = if has_workspace_inheritance(&content) {
+                find_workspace_root(&dependency_root)
+                    .and_then(|ws| extract_workspace_package_section(&ws))
+            } else {
+                None
+            };
+            let resolved =
+                resolve_cargo_toml_paths(&content, &dependency_root, ws_pkg.as_deref());
+            hash_bytes(
+                hasher,
+                "path-dependency-file",
+                Path::new("Cargo.toml"),
+                resolved.as_bytes(),
+            );
+            for nested_dependency in
+                collect_cargo_toml_path_dependencies(&content, &dependency_root)
+            {
+                hash_path_dependency_crate(hasher, &nested_dependency, visited)?;
+            }
+        } else {
+            "path-dependency-missing:Cargo.toml".hash(hasher);
+        }
+
+        let build_rs = dependency_root.join("build.rs");
+        if build_rs.exists() {
+            hash_bytes(
+                hasher,
+                "path-dependency-file",
+                Path::new("build.rs"),
+                &std::fs::read(build_rs)?,
+            );
+        }
+
+        hash_dir(
+            hasher,
+            &dependency_root,
+            &dependency_root.join(".cargo"),
+            Path::new(""),
+            "",
+            "",
+            None,
+            "",
+            false,
+        )?;
+        let cargo_lock = dependency_root.join("Cargo.lock");
+        if cargo_lock.exists() {
+            hash_bytes(
+                hasher,
+                "path-dependency-file",
+                Path::new("Cargo.lock"),
+                &std::fs::read(cargo_lock)?,
+            );
+        }
+        hash_compile_time_assets(hasher, &dependency_root)?;
+
+        Ok(())
+    }
+
+    fn hash_path_dependencies(
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+        content: &str,
+        crate_root: &Path,
+    ) -> io::Result<()> {
+        let mut visited = std::collections::HashSet::new();
+        for dependency_root in collect_cargo_toml_path_dependencies(content, crate_root) {
+            hash_path_dependency_crate(hasher, &dependency_root, &mut visited)?;
+        }
+        Ok(())
+    }
+
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     "crate-bridge-source-v2".hash(&mut hasher);
 
@@ -3167,6 +3320,7 @@ fn crate_bridge_source_hash(
             Path::new("Cargo.toml"),
             injected.as_bytes(),
         );
+        hash_path_dependencies(&mut hasher, &content, crate_root)?;
     } else {
         "missing:Cargo.toml".hash(&mut hasher);
     }
@@ -12278,6 +12432,74 @@ edition = "2021"
         );
 
         let _ = std::fs::remove_dir_all(&crate_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_path_dependency_source_changes() {
+        let workspace_root = unique_tmp_dir("bridge-path-dep-hash");
+        let crate_root = workspace_root.join("app");
+        let helper_root = workspace_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_path_dep"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+helper = { path = "../helper" }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when local path dependency sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace_root);
     }
 
     /// str-n374: root-level crates without workspace inheritance still work.
