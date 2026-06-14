@@ -3982,18 +3982,79 @@ fn find_workspace_root(crate_root: &Path) -> Option<PathBuf> {
 }
 
 fn extract_workspace_inherited_sections(workspace_root: &Path) -> Option<String> {
+    fn section_name(line: &str) -> Option<&str> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('[') {
+            return None;
+        }
+        let end = trimmed.find(']')?;
+        Some(trimmed[..=end].trim_matches(&['[', ']'][..]).trim())
+    }
+
+    fn quoted_path_value(line: &str) -> Option<(&str, char)> {
+        let mut search_start = 0;
+        while let Some(idx) = line[search_start..].find("path") {
+            let path_idx = search_start + idx;
+            let before = line[..path_idx].chars().rev().find(|ch| !ch.is_whitespace());
+            let valid_key_start = before.is_none_or(|ch| ch == '{' || ch == ',' || ch == '.');
+            let after_path = line[path_idx + "path".len()..].trim_start();
+            if valid_key_start
+                && let Some(rest) = after_path.strip_prefix('=')
+            {
+                let rest = rest.trim_start();
+                let quote = rest.chars().next()?;
+                if quote != '"' && quote != '\'' {
+                    return None;
+                }
+                let rest = &rest[quote.len_utf8()..];
+                let value_end = rest.find(quote)?;
+                return Some((&rest[..value_end], quote));
+            }
+            search_start = path_idx + "path".len();
+        }
+        None
+    }
+
+    fn absolutise_workspace_dependency_path(line: &str, workspace_root: &Path) -> String {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            return line.to_string();
+        }
+        if let Some((path_value, quote)) = quoted_path_value(trimmed) {
+            let dep_path = Path::new(path_value);
+            if dep_path.is_relative() && !path_value.is_empty() {
+                let abs = workspace_root.join(dep_path);
+                let abs_str = abs.display().to_string().replace('\\', "/");
+                return line.replacen(
+                    &format!("{quote}{path_value}{quote}"),
+                    &format!("{quote}{abs_str}{quote}"),
+                    1,
+                );
+            }
+        }
+        line.to_string()
+    }
+
     let content = std::fs::read_to_string(workspace_root.join("Cargo.toml")).ok()?;
     let mut include_section = false;
+    let mut in_workspace_dependencies = false;
     let mut result = String::new();
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            include_section = trimmed == "[workspace.package]"
-                || trimmed == "[workspace.dependencies]"
-                || trimmed.starts_with("[workspace.dependencies.");
+        if let Some(section) = section_name(trimmed) {
+            include_section = section == "workspace.package"
+                || section == "workspace.dependencies"
+                || section.starts_with("workspace.dependencies.");
+            in_workspace_dependencies =
+                section == "workspace.dependencies" || section.starts_with("workspace.dependencies.");
         }
         if include_section {
-            result.push_str(line);
+            let line = if in_workspace_dependencies {
+                absolutise_workspace_dependency_path(line, workspace_root)
+            } else {
+                line.to_string()
+            };
+            result.push_str(&line);
             result.push('\n');
         }
     }
@@ -12179,6 +12240,37 @@ helper = { path = "/tmp/helper", features = ["serde"] }
             result.contains(r#"helper = { path = "/tmp/helper", features = ["serde"] }"#),
             "must include inherited dependency metadata: {result}",
         );
+    }
+
+    #[test]
+    fn workspace_inherited_sections_absolutise_dependency_paths() {
+        let workspace_root = unique_tmp_dir("workspace-dep-paths");
+        std::fs::write(
+            workspace_root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["member", "helper"]
+
+[workspace.dependencies] # local crates
+helper = { path = "helper", features = ["serde"] }
+"#,
+        )
+        .unwrap();
+
+        let sections = extract_workspace_inherited_sections(&workspace_root).unwrap();
+
+        assert!(
+            sections.contains("[workspace.dependencies] # local crates"),
+            "must preserve commented workspace dependency header: {sections}",
+        );
+        assert!(
+            sections.contains(&format!(
+                r#"helper = {{ path = "{}/helper", features = ["serde"] }}"#,
+                workspace_root.display()
+            )),
+            "workspace dependency path must be absolute in staged metadata: {sections}",
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace_root);
     }
 
     #[test]
