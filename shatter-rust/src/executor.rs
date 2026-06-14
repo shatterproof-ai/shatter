@@ -3159,10 +3159,11 @@ fn crate_bridge_source_hash(
 
     fn toml_section_name(line: &str) -> Option<&str> {
         let trimmed = line.trim();
-        if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        if !trimmed.starts_with('[') {
             return None;
         }
-        Some(trimmed.trim_matches(&['[', ']'][..]).trim())
+        let end = trimmed.find(']')?;
+        Some(trimmed[..=end].trim_matches(&['[', ']'][..]).trim())
     }
 
     fn dependency_name_from_section(section: &str) -> Option<String> {
@@ -3195,11 +3196,9 @@ fn crate_bridge_source_hash(
 
     fn dependency_name_from_line(line: &str) -> Option<String> {
         let (key, _) = line.split_once('=')?;
-        let key = key
-            .trim()
-            .strip_suffix(".workspace")
-            .unwrap_or_else(|| key.trim())
-            .trim();
+        let key = key.trim();
+        let key = key.strip_suffix(".workspace").unwrap_or(key);
+        let key = key.strip_suffix(".path").unwrap_or(key).trim();
         if key == "workspace" || key.is_empty() {
             return None;
         }
@@ -13069,6 +13068,147 @@ edition = "2021"
         );
 
         let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_commented_dependency_section_source_changes() {
+        let workspace_root = unique_tmp_dir("bridge-commented-dep-section-hash");
+        let crate_root = workspace_root.join("app");
+        let helper_root = workspace_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_commented_dep_section"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies] # local crates
+helper = { path = "../helper" }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_commented_dep_section",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_commented_dep_section",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when commented dependency section path sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_workspace_dotted_path_dependency_source_changes() {
+        let crate_root = unique_tmp_dir("bridge-workspace-dotted-path-dep-hash");
+        let helper_root = crate_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_workspace_dotted_path_dep"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["helper"]
+
+[workspace.dependencies]
+helper.path = "helper"
+
+[dependencies]
+helper = { workspace = true }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_workspace_dotted_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_workspace_dotted_path_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when workspace dotted path dependency sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
     }
 
     #[test]
