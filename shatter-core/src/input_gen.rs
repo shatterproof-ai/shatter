@@ -292,6 +292,39 @@ pub fn repair_required_fields(value: &Value, typ: &TypeInfo) -> Value {
                 default_for_type(typ)
             }
         }
+        // Primitive fields: when the present value's JSON shape disagrees with
+        // the declared type (e.g. the solver wrote an integer into a `String`
+        // field, or a string into an enum/`Union`), it fails deserialization
+        // ("invalid type: integer, expected string"). Replace such off-type
+        // values with a valid default so the struct still round-trips (str-kn3f).
+        TypeInfo::Str => {
+            if value.is_string() {
+                value.clone()
+            } else {
+                default_for_type(typ)
+            }
+        }
+        TypeInfo::Int => {
+            if value.is_i64() || value.is_u64() {
+                value.clone()
+            } else {
+                default_for_type(typ)
+            }
+        }
+        TypeInfo::Float => {
+            if value.is_number() {
+                value.clone()
+            } else {
+                default_for_type(typ)
+            }
+        }
+        TypeInfo::Bool => {
+            if value.is_boolean() {
+                value.clone()
+            } else {
+                default_for_type(typ)
+            }
+        }
         _ => value.clone(),
     }
 }
