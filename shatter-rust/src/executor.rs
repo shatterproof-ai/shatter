@@ -4069,6 +4069,9 @@ fn extract_workspace_inherited_sections(workspace_root: &Path) -> Option<String>
 fn has_workspace_inheritance(content: &str) -> bool {
     content.lines().any(|line| {
         let t = line.trim();
+        if t.starts_with('#') {
+            return false;
+        }
         t.ends_with(".workspace = true") || t.contains("workspace = true")
     })
 }
@@ -4092,10 +4095,7 @@ fn resolve_cargo_toml_paths(
     }
 
     fn is_path_dependency_section(section: &str) -> bool {
-        !section.starts_with("workspace.dependencies")
-            && (section.contains("dependencies")
-                || section.starts_with("patch.")
-                || section == "replace")
+        section.contains("dependencies") || section.starts_with("patch.") || section == "replace"
     }
 
     fn quoted_path_value(line: &str) -> Option<(&str, char)> {
@@ -12177,12 +12177,39 @@ helper = { path = "../helper" }
     }
 
     #[test]
+    fn resolve_cargo_toml_paths_absolutises_root_workspace_dependency_paths() {
+        let crate_root = Path::new("/tmp/root-workspace");
+        let input = r#"[package]
+name = "root_workspace"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["helper"]
+
+[workspace.dependencies]
+helper = { path = "helper" }
+
+[dependencies]
+helper = { workspace = true }
+"#;
+        let result = resolve_cargo_toml_paths(input, crate_root, None);
+        assert!(
+            result.contains(r#"helper = { path = "/tmp/root-workspace/helper" }"#),
+            "root workspace dependency path must be absolute in staging: {result}",
+        );
+    }
+
+    #[test]
     fn has_workspace_inheritance_detects_dotted_fields() {
         assert!(has_workspace_inheritance("edition.workspace = true\n"));
         assert!(has_workspace_inheritance(
             "[package]\nedition.workspace = true\n"
         ));
         assert!(has_workspace_inheritance("rust-version.workspace = true\n"));
+        assert!(!has_workspace_inheritance(
+            "[dependencies]\n# helper = { workspace = true }\n"
+        ));
         assert!(!has_workspace_inheritance(
             "[package]\nedition = \"2021\"\n"
         ));
