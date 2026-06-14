@@ -361,8 +361,10 @@ func Handle(h http.Handler) bool { return h != nil }
 // a direct *http.Request parameter must be constructed from a symbolic body
 // input (so the solver can drive request payloads into handlers) rather than
 // the fixed empty-body runtime value httptest.NewRequest("GET","/",nil). The
-// param must consume one string input slot and feed it through
-// httptest.NewRequest(..., strings.NewReader(<body>)).
+// param must consume one string input slot, feed it through
+// httptest.NewRequest(..., strings.NewReader(<body>)), and include a benign
+// API-key header so common provider handlers do not return before reading the
+// body.
 func TestGenerateWrapper_HTTPRequestBodyIsSymbolic(t *testing.T) {
 	const src = `package svc
 
@@ -410,6 +412,9 @@ func Handle(r *http.Request) bool { return r != nil }
 	}
 	if !strings.Contains(out, "strings.NewReader(") {
 		t.Fatalf("wrapper missing strings.NewReader body wrapper; source:\n%s", out)
+	}
+	if !strings.Contains(out, `.Header.Set("x-api-key", "shatter")`) {
+		t.Fatalf("wrapper missing non-empty x-api-key header for provider handlers; source:\n%s", out)
 	}
 	if strings.Contains(out, "bytes.NewReader(nil)") {
 		t.Fatalf("wrapper still uses fixed empty body bytes.NewReader(nil); body must be symbolic; source:\n%s", out)
