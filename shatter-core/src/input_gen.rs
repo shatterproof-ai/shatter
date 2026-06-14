@@ -235,6 +235,126 @@ fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
     }
 }
 
+/// Recursively repair an input value against its declared type so it can be
+/// deserialized, WITHOUT discarding the values it already carries. The key job
+/// (str-kn3f) is to restore required (non-nullable) struct fields that upstream
+/// transforms (mutation, crossover, shrinking) may have dropped — a struct
+/// missing a required field fails deserialization with "missing field X" and
+/// the function never executes. Present fields are kept (and recursively
+/// repaired); missing fields are filled with a type-appropriate default.
+///
+/// Applied to every input immediately before execution so eroded struct inputs
+/// still round-trip. It is purely additive for objects (never removes a field),
+/// so it does not disturb solver/mutation intent on the fields that are present.
+pub fn repair_required_fields(value: &Value, typ: &TypeInfo) -> Value {
+    match typ {
+        TypeInfo::Object { fields } => {
+            let mut obj = value.as_object().cloned().unwrap_or_default();
+            for (name, field_type) in fields {
+                match obj.get(name) {
+                    Some(existing) => {
+                        let repaired = repair_required_fields(existing, field_type);
+                        obj.insert(name.clone(), repaired);
+                    }
+                    None => {
+                        obj.insert(name.clone(), default_for_type(field_type));
+                    }
+                }
+            }
+            Value::Object(obj)
+        }
+        TypeInfo::Array { element } => match value.as_array() {
+            Some(items) => Value::Array(
+                items
+                    .iter()
+                    .map(|item| repair_required_fields(item, element))
+                    .collect(),
+            ),
+            None => value.clone(),
+        },
+        TypeInfo::Nullable { inner } => {
+            if value.is_null() {
+                value.clone()
+            } else {
+                repair_required_fields(value, inner)
+            }
+        }
+        // A malformed uuid value (e.g. a non-canonical string written by the
+        // solver overlay) fails `from_value::<Uuid>`; replace it with a valid
+        // default rather than letting the whole struct fail to deserialize.
+        TypeInfo::Complex {
+            kind: ComplexKind::Uuid,
+            ..
+        } => {
+            if uuid_value_is_valid(value) {
+                value.clone()
+            } else {
+                default_for_type(typ)
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
+/// True when `value` is (or wraps, via a `__complex_type` envelope) a canonical
+/// 8-4-4-4-12 hex uuid string.
+fn uuid_value_is_valid(value: &Value) -> bool {
+    let candidate = value
+        .as_str()
+        .or_else(|| value.get("value").and_then(Value::as_str));
+    match candidate {
+        Some(s) => {
+            let bytes = s.as_bytes();
+            bytes.len() == 36
+                && bytes.iter().enumerate().all(|(i, &c)| {
+                    if matches!(i, 8 | 13 | 18 | 23) {
+                        c == b'-'
+                    } else {
+                        c.is_ascii_hexdigit()
+                    }
+                })
+        }
+        None => false,
+    }
+}
+
+/// A valid, deserializable default value for a type, used to fill a required
+/// field that an input is missing (see [`repair_required_fields`]). Complex
+/// kinds emit the same `__complex_type` envelope shape the generator uses, so
+/// the frontend harness materializes them correctly.
+fn default_for_type(typ: &TypeInfo) -> Value {
+    match typ {
+        TypeInfo::Int => json!(0),
+        TypeInfo::Float => json!(0.0),
+        TypeInfo::Bool => json!(false),
+        TypeInfo::Str => json!(""),
+        TypeInfo::Array { .. } => json!([]),
+        TypeInfo::Object { fields } => {
+            let mut obj = serde_json::Map::new();
+            for (name, field_type) in fields {
+                obj.insert(name.clone(), default_for_type(field_type));
+            }
+            Value::Object(obj)
+        }
+        TypeInfo::Nullable { .. } => Value::Null,
+        TypeInfo::Union { variants } => variants
+            .first()
+            .map(default_for_type)
+            .unwrap_or(Value::Null),
+        TypeInfo::Complex { kind, .. } => match kind {
+            ComplexKind::Uuid => {
+                json!({"__complex_type": "uuid", "value": "00000000-0000-0000-0000-000000000000"})
+            }
+            ComplexKind::Url => json!({"__complex_type": "url", "value": "https://example.test/"}),
+            ComplexKind::Date => json!({"__complex_type": "date", "value": 0}),
+            ComplexKind::DateTime => json!({"__complex_type": "date_time", "value": 0}),
+            ComplexKind::GoByte | ComplexKind::GoUint | ComplexKind::GoDuration => json!(0),
+            _ => Value::Null,
+        },
+        TypeInfo::Opaque { .. } | TypeInfo::Unknown => Value::Null,
+    }
+}
+
 /// Generate a random integer, biased toward boundary values.
 fn generate_int(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..10);
@@ -5784,6 +5904,58 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         };
         let candidates = shrink_candidates(&Value::Null, &typ);
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn repair_required_fields_restores_missing_struct_fields() {
+        // str-kn3f: an eroded struct (missing required fields) is repaired so it
+        // deserializes — present fields are kept, required ones are restored.
+        let typ = TypeInfo::Object {
+            fields: vec![
+                (
+                    "id".into(),
+                    TypeInfo::Complex {
+                        kind: ComplexKind::Uuid,
+                        metadata: serde_json::Map::new(),
+                        inner: None,
+                    },
+                ),
+                ("name".into(), TypeInfo::Str),
+                ("count".into(), TypeInfo::Int),
+                (
+                    "note".into(),
+                    TypeInfo::Nullable {
+                        inner: Box::new(TypeInfo::Str),
+                    },
+                ),
+            ],
+        };
+        let eroded = json!({"name": "kept"});
+        let repaired = repair_required_fields(&eroded, &typ);
+        let obj = repaired.as_object().expect("object");
+        assert_eq!(obj.get("name"), Some(&json!("kept")), "present field kept");
+        assert!(obj.contains_key("id"), "required uuid field restored");
+        assert!(obj.contains_key("count"), "required int field restored");
+        assert_eq!(obj["id"]["__complex_type"], json!("uuid"));
+        assert_eq!(obj["count"], json!(0));
+    }
+
+    #[test]
+    fn repair_required_fields_keeps_nested_and_arrays() {
+        let typ = TypeInfo::Object {
+            fields: vec![(
+                "items".into(),
+                TypeInfo::Array {
+                    element: Box::new(TypeInfo::Object {
+                        fields: vec![("x".into(), TypeInfo::Int), ("y".into(), TypeInfo::Int)],
+                    }),
+                },
+            )],
+        };
+        let eroded = json!({"items": [{"x": 5}]}); // element missing required "y"
+        let repaired = repair_required_fields(&eroded, &typ);
+        assert_eq!(repaired["items"][0]["x"], json!(5));
+        assert_eq!(repaired["items"][0]["y"], json!(0));
     }
 
     #[test]

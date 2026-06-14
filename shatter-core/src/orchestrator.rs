@@ -1297,8 +1297,21 @@ async fn observe_one(
     // an error — when the frontend is slow to respond (e.g., long compile
     // times in the Rust harness), the orchestrator should stop scheduling
     // new work and report a timeout, not a protocol ID mismatch.
+    // Repair each input against its parameter type before execution so eroded
+    // struct inputs (missing required fields from upstream mutation/crossover/
+    // shrinking) still deserialize and the function actually runs (str-kn3f).
+    // Purely additive — present fields keep their solved/mutated values.
+    let repaired_inputs: Vec<serde_json::Value> = entry
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(i, value)| match param_infos.get(i) {
+            Some(param) => crate::input_gen::repair_required_fields(value, &param.typ),
+            None => value.clone(),
+        })
+        .collect();
     let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
-        &entry.inputs,
+        &repaired_inputs,
         param_infos.len(),
         config.default_execute_plan.as_ref(),
     )?;
