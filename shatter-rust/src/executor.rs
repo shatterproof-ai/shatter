@@ -387,14 +387,14 @@ pub type CrateHarnessCache = Mutex<HashMap<CrateHarnessKey, CrateHarnessEntry>>;
 
 /// Cache key for a crate-bridge harness.
 ///
-/// One harness binary per (crate root, wrapper source hash, mocks) — keyed by crate root
+/// One harness binary per (crate root, staged bridge source hash, mocks) — keyed by crate root
 /// rather than individual file so the same binary serves all bridge-enabled functions
 /// in the same crate.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateBridgeHarnessKey {
     crate_root: PathBuf,
-    /// Hash of the generated `__shatter.rs` wrapper module content.
-    wrapper_hash: u64,
+    /// Hash of staged crate inputs that affect the crate-bridge binary.
+    bridge_source_hash: u64,
     mocks_hash: u64,
     cargo_lock_hash: u64,
 }
@@ -410,7 +410,7 @@ impl CrateBridgeHarnessKey {
     pub fn new_test(crate_root: PathBuf) -> Self {
         Self {
             crate_root,
-            wrapper_hash: 0,
+            bridge_source_hash: 0,
             mocks_hash: 0,
             cargo_lock_hash: 0,
         }
@@ -2998,12 +2998,12 @@ fn build_and_spawn_crate_harness(
 
 /// Content-addressed stable directory for a crate-bridge harness.
 ///
-/// The directory path is deterministic: same crate root + wrapper hash + mocks → same path.
-fn stable_crate_bridge_dir(crate_root: &Path, wrapper_hash: u64, mh: u64) -> PathBuf {
+/// The directory path is deterministic: same crate root + staged source hash + mocks → same path.
+fn stable_crate_bridge_dir(crate_root: &Path, bridge_source_hash: u64, mh: u64) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     crate_root.hash(&mut h);
-    wrapper_hash.hash(&mut h);
+    bridge_source_hash.hash(&mut h);
     mh.hash(&mut h);
     let key = h.finish();
     harness_cache_root()
@@ -3013,6 +3013,198 @@ fn stable_crate_bridge_dir(crate_root: &Path, wrapper_hash: u64, mh: u64) -> Pat
                 .join(format!("{key:016x}"))
         })
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-crate-bridge-{key:016x}")))
+}
+
+fn crate_bridge_target_rel_file(
+    file_path: &str,
+    crate_root: &Path,
+) -> Result<PathBuf, ExecuteError> {
+    let crate_root =
+        std::fs::canonicalize(crate_root).unwrap_or_else(|_| to_absolute(crate_root.to_path_buf()));
+    let source_path =
+        std::fs::canonicalize(file_path).unwrap_or_else(|_| to_absolute(PathBuf::from(file_path)));
+    let rel = source_path.strip_prefix(&crate_root).map_err(|_| {
+        ExecuteError::FileError(format!(
+            "crate_bridge target source `{}` is outside crate root `{}`",
+            source_path.display(),
+            crate_root.display()
+        ))
+    })?;
+    Ok(rel.to_path_buf())
+}
+
+fn crate_bridge_source_hash(
+    crate_root: &Path,
+    target_rel_file: &Path,
+    target_contents: &str,
+    root_stub: &str,
+    crate_alias: &str,
+    runtime_path: &Path,
+) -> io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+
+    fn hash_bytes(
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+        label: &str,
+        rel_path: &Path,
+        bytes: &[u8],
+    ) {
+        label.hash(hasher);
+        rel_path.to_string_lossy().hash(hasher);
+        bytes.hash(hasher);
+    }
+
+    fn collect_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err),
+            };
+            for entry in entries {
+                let path = entry?.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.is_file() {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+
+    fn hash_dir(
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+        crate_root: &Path,
+        dir: &Path,
+        target_rel_file: &Path,
+        target_contents: &str,
+        root_stub: &str,
+        lib_rel_file: Option<&Path>,
+        crate_alias: &str,
+        include_generated_stub: bool,
+    ) -> io::Result<()> {
+        let mut hashed_generated_stub = false;
+        for path in collect_files(dir)? {
+            let rel = path.strip_prefix(crate_root).unwrap_or(path.as_path());
+            let mut content = if rel == target_rel_file {
+                target_contents.as_bytes().to_vec()
+            } else if rel == Path::new("src").join("__shatter.rs") {
+                hashed_generated_stub = true;
+                root_stub.as_bytes().to_vec()
+            } else {
+                std::fs::read(&path)?
+            };
+            if lib_rel_file.is_some_and(|lib_rel| rel == lib_rel) {
+                let text = String::from_utf8_lossy(&content);
+                content
+                    .extend_from_slice(crate_bridge_lib_declaration(&text, crate_alias).as_bytes());
+            }
+            hash_bytes(hasher, "file", rel, &content);
+        }
+        if include_generated_stub && !hashed_generated_stub {
+            hash_bytes(
+                hasher,
+                "file",
+                &Path::new("src").join("__shatter.rs"),
+                root_stub.as_bytes(),
+            );
+        }
+        Ok(())
+    }
+
+    fn hash_compile_time_assets(
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+        crate_root: &Path,
+    ) -> io::Result<()> {
+        for entry in collect_compile_time_asset_entries(crate_root)? {
+            match entry.kind {
+                CompileTimeAssetKind::Dir => hash_bytes(hasher, "asset-dir", &entry.rel, b""),
+                CompileTimeAssetKind::File => {
+                    hash_bytes(hasher, "asset", &entry.rel, &std::fs::read(&entry.path)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "crate-bridge-source-v2".hash(&mut hasher);
+
+    let lib_rel_file = find_lib_rs(crate_root).and_then(|lib| {
+        lib.strip_prefix(crate_root)
+            .ok()
+            .map(std::path::Path::to_path_buf)
+    });
+    hash_dir(
+        &mut hasher,
+        crate_root,
+        &crate_root.join("src"),
+        target_rel_file,
+        target_contents,
+        root_stub,
+        lib_rel_file.as_deref(),
+        crate_alias,
+        true,
+    )?;
+
+    let cargo_toml = crate_root.join("Cargo.toml");
+    if cargo_toml.exists() {
+        let content = std::fs::read_to_string(&cargo_toml)?;
+        let ws_pkg = if has_workspace_inheritance(&content) {
+            find_workspace_root(crate_root).and_then(|ws| extract_workspace_package_section(&ws))
+        } else {
+            None
+        };
+        let resolved = resolve_cargo_toml_paths(&content, crate_root, ws_pkg.as_deref());
+        let injected = crate_bridge_feature_content(&resolved, runtime_path);
+        hash_bytes(
+            &mut hasher,
+            "file",
+            Path::new("Cargo.toml"),
+            injected.as_bytes(),
+        );
+    } else {
+        "missing:Cargo.toml".hash(&mut hasher);
+    }
+
+    let build_rs = crate_root.join("build.rs");
+    if build_rs.exists() {
+        hash_bytes(
+            &mut hasher,
+            "file",
+            Path::new("build.rs"),
+            &std::fs::read(build_rs)?,
+        );
+    }
+
+    hash_dir(
+        &mut hasher,
+        crate_root,
+        &crate_root.join(".cargo"),
+        target_rel_file,
+        target_contents,
+        root_stub,
+        None,
+        crate_alias,
+        false,
+    )?;
+    if let Some(lock_source) = cargo_lock_source_for_crate(crate_root) {
+        hash_bytes(
+            &mut hasher,
+            "file",
+            Path::new("Cargo.lock"),
+            &std::fs::read(lock_source)?,
+        );
+    } else {
+        CARGO_LOCK_ABSENT_MARKER.hash(&mut hasher);
+    }
+    hash_compile_time_assets(&mut hasher, crate_root)?;
+
+    Ok(hasher.finish())
 }
 
 fn crate_bridge_target_dir(harness_dir: &Path) -> PathBuf {
@@ -3211,16 +3403,58 @@ fn remove_file_if_exists(path: &Path) -> io::Result<()> {
 /// Paths that escape the crate root, that don't exist, or that already live
 /// under `src/` (already copied) are skipped silently.
 fn copy_compile_time_assets(crate_root: &Path, staging_crate: &Path) -> io::Result<()> {
+    for entry in collect_compile_time_asset_entries(crate_root)? {
+        let dst = staging_crate.join(&entry.rel);
+        match entry.kind {
+            CompileTimeAssetKind::Dir => {
+                std::fs::create_dir_all(&dst)?;
+            }
+            CompileTimeAssetKind::File => {
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&entry.path, &dst)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompileTimeAssetKind {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompileTimeAssetEntry {
+    path: PathBuf,
+    rel: PathBuf,
+    kind: CompileTimeAssetKind,
+}
+
+fn collect_compile_time_asset_entries(crate_root: &Path) -> io::Result<Vec<CompileTimeAssetEntry>> {
     let src_dir = crate_root.join("src");
     if !src_dir.is_dir() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let crate_root_canon = crate_root
         .canonicalize()
         .unwrap_or_else(|_| crate_root.to_path_buf());
 
-    let mut copied: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    let mut copy_asset = |abs: &Path| -> io::Result<()> {
+    let mut entries = Vec::<CompileTimeAssetEntry>::new();
+    let mut seen = std::collections::HashSet::<PathBuf>::new();
+    let mut push_entry = |path: PathBuf, kind: CompileTimeAssetKind| -> io::Result<()> {
+        let rel = match path.strip_prefix(&crate_root_canon) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => return Ok(()),
+        };
+        if seen.insert(rel.clone()) {
+            entries.push(CompileTimeAssetEntry { path, rel, kind });
+        }
+        Ok(())
+    };
+    let mut collect_asset = |abs: &Path| -> io::Result<()> {
         // Canonicalize for escape check; if canonicalization fails (e.g. broken
         // symlink) treat as absent and skip.
         let canon = match abs.canonicalize() {
@@ -3238,17 +3472,22 @@ fn copy_compile_time_assets(crate_root: &Path, staging_crate: &Path) -> io::Resu
         if rel.starts_with("src") {
             return Ok(());
         }
-        if !copied.insert(rel.clone()) {
-            return Ok(());
-        }
-        let dst = staging_crate.join(&rel);
         if canon.is_dir() {
-            copy_dir_recursive(&canon, &dst)?;
-        } else if canon.is_file() {
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
+            push_entry(canon.clone(), CompileTimeAssetKind::Dir)?;
+            let mut stack = vec![canon.clone()];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir)? {
+                    let path = entry?.path();
+                    if path.is_dir() {
+                        push_entry(path.clone(), CompileTimeAssetKind::Dir)?;
+                        stack.push(path);
+                    } else if path.is_file() {
+                        push_entry(path, CompileTimeAssetKind::File)?;
+                    }
+                }
             }
-            std::fs::copy(&canon, &dst)?;
+        } else if canon.is_file() {
+            push_entry(canon, CompileTimeAssetKind::File)?;
         }
         Ok(())
     };
@@ -3276,12 +3515,17 @@ fn copy_compile_time_assets(crate_root: &Path, staging_crate: &Path) -> io::Resu
                         AssetBase::Manifest => crate_root.to_path_buf(),
                     };
                     let abs = base.join(&asset.path);
-                    copy_asset(&abs)?;
+                    collect_asset(&abs)?;
                 }
             }
         }
     }
-    Ok(())
+    entries.sort_by(|a, b| {
+        a.rel
+            .cmp(&b.rel)
+            .then_with(|| (a.kind as u8).cmp(&(b.kind as u8)))
+    });
+    Ok(entries)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3547,19 +3791,26 @@ fn inject_lib_module_declaration(
     lib_rs_path: &Path,
     crate_alias: &str,
 ) -> Result<(), ExecuteError> {
+    let content = std::fs::read_to_string(lib_rs_path)
+        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot read lib.rs: {e}"))))?;
+    let declaration = crate_bridge_lib_declaration(&content, crate_alias);
+    if declaration.is_empty() {
+        return Ok(());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(lib_rs_path)
+        .map_err(ExecuteError::IoError)?;
+    file.write_all(declaration.as_bytes())
+        .map_err(ExecuteError::IoError)
+}
+
+fn crate_bridge_lib_declaration(content: &str, crate_alias: &str) -> String {
     const MARKER: &str = "pub mod __shatter;";
     const SHATTER_RUST_ALIAS: &str = "extern crate self as shatter_rust;";
     const GENERATORS_MARKER: &str = "pub mod generators {";
-    let content = std::fs::read_to_string(lib_rs_path)
-        .map_err(|e| ExecuteError::IoError(io::Error::other(format!("cannot read lib.rs: {e}"))))?;
+
     let alias_decl = format!("extern crate self as {crate_alias};");
-    if content.contains(MARKER)
-        && content.contains(&alias_decl)
-        && content.contains(SHATTER_RUST_ALIAS)
-        && content.contains(GENERATORS_MARKER)
-    {
-        return Ok(());
-    }
     let mut declaration = String::new();
     if !content.contains(&alias_decl) {
         declaration.push_str(&format!(
@@ -3579,12 +3830,7 @@ fn inject_lib_module_declaration(
     if !content.contains(MARKER) {
         declaration.push_str("\n#[cfg(feature = \"shatter-crate-bridge\")]\npub mod __shatter;\n");
     }
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(lib_rs_path)
-        .map_err(ExecuteError::IoError)?;
-    file.write_all(declaration.as_bytes())
-        .map_err(ExecuteError::IoError)
+    declaration
 }
 
 /// Add the `shatter-crate-bridge` feature plus optional `serde_json` and
@@ -3601,20 +3847,29 @@ fn inject_crate_bridge_feature(
     cargo_toml_path: &Path,
     runtime_path: &Path,
 ) -> Result<(), ExecuteError> {
-    const FEATURE_MARKER: &str = "shatter-crate-bridge";
     let content = std::fs::read_to_string(cargo_toml_path).map_err(|e| {
         ExecuteError::IoError(io::Error::other(format!("cannot read Cargo.toml: {e}")))
     })?;
+    let new_content = crate_bridge_feature_content(&content, runtime_path);
 
+    if new_content == content {
+        return Ok(());
+    }
+
+    std::fs::write(cargo_toml_path, new_content).map_err(ExecuteError::IoError)
+}
+
+fn crate_bridge_feature_content(content: &str, runtime_path: &Path) -> String {
+    const FEATURE_MARKER: &str = "shatter-crate-bridge";
     let needs_feature = !content.contains(FEATURE_MARKER);
     let needs_serde_json = !content.contains("serde_json");
     let needs_runtime = !content.contains("shatter-rust-runtime");
 
     if !needs_feature && !needs_serde_json && !needs_runtime {
-        return Ok(());
+        return content.to_string();
     }
 
-    let mut new_content = content.clone();
+    let mut new_content = content.to_string();
 
     // Insert new optional deps into the [dependencies] section (or add the section).
     let mut deps_to_add = String::new();
@@ -3660,7 +3915,7 @@ fn inject_crate_bridge_feature(
         }
     }
 
-    std::fs::write(cargo_toml_path, new_content).map_err(ExecuteError::IoError)
+    new_content
 }
 
 fn section_header_insert_after(content: &str, header: &str) -> Option<usize> {
@@ -4386,13 +4641,37 @@ fn execute_function_crate_bridge(
         &native_replays,
     );
     let root_stub = generate_crate_bridge_root_stub();
-    let wrapper_hash = source_hash(&format!("{in_module_wrapper}{root_stub}"));
+
+    let mut target_contents = instr_result.source.clone();
+    if !target_contents.ends_with('\n') {
+        target_contents.push('\n');
+    }
+    target_contents.push_str(&in_module_wrapper);
+
+    let user_cargo_toml_path = crate_root.join("Cargo.toml");
+    let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
+        .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
+    let crate_name =
+        extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
+    let crate_alias = crate_name.replace('-', "_");
+    let runtime_path = find_runtime_crate_path()?;
+
+    let rel_file = crate_bridge_target_rel_file(file_path, crate_root)?;
+    let bridge_source_hash = crate_bridge_source_hash(
+        crate_root,
+        &rel_file,
+        &target_contents,
+        &root_stub,
+        &crate_alias,
+        &runtime_path,
+    )
+    .map_err(|e| ExecuteError::FileError(format!("cannot hash crate_bridge sources: {e}")))?;
     let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
 
     let key = CrateBridgeHarnessKey {
         crate_root: crate_root.to_path_buf(),
-        wrapper_hash,
+        bridge_source_hash,
         mocks_hash: mh,
         cargo_lock_hash,
     };
@@ -4421,14 +4700,6 @@ fn execute_function_crate_bridge(
 
     // Slow path: build driver binary against an isolated staging copy of the
     // user crate. The original source files are never modified (str-ja70).
-    let user_cargo_toml_path = crate_root.join("Cargo.toml");
-    let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
-        .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
-
-    let crate_name =
-        extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
-    let runtime_path = find_runtime_crate_path()?;
-
     // Verify the user crate is a library before doing any I/O.
     let _lib_rs = find_lib_rs(crate_root).ok_or_else(|| {
         ExecuteError::NonExecutable(
@@ -4436,7 +4707,7 @@ fn execute_function_crate_bridge(
         )
     })?;
 
-    let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
+    let harness_dir = stable_crate_bridge_dir(crate_root, bridge_source_hash, mh);
     std::fs::create_dir_all(&harness_dir)?;
 
     // Create an isolated staging copy of the user crate. All mutations
@@ -4447,10 +4718,7 @@ fn execute_function_crate_bridge(
     })?;
 
     // Map `file_path` from original crate to staging copy.
-    let rel_file = Path::new(file_path)
-        .strip_prefix(crate_root)
-        .unwrap_or(Path::new(file_path));
-    let staging_file = staging_crate.join(rel_file);
+    let staging_file = staging_crate.join(&rel_file);
     let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| {
         ExecuteError::NonExecutable("crate_bridge: cannot find lib.rs in staging copy".to_string())
     })?;
@@ -4458,11 +4726,6 @@ fn execute_function_crate_bridge(
     let staging_cargo_toml = staging_crate.join("Cargo.toml");
 
     // Write the instrumented source + in-module wrapper to the staging copy.
-    let mut target_contents = instr_result.source.clone();
-    if !target_contents.ends_with('\n') {
-        target_contents.push('\n');
-    }
-    target_contents.push_str(&in_module_wrapper);
     if let Some(parent) = staging_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             ExecuteError::IoError(io::Error::other(format!(
@@ -4480,13 +4743,13 @@ fn execute_function_crate_bridge(
     std::fs::write(&staging_shatter_mod, &root_stub).map_err(ExecuteError::IoError)?;
 
     // Inject mod declaration into staging lib.rs (idempotent).
-    inject_lib_module_declaration(&staging_lib_rs, &crate_name.replace('-', "_"))?;
+    inject_lib_module_declaration(&staging_lib_rs, &crate_alias)?;
 
     // Inject feature + deps into staging Cargo.toml (idempotent).
     inject_crate_bridge_feature(&staging_cargo_toml, &runtime_path)?;
 
     let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
-    let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
+    let driver_source = generate_crate_bridge_bin(&crate_alias);
     let driver_package_name =
         crate_bridge_driver_package_name("shatter-crate-bridge-exec", &harness_dir);
     let driver_cargo_toml = generate_crate_bridge_cargo_toml(
@@ -11878,7 +12141,7 @@ edition = "2021"
         };
         let old_bridge_key = CrateBridgeHarnessKey {
             crate_root: crate_root.clone(),
-            wrapper_hash: 4,
+            bridge_source_hash: 4,
             mocks_hash: 5,
             cargo_lock_hash: old_hash,
         };
@@ -11902,6 +12165,116 @@ edition = "2021"
         assert_ne!(
             old_bridge_key, new_bridge_key,
             "crate-bridge in-memory harness cache key must change when Cargo.lock changes",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_staged_sources_change() {
+        let crate_root = unique_tmp_dir("bridge-source-hash-8j9k");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_hash"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "mod helper;\npub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/helper.rs"),
+            "pub fn value() -> u64 { 1 }\n",
+        )
+        .unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "mod helper;\npub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_hash",
+            runtime_path,
+        )
+        .unwrap();
+        let changed_target_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "mod helper;\npub fn target() -> u64 { 2 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_hash",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_target_hash,
+            "crate-bridge cache keys must invalidate when the staged target source changes",
+        );
+
+        std::fs::write(
+            crate_root.join("src/helper.rs"),
+            "pub fn value() -> u64 { 2 }\n",
+        )
+        .unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "mod helper;\npub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_hash",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when sibling staged source files change",
+        );
+
+        std::fs::write(
+            crate_root.join("src/helper.rs"),
+            "pub fn value() -> u64 { 1 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "mod helper;\nconst _: sqlx::migrate::Migrator = sqlx::migrate!();\npub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        let before_migrations_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "mod helper;\nconst _: sqlx::migrate::Migrator = sqlx::migrate!();\npub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_hash",
+            runtime_path,
+        )
+        .unwrap();
+        std::fs::create_dir(crate_root.join("migrations")).unwrap();
+        let empty_migrations_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "mod helper;\nconst _: sqlx::migrate::Migrator = sqlx::migrate!();\npub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_hash",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            before_migrations_hash, empty_migrations_hash,
+            "crate-bridge cache keys must invalidate when an empty compile-time asset directory appears",
         );
 
         let _ = std::fs::remove_dir_all(&crate_root);
@@ -11993,6 +12366,27 @@ edition = "2021"
 
         let _ = std::fs::remove_dir_all(&crate_root);
         let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
+    #[test]
+    fn crate_bridge_target_rel_file_normalizes_relative_paths() {
+        let project_root = unique_tmp_dir("bridge-rel-path-project");
+        let crate_root = project_root.join("api");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        let source_file = crate_root.join("src/lib.rs");
+        std::fs::write(&source_file, "pub fn target() {}\n").unwrap();
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::enter(&project_root);
+        let rel = crate_bridge_target_rel_file("api/src/lib.rs", Path::new("api")).unwrap();
+
+        assert_eq!(rel, PathBuf::from("src/lib.rs"));
+        assert!(
+            !rel.is_absolute(),
+            "crate-bridge staging paths must always stay relative to the staging crate",
+        );
+
+        let _ = std::fs::remove_dir_all(&project_root);
     }
 
     // ─── str-gc0r: compile-time asset copying ────────────────────────────
