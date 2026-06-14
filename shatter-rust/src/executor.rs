@@ -3209,13 +3209,27 @@ fn crate_bridge_source_hash(
         line: &str,
         section_dependency_name: Option<&str>,
     ) -> Option<String> {
-        let (_, value) = line.split_once('=')?;
-        if !value.contains("workspace") || !value.contains("true") {
+        let (key, value) = line.split_once('=')?;
+        let key = key.trim();
+        let value = value.trim();
+        if value.contains("workspace") && value.contains("true") {
+            return section_dependency_name
+                .map(ToString::to_string)
+                .or_else(|| dependency_name_from_line(line));
+        }
+        if value.starts_with("true") && key.ends_with(".workspace") {
+            return dependency_name_from_line(line);
+        }
+        if value.starts_with("true")
+            && key == "workspace"
+            && let Some(section_name) = section_dependency_name
+        {
+            return Some(section_name.to_string());
+        }
+        if !value.starts_with("true") {
             return None;
         }
-        section_dependency_name
-            .map(ToString::to_string)
-            .or_else(|| dependency_name_from_line(line))
+        None
     }
 
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -13206,6 +13220,152 @@ edition = "2021"
         assert_ne!(
             old_hash, changed_helper_hash,
             "crate-bridge cache keys must invalidate when workspace dotted path dependency sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_dotted_workspace_dependency_source_changes() {
+        let crate_root = unique_tmp_dir("bridge-dotted-workspace-dep-hash");
+        let helper_root = crate_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_dotted_workspace_dep"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["helper"]
+
+[workspace.dependencies]
+helper = { path = "helper" }
+
+[dependencies]
+helper.workspace = true
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_dotted_workspace_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_dotted_workspace_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when dotted workspace dependency sources change",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_table_workspace_dependency_source_changes() {
+        let crate_root = unique_tmp_dir("bridge-table-workspace-dep-hash");
+        let helper_root = crate_root.join("helper");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(helper_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_table_workspace_dep"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["helper"]
+
+[workspace.dependencies]
+helper = { path = "helper" }
+
+[dependencies.helper]
+workspace = true
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate_root.join("src/lib.rs"),
+            "pub fn target() -> u64 { helper::value() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            helper_root.join("Cargo.toml"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_table_workspace_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        std::fs::write(helper_root.join("src/lib.rs"), "pub fn value() -> u64 { 2 }\n").unwrap();
+        let changed_helper_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { helper::value() }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_table_workspace_dep",
+            runtime_path,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_helper_hash,
+            "crate-bridge cache keys must invalidate when table workspace dependency sources change",
         );
 
         let _ = std::fs::remove_dir_all(&crate_root);
