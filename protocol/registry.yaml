@@ -467,4 +467,6 @@ frontends:
     complex_type_capabilities:
       - uuid
       - url
+      - date
+      - date_time
     default_exec_timeout_s: 5

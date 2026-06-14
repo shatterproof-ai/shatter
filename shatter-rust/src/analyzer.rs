@@ -918,6 +918,20 @@ fn convert_type_path(
             metadata: HashMap::new(),
             inner: None,
         },
+        // chrono date/time types (str-8euf). NaiveDate is a calendar date;
+        // NaiveDateTime and DateTime<Tz> carry a time component. The harness
+        // materializes the date/date_time envelopes into the ISO strings these
+        // types deserialize from.
+        "NaiveDate" => TypeInfo::Complex {
+            kind: ComplexKind::Date,
+            metadata: HashMap::new(),
+            inner: None,
+        },
+        "NaiveDateTime" | "DateTime" => TypeInfo::Complex {
+            kind: ComplexKind::DateTime,
+            metadata: HashMap::new(),
+            inner: None,
+        },
         "Regex" => TypeInfo::Complex {
             kind: ComplexKind::RegExp,
             metadata: HashMap::new(),
