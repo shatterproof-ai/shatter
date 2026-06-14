@@ -4931,7 +4931,7 @@ for line in sys.stdin:
         };
         let method_inputs = vec![serde_json::json!("default")];
         let prefixed =
-            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan))
+            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, &[crate::types::ParamInfo { name: String::new(), typ: crate::types::TypeInfo::Str, type_name: None }], Some(&plan))
                 .expect("constructor path seed should materialize");
         assert_eq!(prefixed.inputs().len(), 2);
         assert_eq!(
@@ -4957,7 +4957,7 @@ for line in sys.stdin:
             "directory-like constructor prefix should be a usable directory",
         );
         let refreshed =
-            crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), 1, Some(&plan))
+            crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), &[crate::types::ParamInfo { name: String::new(), typ: crate::types::TypeInfo::Str, type_name: None }], Some(&plan))
                 .expect("already-prefixed inputs should refresh constructor scratch");
         assert_eq!(refreshed.inputs().len(), 2);
         assert_eq!(
