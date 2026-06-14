@@ -3040,6 +3040,7 @@ fn crate_bridge_source_hash(
     root_stub: &str,
     crate_alias: &str,
     runtime_path: &Path,
+    native_replays: &[Option<NativeReplaySpec>],
 ) -> io::Result<u64> {
     use std::hash::{Hash, Hasher};
 
@@ -3463,6 +3464,21 @@ fn crate_bridge_source_hash(
         Ok(())
     }
 
+    fn hash_native_replay_sources(
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+        native_replays: &[Option<NativeReplaySpec>],
+    ) -> io::Result<()> {
+        for spec in native_replays.iter().flatten() {
+            hash_bytes(
+                hasher,
+                "native-replay-generator",
+                &spec.file_path,
+                &std::fs::read(&spec.file_path)?,
+            );
+        }
+        Ok(())
+    }
+
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     "crate-bridge-source-v2".hash(&mut hasher);
 
@@ -3512,6 +3528,16 @@ fn crate_bridge_source_hash(
     } else {
         "missing:Cargo.toml".hash(&mut hasher);
     }
+    let mut runtime_visited = std::collections::HashSet::new();
+    hash_path_dependency_crate(
+        &mut hasher,
+        &PathDependencyInput {
+            root: runtime_path.to_path_buf(),
+            workspace_manifest: None,
+        },
+        &mut runtime_visited,
+    )?;
+    hash_native_replay_sources(&mut hasher, native_replays)?;
 
     let build_rs = crate_root.join("build.rs");
     if build_rs.exists() {
@@ -5092,6 +5118,7 @@ fn execute_function_crate_bridge(
         &root_stub,
         &crate_alias,
         &runtime_path,
+        &native_replays,
     )
     .map_err(|e| ExecuteError::FileError(format!("cannot hash crate_bridge sources: {e}")))?;
     let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
@@ -12736,6 +12763,7 @@ edition = "2021"
             root_stub,
             "bridge_hash",
             runtime_path,
+            &[],
         )
         .unwrap();
         let changed_target_hash = crate_bridge_source_hash(
@@ -12745,6 +12773,7 @@ edition = "2021"
             root_stub,
             "bridge_hash",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -12765,6 +12794,7 @@ edition = "2021"
             root_stub,
             "bridge_hash",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -12790,6 +12820,7 @@ edition = "2021"
             root_stub,
             "bridge_hash",
             runtime_path,
+            &[],
         )
         .unwrap();
         std::fs::create_dir(crate_root.join("migrations")).unwrap();
@@ -12800,6 +12831,7 @@ edition = "2021"
             root_stub,
             "bridge_hash",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -12809,6 +12841,137 @@ edition = "2021"
         );
 
         let _ = std::fs::remove_dir_all(&crate_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_runtime_source_changes() {
+        let crate_root = unique_tmp_dir("bridge-runtime-hash-crate");
+        let runtime_root = unique_tmp_dir("bridge-runtime-hash-runtime");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(runtime_root.join("src")).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_runtime_hash"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(crate_root.join("src/lib.rs"), "pub fn target() -> u64 { 1 }\n").unwrap();
+        std::fs::write(
+            runtime_root.join("Cargo.toml"),
+            r#"[package]
+name = "shatter-rust-runtime"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(runtime_root.join("src/lib.rs"), "pub fn marker() -> u64 { 1 }\n").unwrap();
+
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 1 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_runtime_hash",
+            &runtime_root,
+            &[],
+        )
+        .unwrap();
+
+        std::fs::write(runtime_root.join("src/lib.rs"), "pub fn marker() -> u64 { 2 }\n").unwrap();
+        let changed_runtime_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 1 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_runtime_hash",
+            &runtime_root,
+            &[],
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_runtime_hash,
+            "crate-bridge cache keys must invalidate when the injected runtime crate source changes",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+        let _ = std::fs::remove_dir_all(&runtime_root);
+    }
+
+    #[test]
+    fn crate_bridge_source_hash_changes_when_native_replay_generator_source_changes() {
+        let crate_root = unique_tmp_dir("bridge-native-replay-hash-crate");
+        let generator_root = unique_tmp_dir("bridge-native-replay-hash-generator");
+        std::fs::create_dir_all(crate_root.join("src")).unwrap();
+        std::fs::create_dir_all(&generator_root).unwrap();
+        std::fs::write(
+            crate_root.join("Cargo.toml"),
+            r#"[package]
+name = "bridge_native_replay_hash"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        std::fs::write(crate_root.join("src/lib.rs"), "pub fn target() -> u64 { 1 }\n").unwrap();
+        let generator_file = generator_root.join("generator.rs");
+        std::fs::write(
+            &generator_file,
+            "pub fn make() -> shatter_rust::generators::GeneratorResult { unimplemented!() }\n",
+        )
+        .unwrap();
+        let native_replays = vec![Some(NativeReplaySpec {
+            input_index: 0,
+            module_name: "__shatter_native_gen_0".to_string(),
+            function_name: "make".to_string(),
+            file_path: generator_file.clone(),
+            recipe: Value::Null,
+        })];
+        let root_stub = "pub mod __shatter;\n";
+        let target_rel = Path::new("src/lib.rs");
+        let runtime_path = Path::new("/fake/runtime");
+
+        let old_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 1 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_native_replay_hash",
+            runtime_path,
+            &native_replays,
+        )
+        .unwrap();
+
+        std::fs::write(
+            &generator_file,
+            "pub fn make() -> shatter_rust::generators::GeneratorResult { panic!(\"changed\") }\n",
+        )
+        .unwrap();
+        let changed_generator_hash = crate_bridge_source_hash(
+            &crate_root,
+            target_rel,
+            "pub fn target() -> u64 { 1 }\n__shatter_wrapper!();\n",
+            root_stub,
+            "bridge_native_replay_hash",
+            runtime_path,
+            &native_replays,
+        )
+        .unwrap();
+
+        assert_ne!(
+            old_hash, changed_generator_hash,
+            "crate-bridge cache keys must invalidate when native replay generator source changes",
+        );
+
+        let _ = std::fs::remove_dir_all(&crate_root);
+        let _ = std::fs::remove_dir_all(&generator_root);
     }
 
     #[test]
@@ -12857,6 +13020,7 @@ edition = "2021"
             root_stub,
             "bridge_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -12868,6 +13032,7 @@ edition = "2021"
             root_stub,
             "bridge_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -12928,6 +13093,7 @@ path = "lib.rs"
             root_stub,
             "bridge_path_dep_lib_path",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -12939,6 +13105,7 @@ path = "lib.rs"
             root_stub,
             "bridge_path_dep_lib_path",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13025,6 +13192,7 @@ edition = "2021"
             root_stub,
             "bridge_workspace_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13036,6 +13204,7 @@ edition = "2021"
             root_stub,
             "bridge_workspace_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13062,6 +13231,7 @@ leaf = { path = "leaf", features = ["new"] }
             root_stub,
             "bridge_workspace_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13119,6 +13289,7 @@ edition = "2021"
             root_stub,
             "bridge_target_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13130,6 +13301,7 @@ edition = "2021"
             root_stub,
             "bridge_target_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13187,6 +13359,7 @@ edition = "2021"
             root_stub,
             "bridge_dotted_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13198,6 +13371,7 @@ edition = "2021"
             root_stub,
             "bridge_dotted_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13258,6 +13432,7 @@ edition = "2021"
             root_stub,
             "bridge_patch_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13269,6 +13444,7 @@ edition = "2021"
             root_stub,
             "bridge_patch_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13326,6 +13502,7 @@ edition = "2021"
             root_stub,
             "bridge_commented_dep_section",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13337,6 +13514,7 @@ edition = "2021"
             root_stub,
             "bridge_commented_dep_section",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13390,6 +13568,7 @@ edition = "2021"
             root_stub,
             "bridge_commented_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13401,6 +13580,7 @@ edition = "2021"
             root_stub,
             "bridge_commented_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13463,6 +13643,7 @@ edition = "2021"
             root_stub,
             "bridge_workspace_dotted_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13474,6 +13655,7 @@ edition = "2021"
             root_stub,
             "bridge_workspace_dotted_path_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13536,6 +13718,7 @@ edition = "2021"
             root_stub,
             "bridge_dotted_workspace_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13547,6 +13730,7 @@ edition = "2021"
             root_stub,
             "bridge_dotted_workspace_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13609,6 +13793,7 @@ edition = "2021"
             root_stub,
             "bridge_table_workspace_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13620,6 +13805,7 @@ edition = "2021"
             root_stub,
             "bridge_table_workspace_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13682,6 +13868,7 @@ edition = "2021"
             root_stub,
             "bridge_root_workspace_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13693,6 +13880,7 @@ edition = "2021"
             root_stub,
             "bridge_root_workspace_dep",
             runtime_path,
+            &[],
         )
         .unwrap();
 
@@ -13740,6 +13928,7 @@ edition = "2021"
             root_stub,
             "bridge_external_target",
             runtime_path,
+            &[],
         )
         .unwrap();
         let changed_target_hash = crate_bridge_source_hash(
@@ -13749,6 +13938,7 @@ edition = "2021"
             root_stub,
             "bridge_external_target",
             runtime_path,
+            &[],
         )
         .unwrap();
 
