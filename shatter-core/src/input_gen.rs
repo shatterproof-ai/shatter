@@ -1772,10 +1772,30 @@ fn mutate_object(
             Value::Object(result)
         }
         1 => {
-            // Remove a field
+            // Remove an OPTIONAL field only. Every entry in `fields` is a
+            // declared field of the type; removing a REQUIRED (non-nullable)
+            // one yields an object that fails deserialization with
+            // "missing field X" (str-kn3f). Optional fields deserialize as None
+            // when absent, so dropping one is a valid mutation that explores the
+            // present/absent dimension. With no optional field, fall back to
+            // mutating a value rather than corrupting the struct.
             let mut result = obj;
-            let idx = rng.random_range(0..fields.len());
-            result.remove(&fields[idx].0);
+            let optional: Vec<&String> = fields
+                .iter()
+                .filter(|(_, t)| matches!(t, TypeInfo::Nullable { .. }))
+                .map(|(name, _)| name)
+                .collect();
+            if !optional.is_empty() {
+                let idx = rng.random_range(0..optional.len());
+                result.remove(optional[idx]);
+            } else {
+                let idx = rng.random_range(0..fields.len());
+                let (name, typ) = &fields[idx];
+                if let Some(current) = result.get(name) {
+                    let mutated = mutate_value(current, typ, dictionary, rng);
+                    result.insert(name.clone(), mutated);
+                }
+            }
             Value::Object(result)
         }
         _ => {
@@ -4669,6 +4689,33 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         for _ in 0..100 {
             let mutated = mutate_value(&original, &typ, &[], &mut rng);
             assert!(mutated.is_object(), "expected object, got {mutated}");
+        }
+    }
+
+    #[test]
+    fn mutate_object_never_drops_required_field() {
+        // str-kn3f: a required (non-nullable) field must always survive mutation,
+        // or the struct fails to deserialize ("missing field id"). An optional
+        // field MAY be dropped (deserializes as None).
+        let mut rng = seeded_rng();
+        let typ = TypeInfo::Object {
+            fields: vec![
+                ("id".into(), TypeInfo::Str),
+                ("count".into(), TypeInfo::Int),
+                (
+                    "note".into(),
+                    TypeInfo::Nullable {
+                        inner: Box::new(TypeInfo::Str),
+                    },
+                ),
+            ],
+        };
+        let original = json!({"id": "x", "count": 1, "note": "hi"});
+        for _ in 0..500 {
+            let mutated = mutate_value(&original, &typ, &[], &mut rng);
+            let obj = mutated.as_object().expect("expected object");
+            assert!(obj.contains_key("id"), "required field 'id' was dropped: {mutated}");
+            assert!(obj.contains_key("count"), "required field 'count' was dropped: {mutated}");
         }
     }
 
