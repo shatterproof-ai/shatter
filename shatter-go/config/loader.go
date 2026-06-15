@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -183,10 +184,31 @@ func findConfigFile(fromFile string) (string, error) {
 	}
 }
 
+// TargetRelpath normalizes a source-file path into the form MatchTarget
+// expects. Absolute paths (and paths that escape the working tree via "../")
+// collapse to their basename, mirroring how filename-scoped config globs are
+// written; clean relative paths pass through unchanged. Both the safety-policy
+// resolver and the hint-config resolver MUST funnel SourceFile through this
+// helper before MatchTarget — historically the hint resolver passed the raw
+// absolute SourceFile, so filename-scoped `defaults`/`generators` globs silently
+// failed to match during scans even though the same globs worked for `policy`
+// (str-rd0a).
+func TargetRelpath(file string) string {
+	clean := filepath.ToSlash(filepath.Clean(file))
+	if filepath.IsAbs(clean) {
+		return filepath.Base(clean)
+	}
+	if strings.HasPrefix(clean, "../") {
+		return filepath.Base(clean)
+	}
+	return clean
+}
+
 // MatchTarget returns the most specific FunctionConfig whose glob pattern
 // matches relpath:function. Patterns use path.Match semantics on both
 // sides of the colon (e.g. "*_test.go:*" or "models/user.go:Fetch*").
 // Falls back to a zero-value FunctionConfig when no entry matches.
+// Callers should pass relpath through TargetRelpath first.
 func (f File) MatchTarget(relpath, function string) FunctionConfig {
 	const exactScore = 1000
 	best := FunctionConfig{}

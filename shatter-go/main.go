@@ -91,7 +91,11 @@ func hintConfigResolver(lookup func(string) *protocol.TargetContext) func(string
 		if err != nil {
 			return planner.PerTargetHints{}
 		}
-		entry := file.MatchTarget(analysis.SourceFile, analysis.Name)
+		// str-rd0a: normalize SourceFile the same way the policy resolver does
+		// (config.TargetRelpath). Without this, an absolute SourceFile never
+		// matches filename-scoped `defaults`/`generators` globs, so per-function
+		// hint config silently failed for scans even though `policy` worked.
+		entry := file.MatchTarget(config.TargetRelpath(analysis.SourceFile), analysis.Name)
 		hints := translateHintConfig(entry)
 		if len(file.GoRuntimeValues) > 0 {
 			hints.ConfiguredRuntimeValues = file.GoRuntimeValues

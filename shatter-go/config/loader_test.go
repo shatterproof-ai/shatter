@@ -275,6 +275,49 @@ functions:
 	}
 }
 
+// str-rd0a: the hint-config resolver (shatter-go/main.go) historically passed
+// the raw FunctionAnalysis.SourceFile — an ABSOLUTE path during scans — to
+// MatchTarget, while the policy resolver normalized it first. filepath.Match
+// never matches a basename pattern against an absolute path, so per-function
+// `defaults`/`generators` globs silently failed for hints while working for
+// policy. config.TargetRelpath centralizes the normalization both paths must use.
+func TestTargetRelpath_NormalizesAbsoluteToBasename(t *testing.T) {
+	t.Parallel()
+	if got := config.TargetRelpath("/abs/module/internal/fixture/loader.go"); got != "loader.go" {
+		t.Errorf("TargetRelpath(absolute) = %q, want %q", got, "loader.go")
+	}
+	if got := config.TargetRelpath("internal/fixture/loader.go"); got != "internal/fixture/loader.go" {
+		t.Errorf("TargetRelpath(relative) = %q, want it unchanged", got)
+	}
+}
+
+func TestMatchTarget_AbsoluteSourceFileMatchesViaTargetRelpath(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "loader.go:loadOne":
+    defaults:
+      dir: "/fixtures/sample"
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	absPath := "/home/user/project/internal/fixture/loader.go"
+	// The bug: the raw absolute SourceFile does not match a basename key.
+	if got := file.MatchTarget(absPath, "loadOne"); len(got.Defaults) != 0 {
+		t.Fatalf("raw absolute path unexpectedly matched (defaults=%+v)", got.Defaults)
+	}
+	// The fix: normalizing the SourceFile via TargetRelpath matches.
+	entry := file.MatchTarget(config.TargetRelpath(absPath), "loadOne")
+	if len(entry.Defaults) != 1 {
+		t.Fatalf("normalized absolute path failed to match defaults: %+v", entry.Defaults)
+	}
+	if !bytes.Equal(entry.Defaults["dir"].JSON, []byte(`"/fixtures/sample"`)) {
+		t.Errorf("dir default = %s, want \"/fixtures/sample\"", string(entry.Defaults["dir"].JSON))
+	}
+}
+
 func TestLoad_MissingFile_ReturnsZeroFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -20,7 +20,6 @@ package protocol
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
@@ -505,7 +504,7 @@ func (h *Handler) evaluateExecutePolicy(file, function string, fa *FunctionAnaly
 		h.log.Log(context.Background(), LevelTrace, "policy config load failed; proceeding with defaults", "err", err, "file", file)
 		cfg = config.File{}
 	}
-	relpath := policyTargetRelpath(file)
+	relpath := config.TargetRelpath(file)
 	entry := cfg.MatchTarget(relpath, function)
 	var overrides []string
 	if entry.Policy != nil {
@@ -535,21 +534,6 @@ func (h *Handler) loadPolicyConfig(file string) (config.File, error) {
 		return h.policyConfigLoader(file)
 	}
 	return config.Load(file)
-}
-
-// policyTargetRelpath returns the path component used in config match
-// keys. It is the file's basename if the path is absolute or escapes
-// the working directory; otherwise the original path is preserved so
-// nested patterns like "models/user.go:*" still work.
-func policyTargetRelpath(file string) string {
-	clean := filepath.ToSlash(filepath.Clean(file))
-	if filepath.IsAbs(clean) {
-		return filepath.Base(clean)
-	}
-	if strings.HasPrefix(clean, "../") {
-		return filepath.Base(clean)
-	}
-	return clean
 }
 
 // buildAllowedSet constructs the final allowed-class set by unioning the
