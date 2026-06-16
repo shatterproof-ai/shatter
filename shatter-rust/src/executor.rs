@@ -1556,6 +1556,13 @@ fn is_input_dependent_prepare_error(err: &ExecuteError) -> bool {
         err,
         ExecuteError::NonExecutable(msg)
             if msg.contains("not JSON-harness compatible: function parameters")
+                // An axum `State<T>` extractor is rejected by the static prepare
+                // precheck, but a per-execute native-replay marker (from a
+                // configured state generator) CAN construct it in the dispatch
+                // harness. Defer the prepare failure so execute can supply the
+                // marker; execute still emits a clean not_supported when no
+                // marker is present. (str-uz5m)
+                || msg.contains("not constructible without an app-state generator")
     )
 }
 
@@ -2017,6 +2024,51 @@ fn axum_state_unsupported_reason(param_types: &[String]) -> Option<String> {
     }
 }
 
+/// Like `axum_state_unsupported_reason`, but a `State<T>` param that has a
+/// native-replay marker IS constructible: a configured state generator builds
+/// the inner value during prefetch and the harness re-wraps it. Only reject
+/// `State<T>` params that have NO native-replay spec to construct them.
+/// (str-uz5m)
+fn axum_state_unsupported_reason_with_replays(
+    param_types: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
+) -> Option<String> {
+    let unresolved: Vec<String> = param_types
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ty)| match classify_axum_extractor(ty) {
+            Some(AxumExtractor::State(_))
+                if native_replays.get(i).and_then(|s| s.as_ref()).is_none() =>
+            {
+                Some(ty.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if unresolved.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "axum extractor `{}` not constructible without an app-state generator; \
+             configure a state generator or run via the Axum harness adapter",
+            unresolved.join("`, `")
+        ))
+    }
+}
+
+/// For a native-replay param, return `(downcast_type, wrap_prefix, wrap_suffix)`.
+///
+/// Axum `State<T>` generators return the INNER value (e.g. `AppState`), so the
+/// harness downcasts the generator output to `T` and re-wraps it with
+/// `axum::extract::State(..)`. All other params downcast directly to the
+/// declared param type with no wrapping. (str-uz5m)
+fn native_replay_downcast_parts(ty: &str) -> (String, &'static str, &'static str) {
+    match classify_axum_extractor(ty) {
+        Some(AxumExtractor::State(inner)) => (inner, "axum::extract::State(", ")"),
+        _ => (ty.to_string(), "", ""),
+    }
+}
+
 /// True if any parameter is an Axum extractor (handler-shaped function).
 ///
 /// Used to decide whether to skip Serialize-on-return-value capture, which
@@ -2205,7 +2257,7 @@ fn generate_harness(
     // If any parameter is an Axum `State<T>` we cannot synthesize it from JSON
     // (it has no `Deserialize` impl). Emit an early return with a clear error
     // rather than producing uncompilable `from_value::<State<T>>` code.
-    if let Some(reason) = axum_state_unsupported_reason(param_types) {
+    if let Some(reason) = axum_state_unsupported_reason_with_replays(param_types, native_replays) {
         h.push_str(&format!(
             "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":{:?}}})), 0.0, vec![]);\n",
             reason
@@ -2232,12 +2284,13 @@ fn generate_harness(
                 "        let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
                 spec.module_name, spec.function_name
             ));
+            let (__dcast, __wpre, __wpost) = native_replay_downcast_parts(ty);
             h.push_str(&format!(
-                "        let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                "        let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{__dcast}>() {{\n"
             ));
-            h.push_str("            Ok(value) => *value,\n");
+            h.push_str(&format!("            Ok(value) => {__wpre}*value{__wpost},\n"));
             h.push_str(&format!(
-                "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {ty}\"}})), 0.0, vec![]),\n"
+                "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {__dcast}\"}})), 0.0, vec![]),\n"
             ));
             h.push_str("        };\n");
         } else if let Some(ext) = classify_axum_extractor(ty) {
@@ -2519,7 +2572,8 @@ fn generate_dispatch_harness(
         ));
         // Axum `State<T>` short-circuits with a clear "not supported" before
         // emitting any uncompilable `from_value::<State<T>>` code.
-        if let Some(reason) = axum_state_unsupported_reason(param_types) {
+        if let Some(reason) = axum_state_unsupported_reason_with_replays(param_types, native_replays)
+        {
             h.push_str(&format!(
                 "                break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":{:?}}})), 0.0);\n",
                 reason
@@ -2545,12 +2599,15 @@ fn generate_dispatch_harness(
                     "                let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
                     spec.module_name, spec.function_name
                 ));
+                let (__dcast, __wpre, __wpost) = native_replay_downcast_parts(ty);
                 h.push_str(&format!(
-                    "                let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                    "                let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{__dcast}>() {{\n"
                 ));
-                h.push_str("                    Ok(value) => *value,\n");
                 h.push_str(&format!(
-                    "                    Err(_) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {ty}\"}})), 0.0),\n"
+                    "                    Ok(value) => {__wpre}*value{__wpost},\n"
+                ));
+                h.push_str(&format!(
+                    "                    Err(_) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {__dcast}\"}})), 0.0),\n"
                 ));
                 h.push_str("                };\n");
             } else if let Some(ext) = classify_axum_extractor(ty) {
@@ -3791,7 +3848,8 @@ fn generate_crate_bridge_wrapper(
         // Axum `State<T>` extractors are not constructible by the generic
         // wrapper (no `Deserialize` impl). Short-circuit with a clear
         // not-supported error instead of emitting `from_value::<State<T>>`.
-        if let Some(reason) = axum_state_unsupported_reason(param_types) {
+        if let Some(reason) = axum_state_unsupported_reason_with_replays(param_types, native_replays)
+        {
             w.push_str("    let _ = inputs;\n");
             w.push_str(&format!(
                 "    return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"not_supported\", \"message\": {:?}}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}});\n",
@@ -3843,12 +3901,13 @@ fn generate_crate_bridge_wrapper(
                     "    let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
                     spec.module_name, spec.function_name
                 ));
+                let (__dcast, __wpre, __wpost) = native_replay_downcast_parts(ty);
                 w.push_str(&format!(
-                    "    let {clean}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                    "    let {clean}: {ty} = match __generated_{i}.value.downcast::<{__dcast}>() {{\n"
                 ));
-                w.push_str("        Ok(value) => *value,\n");
+                w.push_str(&format!("        Ok(value) => {__wpre}*value{__wpost},\n"));
                 w.push_str(&format!(
-                    "        Err(_) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": \"native replay downcast failed for input {i}: expected {ty}\"}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                    "        Err(_) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": \"native replay downcast failed for input {i}: expected {__dcast}\"}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
                 ));
                 w.push_str("    };\n");
             } else if let Some(ext) = classify_axum_extractor(ty) {
@@ -7857,6 +7916,49 @@ pub struct Nested {
     fn classify_axum_multipart_extractor_returns_multipart() {
         let ext = classify_axum_extractor("axum::extract::Multipart").unwrap();
         assert_eq!(ext, AxumExtractor::Multipart);
+    }
+
+    // str-uz5m / str-wjhv: State<T> with a native-replay marker is constructible.
+    #[test]
+    fn axum_state_with_native_replay_is_not_rejected() {
+        let params = vec!["State<AppState>".to_string(), "Path<Uuid>".to_string()];
+        let replays = vec![
+            Some(NativeReplaySpec {
+                input_index: 0,
+                module_name: "gen".to_string(),
+                function_name: "State".to_string(),
+                file_path: PathBuf::from("gen.rs"),
+                recipe: Value::Null,
+            }),
+            None,
+        ];
+        // A State param backed by a native-replay marker must NOT be rejected.
+        assert!(axum_state_unsupported_reason_with_replays(&params, &replays).is_none());
+        // But the static (replay-blind) check still flags it.
+        assert!(axum_state_unsupported_reason(&params).is_some());
+    }
+
+    #[test]
+    fn axum_state_without_native_replay_is_rejected() {
+        let params = vec!["State<AppState>".to_string()];
+        let replays = vec![None];
+        let reason = axum_state_unsupported_reason_with_replays(&params, &replays)
+            .expect("State without a replay marker must be rejected");
+        assert!(reason.contains("not constructible without an app-state generator"));
+    }
+
+    #[test]
+    fn native_replay_downcast_parts_wraps_state_inner() {
+        // State<T> generators return inner T; harness downcasts to T then re-wraps.
+        let (dcast, pre, post) = native_replay_downcast_parts("State<AppState>");
+        assert_eq!(dcast, "AppState");
+        assert_eq!(pre, "axum::extract::State(");
+        assert_eq!(post, ")");
+        // Non-extractor params downcast directly with no wrapping.
+        let (dcast, pre, post) = native_replay_downcast_parts("CurrentAccount");
+        assert_eq!(dcast, "CurrentAccount");
+        assert_eq!(pre, "");
+        assert_eq!(post, "");
     }
 
     #[test]
