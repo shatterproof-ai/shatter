@@ -70,7 +70,7 @@ pub fn build_schema(param_types: &[ParamInfo]) -> Value {
 
 fn type_to_schema(t: &TypeInfo) -> Value {
     match t {
-        TypeInfo::Int => json!({ "type": "integer" }),
+        TypeInfo::Int { .. } => json!({ "type": "integer" }),
         TypeInfo::Float => json!({ "type": "number" }),
         TypeInfo::Str => json!({ "type": "string" }),
         TypeInfo::Bool => json!({ "type": "boolean" }),
@@ -109,7 +109,7 @@ fn type_to_schema(t: &TypeInfo) -> Value {
 
 fn type_label(t: &TypeInfo) -> String {
     match t {
-        TypeInfo::Int => "int".to_string(),
+        TypeInfo::Int { .. } => "int".to_string(),
         TypeInfo::Float => "float".to_string(),
         TypeInfo::Str => "string".to_string(),
         TypeInfo::Bool => "bool".to_string(),
@@ -144,7 +144,7 @@ mod tests {
             function_source: "fn f(x: i64) -> bool { x > 10 }".to_string(),
             param_types: vec![ParamInfo {
                 name: "x".to_string(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             condition: FailedCondition {
@@ -168,7 +168,7 @@ mod tests {
         let params = vec![
             ParamInfo {
                 name: "x".to_string(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {

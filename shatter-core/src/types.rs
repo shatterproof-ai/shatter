@@ -124,7 +124,19 @@ pub enum ComplexKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeInfo {
-    Int,
+    Int {
+        /// Bit width of the integer type (8/16/32/64/128). `None` = unspecified.
+        ///
+        /// Carried from frontends that know the source integer width (e.g. the
+        /// Rust analyzer maps `u8`→8/unsigned) so the input generator can keep
+        /// generated values inside the type's range (str-ddxe). Defaults so the
+        /// bare wire form `{"kind":"int"}` from TS/Go still deserializes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        int_width: Option<u8>,
+        /// Whether the integer type is signed. `None` = unspecified.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        int_signed: Option<bool>,
+    },
     Float,
     Str,
     Bool,
@@ -188,7 +200,7 @@ impl TypeInfo {
             TypeInfo::Union { variants } => variants.iter().any(|t| t.has_opaque()),
             TypeInfo::Nullable { inner } => inner.has_opaque(),
             TypeInfo::Complex { inner, .. } => inner.as_deref().is_some_and(|t| t.has_opaque()),
-            TypeInfo::Int
+            TypeInfo::Int { .. }
             | TypeInfo::Float
             | TypeInfo::Str
             | TypeInfo::Bool
@@ -278,12 +290,47 @@ impl TypeInfo {
                 }
                 None
             }
-            TypeInfo::Int
+            TypeInfo::Int { .. }
             | TypeInfo::Float
             | TypeInfo::Str
             | TypeInfo::Bool
             | TypeInfo::Unknown => None,
         }
+    }
+
+    /// If `self` is `Int { .. }`, return the inclusive `(min, max)` value range
+    /// implied by its width/signedness — but only when that range fits in `i64`.
+    /// Returns `None` for unsized ints and for widths whose bounds exceed `i64`
+    /// (u64/i64/u128/i128/usize/isize), leaving them unconstrained.
+    pub fn int_range(&self) -> Option<(i64, i64)> {
+        match self {
+            TypeInfo::Int {
+                int_width,
+                int_signed,
+            } => int_range(*int_width, *int_signed),
+            _ => None,
+        }
+    }
+}
+
+/// Inclusive `(min, max)` value range for an integer of the given width and
+/// signedness, when that range fits in `i64`.
+///
+/// Returns `None` when width or signedness is unspecified, or when the type's
+/// natural bounds exceed `i64` (u64, i64, u128, i128, usize, isize) — those stay
+/// unconstrained so the solver/generator keep their existing full-range behavior.
+pub fn int_range(width: Option<u8>, signed: Option<bool>) -> Option<(i64, i64)> {
+    let width = width?;
+    let signed = signed?;
+    match (width, signed) {
+        (8, false) => Some((0, u8::MAX as i64)),
+        (8, true) => Some((i8::MIN as i64, i8::MAX as i64)),
+        (16, false) => Some((0, u16::MAX as i64)),
+        (16, true) => Some((i16::MIN as i64, i16::MAX as i64)),
+        (32, false) => Some((0, u32::MAX as i64)),
+        (32, true) => Some((i32::MIN as i64, i32::MAX as i64)),
+        // 64-bit and 128-bit ranges exceed (or fill) i64; leave unconstrained.
+        _ => None,
     }
 }
 
@@ -318,9 +365,18 @@ mod tests {
         assert_eq!(*value, deserialized, "round-trip failed for json: {json}");
     }
 
+    /// Bare, width-unspecified `TypeInfo::Int` for tests that don't care about
+    /// integer range.
+    fn int() -> TypeInfo {
+        TypeInfo::Int {
+            int_width: None,
+            int_signed: None,
+        }
+    }
+
     #[test]
     fn primitive_types_round_trip() {
-        round_trip(&TypeInfo::Int);
+        round_trip(&int());
         round_trip(&TypeInfo::Float);
         round_trip(&TypeInfo::Str);
         round_trip(&TypeInfo::Bool);
@@ -330,25 +386,65 @@ mod tests {
     #[test]
     fn array_type_round_trips() {
         round_trip(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(int()),
         });
     }
 
     #[test]
     fn object_type_round_trips() {
         round_trip(&TypeInfo::Object {
-            fields: vec![
-                ("name".into(), TypeInfo::Str),
-                ("age".into(), TypeInfo::Int),
-            ],
+            fields: vec![("name".into(), TypeInfo::Str), ("age".into(), int())],
         });
     }
 
     #[test]
     fn union_type_round_trips() {
         round_trip(&TypeInfo::Union {
-            variants: vec![TypeInfo::Str, TypeInfo::Int],
+            variants: vec![TypeInfo::Str, int()],
         });
+    }
+
+    #[test]
+    fn sized_int_round_trips() {
+        round_trip(&TypeInfo::Int {
+            int_width: Some(8),
+            int_signed: Some(false),
+        });
+        round_trip(&TypeInfo::Int {
+            int_width: Some(32),
+            int_signed: Some(true),
+        });
+    }
+
+    #[test]
+    fn bare_int_deserializes_to_unspecified() {
+        let parsed: TypeInfo = serde_json::from_str(r#"{"kind":"int"}"#).expect("deserialize");
+        assert_eq!(parsed, int());
+    }
+
+    #[test]
+    fn int_range_fits_in_i64_or_none() {
+        assert_eq!(int_range(Some(8), Some(false)), Some((0, 255)));
+        assert_eq!(int_range(Some(8), Some(true)), Some((-128, 127)));
+        assert_eq!(int_range(Some(32), Some(false)), Some((0, u32::MAX as i64)));
+        assert_eq!(
+            int_range(Some(32), Some(true)),
+            Some((i32::MIN as i64, i32::MAX as i64))
+        );
+        // 64/128-bit and unsized stay unconstrained.
+        assert_eq!(int_range(Some(64), Some(false)), None);
+        assert_eq!(int_range(Some(128), Some(true)), None);
+        assert_eq!(int_range(None, None), None);
+        // Method form mirrors the free function.
+        assert_eq!(
+            TypeInfo::Int {
+                int_width: Some(8),
+                int_signed: Some(false)
+            }
+            .int_range(),
+            Some((0, 255))
+        );
+        assert_eq!(TypeInfo::Str.int_range(), None);
     }
 
     #[test]
@@ -367,7 +463,7 @@ mod tests {
                     TypeInfo::Array {
                         element: Box::new(TypeInfo::Object {
                             fields: vec![
-                                ("id".into(), TypeInfo::Int),
+                                ("id".into(), int()),
                                 (
                                     "label".into(),
                                     TypeInfo::Nullable {
@@ -378,7 +474,7 @@ mod tests {
                         }),
                     },
                 ),
-                ("count".into(), TypeInfo::Int),
+                ("count".into(), int()),
             ],
         };
         round_trip(&typ);
@@ -393,7 +489,7 @@ mod tests {
                     (
                         "items".into(),
                         TypeInfo::Array {
-                            element: Box::new(TypeInfo::Int),
+                            element: Box::new(int()),
                         },
                     ),
                     ("priority".into(), TypeInfo::Str),
@@ -482,7 +578,7 @@ mod tests {
         round_trip(&TypeInfo::Complex {
             kind: ComplexKind::Option,
             metadata: serde_json::Map::new(),
-            inner: Some(Box::new(TypeInfo::Int)),
+            inner: Some(Box::new(int())),
         });
     }
 
@@ -624,7 +720,7 @@ mod tests {
                 (
                     "items".into(),
                     TypeInfo::Array {
-                        element: Box::new(TypeInfo::Int),
+                        element: Box::new(int()),
                     },
                 ),
                 (
@@ -641,7 +737,7 @@ mod tests {
 
     #[test]
     fn has_opaque_false_for_primitives() {
-        assert!(!TypeInfo::Int.has_opaque());
+        assert!(!int().has_opaque());
         assert!(!TypeInfo::Float.has_opaque());
         assert!(!TypeInfo::Str.has_opaque());
         assert!(!TypeInfo::Bool.has_opaque());
@@ -758,7 +854,7 @@ mod tests {
     #[test]
     fn find_opaque_node_returns_none_for_primitives() {
         let mut path = vec![PathSegment::Param("x".into())];
-        assert!(TypeInfo::Int.find_opaque_node(&mut path).is_none());
+        assert!(int().find_opaque_node(&mut path).is_none());
         assert!(TypeInfo::Str.find_opaque_node(&mut path).is_none());
         assert_eq!(path.len(), 1, "path should be unmodified on no-match");
     }

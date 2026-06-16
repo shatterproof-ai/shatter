@@ -68,7 +68,7 @@ pub enum RecursiveError {
 /// functions (e.g., 0, 1, -1 for numbers; "" for strings; [] for arrays).
 fn probe_values(typ: &TypeInfo) -> Vec<Value> {
     match typ {
-        TypeInfo::Int => vec![json!(0), json!(1), json!(-1), json!(2)],
+        TypeInfo::Int { .. } => vec![json!(0), json!(1), json!(-1), json!(2)],
         TypeInfo::Float => vec![json!(0.0), json!(1.0), json!(-1.0), json!(0.5)],
         TypeInfo::Str => vec![json!(""), json!("a")],
         TypeInfo::Bool => vec![json!(false), json!(true)],
@@ -304,7 +304,7 @@ fn generate_depth_inputs(params: &[crate::types::ParamInfo], depth: u32) -> Vec<
     let per_param: Vec<Vec<Value>> = params
         .iter()
         .map(|p| match &p.typ {
-            TypeInfo::Int => vec![json!(d), json!(d + 1), json!(d + 2)],
+            TypeInfo::Int { .. } => vec![json!(d), json!(d + 1), json!(d + 2)],
             TypeInfo::Float => vec![json!(d as f64), json!((d + 1) as f64)],
             TypeInfo::Str => {
                 vec![json!("a".repeat(depth as usize))]
@@ -312,7 +312,7 @@ fn generate_depth_inputs(params: &[crate::types::ParamInfo], depth: u32) -> Vec<
             TypeInfo::Array { element } => {
                 // Array of length `depth` with minimal elements
                 let elem = match element.as_ref() {
-                    TypeInfo::Int => json!(1),
+                    TypeInfo::Int { .. } => json!(1),
                     TypeInfo::Str => json!("a"),
                     TypeInfo::Bool => json!(true),
                     _ => json!(1),
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn probe_values_int_includes_boundaries() {
-        let vals = probe_values(&TypeInfo::Int);
+        let vals = probe_values(&TypeInfo::Int { int_width: None, int_signed: None });
         assert!(vals.contains(&json!(0)));
         assert!(vals.contains(&json!(1)));
         assert!(vals.contains(&json!(-1)));
@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn probe_values_array_includes_empty() {
         let vals = probe_values(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         });
         assert!(vals.contains(&json!([])));
     }
@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn probe_values_nullable_includes_null() {
         let vals = probe_values(&TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         });
         assert!(vals.contains(&Value::Null));
         // Also includes inner type probes
@@ -586,7 +586,7 @@ mod tests {
     fn generate_probe_inputs_single_param() {
         let params = vec![ParamInfo {
             name: "n".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let inputs = generate_probe_inputs(&params, 20);
@@ -601,17 +601,17 @@ mod tests {
         let params = vec![
             ParamInfo {
                 name: "a".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
                 name: "b".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
                 name: "c".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
         ];
@@ -630,7 +630,7 @@ mod tests {
     fn generate_depth_inputs_grows_with_depth() {
         let params = vec![ParamInfo {
             name: "n".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let d1 = generate_depth_inputs(&params, 1);
@@ -645,7 +645,7 @@ mod tests {
         let params = vec![ParamInfo {
             name: "arr".into(),
             typ: TypeInfo::Array {
-                element: Box::new(TypeInfo::Int),
+                element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
             },
             type_name: None,
         }];

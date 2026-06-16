@@ -5864,7 +5864,7 @@ fn format_skip_sections(
 /// Format a [`TypeInfo`] as a concise human-readable string.
 fn format_type(ty: &TypeInfo) -> String {
     match ty {
-        TypeInfo::Int => "int".to_string(),
+        TypeInfo::Int { .. } => "int".to_string(),
         TypeInfo::Float => "float".to_string(),
         TypeInfo::Str => "string".to_string(),
         TypeInfo::Bool => "bool".to_string(),
@@ -7591,7 +7591,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7611,7 +7611,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7710,7 +7710,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -7789,7 +7789,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -7874,7 +7874,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7894,7 +7894,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7981,7 +7981,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -8070,7 +8070,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -8234,7 +8234,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8254,7 +8254,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8357,7 +8357,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -8442,7 +8442,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8462,7 +8462,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8557,7 +8557,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -8675,7 +8675,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8695,7 +8695,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8806,7 +8806,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8826,7 +8826,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8917,7 +8917,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -9352,7 +9352,7 @@ for line in sys.stdin:
                 name: format!("leaf_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: 2,
                 start_line: 1,
@@ -9366,12 +9366,12 @@ for line in sys.stdin:
                 name: format!("mid_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: format!("leaf_{i}"),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9387,12 +9387,12 @@ for line in sys.stdin:
                 name: format!("top_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: format!("mid_{i}"),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9492,7 +9492,7 @@ for line in sys.stdin:
                 name: format!("fn_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: i % 10,
                 start_line: 1,
@@ -9539,7 +9539,7 @@ for line in sys.stdin:
                 name: "fn_c".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: 0,
                 start_line: 1,
@@ -9551,12 +9551,12 @@ for line in sys.stdin:
                 name: "fn_b".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_c".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9570,12 +9570,12 @@ for line in sys.stdin:
                 name: "fn_a".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_b".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9630,7 +9630,7 @@ for line in sys.stdin:
                 name: "fn_c".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: 1,
                 start_line: 1,
@@ -9642,12 +9642,12 @@ for line in sys.stdin:
                 name: "fn_b".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_c".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9661,12 +9661,12 @@ for line in sys.stdin:
                 name: "fn_a".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_b".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9878,7 +9878,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10186,7 +10186,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10297,7 +10297,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10332,7 +10332,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "y".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10428,7 +10428,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10512,7 +10512,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10620,7 +10620,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10767,7 +10767,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10884,7 +10884,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10909,7 +10909,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -11034,7 +11034,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11054,7 +11054,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11156,7 +11156,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -11296,7 +11296,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11316,7 +11316,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11402,7 +11402,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11422,7 +11422,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -13837,7 +13837,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],

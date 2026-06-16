@@ -415,7 +415,7 @@ fn write_dependencies_section(out: &mut String, deps: &[ExternalDependency]) {
 
 fn format_type(typ: &TypeInfo) -> String {
     match typ {
-        TypeInfo::Int => "number".to_string(),
+        TypeInfo::Int { .. } => "number".to_string(),
         TypeInfo::Float => "number".to_string(),
         TypeInfo::Str => "string".to_string(),
         TypeInfo::Bool => "boolean".to_string(),
@@ -645,16 +645,16 @@ mod tests {
             vec![
                 ParamInfo {
                     name: "a".to_string(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
                 ParamInfo {
                     name: "b".to_string(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
             ],
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             vec![],
         );
         let spec = FunctionSpec {
@@ -1144,10 +1144,10 @@ mod tests {
             "abs",
             vec![ParamInfo {
                 name: "x".to_string(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             vec![],
         );
         let map = BehaviorMap {
@@ -1189,14 +1189,14 @@ mod tests {
 
     #[test]
     fn format_type_handles_all_variants() {
-        assert_eq!(format_type(&TypeInfo::Int), "number");
+        assert_eq!(format_type(&TypeInfo::Int { int_width: None, int_signed: None }), "number");
         assert_eq!(format_type(&TypeInfo::Float), "number");
         assert_eq!(format_type(&TypeInfo::Str), "string");
         assert_eq!(format_type(&TypeInfo::Bool), "boolean");
         assert_eq!(format_type(&TypeInfo::Unknown), "unknown");
         assert_eq!(
             format_type(&TypeInfo::Array {
-                element: Box::new(TypeInfo::Int)
+                element: Box::new(TypeInfo::Int { int_width: None, int_signed: None })
             }),
             "Array<number>"
         );
@@ -1208,13 +1208,13 @@ mod tests {
         );
         assert_eq!(
             format_type(&TypeInfo::Union {
-                variants: vec![TypeInfo::Str, TypeInfo::Int]
+                variants: vec![TypeInfo::Str, TypeInfo::Int { int_width: None, int_signed: None }]
             }),
             "string | number"
         );
         assert_eq!(
             format_type(&TypeInfo::Object {
-                fields: vec![("x".to_string(), TypeInfo::Int)]
+                fields: vec![("x".to_string(), TypeInfo::Int { int_width: None, int_signed: None })]
             }),
             "{ x: number }"
         );

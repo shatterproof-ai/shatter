@@ -55,7 +55,14 @@ pub enum ComplexKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeInfo {
-    Int,
+    Int {
+        /// Bit width of the integer type (8/16/32/64/128). `None` = unspecified.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        int_width: Option<u8>,
+        /// Whether the integer type is signed. `None` = unspecified.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        int_signed: Option<bool>,
+    },
     Float,
     Str,
     Bool,
@@ -814,23 +821,78 @@ mod tests {
 
     #[test]
     fn existing_typeinfo_variants_still_round_trip() {
-        round_trip(&TypeInfo::Int);
+        round_trip(&TypeInfo::Int {
+            int_width: None,
+            int_signed: None,
+        });
         round_trip(&TypeInfo::Float);
         round_trip(&TypeInfo::Str);
         round_trip(&TypeInfo::Bool);
         round_trip(&TypeInfo::Unknown);
         round_trip(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            }),
         });
         round_trip(&TypeInfo::Nullable {
             inner: Box::new(TypeInfo::Str),
         });
         round_trip(&TypeInfo::Object {
-            fields: vec![("x".into(), TypeInfo::Int)],
+            fields: vec![(
+                "x".into(),
+                TypeInfo::Int {
+                    int_width: None,
+                    int_signed: None,
+                },
+            )],
         });
         round_trip(&TypeInfo::Union {
-            variants: vec![TypeInfo::Str, TypeInfo::Int],
+            variants: vec![
+                TypeInfo::Str,
+                TypeInfo::Int {
+                    int_width: None,
+                    int_signed: None,
+                },
+            ],
         });
+    }
+
+    #[test]
+    fn sized_int_round_trips() {
+        round_trip(&TypeInfo::Int {
+            int_width: Some(8),
+            int_signed: Some(false),
+        });
+        round_trip(&TypeInfo::Int {
+            int_width: Some(32),
+            int_signed: Some(true),
+        });
+    }
+
+    #[test]
+    fn bare_int_deserializes_to_unspecified() {
+        // Backward-compat: the bare wire form `{"kind":"int"}` (emitted by
+        // TS/Go frontends and all existing fixtures) must still deserialize.
+        let parsed: TypeInfo = serde_json::from_str(r#"{"kind":"int"}"#).expect("deserialize");
+        assert_eq!(
+            parsed,
+            TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            }
+        );
+    }
+
+    #[test]
+    fn sized_int_wire_form_carries_fields() {
+        let json = serde_json::to_string(&TypeInfo::Int {
+            int_width: Some(8),
+            int_signed: Some(false),
+        })
+        .expect("serialize");
+        assert!(json.contains("\"int_width\":8"), "json: {json}");
+        assert!(json.contains("\"int_signed\":false"), "json: {json}");
     }
 
     #[test]

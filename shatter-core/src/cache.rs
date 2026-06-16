@@ -1909,7 +1909,7 @@ mod tests {
     fn stored_inputs_cache_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int, crate::types::TypeInfo::Str]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }, crate::types::TypeInfo::Str]);
         let inputs = vec![vec![json!(1), json!("a")], vec![json!(-7), json!("")]];
 
         cache.store("src/m.ts:f", &s, &inputs).unwrap();
@@ -1922,7 +1922,7 @@ mod tests {
     fn stored_inputs_cache_miss_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
 
         let loaded = cache.load_compatible("never:stored", &s).unwrap();
         assert_eq!(loaded, None);
@@ -1936,7 +1936,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bm_cache = BehaviorMapCache::new(dir.path().join("behavior-maps")).unwrap();
         let inputs_cache = StoredInputsCache::new(dir.path().join("stored-inputs")).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
         let function_id = "src/m.ts:square";
         let inputs = vec![vec![json!(3)], vec![json!(-4)]];
 
@@ -1964,7 +1964,7 @@ mod tests {
     fn stored_inputs_cache_drops_incompatible_entry() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let stored_sig = sig(&[crate::types::TypeInfo::Int]);
+        let stored_sig = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
         let current_sig = sig(&[crate::types::TypeInfo::Str]);
         cache
             .store("src/m.ts:f", &stored_sig, &[vec![json!(7)]])
@@ -1985,9 +1985,9 @@ mod tests {
     fn stored_inputs_cache_adapts_additive_with_null_padding() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let stored_sig = sig(&[crate::types::TypeInfo::Int]);
+        let stored_sig = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
         let current_sig = sig(&[
-            crate::types::TypeInfo::Int,
+            crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             crate::types::TypeInfo::Str,
             crate::types::TypeInfo::Bool,
         ]);
@@ -2013,11 +2013,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
         let stored_sig = sig(&[
-            crate::types::TypeInfo::Int,
+            crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             crate::types::TypeInfo::Str,
             crate::types::TypeInfo::Bool,
         ]);
-        let current_sig = sig(&[crate::types::TypeInfo::Int]);
+        let current_sig = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
         cache
             .store(
                 "f",
@@ -2040,7 +2040,7 @@ mod tests {
     fn stored_inputs_cache_protocol_version_mismatch_is_miss() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
 
         // Hand-write an entry with a bad protocol_version.
         let path = cache.path_for("f");
@@ -2064,7 +2064,7 @@ mod tests {
     fn stored_inputs_cache_schema_version_mismatch_is_miss() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
 
         let path = cache.path_for("f");
         if let Some(parent) = path.parent() {
@@ -2087,7 +2087,7 @@ mod tests {
     fn stored_inputs_cache_corrupt_bytes_is_miss() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
 
         let path = cache.path_for("f");
         if let Some(parent) = path.parent() {
@@ -2103,7 +2103,7 @@ mod tests {
     fn stored_inputs_cache_store_overwrites_same_function_id() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
 
         cache.store("f", &s, &[vec![json!(1)]]).unwrap();
         cache
@@ -2118,7 +2118,7 @@ mod tests {
     fn stored_inputs_cache_clear_function_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let cache = StoredInputsCache::new(dir.path().to_path_buf()).unwrap();
-        let s = sig(&[crate::types::TypeInfo::Int]);
+        let s = sig(&[crate::types::TypeInfo::Int { int_width: None, int_signed: None }]);
 
         cache.store("f", &s, &[vec![json!(1)]]).unwrap();
         cache.clear_function("f").unwrap();
@@ -2145,13 +2145,13 @@ mod tests {
 
         let stored_sig = crate::fingerprint::FunctionSignature {
             params: vec![crate::fingerprint::ParamSignature {
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: Some("User".into()),
             }],
         };
         let current_sig = crate::fingerprint::FunctionSignature {
             params: vec![crate::fingerprint::ParamSignature {
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: Some("Customer".into()),
             }],
         };

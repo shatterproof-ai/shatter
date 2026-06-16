@@ -473,3 +473,136 @@ async fn e2e_rust_classify_option_discovers_enum_branches() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// Write a minimal standalone crate exposing `func_src` and return the path to
+/// its `src/lib.rs`. The crate has no external dependencies so the Rust
+/// frontend harness builds it without network access.
+fn write_temp_crate(dir: &Path, func_src: &str) -> PathBuf {
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"shatter_ddxe_fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+    )
+    .expect("write Cargo.toml");
+    let lib = src_dir.join("lib.rs");
+    std::fs::write(&lib, func_src).expect("write lib.rs");
+    lib
+}
+
+/// str-ddxe regression gate: a function taking a `u8` must be executable
+/// end-to-end. Before the fix, the core input generator produced full-i64-range
+/// integers (e.g. 926, negatives, i64::MAX) for the bare `Int` type the Rust
+/// analyzer emitted for `u8`; those failed `serde_json::from_value` into `u8`
+/// ("invalid value: integer `926`, expected u8"), yielding only error_only
+/// outcomes and explorer timeouts. With sized `Int{width,signed}` carried
+/// through generation and solving, generated/solved `u8` inputs stay in [0,255]
+/// and the function's real return branches are reached.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_u8_param_stays_in_range_and_executes() {
+    let func_src = r#"
+/// Classify a byte. All branches are reachable only with in-range u8 values.
+pub fn classify_byte(b: u8) -> &'static str {
+    if b < 10 {
+        "low"
+    } else if b == 200 {
+        "match-200"
+    } else if b > 250 {
+        "high"
+    } else {
+        "mid"
+    }
+}
+"#;
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let lib = write_temp_crate(tmp.path(), func_src);
+    let file_str = lib.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_byte").await;
+    assert_eq!(analysis.params.len(), 1, "classify_byte takes 1 param");
+    // The analyzer must report the u8 param as a sized unsigned 8-bit int.
+    assert_eq!(
+        analysis.params[0].typ,
+        shatter_core::types::TypeInfo::Int {
+            int_width: Some(8),
+            int_signed: Some(false),
+        },
+        "u8 param must carry width=8, signed=false"
+    );
+
+    instrument_function(&mut frontend, &file_str, "classify_byte").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(100)]];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_byte",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_u8_param: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    // Every integer input ever executed must be a valid u8 (str-ddxe). An
+    // out-of-range value would prove the generator/solver escaped the range.
+    for (inputs, _mocks, _exec) in &result.raw_results {
+        for v in inputs {
+            if let Some(n) = v.as_i64() {
+                assert!(
+                    (0..=255).contains(&n),
+                    "u8 param received out-of-range value {n}: {inputs:?}"
+                );
+            }
+        }
+    }
+
+    // The outcome must NOT be error-only: real string branches must be reached,
+    // which only happens if the u8 inputs deserialized successfully.
+    let return_values = return_value_set(&result);
+    let real_returns: Vec<&String> = return_values
+        .iter()
+        .filter(|v| !v.starts_with("ERROR:"))
+        .collect();
+    assert!(
+        !real_returns.is_empty(),
+        "u8 function must produce non-error return values; got: {return_values:?}"
+    );
+    // The exact-equality branch b==200 is the Z3-only target (random generation
+    // rarely lands on 200), so reaching it confirms in-range solving works.
+    assert!(
+        return_values.iter().any(|v| v.contains("match-200")),
+        "should reach the b==200 branch via in-range Z3 solving; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

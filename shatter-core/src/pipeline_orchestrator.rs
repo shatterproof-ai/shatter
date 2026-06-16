@@ -633,7 +633,7 @@ mod tests {
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: (0..branch_count)

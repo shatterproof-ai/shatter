@@ -1295,7 +1295,7 @@ mod tests {
         StrategyContext {
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             literals: vec![],
@@ -1583,7 +1583,7 @@ mod tests {
     fn random_explorer_registry_includes_random_when_no_custom_fallback() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let meta = build_random_explorer_meta_strategy(
@@ -1612,7 +1612,7 @@ mod tests {
     fn random_explorer_registry_omits_random_when_custom_fallback_is_enabled() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let meta = build_random_explorer_meta_strategy(
@@ -1644,7 +1644,7 @@ mod tests {
     fn concolic_registry_registers_expected_order() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let meta = build_concolic_meta_strategy(
@@ -1679,7 +1679,7 @@ mod tests {
 
     #[test]
     fn concolic_meta_strategy_drains_user_inputs_before_adaptive_fallbacks() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let expected = vec![Value::from(777)];
 
         for seed in 0..32 {
@@ -1752,7 +1752,7 @@ mod tests {
     fn concolic_meta_strategy_prioritizes_z3_after_first_user_seed_feedback() {
         use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
 
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let mut meta = build_concolic_meta_strategy(
             vec![vec![Value::from(5)], vec![Value::from(6)]],
             vec![],
@@ -1871,10 +1871,10 @@ mod tests {
 
     #[test]
     fn boundary_seeds_single_int_param() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let mut bs = BoundarySeeds::new(&params);
         let ctx = empty_ctx();
-        let expected = get_boundary_values(&TypeInfo::Int).len();
+        let expected = get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None }).len();
         assert_eq!(bs.estimated_size(), Some(expected as u64));
 
         let mut count = 0;
@@ -1903,11 +1903,11 @@ mod tests {
 
     #[test]
     fn boundary_seeds_multi_param_pairwise() {
-        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
         let mut bs = BoundarySeeds::new(&params);
         let ctx = empty_ctx();
         let expected =
-            get_boundary_values(&TypeInfo::Int).len() + get_boundary_values(&TypeInfo::Str).len();
+            get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None }).len() + get_boundary_values(&TypeInfo::Str).len();
         assert_eq!(bs.estimated_size(), Some(expected as u64));
 
         let mut count = 0;
@@ -2105,7 +2105,7 @@ mod tests {
 
     #[test]
     fn literals_strategy_exhausts_then_none() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let literals = vec![LiteralValue::Int { value: 42 }];
         let mut strat = LiteralsStrategy::new(&params, &literals);
         let ctx = empty_ctx();
@@ -2117,7 +2117,7 @@ mod tests {
 
     #[test]
     fn literals_strategy_empty_literals() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let mut strat = LiteralsStrategy::new(&params, &[]);
         let ctx = empty_ctx();
         assert_eq!(strat.estimated_size(), Some(0));
@@ -2143,7 +2143,7 @@ mod tests {
 
     #[test]
     fn literals_strategy_estimated_size_matches_drain() {
-        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
         let literals = vec![
             LiteralValue::Int { value: 1 },
             LiteralValue::Int { value: 2 },
@@ -2182,7 +2182,7 @@ mod tests {
         let int_ctx = StrategyContext {
             params: vec![ParamInfo {
                 name: "n".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             literals: vec![],
@@ -2367,7 +2367,7 @@ mod tests {
     fn int_param(name: &str) -> ParamInfo {
         ParamInfo {
             name: name.into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }
     }
@@ -2557,7 +2557,7 @@ mod tests {
                 let params: Vec<ParamInfo> = (0..len)
                     .map(|i| ParamInfo {
                         name: format!("p{i}"),
-                        typ: TypeInfo::Int,
+                        typ: TypeInfo::Int { int_width: None, int_signed: None },
                         type_name: None,
                     })
                     .collect();
@@ -2576,7 +2576,7 @@ mod tests {
                 let params: Vec<ParamInfo> = (0..len)
                     .map(|i| ParamInfo {
                         name: format!("p{i}"),
-                        typ: TypeInfo::Int,
+                        typ: TypeInfo::Int { int_width: None, int_signed: None },
                         type_name: None,
                     })
                     .collect();
