@@ -606,3 +606,289 @@ pub fn classify_byte(b: u8) -> &'static str {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// str-w17c regression gate: the crate-backed Axum harness must resolve the
+/// inner extractor/state types it names by bare identifier (e.g. `AppStateLike`,
+/// a custom `FromRequestParts` extractor, and `Uuid` from `use uuid::Uuid;`)
+/// even when those names arrive via non-`crate::` imports (`use super::...`,
+/// external crates, re-exports).
+///
+/// ## The bug
+///
+/// `generate_axum_crate_harness` emits the State inner type and custom-extractor
+/// inner type by BARE name (`let __state_value_0: AppStateLike = ...`,
+/// `let __extension_value_1: WhoAmI = ...`). Before the fix,
+/// `crate_use_imports_for_harness` forwarded ONLY `use crate::...` statements
+/// into the harness, dropping `use super::...`, external-crate, and glob
+/// imports. So when a real handler reaches the State/extractor types via
+/// `use super::{AppStateLike, WhoAmI};` (the common shape when the handler lives
+/// in a submodule) those names were undefined in the harness crate → rustc
+/// E0412/E0433 → `CompilationFailed` → the frontend returned `status:"error"`
+/// → the orchestrator treated it as a frontend skip and recorded NOTHING →
+/// the function was reported `dispatch_failed` ("no successful observations
+/// recorded"). This is exactly the shape that made every pickpackit Axum
+/// handler with crate-local State/extractors fail at COMPILE time before any
+/// request ran.
+///
+/// ## Why this lives in e2e (not a unit test)
+///
+/// The in-process `execute_axum_handler` unit tests run through the STANDALONE
+/// harness path (their tempdir fixtures have no `Cargo.toml`, so
+/// `find_crate_root` returns `None`). Only a real multi-file crate routes
+/// through `generate_axum_crate_harness`, and only the real frontend +
+/// orchestrator reproduce the "CompilationFailed → frontend skip →
+/// dispatch_failed" chain. Nothing exercised the crate-backed compile path
+/// end-to-end before this test.
+///
+/// ## What this asserts
+///
+/// The function must NOT be dispatch_failed: at least one `ExecuteResult` is
+/// recorded in `raw_results` (the handler may legitimately throw — the point is
+/// that the harness COMPILES and produces an `ExecuteResult`, proving the
+/// import-forwarding fix). State and the custom extractor are supplied via
+/// native-replay generator seeds; `Path<Uuid>` uses the harness default.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_crate_backed_axum_resolves_super_and_external_extractor_types() {
+    // Crate name -> alias the driver references it under (dashes -> underscores).
+    const CRATE_ALIAS: &str = "shatter_w17c_fixture";
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let crate_dir = tmp.path();
+    let src_dir = crate_dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+    // Cargo.toml: axum + uuid + serde + async-trait. The driver crate forwards
+    // these deps, so `use uuid::Uuid;` resolves in the harness once forwarded.
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"shatter_w17c_fixture\"\n\
+         version = \"0.0.0\"\n\
+         edition = \"2021\"\n\n\
+         [lib]\n\
+         path = \"src/lib.rs\"\n\n\
+         [dependencies]\n\
+         axum = { version = \"0.8\", features = [\"json\"] }\n\
+         serde = { version = \"1\", features = [\"derive\"] }\n\
+         uuid = { version = \"1\", features = [\"serde\", \"v4\"] }\n\
+         async-trait = \"0.1\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    // Crate root: State type + a custom FromRequestParts extractor read from
+    // request extensions, both `pub` at the crate root, plus `pub mod handlers;`.
+    std::fs::write(
+        src_dir.join("lib.rs"),
+        r#"
+pub mod handlers;
+
+#[derive(Clone)]
+pub struct AppStateLike {
+    pub prefix: String,
+}
+
+#[derive(Clone)]
+pub struct WhoAmI {
+    pub id: u64,
+}
+
+impl<S> axum::extract::FromRequestParts<S> for WhoAmI
+where
+    S: Send + Sync,
+{
+    type Rejection = &'static str;
+
+    fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(
+            parts
+                .extensions
+                .get::<WhoAmI>()
+                .cloned()
+                .ok_or("missing WhoAmI"),
+        )
+    }
+}
+"#,
+    )
+    .expect("write lib.rs");
+
+    // Submodule handler. The State + custom-extractor types arrive via
+    // `use super::{...}` (NON-crate::, dropped before the fix) and `Uuid` via
+    // `use uuid::Uuid;` (external, also dropped before the fix). This is the
+    // failing pickpackit shape.
+    let handler_path = src_dir.join("handlers.rs");
+    std::fs::write(
+        &handler_path,
+        r#"
+use axum::extract::{Path, State};
+use super::{AppStateLike, WhoAmI};
+use uuid::Uuid;
+
+pub async fn h(
+    State(state): State<AppStateLike>,
+    who: WhoAmI,
+    Path(id): Path<Uuid>,
+) -> String {
+    format!("{}:{}:{}", state.prefix, who.id, id)
+}
+"#,
+    )
+    .expect("write handlers.rs");
+    let handler_str = handler_path.to_string_lossy().to_string();
+
+    // Native-replay generator files. They compile as modules of the DRIVER
+    // crate (via `#[path] mod ...`), so they reference the fixture crate's
+    // types under the crate alias, NOT `crate::user_code::...` (which only
+    // exists on the standalone path).
+    let state_gen = crate_dir.join("state_gen.rs");
+    std::fs::write(
+        &state_gen,
+        format!(
+            "use {CRATE_ALIAS}::AppStateLike;\n\
+             use shatter_rust::generators::GeneratorResult;\n\n\
+             pub fn AppStateLikeGen(recipe: Option<serde_json::Value>) -> GeneratorResult {{\n\
+             \x20   let prefix = recipe\n\
+             \x20       .as_ref()\n\
+             \x20       .and_then(|v| v.get(\"prefix\"))\n\
+             \x20       .and_then(serde_json::Value::as_str)\n\
+             \x20       .unwrap_or(\"state\")\n\
+             \x20       .to_string();\n\
+             \x20   GeneratorResult {{\n\
+             \x20       id: \"app-state-like\".to_string(),\n\
+             \x20       value: Box::new(AppStateLike {{ prefix }}),\n\
+             \x20       recipe: recipe.unwrap_or(serde_json::Value::Null),\n\
+             \x20   }}\n\
+             }}\n"
+        ),
+    )
+    .expect("write state generator");
+
+    let who_gen = crate_dir.join("who_gen.rs");
+    std::fs::write(
+        &who_gen,
+        format!(
+            "use {CRATE_ALIAS}::WhoAmI;\n\
+             use shatter_rust::generators::GeneratorResult;\n\n\
+             pub fn WhoAmIGen(recipe: Option<serde_json::Value>) -> GeneratorResult {{\n\
+             \x20   let id = recipe\n\
+             \x20       .as_ref()\n\
+             \x20       .and_then(|v| v.get(\"id\"))\n\
+             \x20       .and_then(serde_json::Value::as_u64)\n\
+             \x20       .unwrap_or(0);\n\
+             \x20   GeneratorResult {{\n\
+             \x20       id: \"who-am-i\".to_string(),\n\
+             \x20       value: Box::new(WhoAmI {{ id }}),\n\
+             \x20       recipe: recipe.unwrap_or(serde_json::Value::Null),\n\
+             \x20   }}\n\
+             }}\n"
+        ),
+    )
+    .expect("write who generator");
+
+    // Native-replay seed inputs: param 0 = State, param 1 = custom extractor,
+    // param 2 = Path<Uuid> (defaulted by the harness via `null`).
+    let state_input = serde_json::json!({
+        "__shatter_native": true,
+        "handle": "frontend-state",
+        "__shatter_replay": {
+            "language": "rust",
+            "file": state_gen.to_string_lossy(),
+            "name": "AppStateLikeGen",
+            "recipe": {"prefix": "pack"}
+        }
+    });
+    let who_input = serde_json::json!({
+        "__shatter_native": true,
+        "handle": "frontend-who",
+        "__shatter_replay": {
+            "language": "rust",
+            "file": who_gen.to_string_lossy(),
+            "name": "WhoAmIGen",
+            "recipe": {"id": 7}
+        }
+    });
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &handler_str, "h").await;
+    assert_eq!(analysis.params.len(), 3, "h takes 3 params");
+
+    instrument_function(&mut frontend, &handler_str, "h").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(4),
+        max_executions: Some(8),
+        plateau_threshold: 3,
+        ..Default::default()
+    };
+
+    // The native-replay seed is executed verbatim first (UserProvidedStrategy),
+    // so at least one Execute carries valid generator inputs for State + the
+    // custom extractor.
+    let seed_inputs = vec![vec![
+        state_input,
+        who_input,
+        serde_json::Value::Null,
+    ]];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "h",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!(
+                    "skipping e2e_rust_crate_backed_axum_resolves_super_and_external_extractor_types: {message}"
+                );
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    // The core regression assertion: the crate-backed Axum harness COMPILED and
+    // produced at least one ExecuteResult. Before the str-w17c fix the harness
+    // failed to compile (AppStateLike / WhoAmI / Uuid undefined), every Execute
+    // was treated as a frontend skip, and `raw_results` was empty →
+    // dispatch_failed. A throw is acceptable; a recorded observation is not.
+    assert!(
+        !result.raw_results.is_empty(),
+        "crate-backed Axum handler must record at least one ExecuteResult (not \
+         dispatch_failed); empty raw_results means the harness failed to compile. \
+         executions={:?}",
+        result.executions
+    );
+
+    // Sanity: the recorded observation must be a real ExecuteResult, whether it
+    // returned a body or threw. (If the import fix regressed, we would never get
+    // here because raw_results would be empty.)
+    let saw_observation = result.raw_results.iter().any(|(_, _, exec)| {
+        exec.return_value.is_some() || exec.thrown_error.is_some()
+    });
+    assert!(
+        saw_observation,
+        "recorded ExecuteResult should carry a return value or thrown error: {:?}",
+        result.raw_results
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
