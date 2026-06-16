@@ -895,6 +895,14 @@ fn convert_type_inner(
     }
 }
 
+/// Construct a sized `TypeInfo::Int` carrying bit-width and signedness.
+fn int_type(width: u8, signed: bool) -> TypeInfo {
+    TypeInfo::Int {
+        int_width: Some(width),
+        int_signed: Some(signed),
+    }
+}
+
 fn convert_type_path(
     type_path: &syn::TypePath,
     structs: &StructDefs,
@@ -908,9 +916,22 @@ fn convert_type_path(
     let name = seg.ident.to_string();
 
     match name.as_str() {
-        // Integer types
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "usize" => TypeInfo::Int,
+        // Integer types — carry width/signedness so the core input generator can
+        // constrain generated values to the type's range (str-ddxe). Without this
+        // every int became a bare `Int` and the generator produced full-i64-range
+        // values that failed to deserialize into u8/narrow/unsigned fields.
+        "u8" => int_type(8, false),
+        "i8" => int_type(8, true),
+        "u16" => int_type(16, false),
+        "i16" => int_type(16, true),
+        "u32" => int_type(32, false),
+        "i32" => int_type(32, true),
+        "u64" => int_type(64, false),
+        "i64" => int_type(64, true),
+        "u128" => int_type(128, false),
+        "i128" => int_type(128, true),
+        "usize" => int_type(64, false),
+        "isize" => int_type(64, true),
 
         // Float types
         "f32" | "f64" => TypeInfo::Float,
@@ -2248,6 +2269,14 @@ mod tests {
             .expect("function should be found")
     }
 
+    /// Shorthand for a sized `TypeInfo::Int` in test assertions.
+    fn int_ty(width: u8, signed: bool) -> TypeInfo {
+        TypeInfo::Int {
+            int_width: Some(width),
+            int_signed: Some(signed),
+        }
+    }
+
     // ── Async detection tests ──
 
     #[test]
@@ -2267,14 +2296,43 @@ mod tests {
     #[test]
     fn maps_i32_to_int() {
         let f = analyze_fn("fn f(x: i32) {}", "f");
-        assert_eq!(f.params[0].typ, TypeInfo::Int);
+        assert_eq!(f.params[0].typ, int_ty(32, true));
         assert_eq!(f.params[0].name, "x");
     }
 
     #[test]
     fn maps_u64_to_int() {
         let f = analyze_fn("fn f(x: u64) {}", "f");
-        assert_eq!(f.params[0].typ, TypeInfo::Int);
+        assert_eq!(f.params[0].typ, int_ty(64, false));
+    }
+
+    #[test]
+    fn maps_u8_to_sized_unsigned_int() {
+        let f = analyze_fn("fn f(x: u8) {}", "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Int {
+                int_width: Some(8),
+                int_signed: Some(false),
+            }
+        );
+    }
+
+    #[test]
+    fn maps_i8_isize_usize_widths() {
+        assert_eq!(analyze_fn("fn f(x: i8) {}", "f").params[0].typ, int_ty(8, true));
+        assert_eq!(
+            analyze_fn("fn f(x: usize) {}", "f").params[0].typ,
+            int_ty(64, false)
+        );
+        assert_eq!(
+            analyze_fn("fn f(x: isize) {}", "f").params[0].typ,
+            int_ty(64, true)
+        );
+        assert_eq!(
+            analyze_fn("fn f(x: u128) {}", "f").params[0].typ,
+            int_ty(128, false)
+        );
     }
 
     #[test]
@@ -2307,7 +2365,7 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Array {
-                element: Box::new(TypeInfo::Int)
+                element: Box::new(int_ty(32, true))
             }
         );
     }
@@ -2329,7 +2387,7 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Union {
-                variants: vec![TypeInfo::Int, TypeInfo::Str]
+                variants: vec![int_ty(32, true), TypeInfo::Str]
             }
         );
     }
@@ -2337,13 +2395,13 @@ mod tests {
     #[test]
     fn unwraps_box() {
         let f = analyze_fn("fn f(x: Box<i32>) {}", "f");
-        assert_eq!(f.params[0].typ, TypeInfo::Int);
+        assert_eq!(f.params[0].typ, int_ty(32, true));
     }
 
     #[test]
     fn unwraps_reference() {
         let f = analyze_fn("fn f(x: &i32) {}", "f");
-        assert_eq!(f.params[0].typ, TypeInfo::Int);
+        assert_eq!(f.params[0].typ, int_ty(32, true));
     }
 
     #[test]
@@ -2353,7 +2411,7 @@ mod tests {
             f.params[0].typ,
             TypeInfo::Object {
                 fields: vec![
-                    ("0".to_string(), TypeInfo::Int),
+                    ("0".to_string(), int_ty(32, true)),
                     ("1".to_string(), TypeInfo::Str),
                 ]
             }
@@ -2366,7 +2424,7 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Array {
-                element: Box::new(TypeInfo::Int)
+                element: Box::new(int_ty(8, false))
             }
         );
     }
@@ -2377,7 +2435,7 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Array {
-                element: Box::new(TypeInfo::Int)
+                element: Box::new(int_ty(32, true))
             }
         );
     }
@@ -2628,7 +2686,7 @@ mod tests {
             f.params[0].typ,
             TypeInfo::Object {
                 fields: vec![
-                    ("id".to_string(), TypeInfo::Int),
+                    ("id".to_string(), int_ty(32, true)),
                     ("name".to_string(), TypeInfo::Str),
                 ]
             }
@@ -2641,7 +2699,7 @@ mod tests {
     #[test]
     fn extracts_return_type() {
         let f = analyze_fn("fn f() -> i32 { 0 }", "f");
-        assert_eq!(f.return_type, TypeInfo::Int);
+        assert_eq!(f.return_type, int_ty(32, true));
     }
 
     #[test]
@@ -2982,7 +3040,7 @@ mod tests {
         assert!(f.exported);
         assert_eq!(f.params.len(), 1);
         assert_eq!(f.params[0].name, "n");
-        assert_eq!(f.params[0].typ, TypeInfo::Int);
+        assert_eq!(f.params[0].typ, int_ty(32, true));
         assert_eq!(f.return_type, TypeInfo::Str);
         assert!(f.branches.len() >= 2); // if + else-if at least
         assert_eq!(f.branches[0].branch_type, BranchType::If);
@@ -3149,7 +3207,7 @@ mod tests {
             TypeInfo::Union {
                 variants: vec![TypeInfo::Object {
                     fields: vec![
-                        ("0".to_string(), TypeInfo::Int),
+                        ("0".to_string(), int_ty(32, true)),
                         ("1".to_string(), TypeInfo::Str),
                     ]
                 }]

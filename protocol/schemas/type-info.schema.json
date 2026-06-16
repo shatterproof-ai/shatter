@@ -13,7 +13,18 @@
   },
   "oneOf": [
     {
-      "properties": { "kind": { "const": "int" } },
+      "properties": {
+        "kind": { "const": "int" },
+        "int_width": {
+          "type": "integer",
+          "enum": [8, 16, 32, 64, 128],
+          "description": "Optional bit width of the integer type. Carried by frontends that know the source width (e.g. the Rust analyzer maps u8 -> 8). Absent means unspecified; the core treats unspecified as full-i64 range."
+        },
+        "int_signed": {
+          "type": "boolean",
+          "description": "Optional signedness of the integer type. Absent means unspecified."
+        }
+      },
       "required": ["kind"]
     },
     {

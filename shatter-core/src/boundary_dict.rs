@@ -53,7 +53,7 @@ impl BoundaryEntry {
 #[must_use]
 pub fn get_boundary_values(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
     match type_info {
-        TypeInfo::Int => int_boundaries(),
+        TypeInfo::Int { .. } => int_boundaries(),
         TypeInfo::Float => float_boundaries(),
         TypeInfo::Str => string_boundaries(),
         TypeInfo::Bool => bool_boundaries(),
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn int_boundaries_include_expected_values() {
-        let entries = get_boundary_values(&TypeInfo::Int);
+        let entries = get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None });
         let values: Vec<&Value> = entries.iter().map(|e| &e.value).collect();
         assert!(values.contains(&&json!(0)), "should contain 0");
         assert!(values.contains(&&json!(-1)), "should contain -1");
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn category_filtering_works() {
-        let overflow = get_boundary_values_for_category(&TypeInfo::Int, BoundaryCategory::Overflow);
+        let overflow = get_boundary_values_for_category(&TypeInfo::Int { int_width: None, int_signed: None }, BoundaryCategory::Overflow);
         assert!(
             !overflow.is_empty(),
             "int should have overflow boundary values"
@@ -567,12 +567,12 @@ mod tests {
     #[test]
     fn all_entries_have_descriptions() {
         for type_info in &[
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             TypeInfo::Float,
             TypeInfo::Str,
             TypeInfo::Bool,
             TypeInfo::Array {
-                element: Box::new(TypeInfo::Int),
+                element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
             },
             TypeInfo::Object { fields: vec![] },
         ] {
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn all_entries_are_valid_json() {
         for type_info in &[
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             TypeInfo::Float,
             TypeInfo::Str,
             TypeInfo::Bool,
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn nullable_includes_null_plus_inner_boundaries() {
         let entries = get_boundary_values(&TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         });
         let has_null = entries.iter().any(|e| e.value.is_null());
         assert!(has_null, "nullable should include null");
@@ -622,7 +622,7 @@ mod tests {
         let params = vec![
             ParamInfo {
                 name: "x".to_string(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -633,7 +633,7 @@ mod tests {
         ];
         let inputs = generate_boundary_inputs(&params);
         let expected_count =
-            get_boundary_values(&TypeInfo::Int).len() + get_boundary_values(&TypeInfo::Str).len();
+            get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None }).len() + get_boundary_values(&TypeInfo::Str).len();
         assert_eq!(inputs.len(), expected_count);
         // Each input vector should have 2 elements (one per param)
         for input in &inputs {
@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn array_boundary_elements_match_element_type_int() {
         let entries = get_boundary_values(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         });
         for entry in &entries {
             if let Some(arr) = entry.value.as_array() {

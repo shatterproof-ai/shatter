@@ -133,7 +133,7 @@ pub fn interpolate_inputs(
 /// an empty vec.
 fn interpolate_value(a: &Value, b: &Value, typ: &TypeInfo, max_steps: usize) -> Vec<Value> {
     match typ {
-        TypeInfo::Int => interpolate_int(a, b, max_steps),
+        TypeInfo::Int { .. } => interpolate_int(a, b, max_steps),
         TypeInfo::Float => interpolate_float(a, b, max_steps),
         TypeInfo::Array { element } => interpolate_array(a, b, element, max_steps),
         TypeInfo::Object { fields } => interpolate_object(a, b, fields, max_steps),
@@ -573,7 +573,7 @@ mod tests {
         let tw = vec![json!(5), json!("hello")];
         let fw = vec![json!(5), json!("hello")];
         let params = vec![
-            make_param("x", TypeInfo::Int),
+            make_param("x", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("s", TypeInfo::Str),
         ];
         let result = interpolate_inputs(&tw, &fw, &params, MAX_BOUNDARY_STEPS);
@@ -585,7 +585,7 @@ mod tests {
         let tw = vec![json!(0), json!("hello")];
         let fw = vec![json!(100), json!("hello")];
         let params = vec![
-            make_param("x", TypeInfo::Int),
+            make_param("x", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("s", TypeInfo::Str),
         ];
         let result = interpolate_inputs(&tw, &fw, &params, MAX_BOUNDARY_STEPS);
@@ -601,7 +601,7 @@ mod tests {
     fn interpolate_respects_max_steps() {
         let tw = vec![json!(0)];
         let fw = vec![json!(1000000)];
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
         let result = interpolate_inputs(&tw, &fw, &params, 2);
         assert!(result.len() <= 2);
     }
@@ -611,7 +611,7 @@ mod tests {
         let tw = vec![json!(0), json!(1.0), json!(true)];
         let fw = vec![json!(100), json!(9.0), json!(false)];
         let params = vec![
-            make_param("a", TypeInfo::Int),
+            make_param("a", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("b", TypeInfo::Float),
             make_param("c", TypeInfo::Bool),
         ];
@@ -625,7 +625,7 @@ mod tests {
     fn interpolate_zero_max_steps() {
         let tw = vec![json!(0)];
         let fw = vec![json!(100)];
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
         assert!(interpolate_inputs(&tw, &fw, &params, 0).is_empty());
     }
 
@@ -635,7 +635,7 @@ mod tests {
     fn interpolate_array_per_element() {
         let a = json!([0, 5]);
         let b = json!([100, 5]);
-        let results = interpolate_array(&a, &b, &TypeInfo::Int, MAX_BOUNDARY_STEPS);
+        let results = interpolate_array(&a, &b, &TypeInfo::Int { int_width: None, int_signed: None }, MAX_BOUNDARY_STEPS);
         assert!(!results.is_empty());
         // Only first element differs, second should remain 5
         for r in &results {
@@ -651,7 +651,7 @@ mod tests {
         let a = json!({"x": 0, "y": "same"});
         let b = json!({"x": 100, "y": "same"});
         let fields = vec![
-            ("x".to_string(), TypeInfo::Int),
+            ("x".to_string(), TypeInfo::Int { int_width: None, int_signed: None }),
             ("y".to_string(), TypeInfo::Str),
         ];
         let results = interpolate_object(&a, &b, &fields, MAX_BOUNDARY_STEPS);
@@ -665,14 +665,14 @@ mod tests {
 
     #[test]
     fn interpolate_nullable_null_vs_value() {
-        let results = interpolate_nullable(&json!(null), &json!(42), &TypeInfo::Int, 4);
+        let results = interpolate_nullable(&json!(null), &json!(42), &TypeInfo::Int { int_width: None, int_signed: None }, 4);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], json!(42));
     }
 
     #[test]
     fn interpolate_nullable_both_non_null() {
-        let results = interpolate_nullable(&json!(0), &json!(100), &TypeInfo::Int, 4);
+        let results = interpolate_nullable(&json!(0), &json!(100), &TypeInfo::Int { int_width: None, int_signed: None }, 4);
         assert!(!results.is_empty());
         assert_eq!(results[0], json!(50));
     }
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn interpolate_union_matching_variant() {
-        let variants = vec![TypeInfo::Int, TypeInfo::Str];
+        let variants = vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str];
         let results = interpolate_union(&json!(0), &json!(100), &variants, 4);
         assert!(!results.is_empty());
     }
@@ -714,7 +714,7 @@ mod tests {
             (vec![json!(0)], vec![], make_execute_result(0, false)),
             (vec![json!(100)], vec![], make_execute_result(0, true)),
         ];
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
 
         let mut exec_fn = mock_threshold_execute(10, 0);
         let results = refine_boundaries(&raw, &params, 20, &mut exec_fn);
@@ -743,7 +743,7 @@ mod tests {
             (vec![json!(0)], vec![], make_execute_result(0, false)),
             (vec![json!(1000)], vec![], make_execute_result(0, true)),
         ];
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
 
         let mut exec_fn = mock_threshold_execute(10, 0);
 
@@ -766,7 +766,7 @@ mod tests {
             (vec![json!(5)], vec![], make_execute_result(0, true)),
             (vec![json!(10)], vec![], make_execute_result(0, true)),
         ];
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
 
         let mut exec_fn = mock_threshold_execute(10, 0);
         let results = refine_boundaries(&raw, &params, 20, &mut exec_fn);
@@ -780,7 +780,7 @@ mod tests {
             (vec![json!(0)], vec![], make_execute_result(0, false)),
             (vec![json!(100)], vec![], make_execute_result(0, true)),
         ];
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
 
         let mut exec_fn = mock_threshold_execute(10, 0);
         let results = refine_boundaries(&raw, &params, 0, &mut exec_fn);
@@ -835,7 +835,7 @@ mod proptests {
             let tw = vec![json!(a_val), json!(c_val)];
             let fw = vec![json!(b_val), json!(d_val)];
             let params = vec![
-                ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+                ParamInfo { name: "a".into(), typ: TypeInfo::Int { int_width: None, int_signed: None }, type_name: None },
                 ParamInfo { name: "b".into(), typ: TypeInfo::Float, type_name: None },
             ];
             let candidates = interpolate_inputs(&tw, &fw, &params, MAX_BOUNDARY_STEPS);
@@ -853,7 +853,7 @@ mod proptests {
             let tw = vec![json!(a_val)];
             let fw = vec![json!(b_val)];
             let params = vec![
-                ParamInfo { name: "x".into(), typ: TypeInfo::Int, type_name: None },
+                ParamInfo { name: "x".into(), typ: TypeInfo::Int { int_width: None, int_signed: None }, type_name: None },
             ];
             let candidates = interpolate_inputs(&tw, &fw, &params, max_steps);
             prop_assert!(candidates.len() <= max_steps);

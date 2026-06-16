@@ -362,7 +362,7 @@ fn value_complexity(v: &Value) -> usize {
 /// are already minimal.
 pub fn shrink_candidates(value: &Value, type_info: &TypeInfo) -> Vec<Value> {
     let mut candidates = match type_info {
-        TypeInfo::Int => shrink_int(value),
+        TypeInfo::Int { .. } => shrink_int(value),
         TypeInfo::Float => shrink_float(value),
         TypeInfo::Str => shrink_string(value),
         TypeInfo::Bool => shrink_bool(value),
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn shrink_int_positive() {
-        let candidates = shrink_candidates(&json!(10), &TypeInfo::Int);
+        let candidates = shrink_candidates(&json!(10), &TypeInfo::Int { int_width: None, int_signed: None });
         assert!(candidates.contains(&json!(5))); // halve
         assert!(candidates.contains(&json!(0)));
         assert!(candidates.contains(&json!(1)));
@@ -648,14 +648,14 @@ mod tests {
 
     #[test]
     fn shrink_int_negative() {
-        let candidates = shrink_candidates(&json!(-8), &TypeInfo::Int);
+        let candidates = shrink_candidates(&json!(-8), &TypeInfo::Int { int_width: None, int_signed: None });
         assert!(candidates.contains(&json!(-4))); // halve toward zero
         assert!(candidates.contains(&json!(0)));
     }
 
     #[test]
     fn shrink_int_zero_already_minimal() {
-        let candidates = shrink_candidates(&json!(0), &TypeInfo::Int);
+        let candidates = shrink_candidates(&json!(0), &TypeInfo::Int { int_width: None, int_signed: None });
         assert!(!candidates.contains(&json!(0)));
         // Still offers 1 and -1 as alternatives.
         assert!(candidates.contains(&json!(1)));
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn shrink_int_one_no_duplicate() {
-        let candidates = shrink_candidates(&json!(1), &TypeInfo::Int);
+        let candidates = shrink_candidates(&json!(1), &TypeInfo::Int { int_width: None, int_signed: None });
         assert!(!candidates.contains(&json!(1)));
         let count = candidates.iter().filter(|c| **c == json!(0)).count();
         assert_eq!(count, 1, "no duplicate zeros");
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn shrink_array_multiple_elements() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!([1, 2, 3]), &typ);
         assert!(candidates.contains(&json!([1, 2]))); // drop last
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn shrink_array_single_element() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!([5]), &typ);
         assert!(candidates.contains(&json!([]))); // empty
@@ -762,7 +762,7 @@ mod tests {
     #[test]
     fn shrink_array_empty_already_minimal() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!([]), &typ);
         assert!(candidates.is_empty());
@@ -775,7 +775,7 @@ mod tests {
     #[test]
     fn shrink_object_removes_fields() {
         let typ = TypeInfo::Object {
-            fields: vec![("a".into(), TypeInfo::Int), ("b".into(), TypeInfo::Str)],
+            fields: vec![("a".into(), TypeInfo::Int { int_width: None, int_signed: None }), ("b".into(), TypeInfo::Str)],
         };
         let val = json!({"a": 10, "b": "hi"});
         let candidates = shrink_candidates(&val, &typ);
@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn shrink_nullable_non_null() {
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!(10), &typ);
         assert!(candidates.contains(&json!(null)));
@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn shrink_nullable_already_null() {
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!(null), &typ);
         assert!(candidates.is_empty());
@@ -830,7 +830,7 @@ mod tests {
     #[test]
     fn shrink_union_collects_from_variants() {
         let typ = TypeInfo::Union {
-            variants: vec![TypeInfo::Int, TypeInfo::Str],
+            variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
         };
         let candidates = shrink_candidates(&json!(10), &typ);
         // Int shrinks.
@@ -878,10 +878,10 @@ mod tests {
     #[test]
     fn candidates_never_contain_original() {
         let cases: Vec<(Value, TypeInfo)> = vec![
-            (json!(0), TypeInfo::Int),
-            (json!(1), TypeInfo::Int),
-            (json!(-1), TypeInfo::Int),
-            (json!(42), TypeInfo::Int),
+            (json!(0), TypeInfo::Int { int_width: None, int_signed: None }),
+            (json!(1), TypeInfo::Int { int_width: None, int_signed: None }),
+            (json!(-1), TypeInfo::Int { int_width: None, int_signed: None }),
+            (json!(42), TypeInfo::Int { int_width: None, int_signed: None }),
             (json!(0.0), TypeInfo::Float),
             (json!(2.5), TypeInfo::Float),
             (json!(""), TypeInfo::Str),
@@ -892,19 +892,19 @@ mod tests {
             (
                 json!(null),
                 TypeInfo::Nullable {
-                    inner: Box::new(TypeInfo::Int),
+                    inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                 },
             ),
             (
                 json!([]),
                 TypeInfo::Array {
-                    element: Box::new(TypeInfo::Int),
+                    element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                 },
             ),
             (
                 json!([1, 2]),
                 TypeInfo::Array {
-                    element: Box::new(TypeInfo::Int),
+                    element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                 },
             ),
         ];
@@ -922,12 +922,12 @@ mod tests {
     #[test]
     fn no_duplicate_candidates() {
         let cases: Vec<(Value, TypeInfo)> = vec![
-            (json!(10), TypeInfo::Int),
+            (json!(10), TypeInfo::Int { int_width: None, int_signed: None }),
             (json!("hello"), TypeInfo::Str),
             (
                 json!([1, 2, 3]),
                 TypeInfo::Array {
-                    element: Box::new(TypeInfo::Int),
+                    element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                 },
             ),
         ];
@@ -957,7 +957,7 @@ mod tests {
             #[test]
             fn shrink_never_contains_original_int(n in any::<i64>()) {
                 let val = json!(n);
-                let candidates = shrink_candidates(&val, &TypeInfo::Int);
+                let candidates = shrink_candidates(&val, &TypeInfo::Int { int_width: None, int_signed: None });
                 prop_assert!(
                     !candidates.contains(&val),
                     "candidates for {val:?} should not contain original"
@@ -989,7 +989,7 @@ mod tests {
             #[test]
             fn shrink_int_candidates_are_ints(n in any::<i64>()) {
                 let val = json!(n);
-                for c in shrink_candidates(&val, &TypeInfo::Int) {
+                for c in shrink_candidates(&val, &TypeInfo::Int { int_width: None, int_signed: None }) {
                     prop_assert!(
                         c.is_i64() || c.is_u64(),
                         "shrink candidate {c:?} is not an int"
@@ -1023,7 +1023,7 @@ mod tests {
             fn shrink_int_abs_leq_or_boundary(n in -1_000_000i64..1_000_000i64) {
                 let val = json!(n);
                 let abs_n = n.unsigned_abs();
-                for c in shrink_candidates(&val, &TypeInfo::Int) {
+                for c in shrink_candidates(&val, &TypeInfo::Int { int_width: None, int_signed: None }) {
                     let c_n = c.as_i64().unwrap();
                     let is_boundary = c_n == 0 || c_n == 1 || c_n == -1;
                     prop_assert!(
@@ -1051,7 +1051,7 @@ mod tests {
             fn shrink_array_len_leq_original(len in 0..6usize) {
                 let arr: Vec<Value> = (0..len).map(|i| json!(i as i64)).collect();
                 let val = Value::Array(arr);
-                let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+                let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }) };
 
                 for c in shrink_candidates(&val, &typ) {
                     let c_arr = c.as_array().unwrap();
@@ -1065,7 +1065,7 @@ mod tests {
 
             #[test]
             fn shrink_no_duplicates_int(n in any::<i64>()) {
-                let candidates = shrink_candidates(&json!(n), &TypeInfo::Int);
+                let candidates = shrink_candidates(&json!(n), &TypeInfo::Int { int_width: None, int_signed: None });
                 for (i, a) in candidates.iter().enumerate() {
                     for (j, b) in candidates.iter().enumerate() {
                         if i != j {
@@ -1078,7 +1078,7 @@ mod tests {
 
         #[test]
         fn shrink_zero_int_minimal() {
-            let candidates = shrink_candidates(&json!(0), &TypeInfo::Int);
+            let candidates = shrink_candidates(&json!(0), &TypeInfo::Int { int_width: None, int_signed: None });
             assert!(!candidates.contains(&json!(0)));
             for c in &candidates {
                 let n = c.as_i64().unwrap();
@@ -1101,7 +1101,7 @@ mod tests {
         #[test]
         fn shrink_null_nullable_minimal() {
             let typ = TypeInfo::Nullable {
-                inner: Box::new(TypeInfo::Int),
+                inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
             };
             let candidates = shrink_candidates(&json!(null), &typ);
             assert!(candidates.is_empty());
@@ -1110,7 +1110,7 @@ mod tests {
         #[test]
         fn shrink_empty_array_minimal() {
             let typ = TypeInfo::Array {
-                element: Box::new(TypeInfo::Int),
+                element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
             };
             let candidates = shrink_candidates(&json!([]), &typ);
             assert!(candidates.is_empty());
@@ -1305,7 +1305,7 @@ mod tests {
 
             let params = vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }];
 
@@ -1331,7 +1331,7 @@ mod tests {
             let params = vec![
                 ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
                 ParamInfo {
@@ -1372,7 +1372,7 @@ mod tests {
 
             let params = vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }];
 
@@ -1391,7 +1391,7 @@ mod tests {
 
             let params = vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }];
 
@@ -1409,7 +1409,7 @@ mod tests {
 
             let params = vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }];
 
@@ -1477,7 +1477,7 @@ mod tests {
         fn int_param(name: &str) -> ParamInfo {
             ParamInfo {
                 name: name.into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }
         }
@@ -1679,7 +1679,7 @@ mod tests {
         fn int_param(name: &str) -> ParamInfo {
             ParamInfo {
                 name: name.into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }
         }
@@ -2068,7 +2068,7 @@ mod tests {
 
                 let params = vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }];
 
@@ -2095,7 +2095,7 @@ mod tests {
 
                 let params = vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }];
 

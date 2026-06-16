@@ -185,7 +185,7 @@ mod tests {
             function_source: "fn f(x: i64) -> bool { x > 10 }".into(),
             param_types: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             condition: FailedCondition {

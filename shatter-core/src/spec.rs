@@ -1886,7 +1886,7 @@ mod tests {
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![BranchInfo {
@@ -1897,7 +1897,7 @@ mod tests {
                 branch_type: crate::protocol::BranchType::If,
             }],
             dependencies: vec![],
-            return_type: crate::types::TypeInfo::Int,
+            return_type: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             start_line: start,
             end_line: end,
             literals: vec![],

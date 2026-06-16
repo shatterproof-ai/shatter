@@ -529,7 +529,7 @@ fn json_value_matches_type(value: &serde_json::Value, typ: &crate::types::TypeIn
     use crate::types::TypeInfo;
     match typ {
         TypeInfo::Bool => value.is_boolean(),
-        TypeInfo::Int => value.is_i64() || value.is_u64(),
+        TypeInfo::Int { .. } => value.is_i64() || value.is_u64(),
         TypeInfo::Float => value.is_f64() || value.is_i64() || value.is_u64(),
         TypeInfo::Str => value.is_string(),
         TypeInfo::Array { .. } => value.is_array(),
@@ -3488,7 +3488,7 @@ mod tests {
     fn make_int_param(name: &str) -> ParamInfo {
         ParamInfo {
             name: name.into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }
     }
@@ -4265,7 +4265,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -4319,7 +4319,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -4385,7 +4385,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -4596,7 +4596,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
 
@@ -4714,7 +4714,7 @@ mod tests {
             converged_loops,
             param_infos: vec![ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             param_names: vec!["x".to_string()],
@@ -4733,7 +4733,7 @@ mod tests {
     fn meta_strategy_replaces_placeholder() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let strategies = vec![
@@ -4767,7 +4767,7 @@ mod tests {
     fn meta_strategy_exhaustible_strategies_exhaust() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         // Only exhaustible strategies.
@@ -4813,7 +4813,7 @@ mod tests {
         let ctx = StrategyContext {
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             literals: vec![],
@@ -4875,7 +4875,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -4926,7 +4926,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -4982,7 +4982,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5042,7 +5042,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5090,7 +5090,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5138,7 +5138,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5218,7 +5218,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5274,7 +5274,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5322,7 +5322,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5416,7 +5416,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5476,7 +5476,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5531,7 +5531,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5828,7 +5828,7 @@ mod tests {
         };
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -6147,7 +6147,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -6351,7 +6351,7 @@ mod tests {
         ];
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];

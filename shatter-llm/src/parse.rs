@@ -101,7 +101,7 @@ fn extract_first_json_array(raw: &str) -> Option<Value> {
 
 fn type_matches(t: &TypeInfo, v: &Value) -> bool {
     match t {
-        TypeInfo::Int => v.is_i64() || v.is_u64(),
+        TypeInfo::Int { .. } => v.is_i64() || v.is_u64(),
         TypeInfo::Float => v.is_number(),
         TypeInfo::Str => v.is_string(),
         TypeInfo::Bool => v.is_boolean(),
@@ -143,7 +143,7 @@ mod tests {
         let raw = r#"Sure! [{"x": 1, "s": "a"}, {"x": 2, "s": "b"}] done."#;
         let got = parse_response(
             raw,
-            &[pi("x", TypeInfo::Int), pi("s", TypeInfo::Str)],
+            &[pi("x", TypeInfo::Int { int_width: None, int_signed: None }), pi("s", TypeInfo::Str)],
             &[],
         );
         assert_eq!(got.len(), 2);
@@ -156,7 +156,7 @@ mod tests {
         let raw = r#"[{"x": "not int", "s": "a"}, {"x": 7, "s": "b"}]"#;
         let got = parse_response(
             raw,
-            &[pi("x", TypeInfo::Int), pi("s", TypeInfo::Str)],
+            &[pi("x", TypeInfo::Int { int_width: None, int_signed: None }), pi("s", TypeInfo::Str)],
             &[],
         );
         assert_eq!(got.len(), 1);
@@ -167,7 +167,7 @@ mod tests {
     fn drops_duplicates_of_attempted() {
         let raw = r#"[{"x": 1}, {"x": 2}, {"x": 3}]"#;
         let attempted = vec![vec![json!(2)]];
-        let got = parse_response(raw, &[pi("x", TypeInfo::Int)], &attempted);
+        let got = parse_response(raw, &[pi("x", TypeInfo::Int { int_width: None, int_signed: None })], &attempted);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0], vec![json!(1)]);
         assert_eq!(got[1], vec![json!(3)]);
@@ -175,13 +175,13 @@ mod tests {
 
     #[test]
     fn non_json_input_returns_empty() {
-        let got = parse_response("no json here at all", &[pi("x", TypeInfo::Int)], &[]);
+        let got = parse_response("no json here at all", &[pi("x", TypeInfo::Int { int_width: None, int_signed: None })], &[]);
         assert!(got.is_empty());
     }
 
     #[test]
     fn malformed_json_returns_empty() {
-        let got = parse_response("[{x: 1,", &[pi("x", TypeInfo::Int)], &[]);
+        let got = parse_response("[{x: 1,", &[pi("x", TypeInfo::Int { int_width: None, int_signed: None })], &[]);
         assert!(got.is_empty());
     }
 
@@ -190,7 +190,7 @@ mod tests {
         let raw = r#"[{"x": 1}, {"y": 2}]"#;
         let got = parse_response(
             raw,
-            &[pi("x", TypeInfo::Int), pi("y", TypeInfo::Int)],
+            &[pi("x", TypeInfo::Int { int_width: None, int_signed: None }), pi("y", TypeInfo::Int { int_width: None, int_signed: None })],
             &[],
         );
         assert!(got.is_empty());
@@ -205,7 +205,7 @@ mod tests {
                 pi(
                     "xs",
                     TypeInfo::Array {
-                        element: Box::new(TypeInfo::Int),
+                        element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                     },
                 ),
                 pi("label", TypeInfo::Str),
@@ -223,7 +223,7 @@ mod tests {
             &[pi(
                 "x",
                 TypeInfo::Nullable {
-                    inner: Box::new(TypeInfo::Int),
+                    inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                 },
             )],
             &[],
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn structured_pipeline_validates() {
         let v = json!([{"x": 1}, {"x": "no"}]);
-        let got = parse_response_structured(v, &[pi("x", TypeInfo::Int)], &[]);
+        let got = parse_response_structured(v, &[pi("x", TypeInfo::Int { int_width: None, int_signed: None })], &[]);
         assert_eq!(got.len(), 1);
     }
 }

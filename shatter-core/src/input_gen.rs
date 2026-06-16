@@ -119,7 +119,7 @@ pub fn generate_random_value(
     caps: Option<&FrontendCapabilities>,
 ) -> Value {
     match typ {
-        TypeInfo::Int => generate_int(rng),
+        TypeInfo::Int { .. } => generate_int(rng, typ.int_range()),
         TypeInfo::Float => generate_float(rng),
         TypeInfo::Str => generate_string(rng),
         TypeInfo::Bool => json!(rng.random_bool(0.5)),
@@ -209,7 +209,14 @@ fn coerce_value_to_type(value: &Value, typ: &TypeInfo, rng: &mut impl Rng) -> Va
 /// (element-level repair is the caller's job).
 fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
     match typ {
-        TypeInfo::Int => value.is_i64() || value.is_u64(),
+        // Must be an integer, and within the declared range when the type
+        // carries a width that fits in i64 (str-ddxe). An out-of-range value
+        // (e.g. 926 for a u8) would fail to deserialize into the narrow field,
+        // so treat it as a shape mismatch and regenerate.
+        TypeInfo::Int { .. } => match typ.int_range() {
+            Some((min, max)) => value.as_i64().is_some_and(|n| n >= min && n <= max),
+            None => value.is_i64() || value.is_u64(),
+        },
         TypeInfo::Float => value.is_number(),
         TypeInfo::Bool => value.is_boolean(),
         TypeInfo::Str => value.is_string(),
@@ -304,7 +311,7 @@ pub fn repair_required_fields(value: &Value, typ: &TypeInfo) -> Value {
                 default_for_type(typ)
             }
         }
-        TypeInfo::Int => {
+        TypeInfo::Int { .. } => {
             if value.is_i64() || value.is_u64() {
                 value.clone()
             } else {
@@ -357,7 +364,7 @@ fn uuid_value_is_valid(value: &Value) -> bool {
 /// the frontend harness materializes them correctly.
 fn default_for_type(typ: &TypeInfo) -> Value {
     match typ {
-        TypeInfo::Int => json!(0),
+        TypeInfo::Int { .. } => json!(0),
         TypeInfo::Float => json!(0.0),
         TypeInfo::Bool => json!(false),
         TypeInfo::Str => json!(""),
@@ -389,17 +396,64 @@ fn default_for_type(typ: &TypeInfo) -> Value {
 }
 
 /// Generate a random integer, biased toward boundary values.
-fn generate_int(rng: &mut impl Rng) -> Value {
-    let choice: u8 = rng.random_range(0..10);
-    let n = match choice {
-        0 => 0,
-        1 => 1,
-        2 => -1,
-        3 => i64::MAX,
-        4 => i64::MIN,
-        _ => rng.random_range(-1000..=1000),
+///
+/// When `range` is `Some((min, max))` the result is constrained to that
+/// inclusive range (str-ddxe), biasing toward the range boundaries, `0` (when
+/// in range), and small values so narrow/unsigned fields like `u8` receive
+/// deserializable values. When `range` is `None` the historical full-i64-range
+/// behavior is preserved.
+fn generate_int(rng: &mut impl Rng, range: Option<(i64, i64)>) -> Value {
+    let Some((min, max)) = range else {
+        let choice: u8 = rng.random_range(0..10);
+        let n = match choice {
+            0 => 0,
+            1 => 1,
+            2 => -1,
+            3 => i64::MAX,
+            4 => i64::MIN,
+            _ => rng.random_range(-1000..=1000),
+        };
+        return json!(n);
     };
-    json!(n)
+    json!(generate_int_in_range(rng, min, max))
+}
+
+/// Draw an integer in the inclusive `[min, max]` range, biased toward the
+/// boundaries, `0`, and small values near `min`.
+fn generate_int_in_range(rng: &mut impl Rng, min: i64, max: i64) -> i64 {
+    debug_assert!(min <= max);
+    let choice: u8 = rng.random_range(0..10);
+    match choice {
+        0 => min,
+        1 => max,
+        // 0 if it is in range, else the lower boundary.
+        2 => {
+            if min <= 0 && 0 <= max {
+                0
+            } else {
+                min
+            }
+        }
+        // 1 if in range, else min.
+        3 => {
+            if min <= 1 && 1 <= max {
+                1
+            } else {
+                min
+            }
+        }
+        // Small values just above min, clamped to max.
+        4 => {
+            let span = max.saturating_sub(min).min(8);
+            min.saturating_add(rng.random_range(0..=span))
+        }
+        // Values just below max.
+        5 => {
+            let span = max.saturating_sub(min).min(8);
+            max.saturating_sub(rng.random_range(0..=span))
+        }
+        _ => rng.random_range(min..=max),
+    }
 }
 
 /// Generate a random float, biased toward boundary values.
@@ -1055,7 +1109,7 @@ fn generate_option(rng: &mut impl Rng) -> Value {
     if rng.random_range(0..10) < 3 {
         json!({"__complex_type": "option", "present": false})
     } else {
-        let inner = generate_int(rng);
+        let inner = generate_int(rng, None);
         json!({"__complex_type": "option", "present": true, "value": inner})
     }
 }
@@ -1065,7 +1119,7 @@ fn generate_result(rng: &mut impl Rng) -> Value {
     if rng.random_range(0..10) < 3 {
         json!({"__complex_type": "result", "ok": false, "error": "error"})
     } else {
-        let inner = generate_int(rng);
+        let inner = generate_int(rng, None);
         json!({"__complex_type": "result", "ok": true, "value": inner})
     }
 }
@@ -1080,7 +1134,7 @@ fn generate_closure(rng: &mut impl Rng) -> Value {
 /// Generate an Iterator value (array of values the frontend wraps).
 fn generate_iterator(rng: &mut impl Rng) -> Value {
     let len = rng.random_range(0..=5);
-    let values: Vec<Value> = (0..len).map(|_| generate_int(rng)).collect();
+    let values: Vec<Value> = (0..len).map(|_| generate_int(rng, None)).collect();
     json!({"__complex_type": "iterator", "values": values})
 }
 
@@ -1088,7 +1142,7 @@ fn generate_iterator(rng: &mut impl Rng) -> Value {
 fn generate_unknown(rng: &mut impl Rng) -> Value {
     let choice: u8 = rng.random_range(0..4);
     match choice {
-        0 => generate_int(rng),
+        0 => generate_int(rng, None),
         1 => generate_float(rng),
         2 => generate_string(rng),
         3 => json!(rng.random_bool(0.5)),
@@ -1530,7 +1584,7 @@ pub fn mutate_value(
     rng: &mut impl Rng,
 ) -> Value {
     match typ {
-        TypeInfo::Int => mutate_int(value, rng),
+        TypeInfo::Int { .. } => mutate_int(value, rng, typ.int_range()),
         TypeInfo::Float => mutate_float(value, rng),
         TypeInfo::Bool => mutate_bool(value),
         TypeInfo::Str => mutate_string(value, dictionary, rng),
@@ -1620,34 +1674,44 @@ pub fn mutate_inputs(
         .collect()
 }
 
-/// Mutate an integer value.
-fn mutate_int(value: &Value, rng: &mut impl Rng) -> Value {
+/// Mutate an integer value, keeping the result within `range` when one is
+/// declared (str-ddxe) so a mutation cannot escape a narrow/unsigned field.
+fn mutate_int(value: &Value, rng: &mut impl Rng, range: Option<(i64, i64)>) -> Value {
     let n = match value.as_i64() {
         Some(n) => n,
-        None => return generate_int(rng),
+        None => return generate_int(rng, range),
     };
     let op: u8 = rng.random_range(0..3);
-    match op {
+    let mutated = match op {
         0 => {
             // Small delta
             let delta = rng.random_range(1..=10_i64);
             if rng.random_bool(0.5) {
-                json!(n.saturating_add(delta))
+                n.saturating_add(delta)
             } else {
-                json!(n.saturating_sub(delta))
+                n.saturating_sub(delta)
             }
         }
         1 => {
             // Bitflip
             let bit = rng.random_range(0..64_u32);
-            json!(n ^ (1_i64 << bit))
+            n ^ (1_i64 << bit)
         }
         _ => {
             // Boundary swap
             let boundaries = [0_i64, i64::MIN, i64::MAX];
             let idx = rng.random_range(0..boundaries.len());
-            json!(boundaries[idx])
+            boundaries[idx]
         }
+    };
+    json!(clamp_to_range(mutated, range))
+}
+
+/// Clamp `n` into the inclusive `range` if present, else return `n` unchanged.
+fn clamp_to_range(n: i64, range: Option<(i64, i64)>) -> i64 {
+    match range {
+        Some((min, max)) => n.clamp(min, max),
+        None => n,
     }
 }
 
@@ -2978,7 +3042,7 @@ fn crossover_string(a: &Value, b: &Value, rng: &mut impl Rng) -> (Value, Value) 
 /// boundary refinement — the inverse of mutation.
 pub fn shrink_candidates(value: &Value, type_info: &TypeInfo) -> Vec<Value> {
     let candidates = match type_info {
-        TypeInfo::Int => shrink_int(value),
+        TypeInfo::Int { .. } => shrink_int(value, type_info.int_range()),
         TypeInfo::Float => shrink_float(value),
         TypeInfo::Str => shrink_str(value),
         TypeInfo::Bool => shrink_bool(value),
@@ -2998,23 +3062,26 @@ pub fn shrink_candidates(value: &Value, type_info: &TypeInfo) -> Vec<Value> {
     seen
 }
 
-fn shrink_int(value: &Value) -> Vec<Value> {
+fn shrink_int(value: &Value, range: Option<(i64, i64)>) -> Vec<Value> {
     let n = match value.as_i64() {
         Some(n) => n,
         None => return Vec::new(),
     };
+    // Only emit shrink targets that are within the declared range (str-ddxe):
+    // for an unsigned type `-1` is not a valid simpler value.
+    let in_range = |v: i64| range.is_none_or(|(min, max)| v >= min && v <= max);
     let mut out = Vec::with_capacity(4);
     let half = n / 2;
-    if half != n {
+    if half != n && in_range(half) {
         out.push(json!(half));
     }
-    if n != 0 {
+    if n != 0 && in_range(0) {
         out.push(json!(0));
     }
-    if n != 1 {
+    if n != 1 && in_range(1) {
         out.push(json!(1));
     }
-    if n != -1 {
+    if n != -1 && in_range(-1) {
         out.push(json!(-1));
     }
     out
@@ -3391,7 +3458,15 @@ pub fn pool_to_candidate_inputs_for_callees(
 /// the corresponding `serde_json::Value` if so.
 fn literal_matches_type(lit: &LiteralValue, typ: &TypeInfo) -> Option<Value> {
     match (lit, typ) {
-        (LiteralValue::Int { value }, TypeInfo::Int) => Some(json!(value)),
+        (LiteralValue::Int { value }, TypeInfo::Int { .. }) => {
+            // Reject literals outside the declared integer range (str-ddxe) so an
+            // out-of-range literal (e.g. 926 seeded for a u8 field) is not used
+            // verbatim and left to fail deserialization downstream.
+            match typ.int_range() {
+                Some((min, max)) if *value < min || *value > max => None,
+                _ => Some(json!(value)),
+            }
+        }
         (LiteralValue::Int { value }, TypeInfo::Float) => Some(json!(*value as f64)),
         (LiteralValue::Float { value }, TypeInfo::Float) => Some(json!(value)),
         (LiteralValue::Str { value }, TypeInfo::Str) => Some(json!(value)),
@@ -3725,7 +3800,7 @@ mod tests {
     fn generates_int_values() {
         let mut rng = seeded_rng();
         for _ in 0..100 {
-            let val = generate_random_value(&TypeInfo::Int, &mut rng, None);
+            let val = generate_random_value(&TypeInfo::Int { int_width: None, int_signed: None }, &mut rng, None);
             assert!(val.is_i64() || val.is_u64(), "expected integer, got {val}");
         }
     }
@@ -3769,7 +3844,7 @@ mod tests {
     fn generates_array_values() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         for _ in 0..20 {
             let val = generate_random_value(&typ, &mut rng, None);
@@ -3783,7 +3858,7 @@ mod tests {
         let typ = TypeInfo::Object {
             fields: vec![
                 ("name".into(), TypeInfo::Str),
-                ("age".into(), TypeInfo::Int),
+                ("age".into(), TypeInfo::Int { int_width: None, int_signed: None }),
             ],
         };
         for _ in 0..20 {
@@ -3798,7 +3873,7 @@ mod tests {
     fn generates_union_values() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Union {
-            variants: vec![TypeInfo::Int, TypeInfo::Str],
+            variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
         };
         let mut saw_int = false;
         let mut saw_str = false;
@@ -3817,7 +3892,7 @@ mod tests {
     fn generates_nullable_values_including_null() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let mut saw_null = false;
         let mut saw_value = false;
@@ -3848,7 +3923,7 @@ mod tests {
         let params = vec![
             ParamInfo {
                 name: "a".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -3899,7 +3974,7 @@ mod tests {
     fn generated_arrays_have_bounded_length() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         for _ in 0..100 {
             let val = generate_random_value(&typ, &mut rng, None);
@@ -4025,7 +4100,7 @@ mod tests {
             ParamInfo {
                 name: "user".into(),
                 typ: TypeInfo::Object {
-                    fields: vec![("id".into(), TypeInfo::Int)],
+                    fields: vec![("id".into(), TypeInfo::Int { int_width: None, int_signed: None })],
                 },
                 type_name: Some("User".into()),
             },
@@ -4036,7 +4111,7 @@ mod tests {
             },
             ParamInfo {
                 name: "count".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
         ]
@@ -4302,12 +4377,12 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "user".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: Some("User".into()),
             },
             ParamInfo {
                 name: "count".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
         ];
@@ -4350,7 +4425,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             },
             ParamInfo {
                 name: "count".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
         ];
@@ -4392,7 +4467,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn generate_inputs_with_custom_falls_back_when_exhausted() {
         let params = vec![ParamInfo {
             name: "user".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: Some("User".into()),
         }];
         let sources = vec![ValueSource::CustomGenerator {
@@ -4415,7 +4490,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "a".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -4481,7 +4556,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn literals_to_candidates_deduplicates_same_value() {
         let params = vec![ParamInfo {
             name: "n".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let literals = vec![
@@ -4515,7 +4590,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             },
             ParamInfo {
                 name: "n".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
         ];
@@ -4551,7 +4626,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![ParamInfo {
             name: "delay".into(),
             typ: TypeInfo::Object {
-                fields: vec![("Mode".into(), TypeInfo::Str), ("MS".into(), TypeInfo::Int)],
+                fields: vec![("Mode".into(), TypeInfo::Str), ("MS".into(), TypeInfo::Int { int_width: None, int_signed: None })],
             },
             type_name: Some("StreamDelay".into()),
         }];
@@ -4593,7 +4668,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn literals_to_candidates_empty_literals_returns_empty() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let candidates = literals_to_candidate_inputs(&params, &[]);
@@ -4624,7 +4699,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut saw_min = false;
         let mut saw_max = false;
         for _ in 0..500 {
-            let mutated = mutate_value(&json!(42), &TypeInfo::Int, &[], &mut rng);
+            let mutated = mutate_value(&json!(42), &TypeInfo::Int { int_width: None, int_signed: None }, &[], &mut rng);
             let n = mutated
                 .as_i64()
                 .or_else(|| mutated.as_u64().map(|u| u as i64));
@@ -4648,7 +4723,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     #[test]
     fn mutate_int_invalid_input_regenerates() {
         let mut rng = seeded_rng();
-        let mutated = mutate_value(&json!("not_an_int"), &TypeInfo::Int, &[], &mut rng);
+        let mutated = mutate_value(&json!("not_an_int"), &TypeInfo::Int { int_width: None, int_signed: None }, &[], &mut rng);
         assert!(
             mutated.is_i64() || mutated.is_u64(),
             "should regenerate valid int, got {mutated}"
@@ -4835,7 +4910,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn mutate_array_type_valid() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         for _ in 0..100 {
             let mutated = mutate_value(&json!([1, 2, 3]), &typ, &[], &mut rng);
@@ -4847,7 +4922,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn mutate_array_empty_can_grow() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let mutated = mutate_value(&json!([]), &typ, &[], &mut rng);
         let arr = mutated.as_array().expect("expected array");
@@ -4860,7 +4935,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let typ = TypeInfo::Object {
             fields: vec![
                 ("name".into(), TypeInfo::Str),
-                ("age".into(), TypeInfo::Int),
+                ("age".into(), TypeInfo::Int { int_width: None, int_signed: None }),
             ],
         };
         let original = json!({"name": "Alice", "age": 30});
@@ -4879,7 +4954,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let typ = TypeInfo::Object {
             fields: vec![
                 ("id".into(), TypeInfo::Str),
-                ("count".into(), TypeInfo::Int),
+                ("count".into(), TypeInfo::Int { int_width: None, int_signed: None }),
                 (
                     "note".into(),
                     TypeInfo::Nullable {
@@ -4903,7 +4978,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "a".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -4962,7 +5037,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn mutate_nullable_can_flip_to_null() {
         let mut rng = StdRng::seed_from_u64(0);
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let mut saw_null = false;
         let mut saw_value = false;
@@ -4982,7 +5057,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn mutate_nullable_can_flip_from_null() {
         let mut rng = StdRng::seed_from_u64(0);
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let mut saw_non_null = false;
         for _ in 0..100 {
@@ -4998,7 +5073,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn mutate_union_delegates_to_variant() {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Union {
-            variants: vec![TypeInfo::Int, TypeInfo::Str],
+            variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
         };
         for _ in 0..50 {
             let mutated = mutate_value(&json!(42), &typ, &[], &mut rng);
@@ -5017,7 +5092,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "a".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -5039,7 +5114,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "a".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -5102,9 +5177,9 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             name: "obj".into(),
             typ: TypeInfo::Object {
                 fields: vec![
-                    ("x".into(), TypeInfo::Int),
-                    ("y".into(), TypeInfo::Int),
-                    ("z".into(), TypeInfo::Int),
+                    ("x".into(), TypeInfo::Int { int_width: None, int_signed: None }),
+                    ("y".into(), TypeInfo::Int { int_width: None, int_signed: None }),
+                    ("z".into(), TypeInfo::Int { int_width: None, int_signed: None }),
                 ],
             },
             type_name: None,
@@ -5145,7 +5220,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![ParamInfo {
             name: "arr".into(),
             typ: TypeInfo::Array {
-                element: Box::new(TypeInfo::Int),
+                element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
             },
             type_name: None,
         }];
@@ -5179,7 +5254,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "i".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -5222,7 +5297,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "a".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -5325,7 +5400,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "i".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -5381,7 +5456,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(42),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: "foo".into(),
                 branch_id: 1,
@@ -5394,7 +5469,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -5413,7 +5488,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let pool = crate::interesting_pool::InterestingPool::default();
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let candidates = pool_to_candidate_inputs(&params, &pool);
@@ -5428,7 +5503,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut pool = InterestingPool::default();
         pool.insert(PoolEntry {
             value: json!(7),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: "a".into(),
                 branch_id: 1,
@@ -5440,7 +5515,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         });
         pool.insert(PoolEntry {
             value: json!(7),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: "b".into(),
                 branch_id: 2,
@@ -5452,7 +5527,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         });
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let candidates = pool_to_candidate_inputs(&params, &pool);
@@ -5491,20 +5566,20 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut pool = crate::interesting_pool::InterestingPool::default();
         pool.insert(make_pool_entry(
             json!(10),
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             "callee_b",
             Severity::RarePath,
         ));
         pool.insert(make_pool_entry(
             json!(20),
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             "unrelated_d",
             Severity::Crash,
         ));
 
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let callees: std::collections::HashSet<String> =
@@ -5524,7 +5599,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         // 1 callee value
         pool.insert(make_pool_entry(
             json!(1),
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             "callee_b",
             Severity::RarePath,
         ));
@@ -5532,7 +5607,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         for i in 100..125 {
             pool.insert(make_pool_entry(
                 json!(i),
-                TypeInfo::Int,
+                TypeInfo::Int { int_width: None, int_signed: None },
                 "unrelated",
                 Severity::RarePath,
             ));
@@ -5540,7 +5615,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
 
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let callees: std::collections::HashSet<String> =
@@ -5594,14 +5669,14 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut pool = crate::interesting_pool::InterestingPool::default();
         pool.insert(make_pool_entry(
             json!(42),
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             "foo",
             Severity::RarePath,
         ));
 
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let empty_callees: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -5619,7 +5694,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         // InterestingPool merges by (ty, value), so behaviors accumulate.
         pool.insert(crate::interesting_pool::PoolEntry {
             value: json!(7),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![
                 BehaviorObservation {
                     function: "callee_b".into(),
@@ -5640,7 +5715,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
 
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let callees: std::collections::HashSet<String> =
@@ -5789,7 +5864,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             },
             ParamInfo {
                 name: "count".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
         ];
@@ -5828,7 +5903,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut rng = seeded_rng();
         let params = vec![ParamInfo {
             name: "email".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let inputs = generate_random_inputs(&params, &mut rng, None);
@@ -5841,7 +5916,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
 
     #[test]
     fn shrink_int_42() {
-        let candidates = shrink_candidates(&json!(42), &TypeInfo::Int);
+        let candidates = shrink_candidates(&json!(42), &TypeInfo::Int { int_width: None, int_signed: None });
         assert!(
             candidates.contains(&json!(21)),
             "should contain halved value"
@@ -5857,7 +5932,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
 
     #[test]
     fn shrink_int_zero() {
-        let candidates = shrink_candidates(&json!(0), &TypeInfo::Int);
+        let candidates = shrink_candidates(&json!(0), &TypeInfo::Int { int_width: None, int_signed: None });
         assert!(
             !candidates.contains(&json!(0)),
             "should not contain original"
@@ -5904,7 +5979,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     #[test]
     fn shrink_array_three_elements() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!([1, 2, 3]), &typ);
         assert!(candidates.contains(&json!([1, 2])), "remove last");
@@ -5915,7 +5990,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     #[test]
     fn shrink_array_empty() {
         let typ = TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!([]), &typ);
         assert!(candidates.is_empty());
@@ -5924,7 +5999,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     #[test]
     fn shrink_nullable_non_null() {
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&json!(42), &typ);
         assert!(candidates.contains(&Value::Null), "should contain null");
@@ -5933,7 +6008,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     #[test]
     fn shrink_nullable_null() {
         let typ = TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         };
         let candidates = shrink_candidates(&Value::Null, &typ);
         assert!(candidates.is_empty());
@@ -5954,7 +6029,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                     },
                 ),
                 ("name".into(), TypeInfo::Str),
-                ("count".into(), TypeInfo::Int),
+                ("count".into(), TypeInfo::Int { int_width: None, int_signed: None }),
                 (
                     "note".into(),
                     TypeInfo::Nullable {
@@ -5980,7 +6055,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 "items".into(),
                 TypeInfo::Array {
                     element: Box::new(TypeInfo::Object {
-                        fields: vec![("x".into(), TypeInfo::Int), ("y".into(), TypeInfo::Int)],
+                        fields: vec![("x".into(), TypeInfo::Int { int_width: None, int_signed: None }), ("y".into(), TypeInfo::Int { int_width: None, int_signed: None })],
                     }),
                 },
             )],
@@ -5998,7 +6073,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         // (Nullable) fields may be dropped (deserialize as None).
         let typ = TypeInfo::Object {
             fields: vec![
-                ("a".into(), TypeInfo::Int),
+                ("a".into(), TypeInfo::Int { int_width: None, int_signed: None }),
                 (
                     "note".into(),
                     TypeInfo::Nullable {
@@ -6027,7 +6102,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
     fn shrink_no_duplicates() {
         // shrink_candidates(1, Int) would produce [0, 1, -1] but 1 is the original
         // and 0 is half — make sure no dupes
-        let candidates = shrink_candidates(&json!(1), &TypeInfo::Int);
+        let candidates = shrink_candidates(&json!(1), &TypeInfo::Int { int_width: None, int_signed: None });
         let mut seen = Vec::new();
         for c in &candidates {
             assert!(!seen.contains(c), "duplicate candidate: {c:?}");
@@ -6053,7 +6128,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         /// NaN/Infinity encode as null in JSON).
         fn value_matches_type(value: &serde_json::Value, typ: &TypeInfo) -> bool {
             match typ {
-                TypeInfo::Int => value.is_i64() || value.is_u64(),
+                TypeInfo::Int { .. } => value.is_i64() || value.is_u64(),
                 // NaN and Infinity serialize to JSON null — accept null for Float.
                 TypeInfo::Float => {
                     value.is_f64() || value.is_i64() || value.is_u64() || value.is_null()
@@ -6113,6 +6188,29 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         }
 
         proptest! {
+            /// `generate_int` for a sized `u8` only ever produces values in
+            /// [0, 255] (str-ddxe). An out-of-range value would fail to
+            /// deserialize into the narrow field downstream.
+            #[test]
+            fn generate_int_u8_in_range(seed in 0u64..2000) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let typ = TypeInfo::Int { int_width: Some(8), int_signed: Some(false) };
+                let v = generate_random_value(&typ, &mut rng, None);
+                let n = v.as_i64().expect("u8 generates an integer");
+                prop_assert!((0..=255).contains(&n), "u8 produced out-of-range {n}");
+            }
+
+            /// `generate_int` for a sized `i8` only ever produces values in
+            /// [-128, 127].
+            #[test]
+            fn generate_int_i8_in_range(seed in 0u64..2000) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let typ = TypeInfo::Int { int_width: Some(8), int_signed: Some(true) };
+                let v = generate_random_value(&typ, &mut rng, None);
+                let n = v.as_i64().expect("i8 generates an integer");
+                prop_assert!((-128..=127).contains(&n), "i8 produced out-of-range {n}");
+            }
+
             /// Call-graph-aware pool seeding produces valid-length rows with
             /// type-matched values, and callee-sourced values precede others.
             #[test]
@@ -6176,7 +6274,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             fn mutate_int_preserves_number(val in -1_000_000i64..1_000_000i64) {
                 let input = serde_json::json!(val);
                 let mut rng = StdRng::seed_from_u64(42);
-                let result = mutate_value(&input, &TypeInfo::Int, &[], &mut rng);
+                let result = mutate_value(&input, &TypeInfo::Int { int_width: None, int_signed: None }, &[], &mut rng);
                 prop_assert!(
                     result.is_number(),
                     "mutating Int produced non-number: {result:?}"
@@ -6278,7 +6376,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 let params: Vec<ParamInfo> = (0..len)
                     .map(|i| ParamInfo {
                         name: format!("p{i}"),
-                        typ: TypeInfo::Int,
+                        typ: TypeInfo::Int { int_width: None, int_signed: None },
                         type_name: None,
                     })
                     .collect();
@@ -6301,7 +6399,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 seed in 0..10000u64,
                 typs in prop::collection::vec(
                     prop_oneof![
-                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Int { int_width: None, int_signed: None }),
                         Just(TypeInfo::Float),
                         Just(TypeInfo::Bool),
                     ],
@@ -6344,7 +6442,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             #[test]
             fn mutate_inputs_actually_mutates(seed in 0..10000u64) {
                 let params = vec![
-                    ParamInfo { name: "a".into(), typ: TypeInfo::Int, type_name: None },
+                    ParamInfo { name: "a".into(), typ: TypeInfo::Int { int_width: None, int_signed: None }, type_name: None },
                     ParamInfo { name: "b".into(), typ: TypeInfo::Str, type_name: None },
                     ParamInfo { name: "c".into(), typ: TypeInfo::Bool, type_name: None },
                 ];
@@ -6372,7 +6470,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             fn havoc_mutate_value_preserves_type(
                 seed in 0..10000u64,
                 typ in prop_oneof![
-                    Just(TypeInfo::Int),
+                    Just(TypeInfo::Int { int_width: None, int_signed: None }),
                     Just(TypeInfo::Float),
                     Just(TypeInfo::Bool),
                     Just(TypeInfo::Str),
@@ -6401,7 +6499,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 let params: Vec<ParamInfo> = (0..len)
                     .map(|i| ParamInfo {
                         name: format!("p{i}"),
-                        typ: TypeInfo::Int,
+                        typ: TypeInfo::Int { int_width: None, int_signed: None },
                         type_name: None,
                     })
                     .collect();
@@ -6424,7 +6522,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 seed in 0..10000u64,
                 typs in prop::collection::vec(
                     prop_oneof![
-                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Int { int_width: None, int_signed: None }),
                         Just(TypeInfo::Float),
                         Just(TypeInfo::Bool),
                         Just(TypeInfo::Str),
@@ -6541,11 +6639,11 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 seed in 0..10000u64,
                 typs in prop::collection::vec(
                     prop_oneof![
-                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Int { int_width: None, int_signed: None }),
                         Just(TypeInfo::Float),
                         Just(TypeInfo::Bool),
                         Just(TypeInfo::Str),
-                        Just(TypeInfo::Nullable { inner: Box::new(TypeInfo::Int) }),
+                        Just(TypeInfo::Nullable { inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }) }),
                     ],
                     1..=5,
                 ),
@@ -6572,7 +6670,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 seed in 0..10000u64,
                 typs in prop::collection::vec(
                     prop_oneof![
-                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Int { int_width: None, int_signed: None }),
                         Just(TypeInfo::Float),
                         Just(TypeInfo::Bool),
                         Just(TypeInfo::Str),
@@ -6807,7 +6905,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             #[test]
             fn shrink_int_toward_zero(val in -1_000_000i64..1_000_000i64) {
                 let value = json!(val);
-                let candidates = shrink_candidates(&value, &TypeInfo::Int);
+                let candidates = shrink_candidates(&value, &TypeInfo::Int { int_width: None, int_signed: None });
                 let abs_orig = val.unsigned_abs();
                 for c in &candidates {
                     if let Some(n) = c.as_i64() {
@@ -6832,7 +6930,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 seed in 0..10000u64,
                 typs in prop::collection::vec(
                     prop_oneof![
-                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Int { int_width: None, int_signed: None }),
                         Just(TypeInfo::Float),
                         Just(TypeInfo::Bool),
                         Just(TypeInfo::Str),
@@ -6887,7 +6985,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             fn generate_mock_values_type_valid(
                 seed in 0..10000u64,
                 typ in prop_oneof![
-                    Just(TypeInfo::Int),
+                    Just(TypeInfo::Int { int_width: None, int_signed: None }),
                     Just(TypeInfo::Float),
                     Just(TypeInfo::Bool),
                     Just(TypeInfo::Str),
@@ -6924,7 +7022,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 seed in 0..10000u64,
                 typs in prop::collection::vec(
                     prop_oneof![
-                        Just(TypeInfo::Int),
+                        Just(TypeInfo::Int { int_width: None, int_signed: None }),
                         Just(TypeInfo::Float),
                         Just(TypeInfo::Bool),
                         Just(TypeInfo::Unknown),
@@ -7130,7 +7228,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 seed in 0..10000u64,
                 len in 0..5usize,
             ) {
-                let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int) };
+                let typ = TypeInfo::Array { element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }) };
                 let mut rng = StdRng::seed_from_u64(seed);
                 let arr: Vec<serde_json::Value> = (0..len)
                     .map(|i| json!(i as i64))
@@ -7147,7 +7245,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             fn mutate_object_preserves_object(seed in 0..10000u64) {
                 let typ = TypeInfo::Object {
                     fields: vec![
-                        ("x".to_string(), TypeInfo::Int),
+                        ("x".to_string(), TypeInfo::Int { int_width: None, int_signed: None }),
                         ("y".to_string(), TypeInfo::Str),
                     ],
                 };
@@ -7164,7 +7262,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             fn mutate_nullable_preserves_type_contract(
                 seed in 0..10000u64,
             ) {
-                let inner = TypeInfo::Int;
+                let inner = TypeInfo::Int { int_width: None, int_signed: None };
                 let typ = TypeInfo::Nullable { inner: Box::new(inner.clone()) };
                 let mut rng = StdRng::seed_from_u64(seed);
                 let input = json!(42);
@@ -7290,7 +7388,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut rng = seeded_rng();
         let params = vec![MockParam {
             symbol: "unused".to_string(),
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             category: IoCategory::ExternalOther,
             call_count_estimate: 0,
             value_source: crate::auto_mock::ValueSource::AutoGenerated,
@@ -7305,7 +7403,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut rng = seeded_rng();
         let params = vec![MockParam {
             symbol: "query".to_string(),
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             category: IoCategory::Database,
             call_count_estimate: 3,
             value_source: crate::auto_mock::ValueSource::AutoGenerated,
@@ -7326,7 +7424,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![
             MockParam {
                 symbol: "a".to_string(),
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 category: IoCategory::ExternalOther,
                 call_count_estimate: 3,
                 value_source: crate::auto_mock::ValueSource::AutoGenerated,

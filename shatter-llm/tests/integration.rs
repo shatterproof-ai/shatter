@@ -74,7 +74,7 @@ fn make_ctx() -> OracleContext {
         function_source: "fn foo(x: i32) -> bool { x > 10 }".to_string(),
         param_types: vec![ParamInfo {
             name: "x".to_string(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }],
         condition: FailedCondition {

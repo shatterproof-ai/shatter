@@ -241,7 +241,7 @@ fn default_for_db(symbol: &str) -> Value {
 /// Generate a type-appropriate default value from TypeInfo.
 fn default_for_type(typ: &TypeInfo) -> Value {
     match typ {
-        TypeInfo::Int => json!(0),
+        TypeInfo::Int { .. } => json!(0),
         TypeInfo::Float => json!(0.0),
         TypeInfo::Str => json!(""),
         TypeInfo::Bool => json!(false),
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn classify_unknown_module_as_external_other() {
-        let dep = make_dep("doSomething", "my-custom-lib", TypeInfo::Int);
+        let dep = make_dep("doSomething", "my-custom-lib", TypeInfo::Int { int_width: None, int_signed: None });
         assert_eq!(classify_dependency(&dep), IoCategory::ExternalOther);
     }
 
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn default_mock_for_external_other_uses_type() {
-        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+        let dep = make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None });
         let mock = generate_default_mock(&dep, IoCategory::ExternalOther);
         assert_eq!(mock.return_values, vec![json!(0)]);
     }
@@ -734,7 +734,7 @@ mod tests {
         let typ = TypeInfo::Object {
             fields: vec![
                 ("name".to_string(), TypeInfo::Str),
-                ("age".to_string(), TypeInfo::Int),
+                ("age".to_string(), TypeInfo::Int { int_width: None, int_signed: None }),
             ],
         };
         let val = default_for_type(&typ);
@@ -806,7 +806,7 @@ mod tests {
             make_dep("get", "axios", TypeInfo::Unknown),
             make_dep("query", "pg", TypeInfo::Unknown),
             make_dep("map", "lodash", TypeInfo::Unknown),
-            make_dep("compute", "my-analytics-lib", TypeInfo::Int),
+            make_dep("compute", "my-analytics-lib", TypeInfo::Int { int_width: None, int_signed: None }),
         ];
 
         // User override: custom return value for the database query mock
@@ -931,7 +931,7 @@ mod tests {
         let dep5 = make_dep("strings.TrimSpace", "strings", TypeInfo::Str);
         assert_eq!(classify_dependency(&dep5), IoCategory::PureUtility);
 
-        let dep6 = make_dep("strconv.Atoi", "strconv", TypeInfo::Int);
+        let dep6 = make_dep("strconv.Atoi", "strconv", TypeInfo::Int { int_width: None, int_signed: None });
         assert_eq!(classify_dependency(&dep6), IoCategory::PureUtility);
 
         let dep7 = make_dep("fmt.Sprintf", "fmt", TypeInfo::Str);
@@ -944,7 +944,7 @@ mod tests {
             make_dep("readFile", "fs", TypeInfo::Str),
             make_dep("get", "axios", TypeInfo::Unknown),
             make_dep("map", "lodash", TypeInfo::Unknown),
-            make_dep("compute", "my-lib", TypeInfo::Int),
+            make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None }),
         ];
 
         let result = generate_auto_mocks(&deps, None, &HashMap::new(), &[]);
@@ -1038,7 +1038,7 @@ mod tests {
             make_dep("get", "axios", TypeInfo::Unknown),
             make_dep("query", "pg", TypeInfo::Unknown),
             make_dep("map", "lodash", TypeInfo::Unknown),
-            make_dep("compute", "my-lib", TypeInfo::Int),
+            make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None }),
         ];
         let configs = vec![MockConfig {
             symbol: "query".to_string(),
@@ -1085,7 +1085,7 @@ mod tests {
             "axios",
             TypeInfo::Object {
                 fields: vec![
-                    ("status".to_string(), TypeInfo::Int),
+                    ("status".to_string(), TypeInfo::Int { int_width: None, int_signed: None }),
                     ("data".to_string(), TypeInfo::Unknown),
                 ],
             },
@@ -1107,7 +1107,7 @@ mod tests {
             "my-db",
             TypeInfo::Nullable {
                 inner: Box::new(TypeInfo::Object {
-                    fields: vec![("id".to_string(), TypeInfo::Int)],
+                    fields: vec![("id".to_string(), TypeInfo::Int { int_width: None, int_signed: None })],
                 }),
             },
         );
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn error_variant_fallback_throws() {
-        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+        let dep = make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None });
         let mock = generate_error_variant(&dep, IoCategory::ExternalOther);
 
         assert_eq!(mock.default_behavior, MockBehavior::ThrowError);

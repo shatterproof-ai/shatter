@@ -221,7 +221,7 @@ mod tests {
     fn make_params() -> Vec<ParamInfo> {
         vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }]
     }
@@ -378,7 +378,7 @@ mod proptests {
     fn simple_params() -> Vec<ParamInfo> {
         vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }]
     }

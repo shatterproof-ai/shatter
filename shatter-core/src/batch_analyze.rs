@@ -345,7 +345,7 @@ mod tests {
             exported,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: (0..branch_count)
@@ -358,7 +358,7 @@ mod tests {
                 })
                 .collect(),
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 10,
             literals: vec![],
@@ -394,7 +394,7 @@ mod tests {
             params: vec![
                 ParamInfo {
                     name: "a".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
                 ParamInfo {
@@ -423,8 +423,8 @@ mod tests {
                 kind: DependencyKind::FunctionCall,
                 symbol: "helper".into(),
                 source_module: "./utils".into(),
-                return_type: TypeInfo::Int,
-                param_types: vec![TypeInfo::Int],
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
+                param_types: vec![TypeInfo::Int { int_width: None, int_signed: None }],
                 call_sites: vec![7],
             }],
             return_type: TypeInfo::Bool,
@@ -507,7 +507,7 @@ mod tests {
             name: "funcA".into(),
             exported: true,
             params: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             dependencies: vec![],
             branch_count: 2,
             start_line: 1,
@@ -572,7 +572,7 @@ mod tests {
             name: "funcA".into(),
             exported: true,
             params: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             dependencies: vec![],
             branch_count: 3,
             start_line: 1,

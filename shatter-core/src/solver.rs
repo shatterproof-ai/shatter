@@ -137,7 +137,7 @@ fn sorts_compatible(a: Sort, b: Sort) -> bool {
 fn type_info_to_sort(ty: &TypeInfo) -> Sort {
     match ty {
         TypeInfo::Str => Sort::Str,
-        TypeInfo::Int => Sort::Int,
+        TypeInfo::Int { .. } => Sort::Int,
         TypeInfo::Float => Sort::Real,
         TypeInfo::Bool => Sort::Bool,
         // Nullable<inner> uses the inner type's sort for Z3 purposes
@@ -153,6 +153,21 @@ fn build_param_sorts(param_infos: &[ParamInfo]) -> HashMap<String, Sort> {
         .iter()
         .map(|p| (p.name.clone(), type_info_to_sort(&p.typ)))
         .collect()
+}
+
+/// Assert the value-range bounds implied by each sized integer parameter
+/// (str-ddxe). Without these bounds Z3 would freely pick values like `926` for a
+/// `u8` param, which then fail to deserialize into the narrow field. Only widths
+/// whose range fits in `i64` are bounded (see [`TypeInfo::int_range`]); wider
+/// types stay unconstrained.
+fn assert_int_param_ranges(solver: &Solver, vars: &mut VarTable, param_infos: &[ParamInfo]) {
+    for p in param_infos {
+        if let Some((min, max)) = p.typ.int_range() {
+            let v = vars.get_or_create_int(&p.name);
+            solver.assert(v.ge(Int::from_i64(min)));
+            solver.assert(v.le(Int::from_i64(max)));
+        }
+    }
 }
 
 /// Infer the sort a `SymExpr` should have, based on the constants and operators it contains.
@@ -863,7 +878,9 @@ fn concrete_value_matches_type(value: &ConcreteValue, ty: &TypeInfo) -> bool {
     match (value, ty) {
         // Numeric types are interchangeable — Z3 may solve a Float param as Int
         // when the constraints only use integer comparisons, and vice versa.
-        (ConcreteValue::Int(_) | ConcreteValue::Float(_), TypeInfo::Int | TypeInfo::Float) => true,
+        (ConcreteValue::Int(_) | ConcreteValue::Float(_), TypeInfo::Int { .. } | TypeInfo::Float) => {
+            true
+        }
         (ConcreteValue::Str(_), TypeInfo::Str) => true,
         (ConcreteValue::Bool(_), TypeInfo::Bool) => true,
         // Nullable<inner> — the solved value should match the inner type
@@ -940,6 +957,9 @@ pub fn solve_for_new_path(
         let solver = Solver::new();
         let mut vars = VarTable::new(param_sorts.clone());
 
+        // Constrain sized integer params to their type range (str-ddxe).
+        assert_int_param_ranges(&solver, &mut vars, param_infos);
+
         // Assert the prefix constraints as-is.
         for constraint in &constraints[..negate_index] {
             let sort = infer_operand_sort(constraint);
@@ -973,6 +993,9 @@ pub fn solve_constraints(
     z3::with_z3_config(&cfg, || {
         let solver = Solver::new();
         let mut vars = VarTable::new(param_sorts.clone());
+
+        // Constrain sized integer params to their type range (str-ddxe).
+        assert_int_param_ranges(&solver, &mut vars, param_infos);
 
         for constraint in constraints {
             let sort = infer_operand_sort(constraint);
@@ -1057,6 +1080,9 @@ pub fn solve_for_mcdc_independence(
     z3::with_z3_config(&cfg, || {
         let solver = Solver::new();
         let mut vars = VarTable::new(param_sorts.clone());
+
+        // Constrain sized integer params to their type range (str-ddxe).
+        assert_int_param_ranges(&solver, &mut vars, param_infos);
 
         // Assert all prefix constraints (path leading up to this decision).
         for constraint in prefix {
@@ -1492,7 +1518,10 @@ mod tests {
         }];
         let param_infos = vec![ParamInfo {
             name: "current".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            },
             type_name: None,
         }];
 
@@ -2484,7 +2513,10 @@ mod tests {
 
         fn type_info_for(sort: PrimSort) -> TypeInfo {
             match sort {
-                PrimSort::Int => TypeInfo::Int,
+                PrimSort::Int => TypeInfo::Int {
+                    int_width: None,
+                    int_signed: None,
+                },
                 PrimSort::Float => TypeInfo::Float,
                 PrimSort::Str => TypeInfo::Str,
                 PrimSort::Bool => TypeInfo::Bool,
@@ -2529,7 +2561,7 @@ mod tests {
 
         fn sort_for_type_info(ti: &TypeInfo) -> PrimSort {
             match ti {
-                TypeInfo::Int => PrimSort::Int,
+                TypeInfo::Int { .. } => PrimSort::Int,
                 TypeInfo::Float => PrimSort::Float,
                 TypeInfo::Str => PrimSort::Str,
                 TypeInfo::Bool => PrimSort::Bool,
@@ -2812,10 +2844,56 @@ mod tests {
         let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            },
             type_name: None,
         }];
         assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn u8_param_range_is_enforced() {
+        // x > 900 is UNSAT for a u8 (max 255); x == 200 is SAT in-range (str-ddxe).
+        let u8_param = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int {
+                int_width: Some(8),
+                int_signed: Some(false),
+            },
+            type_name: None,
+        }];
+
+        let gt_900 = vec![SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(900))),
+        }];
+        let res = solve_constraints(&gt_900, None, &u8_param).expect("solve");
+        assert!(
+            matches!(res, SolveResult::Unsat),
+            "x>900 must be UNSAT for u8, got {res:?}"
+        );
+
+        let eq_200 = vec![SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(200))),
+        }];
+        let res = solve_constraints(&eq_200, None, &u8_param).expect("solve");
+        match res {
+            SolveResult::Sat(map) => {
+                assert_eq!(map.get("x"), Some(&ConcreteValue::Int(200)));
+            }
+            other => panic!("x==200 must be SAT for u8, got {other:?}"),
+        }
     }
 
     #[test]

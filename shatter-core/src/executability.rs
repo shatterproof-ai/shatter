@@ -507,7 +507,7 @@ fn find_blocking_opaque_node(
             }
             None
         }
-        TypeInfo::Int | TypeInfo::Float | TypeInfo::Str | TypeInfo::Bool | TypeInfo::Unknown => {
+        TypeInfo::Int { .. } | TypeInfo::Float | TypeInfo::Str | TypeInfo::Bool | TypeInfo::Unknown => {
             None
         }
     }
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn no_opaque_params_returns_empty() {
-        let params = vec![param("a", TypeInfo::Int), param("b", TypeInfo::Str)];
+        let params = vec![param("a", TypeInfo::Int { int_width: None, int_signed: None }), param("b", TypeInfo::Str)];
         assert!(check_executability(&params, &[]).is_empty());
     }
 
@@ -733,7 +733,7 @@ mod tests {
     #[test]
     fn all_primitive_params_returns_empty() {
         let params = vec![
-            param("x", TypeInfo::Int),
+            param("x", TypeInfo::Int { int_width: None, int_signed: None }),
             param("y", TypeInfo::Float),
             param("name", TypeInfo::Str),
             param("flag", TypeInfo::Bool),
@@ -1018,7 +1018,7 @@ mod tests {
 
     #[test]
     fn custom_opaque_types_empty_list_preserves_default_behavior() {
-        let params = vec![param("x", TypeInfo::Int)];
+        let params = vec![param("x", TypeInfo::Int { int_width: None, int_signed: None })];
         assert!(check_executability(&params, &[]).is_empty());
     }
 
@@ -1650,7 +1650,7 @@ mod tests {
     #[test]
     fn primitives_with_no_failures_produce_no_suggestions() {
         let params = vec![
-            param("x", TypeInfo::Int),
+            param("x", TypeInfo::Int { int_width: None, int_signed: None }),
             param("y", TypeInfo::Float),
             param("s", TypeInfo::Str),
             param("b", TypeInfo::Bool),

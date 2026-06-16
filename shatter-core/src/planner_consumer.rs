@@ -367,7 +367,7 @@ fn materialize_execute_constructor_value(
 /// `null`, letting the downstream input generator refine them.
 fn zero_value(typ: &TypeInfo) -> Value {
     match typ {
-        TypeInfo::Int => Value::from(0),
+        TypeInfo::Int { .. } => Value::from(0),
         TypeInfo::Float => Value::from(0.0),
         TypeInfo::Str => Value::from(""),
         TypeInfo::Bool => Value::from(false),
@@ -493,7 +493,7 @@ mod tests {
     fn int_param(name: &str) -> ParamInfo {
         ParamInfo {
             name: name.to_string(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: Some("int".into()),
         }
     }

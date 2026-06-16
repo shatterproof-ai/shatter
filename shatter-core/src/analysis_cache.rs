@@ -202,12 +202,12 @@ mod tests {
             params: vec![
                 ParamInfo {
                     name: "a".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
                 ParamInfo {
                     name: "b".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
             ],
@@ -219,7 +219,7 @@ mod tests {
                 branch_type: BranchType::If,
             }],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 10,
             literals: vec![],
