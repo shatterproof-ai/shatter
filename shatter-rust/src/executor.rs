@@ -5650,7 +5650,17 @@ fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
         if matches!(leading.as_deref(), Some("super") | Some("self")) {
             continue;
         }
-        let tokens = use_item.to_token_stream().to_string();
+        // str-0018: the harness preamble already emits `use serde_json::Value;`.
+        // Forwarding the handler's own `serde_json::Value` import (e.g.
+        // `use serde_json::{json, Value};`) again is a hard E0252 duplicate-import
+        // error that `#![allow(unused_imports)]` cannot suppress. Prune the
+        // `Value` leaf from any forwarded serde_json import; skip the item if
+        // nothing else remains.
+        let pruned_tree = match prune_serde_json_value(&use_item.tree) {
+            Some(t) => t,
+            None => continue,
+        };
+        let tokens = quote::quote!(use #pruned_tree;).to_string();
         if tokens.contains("crate ::") {
             imports.push_str(&tokens.replace("crate ::", &format!("{crate_alias} ::")));
         } else {
@@ -5661,6 +5671,56 @@ fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
         imports.push('\n');
     }
     imports
+}
+
+/// str-0018: prune a `Value` leaf from a `serde_json::...` use tree (the harness
+/// preamble already brings `serde_json::Value` into scope, so re-importing it is
+/// E0252). Returns the rewritten tree, or `None` if the import was solely
+/// `serde_json::Value` and should be dropped entirely. Non-serde_json trees pass
+/// through unchanged.
+fn prune_serde_json_value(tree: &syn::UseTree) -> Option<syn::UseTree> {
+    if let syn::UseTree::Path(path) = tree {
+        if path.ident == "serde_json" {
+            let inner = prune_value_leaf(&path.tree)?;
+            return Some(syn::UseTree::Path(syn::UsePath {
+                ident: path.ident.clone(),
+                colon2_token: path.colon2_token,
+                tree: Box::new(inner),
+            }));
+        }
+    }
+    Some(tree.clone())
+}
+
+/// Remove a top-level `Value` name from a use tree (a bare `Value`, or the
+/// `Value` member of a brace group). Returns `None` if pruning empties the tree.
+fn prune_value_leaf(tree: &syn::UseTree) -> Option<syn::UseTree> {
+    match tree {
+        syn::UseTree::Name(name) if name.ident == "Value" => None,
+        syn::UseTree::Group(group) => {
+            let kept: Vec<syn::UseTree> = group
+                .items
+                .iter()
+                .filter(|t| !matches!(t, syn::UseTree::Name(n) if n.ident == "Value"))
+                .cloned()
+                .collect();
+            match kept.len() {
+                0 => None,
+                1 => Some(kept.into_iter().next().unwrap()),
+                _ => {
+                    let mut items = syn::punctuated::Punctuated::new();
+                    for k in kept {
+                        items.push(k);
+                    }
+                    Some(syn::UseTree::Group(syn::UseGroup {
+                        brace_token: group.brace_token,
+                        items,
+                    }))
+                }
+            }
+        }
+        other => Some(other.clone()),
+    }
 }
 
 /// Return the leading path identifier of a `use` tree (skipping a leading
