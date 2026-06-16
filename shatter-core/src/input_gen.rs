@@ -1353,6 +1353,20 @@ impl PrefetchedValues {
         }
     }
 
+    /// Peek the next queued value for a generator WITHOUT consuming it.
+    ///
+    /// Used to capture a reusable native-replay marker for a custom-generator
+    /// slot (str-6cdp). The frontend re-resolves the marker on each Execute, so
+    /// the same value can be replayed every iteration even after the prefetch
+    /// queue is otherwise drained.
+    #[must_use]
+    pub fn peek(&self, file: &str, name: &str) -> Option<&Value> {
+        self.entries
+            .get(&(file.to_string(), name.to_string()))
+            .and_then(|q| q.first())
+            .map(|e| &e.value)
+    }
+
     /// Check whether a generator has remaining values.
     #[must_use]
     pub fn has_values(&self, file: &str, name: &str) -> bool {
@@ -1368,6 +1382,129 @@ impl PrefetchedValues {
             .get(&(file.to_string(), name.to_string()))
             .map_or(0, Vec::len)
     }
+}
+
+/// Reusable native-replay markers for custom-generator/extractor slots (str-6cdp).
+///
+/// Built once per function from the resolved `value_sources` plus the prefetch
+/// store, capturing one marker value per parameter index whose source is a
+/// [`ValueSource::CustomGenerator`]. The marker is static metadata (file /
+/// function / recipe) that the frontend re-resolves to a live value on every
+/// Execute, so the captured value can be re-applied to its slot on 100% of
+/// executes — even after the prefetch queue empties or a strategy generated a
+/// fresh (non-native) scalar for that slot.
+#[derive(Debug, Clone, Default)]
+pub struct NativePins {
+    /// One entry per parameter index; `Some(marker)` for custom-generator slots,
+    /// `None` for built-in slots that must be left to normal generation.
+    pins: Vec<Option<Value>>,
+}
+
+impl NativePins {
+    /// Capture a native-replay marker for each custom-generator parameter.
+    ///
+    /// For each `CustomGenerator` slot, the marker is taken (by non-consuming
+    /// peek) from the prefetch store. When the store has no value for a
+    /// generator (prefetch failed or was never run), that slot is left `None`
+    /// and normal generation/repair applies.
+    #[must_use]
+    pub fn capture(sources: &[ValueSource], prefetched: &PrefetchedValues) -> Self {
+        let pins = sources
+            .iter()
+            .map(|source| match source {
+                ValueSource::CustomGenerator {
+                    generator_name,
+                    generator_file,
+                    ..
+                } => {
+                    let file_str = generator_file.display().to_string();
+                    prefetched.peek(&file_str, generator_name).cloned()
+                }
+                ValueSource::BuiltIn => None,
+            })
+            .collect();
+        Self { pins }
+    }
+
+    /// Capture native-replay markers from already-built candidate vectors.
+    ///
+    /// Used on paths (e.g. the concolic orchestrator) where prefetch ran
+    /// upstream and the resolved marker is only available inside the seed/user
+    /// input vectors rather than a live [`PrefetchedValues`] store. For each
+    /// `CustomGenerator` slot, the first candidate whose value at that index is a
+    /// native-replay marker is captured for re-application on every Execute.
+    #[must_use]
+    pub fn capture_from_inputs(sources: &[ValueSource], candidates: &[Vec<Value>]) -> Self {
+        let pins = sources
+            .iter()
+            .enumerate()
+            .map(|(idx, source)| {
+                if !matches!(source, ValueSource::CustomGenerator { .. }) {
+                    return None;
+                }
+                candidates
+                    .iter()
+                    .filter_map(|vec| vec.get(idx))
+                    .find(|v| is_native_marker(v))
+                    .cloned()
+            })
+            .collect();
+        Self { pins }
+    }
+
+    /// Merge markers from `other` into self, filling only currently-empty slots.
+    ///
+    /// Lets a caller seed pins from a prefetch store and then backfill any
+    /// missing slots from candidate vectors (or vice versa).
+    pub fn merge_fill(&mut self, other: &NativePins) {
+        if other.pins.len() > self.pins.len() {
+            self.pins.resize(other.pins.len(), None);
+        }
+        for (slot, incoming) in self.pins.iter_mut().zip(other.pins.iter()) {
+            if slot.is_none() {
+                *slot = incoming.clone();
+            }
+        }
+    }
+
+    /// Whether any slot carries a captured native-replay marker.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pins.iter().all(Option::is_none)
+    }
+
+    /// Re-emit captured native-replay markers into `inputs` in place.
+    ///
+    /// For every parameter index with a captured marker, the corresponding input
+    /// slot is overwritten with the marker so the extractor param carries its
+    /// native value on this Execute regardless of how the vector was produced
+    /// (fresh generation, mutation, crossover, seeding, or prefetch exhaustion).
+    pub fn apply(&self, inputs: &mut Vec<Value>) {
+        for (idx, pin) in self.pins.iter().enumerate() {
+            let Some(marker) = pin else { continue };
+            if let Some(slot) = inputs.get_mut(idx) {
+                *slot = marker.clone();
+            } else {
+                // Extend to reach the pinned index (defensive; arity normally matches).
+                while inputs.len() < idx {
+                    inputs.push(Value::Null);
+                }
+                inputs.push(marker.clone());
+            }
+        }
+    }
+}
+
+/// Whether a JSON value is a native-replay marker emitted by a frontend
+/// generator (`{"__shatter_native": true, ...}`). Such values are re-resolved by
+/// the frontend on each Execute and must never be replaced by generated scalars.
+#[must_use]
+pub fn is_native_marker(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|obj| obj.get("__shatter_native"))
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 /// Collect the set of unique Generate commands needed for the given value sources.
@@ -1637,10 +1774,36 @@ pub fn havoc_mutate_inputs(
     dictionary: &[&str],
     rng: &mut impl Rng,
 ) -> Vec<Value> {
+    havoc_mutate_inputs_with_sources(inputs, params, &[], mutation_rate, dictionary, rng)
+}
+
+/// Havoc-mutate an input vector, pinning custom-generator/extractor slots.
+///
+/// Identical to [`havoc_mutate_inputs`], but any parameter whose `sources`
+/// entry is [`ValueSource::CustomGenerator`] is left untouched (the original
+/// value is cloned through). Such slots carry a native-replay marker
+/// (`{"__shatter_native": true, ...}`) that the frontend resolves to a live
+/// extractor value (axum `State<AppState>`, custom `FromRequestParts`); mutating
+/// it would destroy the marker and the handler would reject the input (str-6cdp).
+///
+/// Passing an empty `sources` slice reproduces the unpinned behavior of
+/// [`havoc_mutate_inputs`], so every parameter is eligible for mutation.
+pub fn havoc_mutate_inputs_with_sources(
+    inputs: &[Value],
+    params: &[crate::types::ParamInfo],
+    sources: &[ValueSource],
+    mutation_rate: f64,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Vec<Value> {
     inputs
         .iter()
         .zip(params.iter())
-        .map(|(val, param)| {
+        .enumerate()
+        .map(|(idx, (val, param))| {
+            if is_pinned_source(sources, idx) {
+                return val.clone();
+            }
             if rng.random_range(0.0..1.0_f64) < mutation_rate {
                 havoc_mutate_value(val, &param.typ, dictionary, rng)
             } else {
@@ -1648,6 +1811,16 @@ pub fn havoc_mutate_inputs(
             }
         })
         .collect()
+}
+
+/// Whether the parameter at `idx` must be pinned (never mutated/seeded over).
+///
+/// Returns `true` when `sources[idx]` is a [`ValueSource::CustomGenerator`].
+/// Out-of-range indices (e.g. an empty `sources` slice) are treated as
+/// not-pinned so callers that have no resolved sources keep mutating every
+/// slot, matching the legacy mutate-all behavior.
+fn is_pinned_source(sources: &[ValueSource], idx: usize) -> bool {
+    matches!(sources.get(idx), Some(ValueSource::CustomGenerator { .. }))
 }
 
 /// Mutate an input vector with per-field probability.
@@ -1661,10 +1834,31 @@ pub fn mutate_inputs(
     dictionary: &[&str],
     rng: &mut impl Rng,
 ) -> Vec<Value> {
+    mutate_inputs_with_sources(inputs, params, &[], mutation_rate, dictionary, rng)
+}
+
+/// Mutate an input vector, pinning custom-generator/extractor slots.
+///
+/// Identical to [`mutate_inputs`], but any parameter whose `sources` entry is
+/// [`ValueSource::CustomGenerator`] is cloned through unchanged so its
+/// native-replay marker survives every mutation iteration (str-6cdp). Passing an
+/// empty `sources` slice reproduces the unpinned [`mutate_inputs`] behavior.
+pub fn mutate_inputs_with_sources(
+    inputs: &[Value],
+    params: &[crate::types::ParamInfo],
+    sources: &[ValueSource],
+    mutation_rate: f64,
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Vec<Value> {
     inputs
         .iter()
         .zip(params.iter())
-        .map(|(val, param)| {
+        .enumerate()
+        .map(|(idx, (val, param))| {
+            if is_pinned_source(sources, idx) {
+                return val.clone();
+            }
             if rng.random_range(0.0..1.0_f64) < mutation_rate {
                 mutate_value(val, &param.typ, dictionary, rng)
             } else {
@@ -2790,6 +2984,23 @@ pub fn crossover_inputs(
     crossover_rate: f64,
     rng: &mut impl Rng,
 ) -> (Vec<Value>, Vec<Value>) {
+    crossover_inputs_with_sources(parent_a, parent_b, params, &[], crossover_rate, rng)
+}
+
+/// Single-point/uniform crossover, pinning custom-generator/extractor slots.
+///
+/// Identical to [`crossover_inputs`], but any parameter whose `sources` entry is
+/// [`ValueSource::CustomGenerator`] is passed through unchanged from each parent
+/// so native-replay markers are never spliced or recombined (str-6cdp). Passing
+/// an empty `sources` slice reproduces the unpinned [`crossover_inputs`].
+pub fn crossover_inputs_with_sources(
+    parent_a: &[Value],
+    parent_b: &[Value],
+    params: &[crate::types::ParamInfo],
+    sources: &[ValueSource],
+    crossover_rate: f64,
+    rng: &mut impl Rng,
+) -> (Vec<Value>, Vec<Value>) {
     let len = parent_a.len().min(parent_b.len()).min(params.len());
 
     // No crossover — clone parents
@@ -2801,6 +3012,12 @@ pub fn crossover_inputs(
     let mut child2 = Vec::with_capacity(len);
 
     for i in 0..len {
+        if is_pinned_source(sources, i) {
+            // Preserve each parent's native-replay marker in place.
+            child1.push(parent_a[i].clone());
+            child2.push(parent_b[i].clone());
+            continue;
+        }
         let (c1, c2) = crossover_value(&parent_a[i], &parent_b[i], &params[i].typ, rng);
         child1.push(c1);
         child2.push(c2);
@@ -4461,6 +4678,106 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
             json!({"__shatter_native": true, "handle": "h_1"})
         );
         assert_eq!(inputs[1], json!(7));
+    }
+
+    /// str-6cdp: a custom-generator/extractor slot carrying a native-replay
+    /// marker must survive mutation/havoc/crossover untouched on every
+    /// iteration, while a built-in slot is still eligible for mutation.
+    #[test]
+    fn mutation_pins_custom_generator_slots_to_native_marker() {
+        let params = vec![
+            // Slot 0: extractor param supplied by a native-replay generator.
+            ParamInfo {
+                name: "state".into(),
+                typ: TypeInfo::Opaque {
+                    label: "AppState".into(),
+                    static_opacity: None,
+                    medium_opacity: None,
+                },
+                type_name: Some("AppState".into()),
+            },
+            // Slot 1: ordinary built-in integer param.
+            ParamInfo {
+                name: "id".into(),
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
+                type_name: None,
+            },
+        ];
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "AppState".into(),
+                param_name: None,
+                generator_file: "/gen/state.rs".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+        ];
+
+        let native_marker = json!({
+            "__shatter_native": true,
+            "__shatter_replay": {"generator": "AppState", "id": "h_1"}
+        });
+        let inputs = vec![native_marker.clone(), json!(0)];
+
+        // Mutation rate 1.0 — every non-pinned slot WILL be mutated.
+        let mut rng = seeded_rng();
+        let mutated =
+            mutate_inputs_with_sources(&inputs, &params, &sources, 1.0, &[], &mut rng);
+        assert_eq!(
+            mutated[0], native_marker,
+            "custom-generator slot must keep its native-replay marker after mutate_inputs"
+        );
+
+        // Havoc — compound multi-mutation — must also leave the pinned slot intact.
+        let mut rng = seeded_rng();
+        let havoced =
+            havoc_mutate_inputs_with_sources(&inputs, &params, &sources, 1.0, &[], &mut rng);
+        assert_eq!(
+            havoced[0], native_marker,
+            "custom-generator slot must keep its native-replay marker after havoc"
+        );
+
+        // Crossover between two parents both carrying the marker must not splice it.
+        let other = vec![native_marker.clone(), json!(99)];
+        let mut rng = seeded_rng();
+        let (child_a, child_b) =
+            crossover_inputs_with_sources(&inputs, &other, &params, &sources, 1.0, &mut rng);
+        assert_eq!(child_a[0], native_marker, "crossover must preserve marker (child A)");
+        assert_eq!(child_b[0], native_marker, "crossover must preserve marker (child B)");
+
+        // Sanity: across many iterations the pinned slot never drifts, while the
+        // built-in slot is genuinely mutated at least once (so the test would
+        // fail if pinning silently disabled all mutation).
+        let mut rng = seeded_rng();
+        let mut builtin_changed = false;
+        for _ in 0..64 {
+            let m = mutate_inputs_with_sources(&inputs, &params, &sources, 1.0, &[], &mut rng);
+            assert_eq!(m[0], native_marker, "pinned slot drifted across iterations");
+            if m[1] != json!(0) {
+                builtin_changed = true;
+            }
+        }
+        assert!(
+            builtin_changed,
+            "built-in slot should still be mutated; pinning must not freeze all slots"
+        );
+
+        // With an empty `sources` slice, the legacy mutate-all behavior holds:
+        // the (now unprotected) marker object is eligible for mutation.
+        let mut rng = seeded_rng();
+        let unpinned =
+            mutate_inputs_with_sources(&inputs, &params, &[], 1.0, &[], &mut rng);
+        // Opaque-typed slot 0 is returned unchanged by mutate_value regardless,
+        // but slot 1 (Int) must be mutable to prove sources=&[] still mutates.
+        let mut any_builtin_changed = false;
+        for _ in 0..16 {
+            let u = mutate_inputs_with_sources(&inputs, &params, &[], 1.0, &[], &mut rng);
+            if u[1] != json!(0) {
+                any_builtin_changed = true;
+            }
+        }
+        let _ = unpinned;
+        assert!(any_builtin_changed, "empty sources must preserve mutate-all behavior");
     }
 
     #[test]

@@ -124,6 +124,9 @@ pub(crate) async fn run_observe(
             fuzz: shatter_core::config::FuzzConfig::default(),
             planner: None,
             default_execute_plan: None,
+            // This observe path does not resolve custom generators; all slots
+            // are built-in, so no pinning is required (str-6cdp).
+            value_sources: vec![],
         };
         // Instrument the function so the frontend has the source ready for prepare.
         if let Err(e) = frontend

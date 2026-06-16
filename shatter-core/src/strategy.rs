@@ -33,8 +33,8 @@ use crate::boundary_dict::generate_boundary_inputs;
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::execution_record::SymConstraint;
 use crate::input_gen::{
-    crossover_inputs, generate_random_inputs, havoc_mutate_inputs, literals_to_candidate_inputs,
-    mutate_inputs,
+    crossover_inputs_with_sources, generate_random_inputs, havoc_mutate_inputs_with_sources,
+    literals_to_candidate_inputs, mutate_inputs_with_sources,
 };
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue, LoopInfo};
@@ -58,6 +58,11 @@ pub struct StrategyContext {
     pub literals: Vec<LiteralValue>,
     /// Frontend capabilities (used to gate complex-type generation).
     pub capabilities: FrontendCapabilities,
+    /// Per-parameter value source (custom generator vs built-in). Custom-generator
+    /// slots carry native-replay markers and must never be mutated (str-6cdp).
+    /// Empty when no generators are configured, in which case every slot is
+    /// treated as built-in and eligible for mutation.
+    pub value_sources: Vec<crate::input_gen::ValueSource>,
 }
 
 impl StrategyContext {
@@ -1054,13 +1059,30 @@ impl FuzzerStrategy {
         let base = self.interesting[idx].clone();
 
         let params: Vec<ParamInfo> = ctx.params.clone();
+        // Pin custom-generator/extractor slots so their native-replay markers
+        // survive mutation (str-6cdp).
+        let sources = ctx.value_sources.as_slice();
 
         // 1. Gentle type-aware mutation for diversity.
-        let gentle_mutated = mutate_inputs(&base, &params, FUZZER_GENTLE_RATE, &[], &mut self.rng);
+        let gentle_mutated = mutate_inputs_with_sources(
+            &base,
+            &params,
+            sources,
+            FUZZER_GENTLE_RATE,
+            &[],
+            &mut self.rng,
+        );
         self.pending.push_back(gentle_mutated);
 
         // 2. Aggressive type-aware mutation via input_gen.
-        let mutated = mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
+        let mutated = mutate_inputs_with_sources(
+            &base,
+            &params,
+            sources,
+            FUZZER_MUTATION_RATE,
+            &[],
+            &mut self.rng,
+        );
         self.pending.push_back(mutated);
 
         // 3. Crossover when at least two interesting inputs exist.
@@ -1071,10 +1093,11 @@ impl FuzzerStrategy {
                     break candidate;
                 }
             };
-            let (child_a, _child_b) = crossover_inputs(
+            let (child_a, _child_b) = crossover_inputs_with_sources(
                 &base,
                 &self.interesting[other_idx],
                 &params,
+                sources,
                 FUZZER_CROSSOVER_RATE,
                 &mut self.rng,
             );
@@ -1082,7 +1105,14 @@ impl FuzzerStrategy {
         }
 
         // 4. Havoc — compound multi-mutation sequence for escaping local optima.
-        let havoc = havoc_mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
+        let havoc = havoc_mutate_inputs_with_sources(
+            &base,
+            &params,
+            sources,
+            FUZZER_MUTATION_RATE,
+            &[],
+            &mut self.rng,
+        );
         self.pending.push_back(havoc);
     }
 }
@@ -1300,6 +1330,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         }
     }
 
@@ -1696,6 +1727,7 @@ mod tests {
                 params: params.clone(),
                 literals: vec![],
                 capabilities: FrontendCapabilities::default(),
+                value_sources: vec![],
             };
             let mut rng = StdRng::seed_from_u64(seed);
 
@@ -1732,6 +1764,7 @@ mod tests {
                 params: params.clone(),
                 literals: literals.clone(),
                 capabilities: FrontendCapabilities::default(),
+                value_sources: vec![],
             };
             let mut rng = StdRng::seed_from_u64(seed);
 
@@ -1766,6 +1799,7 @@ mod tests {
             params,
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1963,6 +1997,7 @@ mod tests {
             params,
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = rand::rngs::StdRng::seed_from_u64(7);
 
@@ -2187,6 +2222,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         };
         for _ in 0..20 {
             let vals = s.next(&int_ctx).unwrap();
@@ -2206,6 +2242,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         };
         for _ in 0..20 {
             let vals = s.next(&str_ctx).unwrap();
@@ -2225,6 +2262,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         };
         for _ in 0..20 {
             let vals = s.next(&bool_ctx).unwrap();
@@ -2585,6 +2623,7 @@ mod tests {
                     params: params.clone(),
                     literals: vec![],
                     capabilities: FrontendCapabilities::from_raw(&[]),
+                    value_sources: vec![],
                 };
                 let mut s = Z3SolverStrategy::new(Some(500), params, vec![]);
                 s.feedback(&inputs, &er, false);

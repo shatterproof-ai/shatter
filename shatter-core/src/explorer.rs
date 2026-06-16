@@ -1090,6 +1090,18 @@ pub async fn explore_function(
     let (mut prefetched, use_generators) =
         prefetch_custom_values_for_explore(config, frontend, use_generators).await;
 
+    // str-6cdp: capture a reusable native-replay marker per custom-generator
+    // slot from the prefetch store. Re-applied at the execute funnel on every
+    // iteration so the extractor param never reaches the frontend as a generated
+    // or mutated scalar, even after the prefetch queue is drained.
+    let native_pins =
+        crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
+    let native_pins_arg = if native_pins.is_empty() {
+        None
+    } else {
+        Some(&native_pins)
+    };
+
     // ObservationAggregator owns the per-execution merge state previously
     // inlined in this function (paths, branches, lines, discoveries,
     // raw_results, new_path_executions, iterations counter, last-discovery
@@ -1173,10 +1185,11 @@ pub async fn explore_function(
             let mut divergent_values = Vec::new();
 
             for (float_inputs, floor_inputs) in pairs {
-                let float_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let float_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &float_inputs,
                     &analysis.params,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let float_resp = frontend
                     .send(ProtoCommand::Execute {
@@ -1191,10 +1204,11 @@ pub async fn explore_function(
                     })
                     .await?;
 
-                let floor_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let floor_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &floor_inputs,
                     &analysis.params,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let floor_resp = frontend
                     .send(ProtoCommand::Execute {
@@ -1284,6 +1298,7 @@ pub async fn explore_function(
         params: analysis.params.clone(),
         literals: analysis.literals.clone(),
         capabilities: config.capabilities.clone(),
+        value_sources: config.value_sources.clone(),
     };
     let mut path_feedback = PathFeedbackQueue::new(analysis, config);
     let explore_start = Instant::now();
@@ -1489,10 +1504,11 @@ pub async fn explore_function(
         // event (raw_results, discoveries, new_path_executions, iterations,
         // last_discovery_iteration) without re-deriving what observe_single
         // already computed.
-        let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+        let execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
             &inputs,
             &analysis.params,
             config.default_execute_plan.as_ref(),
+            native_pins_arg,
         )?;
         let strategy_feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
             execute_inputs.inputs(),
@@ -1680,10 +1696,11 @@ pub async fn explore_function(
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
             {
                 attempts += 1;
-                let bulk_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let bulk_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &bulk_trial,
                     &analysis.params,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let resp = frontend
                     .send(ProtoCommand::Execute {
@@ -1724,10 +1741,11 @@ pub async fn explore_function(
                         break;
                     }
                     attempts += 1;
-                    let trial_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                    let trial_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                         &trial,
                         &analysis.params,
                         config.default_execute_plan.as_ref(),
+                        native_pins_arg,
                     )?;
                     let resp = frontend
                         .send(ProtoCommand::Execute {
@@ -1775,10 +1793,11 @@ pub async fn explore_function(
                         attempts += 1;
 
                         let trial_execute_inputs =
-                            crate::planner_consumer::execute_inputs_for_plan(
+                            crate::planner_consumer::execute_inputs_for_plan_with_pins(
                                 &trial,
                                 &analysis.params,
                                 config.default_execute_plan.as_ref(),
+                                native_pins_arg,
                             )?;
                         let resp = frontend
                             .send(ProtoCommand::Execute {
@@ -2144,6 +2163,16 @@ async fn explore_function_with_observer_pool(
     let (mut prefetched, use_generators) =
         prefetch_custom_values_for_explore(config, frontend, use_generators).await;
 
+    // str-6cdp: reusable native-replay markers for custom-generator slots, applied
+    // at the execute funnel every iteration (see explore_function for rationale).
+    let native_pins =
+        crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
+    let native_pins_arg = if native_pins.is_empty() {
+        None
+    } else {
+        Some(&native_pins)
+    };
+
     let mut aggregator =
         crate::observation_aggregator::ObservationAggregator::new(config.loop_buckets.clone());
     let mut last_reported_branches: usize = 0;
@@ -2161,6 +2190,7 @@ async fn explore_function_with_observer_pool(
         params: analysis.params.clone(),
         literals: analysis.literals.clone(),
         capabilities: config.capabilities.clone(),
+        value_sources: config.value_sources.clone(),
     };
     let mut path_feedback = PathFeedbackQueue::new(analysis, config);
 
@@ -2287,10 +2317,11 @@ async fn explore_function_with_observer_pool(
             };
             apply_live_first_overrides(&live_first_states, &mut iteration_mocks);
 
-            let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+            let execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                 &inputs,
                 &analysis.params,
                 config.default_execute_plan.as_ref(),
+                native_pins_arg,
             )?;
             let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
                 execute_inputs.inputs(),

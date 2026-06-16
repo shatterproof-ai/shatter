@@ -10,7 +10,9 @@ use rand::Rng;
 use serde_json::Value;
 
 use crate::behavior::BehaviorMap;
-use crate::input_gen::{crossover_inputs, generate_random_inputs, mutate_inputs};
+use crate::input_gen::{
+    ValueSource, crossover_inputs_with_sources, generate_random_inputs, mutate_inputs_with_sources,
+};
 use crate::orchestrator::{FrontendCapabilities, hash_branch_path};
 use crate::types::ParamInfo;
 
@@ -87,9 +89,13 @@ impl Population {
     ///
     /// The caller is responsible for assigning fitness scores (via
     /// [`individuals_mut`](Self::individuals_mut)) before calling this method.
+    /// `sources` pins custom-generator/extractor parameter slots so their
+    /// native-replay markers survive crossover and mutation (str-6cdp). Pass an
+    /// empty slice when no generators are configured.
     pub fn evolve(
         &mut self,
         params: &[ParamInfo],
+        sources: &[ValueSource],
         mutation_rate: f64,
         crossover_rate: f64,
         dictionary: &[&str],
@@ -118,15 +124,23 @@ impl Population {
             let parent_a = self.tournament_select(rng);
             let parent_b = self.tournament_select(rng);
 
-            let (child_a_inputs, child_b_inputs) = crossover_inputs(
+            let (child_a_inputs, child_b_inputs) = crossover_inputs_with_sources(
                 &parent_a.inputs,
                 &parent_b.inputs,
                 params,
+                sources,
                 crossover_rate,
                 rng,
             );
 
-            let mutated_a = mutate_inputs(&child_a_inputs, params, mutation_rate, dictionary, rng);
+            let mutated_a = mutate_inputs_with_sources(
+                &child_a_inputs,
+                params,
+                sources,
+                mutation_rate,
+                dictionary,
+                rng,
+            );
             next_gen.push(Individual {
                 inputs: mutated_a,
                 fitness: 0.0,
@@ -134,8 +148,14 @@ impl Population {
             });
 
             if next_gen.len() < pop_size {
-                let mutated_b =
-                    mutate_inputs(&child_b_inputs, params, mutation_rate, dictionary, rng);
+                let mutated_b = mutate_inputs_with_sources(
+                    &child_b_inputs,
+                    params,
+                    sources,
+                    mutation_rate,
+                    dictionary,
+                    rng,
+                );
                 next_gen.push(Individual {
                     inputs: mutated_b,
                     fitness: 0.0,
@@ -335,7 +355,7 @@ mod tests {
         for ind in pop.individuals_mut() {
             ind.fitness = rng.random_range(0.0..1.0_f64);
         }
-        pop.evolve(&make_params(), 0.3, 0.7, &[], &mut rng);
+        pop.evolve(&make_params(), &[], 0.3, 0.7, &[], &mut rng);
         assert_eq!(pop.len(), 10);
         assert_eq!(pop.generation(), 1);
     }
@@ -348,7 +368,7 @@ mod tests {
             ind.fitness = i as f64;
         }
         let best_inputs = pop.best().expect("non-empty").inputs.clone();
-        pop.evolve(&make_params(), 0.3, 0.7, &[], &mut rng);
+        pop.evolve(&make_params(), &[], 0.3, 0.7, &[], &mut rng);
         let has_elite = pop.individuals().iter().any(|i| i.inputs == best_inputs);
         assert!(has_elite, "best individual should survive via elitism");
     }
@@ -360,7 +380,7 @@ mod tests {
             generation: 0,
         };
         let mut rng = StdRng::seed_from_u64(42);
-        pop.evolve(&make_params(), 0.3, 0.7, &[], &mut rng);
+        pop.evolve(&make_params(), &[], 0.3, 0.7, &[], &mut rng);
         assert!(pop.is_empty());
         assert_eq!(pop.generation(), 0); // no increment on empty
     }
@@ -404,7 +424,7 @@ mod proptests {
             for ind in pop.individuals_mut() {
                 ind.fitness = rng.random_range(0.0..1.0_f64);
             }
-            pop.evolve(&params, 0.3, 0.7, &[], &mut rng);
+            pop.evolve(&params, &[], 0.3, 0.7, &[], &mut rng);
             prop_assert_eq!(pop.len(), pop_size as usize);
         }
 
@@ -447,7 +467,7 @@ mod proptests {
                 ind.fitness = rng.random_range(0.0..1.0_f64);
             }
             let best_inputs = pop.best().unwrap().inputs.clone();
-            pop.evolve(&params, 0.3, 0.7, &[], &mut rng);
+            pop.evolve(&params, &[], 0.3, 0.7, &[], &mut rng);
             let has_elite = pop.individuals().iter().any(|i| i.inputs == best_inputs);
             prop_assert!(has_elite, "elite individual lost after evolve");
         }
@@ -464,7 +484,7 @@ mod proptests {
                 for ind in pop.individuals_mut() {
                     ind.fitness = rng.random_range(0.0..1.0_f64);
                 }
-                pop.evolve(&params, 0.3, 0.7, &[], &mut rng);
+                pop.evolve(&params, &[], 0.3, 0.7, &[], &mut rng);
             }
             prop_assert_eq!(pop.generation(), n_evolves as u32);
         }

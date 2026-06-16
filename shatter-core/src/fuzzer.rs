@@ -127,6 +127,10 @@ pub struct FuzzPhaseResult {
 pub struct FuzzSession {
     corpus: Corpus,
     params: Vec<ParamInfo>,
+    /// Per-parameter value source. Custom-generator/extractor slots are pinned
+    /// so their native-replay markers survive havoc mutation (str-6cdp). Empty
+    /// means every slot is built-in and eligible for mutation.
+    value_sources: Vec<crate::input_gen::ValueSource>,
     target_branch_ids: Vec<u32>,
     config: FuzzConfig,
     covered_paths: HashSet<u64>,
@@ -140,9 +144,24 @@ impl FuzzSession {
         config: FuzzConfig,
         covered_paths: HashSet<u64>,
     ) -> Self {
+        Self::with_sources(corpus, params, vec![], target_branch_ids, config, covered_paths)
+    }
+
+    /// Like [`FuzzSession::new`], but pins custom-generator/extractor parameter
+    /// slots listed in `value_sources` so their native-replay markers are never
+    /// mutated (str-6cdp).
+    pub fn with_sources(
+        corpus: Corpus,
+        params: Vec<ParamInfo>,
+        value_sources: Vec<crate::input_gen::ValueSource>,
+        target_branch_ids: Vec<u32>,
+        config: FuzzConfig,
+        covered_paths: HashSet<u64>,
+    ) -> Self {
         Self {
             corpus,
             params,
+            value_sources,
             target_branch_ids,
             config,
             covered_paths,
@@ -203,9 +222,10 @@ impl FuzzSession {
                 None => break FuzzTermination::Plateau, // empty corpus, nothing to do
             };
 
-            let mutated = crate::input_gen::havoc_mutate_inputs(
+            let mutated = crate::input_gen::havoc_mutate_inputs_with_sources(
                 &parent_inputs,
                 &self.params,
+                &self.value_sources,
                 1.0,
                 &[],
                 &mut rng,

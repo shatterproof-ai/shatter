@@ -237,21 +237,46 @@ pub fn execute_inputs_for_plan(
     param_infos: &[ParamInfo],
     plan: Option<&InvocationPlan>,
 ) -> Result<PlannedExecuteInputs, PlannerConsumerError> {
+    execute_inputs_for_plan_with_pins(inputs, param_infos, plan, None)
+}
+
+/// Like [`execute_inputs_for_plan`], but re-emits native-replay markers for
+/// custom-generator/extractor parameter slots (str-6cdp).
+///
+/// `native_pins` is method-parameter indexed. After type repair, each pinned
+/// slot is overwritten with its captured native-replay marker so the extractor
+/// param (axum `State<AppState>`, `FromRequestParts`) carries its native value on
+/// EVERY Execute — regardless of how the method vector was produced (fresh
+/// random generation, mutation, crossover, seeding, or prefetch exhaustion).
+/// This is the single funnel for all execute paths, so pinning here guarantees
+/// 100% coverage in one place.
+pub fn execute_inputs_for_plan_with_pins(
+    inputs: &[Value],
+    param_infos: &[ParamInfo],
+    plan: Option<&InvocationPlan>,
+    native_pins: Option<&crate::input_gen::NativePins>,
+) -> Result<PlannedExecuteInputs, PlannerConsumerError> {
     let method_param_count = param_infos.len();
     // Repair a parameter-aligned input slice against its declared types so eroded
     // struct inputs (missing required fields, malformed uuids) still deserialize
     // and the function actually executes (str-kn3f). This is the single funnel
     // point for ALL execute paths — both the orchestrator's observe loop and the
     // explorer's strategy loops route through here. Purely additive on objects.
+    // After repair, re-apply native-replay markers for custom-generator slots
+    // (str-6cdp) so the extractor param is never a mutated/generated scalar.
     let repair = |method: &[Value]| -> Vec<Value> {
-        method
+        let mut repaired: Vec<Value> = method
             .iter()
             .enumerate()
             .map(|(i, value)| match param_infos.get(i) {
                 Some(param) => crate::input_gen::repair_required_fields(value, &param.typ),
                 None => value.clone(),
             })
-            .collect()
+            .collect();
+        if let Some(pins) = native_pins {
+            pins.apply(&mut repaired);
+        }
+        repaired
     };
 
     let constructor_arg_count = plan.map_or(0, |p| p.constructor_arg_plans.len());
@@ -504,6 +529,64 @@ mod tests {
             typ: TypeInfo::Str,
             type_name: Some("string".into()),
         }
+    }
+
+    /// str-6cdp: the execute funnel must re-emit the native-replay marker for a
+    /// custom-generator/extractor slot even when the incoming method vector
+    /// carries a NON-native scalar there (the actual failure mode: fresh random
+    /// generation / prefetch exhaustion produced e.g. `1`/`null`/`"test"`).
+    #[test]
+    fn funnel_reapplies_native_marker_for_pinned_slot() {
+        use crate::input_gen::{NativePins, ValueSource};
+
+        let params = vec![
+            // Slot 0: extractor param (custom generator / native replay).
+            ParamInfo {
+                name: "state".into(),
+                typ: TypeInfo::Opaque {
+                    label: "AppState".into(),
+                    static_opacity: None,
+                    medium_opacity: None,
+                },
+                type_name: Some("AppState".into()),
+            },
+            // Slot 1: ordinary built-in int param.
+            int_param("id"),
+        ];
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "AppState".into(),
+                param_name: None,
+                generator_file: "/gen/state.rs".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+        ];
+        let marker = json!({
+            "__shatter_native": true,
+            "__shatter_replay": {"file": "state.rs", "name": "AppState", "recipe": {}}
+        });
+        // Pins captured from a candidate vector that DID carry the marker.
+        let pins = NativePins::capture_from_inputs(&sources, &[vec![marker.clone(), json!(7)]]);
+        assert!(!pins.is_empty(), "pins should capture the marker from candidates");
+
+        // The vector reaching execute has a NON-native scalar in the pinned slot.
+        let eroded = vec![json!(1), json!(42)];
+        let out = execute_inputs_for_plan_with_pins(&eroded, &params, None, Some(&pins))
+            .expect("funnel succeeds")
+            .inputs()
+            .to_vec();
+
+        assert_eq!(out[0], marker, "pinned slot must be restored to the native marker");
+        assert_eq!(out[1], json!(42), "built-in slot must pass through unchanged");
+
+        // Without pins, the funnel leaves the eroded non-native scalar in place
+        // (proves the pin is what restores the marker, not repair).
+        let unpinned = execute_inputs_for_plan_with_pins(&eroded, &params, None, None)
+            .expect("funnel succeeds")
+            .inputs()
+            .to_vec();
+        assert_eq!(unpinned[0], json!(1), "without pins the slot stays non-native");
     }
 
     fn literal_plan(param_index: u32, param_name: &str, literal: Value) -> ValuePlan {
