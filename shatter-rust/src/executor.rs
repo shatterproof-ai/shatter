@@ -5620,6 +5620,17 @@ fn generate_axum_harness(
     Ok(h)
 }
 
+/// Forward the handler file's `use` items into the crate-backed axum harness so
+/// that the inner extractor/Path/Json types it names by bare identifier (e.g.
+/// `Uuid` from `use uuid::Uuid;`, request types from `use crate::...;`) resolve.
+///
+/// Rewrites a leading `crate::` segment to `{crate_alias}::` (the driver
+/// references the target crate under that alias). External-crate imports
+/// (`uuid`, `chrono`, std, etc.) are forwarded as-is because the driver crate
+/// depends on the same crates as the handler crate. `super::`/`self::`-relative
+/// imports cannot be resolved at the harness top level, so they are dropped;
+/// the `use {crate_alias}::*;` glob emitted alongside this output covers any
+/// crate-local types those relative paths referenced.
 fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
     use quote::ToTokens;
 
@@ -5631,14 +5642,36 @@ fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
         let syn::Item::Use(use_item) = item else {
             continue;
         };
-        let tokens = use_item.to_token_stream().to_string();
-        if !tokens.contains("crate ::") {
+        // Only forward top-level imports; nested `use` inside `mod` blocks are
+        // not part of `file.items` so this is already top-level only.
+        let leading = use_tree_leading_ident(&use_item.tree);
+        // Drop relative imports that have no meaning at the harness top level.
+        // The crate-alias glob covers any crate-local names they referenced.
+        if matches!(leading.as_deref(), Some("super") | Some("self")) {
             continue;
         }
-        imports.push_str(&tokens.replace("crate ::", &format!("{crate_alias} ::")));
+        let tokens = use_item.to_token_stream().to_string();
+        if tokens.contains("crate ::") {
+            imports.push_str(&tokens.replace("crate ::", &format!("{crate_alias} ::")));
+        } else {
+            // External-crate / std imports: forward verbatim. The driver crate
+            // depends on the same external crates as the handler crate.
+            imports.push_str(&tokens);
+        }
         imports.push('\n');
     }
     imports
+}
+
+/// Return the leading path identifier of a `use` tree (skipping a leading
+/// `::`), e.g. `Some("crate")`, `Some("super")`, `Some("uuid")`.
+fn use_tree_leading_ident(tree: &syn::UseTree) -> Option<String> {
+    match tree {
+        syn::UseTree::Path(path) => Some(path.ident.to_string()),
+        syn::UseTree::Name(name) => Some(name.ident.to_string()),
+        syn::UseTree::Rename(rename) => Some(rename.ident.to_string()),
+        _ => None,
+    }
 }
 
 fn module_path_for_crate_file(crate_root: &Path, file_path: &Path) -> Option<String> {
@@ -5764,9 +5797,19 @@ fn generate_axum_crate_harness(
         type_sources,
     )?;
     harness = harness.replace("#[allow(dead_code)]\nmod user_code {\n\n}", "");
+    // Replace the standalone harness's `use crate::user_code::*;` with the
+    // handler file's forwarded imports plus a glob over the target crate so
+    // crate-local types (AppState, custom extractors, request types) resolve
+    // even when the handler imported them via `super::`/re-exports.
+    let mut crate_imports = crate_use_imports_for_harness(source, crate_alias);
+    crate_imports.push_str(&format!("use {crate_alias}::*;\n"));
+    harness = harness.replace("use crate::user_code::*;\n", &crate_imports);
+    // Broaden the crate-harness allow attribute: the forwarded imports and the
+    // crate-alias glob can produce ambiguous-glob / unused warnings that would
+    // otherwise be noise (and could fail under deny-warnings driver builds).
     harness = harness.replace(
-        "use crate::user_code::*;\n",
-        &crate_use_imports_for_harness(source, crate_alias),
+        "#![allow(unused_imports)]\n",
+        "#![allow(unused_imports, ambiguous_glob_reexports, unused, clippy::all)]\n",
     );
     let public_module_path = if module_path
         .rsplit("::")
