@@ -5488,12 +5488,13 @@ async fn explore_single_function(
     // No-op for free functions, frontends without `get_invocation_plan`,
     // and callers that already attached a plan upstream.
     let mut effective_config = explore_config.clone();
-    attach_default_execute_plan_for_method(frontend, analysis, &mut effective_config).await;
-    // str-r2q7: feed planner seeds (configured defaults, string-literal
-    // boundary seeds) into candidate inputs for ALL targets so the parallel
-    // scan path matches the explore CLI.  `attach_default_execute_plan_for_method`
-    // above already handles method plan attachment; this call adds seeds and
-    // provides a fallback plan when the attach step found nothing.
+    // str-r2q7: fetch planner seeds (configured defaults, string-literal
+    // boundary seeds) for ALL targets so the parallel scan path matches the
+    // explore CLI.  For method targets, `run_phased` upstream may have already
+    // set `default_execute_plan` via `attach_default_execute_plan_for_method`;
+    // the `is_none()` guard below preserves that plan and avoids a second
+    // `GetInvocationPlan` RPC.  Free functions always need their own planner
+    // call here.
     let (planner_seeds, planner_plan) = fetch_planner_seeds_for_scan(
         frontend,
         analysis,
