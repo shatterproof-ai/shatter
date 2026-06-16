@@ -1708,6 +1708,19 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 	if analysis == nil {
 		return nil
 	}
+	// str-r2q7.1: the planner closure's hint-config resolver keys off
+	// Analysis.SourceFile to load .shatter/config.yaml and match per-target
+	// defaults/generators globs. buildTargetContext resolves `file` here even
+	// when the cached FunctionAnalysis predates SourceFile population, so
+	// backfill it (on a copy, to avoid mutating the shared cache entry).
+	// Without this the resolver early-returns on an empty SourceFile and
+	// configured per-parameter inputs are silently ignored on the
+	// get_invocation_plan path (free functions especially).
+	if analysis.SourceFile == "" && file != "" {
+		cp := *analysis
+		cp.SourceFile = file
+		analysis = &cp
+	}
 	ctx := &TargetContext{Analysis: analysis}
 
 	// Always load the package when possible: the analyzer emits a bare
