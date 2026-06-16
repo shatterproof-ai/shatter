@@ -216,6 +216,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         }
     }
 
@@ -240,6 +241,7 @@ mod tests {
             ],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         }
     }
 
@@ -428,6 +430,7 @@ mod tests {
                     params: params.clone(),
                     literals: vec![],
                     capabilities: FrontendCapabilities::from_raw(&[]),
+                    value_sources: vec![],
                 };
                 let result = serde_json::from_str::<ExecuteResult>(
                     r#"{"return_value": 0, "branch_path": [], "lines_executed": [], "path_constraints": [], "performance": {"wall_time_ms": 1.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0}}"#,

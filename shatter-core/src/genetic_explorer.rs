@@ -54,6 +54,7 @@ pub async fn genetic_explore(
     seed_inputs: Vec<Vec<serde_json::Value>>,
     targets: Vec<TargetBranch>,
     params: &[ParamInfo],
+    value_sources: &[crate::input_gen::ValueSource],
     config: &GeneticConfig,
 ) -> Result<GeneticResult, GeneticExploreError> {
     let deadline = Instant::now() + Duration::from_secs(u64::from(config.timeout_secs));
@@ -155,6 +156,7 @@ pub async fn genetic_explore(
         // Evolve to next generation.
         population.evolve(
             params,
+            value_sources,
             config.mutation_rate,
             config.crossover_rate,
             &[],

@@ -1789,6 +1789,7 @@ pub async fn scan(
                         seed_inputs,
                         targets,
                         &analysis.params,
+                        &explore_config.value_sources,
                         &genetic_config,
                     )
                     .await
@@ -2998,6 +2999,8 @@ async fn explore_with_scan_mode(
         fuzz: crate::config::FuzzConfig::default(),
         planner: explore_config.planner.clone(),
         default_execute_plan: explore_config.default_execute_plan.clone(),
+        // Pin custom-generator/extractor slots through the concolic loop (str-6cdp).
+        value_sources: explore_config.value_sources.clone(),
     };
     let (mut result, _state) = crate::orchestrator::explore(
         frontend,
@@ -5548,6 +5551,7 @@ async fn explore_single_function(
                     seed_inputs,
                     targets,
                     &analysis.params,
+                    &explore_config.value_sources,
                     &genetic_config,
                 )
                 .await

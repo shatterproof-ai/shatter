@@ -5106,6 +5106,8 @@ pub(crate) async fn run_explore(
                     fuzz: resolved.fuzz.clone(),
                     planner: planner.map(str::to_string),
                     default_execute_plan: None,
+                    // Pin custom-generator/extractor slots through concolic (str-6cdp).
+                    value_sources: explore_config.value_sources.clone(),
                 };
                 (Some(cc), seeds, users)
             } else {
@@ -6185,6 +6187,9 @@ pub(crate) async fn run_explore(
                                         seed_inputs,
                                         targets,
                                         &func.params,
+                                        // Standalone GA path resolves no custom
+                                        // generators; all slots are built-in (str-6cdp).
+                                        &[],
                                         &outcome.genetic_config,
                                     )
                                     .await

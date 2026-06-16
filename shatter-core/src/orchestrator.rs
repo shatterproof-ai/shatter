@@ -161,6 +161,11 @@ pub struct ExploreConfig {
     /// Set from the first plan returned by the planner; `None` when not using
     /// `--planner` or when the frontend returned no plans.
     pub default_execute_plan: Option<crate::protocol::InvocationPlan>,
+    /// Per-parameter value source for the function under exploration.
+    /// Custom-generator/extractor slots (e.g. axum `State<AppState>`) carry
+    /// native-replay markers and must never be mutated or seeded over (str-6cdp).
+    /// Empty when no generators are configured; every slot is then built-in.
+    pub value_sources: Vec<crate::input_gen::ValueSource>,
 }
 
 /// Default shrink budget per behavior witness.
@@ -209,6 +214,7 @@ impl Default for ExploreConfig {
             fuzz: crate::config::FuzzConfig::default(),
             planner: None,
             default_execute_plan: None,
+            value_sources: vec![],
         }
     }
 }
@@ -1236,6 +1242,7 @@ async fn observe_one(
     budget: &ExploreBudget,
     setup_context: &Option<SetupContextStack>,
     prepare_id: Option<&str>,
+    native_pins: Option<&crate::input_gen::NativePins>,
 ) -> Result<ObserveOneResult, ExploreError> {
     // Check termination budgets.
     if let Some(max) = config.max_iterations
@@ -1299,10 +1306,11 @@ async fn observe_one(
     // new work and report a timeout, not a protocol ID mismatch.
     // execute_inputs_for_plan repairs each input against its parameter type
     // (str-kn3f) — the single funnel point for all execute paths.
-    let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+    let execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
         &entry.inputs,
         param_infos,
         config.default_execute_plan.as_ref(),
+        native_pins,
     )?;
     let response = match frontend
         .send(Command::Execute {
@@ -2024,6 +2032,7 @@ fn solve_and_generate(
 
 /// Async boundary refinement: binary-searches between witness pairs using the
 /// frontend for execution. Runs after discovery with its own per-boundary budget.
+#[allow(clippy::too_many_arguments)] // native_pins added for extractor pinning (str-6cdp)
 async fn refine_boundaries_async(
     frontend: &mut Frontend,
     function_name: &str,
@@ -2032,6 +2041,7 @@ async fn refine_boundaries_async(
     budget_per_boundary: usize,
     setup_context: &Option<SetupContextStack>,
     execute_plan: Option<crate::protocol::InvocationPlan>,
+    native_pins: Option<&crate::input_gen::NativePins>,
 ) -> Result<Vec<boundary_search::BoundaryResult>, ExploreError> {
     // Collect branch IDs with witnesses on both sides.
     let mut branch_ids: Vec<u32> = Vec::new();
@@ -2070,10 +2080,11 @@ async fn refine_boundaries_async(
             }
 
             let candidate = &candidates[0];
-            let execute_candidate = crate::planner_consumer::execute_inputs_for_plan(
+            let execute_candidate = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                 candidate,
                 param_infos,
                 execute_plan.as_ref(),
+                native_pins,
             )?;
             let response = match frontend
                 .send(Command::Execute {
@@ -2218,6 +2229,27 @@ pub async fn explore_with_oracle(
         None => (HashSet::new(), Vec::new()),
     };
     let mut batch_discovery_inputs: Vec<Vec<serde_json::Value>> = Vec::new();
+
+    // str-6cdp: capture the native-replay marker for each custom-generator /
+    // extractor parameter slot from the seed/user/prior candidate vectors that
+    // upstream prefetch already resolved. These markers are re-applied at the
+    // execute funnel on EVERY iteration so the extractor param (e.g. axum
+    // State<AppState>) never reaches the frontend as a generated/mutated scalar,
+    // even after the prefetch queue is exhausted or a strategy produced a fresh
+    // non-native vector.
+    let native_pins = {
+        let mut candidates: Vec<Vec<serde_json::Value>> = Vec::new();
+        candidates.extend(seed_inputs.iter().cloned());
+        candidates.extend(user_inputs.iter().cloned());
+        candidates.extend(prior_discovery_inputs.iter().cloned());
+        crate::input_gen::NativePins::capture_from_inputs(&config.value_sources, &candidates)
+    };
+    let native_pins_arg = if native_pins.is_empty() {
+        None
+    } else {
+        Some(&native_pins)
+    };
+
     let mut executions = Vec::new();
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
@@ -2295,6 +2327,7 @@ pub async fn explore_with_oracle(
         params: param_infos.to_vec(),
         literals: vec![],
         capabilities: FrontendCapabilities::default(),
+        value_sources: config.value_sources.clone(),
     };
     let feedback_mode = if config.solver_offload {
         ConcolicFeedbackMode::Async
@@ -2355,15 +2388,17 @@ pub async fn explore_with_oracle(
                     timed_out_overall = true;
                     break 'float_probe;
                 }
-                let execute_float_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let execute_float_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &float_inputs,
                     param_infos,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
-                let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &floor_inputs,
                     param_infos,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let float_resp = frontend
                     .send(Command::Execute {
@@ -2566,6 +2601,7 @@ pub async fn explore_with_oracle(
             &budget,
             &setup_context,
             prepare_id.as_deref(),
+            native_pins_arg,
         )
         .await?;
 
@@ -2689,17 +2725,19 @@ pub async fn explore_with_oracle(
                                 None => break crate::fuzzer::FuzzTermination::Plateau,
                             };
 
-                            let mutated = crate::input_gen::havoc_mutate_inputs(
+                            let mutated = crate::input_gen::havoc_mutate_inputs_with_sources(
                                 &parent_inputs,
                                 param_infos,
+                                &config.value_sources,
                                 1.0,
                                 &[],
                                 &mut fuzz_rng,
                             );
-                            let execute_mutated = crate::planner_consumer::execute_inputs_for_plan(
+                            let execute_mutated = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                                 &mutated,
                                 param_infos,
                                 config.default_execute_plan.as_ref(),
+                                native_pins_arg,
                             )?;
 
                             let response = frontend
@@ -3128,6 +3166,7 @@ pub async fn explore_with_oracle(
                 budget,
                 &setup_context,
                 config.default_execute_plan.clone(),
+                native_pins_arg,
             )
             .await?
         } else {
@@ -3223,10 +3262,11 @@ pub async fn explore_with_oracle(
                     crate::shrink::bulk_shrink_candidate(&current, param_infos)
             {
                 attempts += 1;
-                let execute_bulk_trial = crate::planner_consumer::execute_inputs_for_plan(
+                let execute_bulk_trial = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &bulk_trial,
                     param_infos,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let resp = frontend
                     .send(Command::Execute {
@@ -3266,10 +3306,11 @@ pub async fn explore_with_oracle(
                         break;
                     }
                     attempts += 1;
-                    let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
+                    let execute_trial = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                         &trial,
                         param_infos,
                         config.default_execute_plan.as_ref(),
+                        native_pins_arg,
                     )?;
                     let resp = frontend
                         .send(Command::Execute {
@@ -3318,10 +3359,11 @@ pub async fn explore_with_oracle(
                         let mut trial = current.clone();
                         trial[i] = candidate;
                         attempts += 1;
-                        let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
+                        let execute_trial = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                             &trial,
                             param_infos,
                             config.default_execute_plan.as_ref(),
+                            native_pins_arg,
                         )?;
 
                         let resp = frontend
@@ -3581,6 +3623,7 @@ mod tests {
             params: vec![make_int_param("x")],
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         }
     }
 
@@ -4755,6 +4798,7 @@ mod tests {
             params: params.clone(),
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(0);
 
@@ -4788,6 +4832,7 @@ mod tests {
             params: params.clone(),
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(0);
 
@@ -4818,6 +4863,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(0);
 
