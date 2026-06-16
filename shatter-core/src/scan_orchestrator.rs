@@ -5489,6 +5489,28 @@ async fn explore_single_function(
     // and callers that already attached a plan upstream.
     let mut effective_config = explore_config.clone();
     attach_default_execute_plan_for_method(frontend, analysis, &mut effective_config).await;
+    // str-r2q7: feed planner seeds (configured defaults, string-literal
+    // boundary seeds) into candidate inputs for ALL targets so the parallel
+    // scan path matches the explore CLI.  `attach_default_execute_plan_for_method`
+    // above already handles method plan attachment; this call adds seeds and
+    // provides a fallback plan when the attach step found nothing.
+    let (planner_seeds, planner_plan) = fetch_planner_seeds_for_scan(
+        frontend,
+        analysis,
+        &effective_config.file,
+        effective_config.project_root.as_deref(),
+    )
+    .await;
+    if !planner_seeds.is_empty() {
+        log::debug!(
+            "[scan] {} planner seed(s) for {func_name}",
+            planner_seeds.len(),
+        );
+        effective_config.candidate_inputs.extend(planner_seeds);
+    }
+    if effective_config.default_execute_plan.is_none() {
+        effective_config.default_execute_plan = planner_plan;
+    }
     let explore_config = &effective_config;
     let explore_started = Instant::now();
     let exploration = explore_with_scan_mode(frontend, analysis, concolic, explore_config).await?;
