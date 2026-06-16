@@ -1,4 +1,4 @@
-package main
+package frontendsetup
 
 import (
 	"os"
@@ -9,12 +9,11 @@ import (
 )
 
 // TestHintConfigResolver_AbsoluteSourceFileMatchesFilenameGlob is the str-rd0a
-// wiring regression. The hint-config resolver must normalize an ABSOLUTE
-// SourceFile — the form scans pass — before MatchTarget, so filename-scoped
-// `defaults`/`generators` globs resolve (matching the policy resolver). Without
-// the normalization the absolute path matches no filename glob and per-function
-// hints silently vanish. This guards the exact main.go call site against
-// regressing back to the raw SourceFile.
+// wiring regression (moved here with hintConfigResolver in str-79t9). The
+// hint-config resolver must normalize an ABSOLUTE SourceFile — the form scans
+// pass — before MatchTarget, so filename-scoped `defaults`/`generators` globs
+// resolve (matching the policy resolver). Without the normalization the
+// absolute path matches no filename glob and per-function hints silently vanish.
 func TestHintConfigResolver_AbsoluteSourceFileMatchesFilenameGlob(t *testing.T) {
 	dir := t.TempDir()
 	shatterDir := filepath.Join(dir, ".shatter")
