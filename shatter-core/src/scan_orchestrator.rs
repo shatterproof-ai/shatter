@@ -1691,16 +1691,22 @@ pub async fn scan(
             }
         }
 
-        // str-jeen.50: consult the planner before building ExploreConfig so
-        // method targets carry a `default_execute_plan` into the executor —
-        // see `fetch_default_execute_plan_for_method` for the no-op cases.
-        let default_execute_plan = fetch_default_execute_plan_for_method(
-            frontend,
-            analysis,
-            &file,
-            config.project_root.as_deref(),
-        )
-        .await;
+        // str-jeen.50 / str-r2q7: consult the planner before building
+        // ExploreConfig so method targets carry a `default_execute_plan` into
+        // the executor, AND so materialized planner seeds (configured `.shatter`
+        // defaults/generators, string-literal and boundary seeds) drive scan
+        // exploration the same way the explore CLI feeds them.
+        let (planner_seeds, default_execute_plan) =
+            fetch_planner_seeds_for_scan(frontend, analysis, &file, config.project_root.as_deref())
+                .await;
+        if !planner_seeds.is_empty() {
+            log::debug!(
+                "[scan] {} planner seed(s) for {}",
+                planner_seeds.len(),
+                func_name,
+            );
+            candidate_inputs.extend(planner_seeds);
+        }
 
         let explore_config = ExploreConfig {
             file,
@@ -5097,6 +5103,97 @@ async fn fetch_default_execute_plan_for_method(
         Err(e) => {
             log::debug!("[scan] planner fetch failed for {}: {e}", analysis.name,);
             None
+        }
+    }
+}
+
+/// Consult the frontend's invocation planner for ANY target (free function or
+/// method) and return both the materialized planner seeds and, for method
+/// targets, the receiver `InvocationPlan` to install as
+/// [`ExploreConfig::default_execute_plan`].
+///
+/// str-r2q7: scan previously only consulted the planner for method receiver
+/// plans (`fetch_default_execute_plan_for_method`) and discarded
+/// `PlannerSeedBundle::seeds`. As a result, materialized `Literal`/`Zero`
+/// `ValuePlan`s — including operator-configured `.shatter` `defaults`/`generators`
+/// for a parameter — never seeded the scan explorer, even though the `explore`
+/// CLI already feeds them (`shatter-cli/src/commands/explore.rs`). This mirrors
+/// the explore path so configured per-parameter inputs (e.g. a real fixture
+/// directory for a filesystem-loading function) actually drive scan exploration,
+/// while preserving the method-only `default_execute_plan`.
+async fn fetch_planner_seeds_for_scan(
+    frontend: &mut Frontend,
+    analysis: &FunctionAnalysis,
+    file: &str,
+    project_root: Option<&str>,
+) -> (Vec<Vec<serde_json::Value>>, Option<crate::protocol::InvocationPlan>) {
+    let none = (Vec::new(), None);
+    if !frontend
+        .capabilities()
+        .iter()
+        .any(|cap| cap == "get_invocation_plan")
+    {
+        return none;
+    }
+
+    // Prime the analysis cache so the frontend's get_invocation_plan target_id
+    // lookup resolves. Mirrors the explore CLI pattern.
+    let _ = frontend
+        .send(crate::protocol::Command::Analyze {
+            file: file.to_string(),
+            function: Some(analysis.name.clone()),
+            project_root: project_root.map(str::to_string),
+            execution_profile: None,
+        })
+        .await;
+
+    let target_id = format!(":{}", analysis.name);
+    match crate::planner_consumer::fetch_planner_seeds(frontend, &target_id, &analysis.params).await
+    {
+        Ok(bundle) => {
+            if !bundle.unsatisfied.is_empty() {
+                log::debug!(
+                    "[scan] planner unsatisfied for {}: {:?}",
+                    analysis.name,
+                    bundle.unsatisfied,
+                );
+            }
+            let is_method = is_method_target_name(&analysis.name);
+            // Select the plan whose seeds we materialize. For methods prefer the
+            // receiver plan so seeds match the installed default_execute_plan;
+            // for free functions take the first materializable plan (mirrors
+            // explore's `find_map(materialize_seed_for_plan)`).
+            let selected = if is_method {
+                bundle
+                    .plans
+                    .iter()
+                    .find(|p| !p.receiver_kind.is_empty())
+                    .cloned()
+            } else {
+                bundle.plans.iter().find_map(|plan| {
+                    crate::planner_consumer::materialize_seed_for_plan(plan, &analysis.params)
+                        .map(|_| plan.clone())
+                })
+            };
+            let seeds = match &selected {
+                Some(sel) => crate::planner_consumer::materialize_seeds_compatible_with_plan(
+                    &bundle.plans,
+                    sel,
+                    &analysis.params,
+                ),
+                None => Vec::new(),
+            };
+            // Only method targets need a default_execute_plan (receiver dispatch);
+            // free functions execute through the plain wrapper path.
+            let plan = if is_method { selected } else { None };
+            (seeds, plan)
+        }
+        Err(e) => {
+            log::debug!(
+                "[scan] planner seed fetch failed for {}: {e}",
+                analysis.name,
+            );
+            none
         }
     }
 }
