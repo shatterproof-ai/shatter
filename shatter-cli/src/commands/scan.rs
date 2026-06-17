@@ -61,6 +61,44 @@ fn dry_run_deadline_check(
     Ok(())
 }
 
+/// Interpretation of the `--resume` flag value (str-6q1i).
+///
+/// `--resume` is a free-form string so it can carry a checkpoint file path,
+/// but a handful of barewords are reserved as mode keywords. Without this,
+/// `--resume off` was silently treated as the path `./off`, creating a stray
+/// checkpoint file in the working directory.
+#[derive(Debug, PartialEq, Eq)]
+enum ResumeDirective<'a> {
+    /// Auto-discover the checkpoint from the scan artifact directory.
+    Auto,
+    /// Resume is explicitly turned off; load and write no checkpoint.
+    Disabled,
+    /// Treat the value as a checkpoint file path.
+    Path(&'a str),
+}
+
+/// Classify a raw `--resume` value into a [`ResumeDirective`] (str-6q1i).
+///
+/// Keyword matching is case-insensitive. `off`/`no`/`none`/`false`/`disabled`
+/// disable resume; `on`/`true`/`yes`/`enable`/`enabled` are rejected as
+/// ambiguous (they name no concrete checkpoint and could mean either `auto`
+/// or a path), steering the user toward an unambiguous value. Every other
+/// value is treated as a checkpoint file path.
+fn classify_resume(value: Option<&str>) -> Result<Option<ResumeDirective<'_>>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    match raw.to_ascii_lowercase().as_str() {
+        "auto" => Ok(Some(ResumeDirective::Auto)),
+        "off" | "no" | "none" | "false" | "disabled" => Ok(Some(ResumeDirective::Disabled)),
+        "on" | "true" | "yes" | "enable" | "enabled" => Err(format!(
+            "--resume value {raw:?} is ambiguous. Use \"auto\" to auto-discover a checkpoint, \
+             \"off\" to disable resume, or pass an explicit checkpoint file path."
+        )),
+        _ => Ok(Some(ResumeDirective::Path(raw))),
+    }
+}
+
 /// Derive the source language of a function from its `source_file` path.
 ///
 /// Used to partition analyses for per-language scan passes (str-14en); the
@@ -955,9 +993,18 @@ pub(crate) async fn run_scan(
         }
     };
 
-    // Resolve --resume: "auto" discovers from artifact dir, otherwise treat as path.
-    let resolved_resume_path: Option<std::path::PathBuf> = match resume {
-        Some("auto") => {
+    // Resolve --resume (str-6q1i): "auto" discovers from the artifact dir,
+    // "off"/"no"/etc. disable resume, ambiguous keywords error out, and any
+    // other value is an explicit checkpoint path. A nonexistent explicit path
+    // is announced before a fresh checkpoint is created there rather than
+    // silently materializing a stray file (e.g. `--resume off` → `./off`).
+    let resolved_resume_path: Option<std::path::PathBuf> = match classify_resume(resume)? {
+        None => None,
+        Some(ResumeDirective::Disabled) => {
+            log::info!("--resume disabled; no checkpoint will be loaded or written");
+            None
+        }
+        Some(ResumeDirective::Auto) => {
             let sid = compute_scan_id_from_file_map(&file_map);
             match shatter_core::checkpoint::ScanCheckpoint::auto_discover(
                 project_root_str.as_deref(),
@@ -980,8 +1027,16 @@ pub(crate) async fn run_scan(
                 }
             }
         }
-        Some(path) => Some(std::path::PathBuf::from(path)),
-        None => None,
+        Some(ResumeDirective::Path(path)) => {
+            let pb = std::path::PathBuf::from(path);
+            if !pb.exists() {
+                log::info!(
+                    "no checkpoint found at {}; a new checkpoint will be created there",
+                    pb.display()
+                );
+            }
+            Some(pb)
+        }
     };
 
     let scan_config = ScanConfig {
@@ -1886,6 +1941,70 @@ mod tests {
         AdapterHint, BranchInfo, BranchType, ExecutionAdapter, FunctionAnalysis, InvocationModel,
     };
     use shatter_core::types::{ParamInfo, TypeInfo};
+
+    // ── str-6q1i: --resume value classification ──
+
+    #[test]
+    fn classify_resume_none_is_none() {
+        assert_eq!(classify_resume(None), Ok(None));
+    }
+
+    #[test]
+    fn classify_resume_auto() {
+        assert_eq!(classify_resume(Some("auto")), Ok(Some(ResumeDirective::Auto)));
+        // Case-insensitive.
+        assert_eq!(classify_resume(Some("AUTO")), Ok(Some(ResumeDirective::Auto)));
+    }
+
+    #[test]
+    fn classify_resume_disable_keywords() {
+        for kw in ["off", "OFF", "no", "none", "false", "disabled"] {
+            assert_eq!(
+                classify_resume(Some(kw)),
+                Ok(Some(ResumeDirective::Disabled)),
+                "{kw:?} should disable resume",
+            );
+        }
+    }
+
+    #[test]
+    fn classify_resume_ambiguous_keywords_error() {
+        for kw in ["on", "true", "yes", "enable", "enabled"] {
+            let err = classify_resume(Some(kw))
+                .expect_err(&format!("{kw:?} should be rejected as ambiguous"));
+            assert!(err.contains("ambiguous"), "error should explain ambiguity: {err}");
+            assert!(err.contains("auto"), "error should suggest auto: {err}");
+            assert!(err.contains("off"), "error should suggest off: {err}");
+        }
+    }
+
+    #[test]
+    fn classify_resume_path_is_passed_through() {
+        assert_eq!(
+            classify_resume(Some("/tmp/state.json")),
+            Ok(Some(ResumeDirective::Path("/tmp/state.json"))),
+        );
+        // A path-like value is never mistaken for a keyword.
+        assert_eq!(
+            classify_resume(Some("off.json")),
+            Ok(Some(ResumeDirective::Path("off.json"))),
+        );
+    }
+
+    #[test]
+    fn resume_off_never_names_a_checkpoint_path() {
+        // The core regression: `--resume off` must not be treated as the path
+        // `./off`. Disabled resolves to no checkpoint path, so the orchestrator
+        // never loads or creates a file named "off".
+        match classify_resume(Some("off")) {
+            Ok(Some(ResumeDirective::Disabled)) => {}
+            other => panic!("expected Disabled, got {other:?}"),
+        }
+        assert!(
+            !std::path::Path::new("off").exists(),
+            "classifying --resume off must not create a file named 'off'",
+        );
+    }
 
     // ── str-bbyy: dry-run deadline helpers ──
 
