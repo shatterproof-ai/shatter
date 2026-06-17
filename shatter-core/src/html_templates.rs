@@ -590,14 +590,15 @@ mod tests {
 
     #[test]
     fn render_source_block_marks_covered_and_uncovered_lines() {
-        let path = std::env::temp_dir().join("shatter_html_templates_src_block_test.txt");
-        std::fs::write(&path, "line one\nline two\nline three\n").unwrap();
+        // Use a NamedTempFile for a unique path (safe under concurrent test
+        // processes) that is removed on drop even if an assertion panics.
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"line one\nline two\nline three\n").unwrap();
 
         let covered: HashSet<u32> = [2u32].into_iter().collect();
-        let html = render_source_block(path.to_str().unwrap(), None, 1, 3, &covered)
+        let html = render_source_block(file.path().to_str().unwrap(), None, 1, 3, &covered)
             .expect("source block should render for a readable file");
-
-        let _ = std::fs::remove_file(&path);
 
         assert!(html.contains(r#"data-line="1""#));
         assert!(html.contains(r#"data-line="2""#));
