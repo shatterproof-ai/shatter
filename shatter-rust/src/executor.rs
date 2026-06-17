@@ -4569,11 +4569,18 @@ fn execute_function_crate_bridge(
         ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
     })?;
 
-    // Map `file_path` from original crate to staging copy.
-    let rel_file = Path::new(file_path)
-        .strip_prefix(crate_root)
-        .unwrap_or(Path::new(file_path));
-    let staging_file = staging_crate.join(rel_file);
+    // Map `file_path` from original crate to staging copy. str-oc67: `file_path`
+    // may be RELATIVE while `crate_root` is absolute, so a naive
+    // `strip_prefix(crate_root)` fails and the instrumented source + in-module
+    // `__shatter` wrapper land at a bogus nested path while cargo compiles the
+    // ORIGINAL file — leaving `shatter_crate_bridge_entry` undefined (link error)
+    // for every non-axum function. Strip the canonicalized source_path.
+    let source_path = std::fs::canonicalize(file_path)
+        .unwrap_or_else(|_| Path::new(file_path).to_path_buf());
+    let crate_root_canon =
+        std::fs::canonicalize(crate_root).unwrap_or_else(|_| crate_root.to_path_buf());
+    let rel_file = staging_rel_file(&source_path, Path::new(file_path), &crate_root_canon);
+    let staging_file = staging_crate.join(&rel_file);
     let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| {
         ExecuteError::NonExecutable("crate_bridge: cannot find lib.rs in staging copy".to_string())
     })?;
