@@ -760,7 +760,9 @@ pub(crate) struct ScanArgs {
     pub(crate) dry_run: bool,
 
     /// Resume a previous scan from a checkpoint file, or pass "auto" to
-    /// discover the checkpoint from the scan artifact directory.
+    /// discover the checkpoint from the scan artifact directory. Pass "off"
+    /// (or no/none/false/disabled) to disable resume. A nonexistent explicit
+    /// path is reported before a fresh checkpoint is created there.
     #[arg(long)]
     pub(crate) resume: Option<String>,
 

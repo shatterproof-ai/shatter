@@ -2142,6 +2142,7 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
         ga_seed_inputs,
         targets,
         &analysis.params,
+        &[],
         &ga_config,
     )
     .await
