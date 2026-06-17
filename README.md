@@ -56,7 +56,18 @@ manifest in a mixed repo. See [docs/distribution.md](docs/distribution.md).
 
 ### Build from source
 
-Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+, and `libclang`.
+Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+,
+`libclang`, and Z3. `shatter-core` links the system Z3 library, so the Z3
+development package must be installed first or `cargo build` fails with a
+linker/bindgen error. On Ubuntu/Debian:
+
+```bash
+sudo apt install libclang-dev libz3-dev
+```
+
+(macOS: `brew install llvm z3`.) See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+full toolchain used by the test and quality gates, including `go-task` and
+Python 3.
 
 ```bash
 git clone https://github.com/shatterproof-ai/shatter.git
