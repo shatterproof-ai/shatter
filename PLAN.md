@@ -1,5 +1,17 @@
 # Shatter v2: Automatic Exploratory Testing via Concolic Execution
 
+> **Status: original design document / roadmap.** This is the founding architecture
+> plan for Shatter v2. It captures intent, rationale, and the planned component
+> breakdown — not a guaranteed description of current behavior. Some sections describe
+> features that were since reshaped or dropped, and the implementation has moved ahead
+> of parts of this text. For authoritative, current detail consult:
+> - **Protocol:** `PROTOCOL.md`, `protocol/registry.yaml`, `protocol/parity-matrix.yaml`
+> - **Code:** the crate sources and their per-crate `CLAUDE.md` files
+> - **Architecture / workflow:** the root `CLAUDE.md` and `AGENTS.md`
+>
+> Use this document for the "why" behind the design; verify the "what" against the
+> sources above before relying on any specific claim.
+
 ## The Core Problem with v1
 
 The current system uses **coverage-guided random fuzzing**: generate random typed values, run the function, observe which lines executed, then try to hybridize/breed inputs to find new paths. This fails for non-trivial functions because:
