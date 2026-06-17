@@ -94,13 +94,6 @@
         "execution_profile": {
           "$ref": "#/$defs/execution_profile",
           "description": "Opaque ordered adapter descriptors selected for this target."
-        },
-        "plan": {
-          "oneOf": [
-            { "$ref": "#/$defs/invocation_plan" },
-            { "type": "null" }
-          ],
-          "description": "Optional invocation plan used to prepare plan-specific launcher artifacts."
         }
       },
       "required": ["command", "file", "function", "mocks"]
@@ -129,6 +122,13 @@
         "execution_profile": {
           "$ref": "#/$defs/execution_profile",
           "description": "Opaque ordered adapter descriptors selected for this target."
+        },
+        "plan": {
+          "oneOf": [
+            { "$ref": "#/$defs/invocation_plan" },
+            { "type": "null" }
+          ],
+          "description": "Optional invocation plan used to prepare plan-specific launcher artifacts."
         }
       },
       "required": ["command", "file", "function", "mocks"]

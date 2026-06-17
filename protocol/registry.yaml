@@ -129,7 +129,7 @@ commands:
 
   instrument:
     description: Instrument a function for symbolic constraint tracking.
-    fields: [file, function, mocks, project_root, execution_profile, plan]
+    fields: [file, function, mocks, project_root, execution_profile]
     response_status: instrument
     field_model:
       request_fields:
@@ -138,7 +138,6 @@ commands:
         mocks: { type: "array<ref:mock-config.schema.json>", optional: false }
         project_root: { type: string, optional: true }
         execution_profile: { type: "ref:execution_profile", optional: true }
-        plan: { type: "ref:invocation_plan", optional: true }
       response_fields:
         instrumented: { type: boolean, optional: false }
         output_file: { type: string, optional: true }
@@ -146,7 +145,7 @@ commands:
 
   prepare:
     description: Pre-build execution artifacts once for reuse across repeated execute calls.
-    fields: [file, function, mocks, project_root, execution_profile]
+    fields: [file, function, mocks, project_root, execution_profile, plan]
     response_status: prepare
     field_model:
       request_fields:
@@ -155,6 +154,7 @@ commands:
         mocks: { type: "array<ref:mock-config.schema.json>", optional: false }
         project_root: { type: string, optional: true }
         execution_profile: { type: "ref:execution_profile", optional: true }
+        plan: { type: "ref:invocation_plan", optional: true }
       response_fields:
         prepare_id: { type: string, optional: false }
 
