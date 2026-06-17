@@ -1,16 +1,20 @@
 # Shatter v2: Automatic Exploratory Testing via Concolic Execution
 
-> **Status: original design document / roadmap.** This is the founding architecture
-> plan for Shatter v2. It captures intent, rationale, and the planned component
-> breakdown — not a guaranteed description of current behavior. Some sections describe
-> features that were since reshaped or dropped, and the implementation has moved ahead
-> of parts of this text. For authoritative, current detail consult:
-> - **Protocol:** `PROTOCOL.md`, `protocol/registry.yaml`, `protocol/parity-matrix.yaml`
-> - **Code:** the crate sources and their per-crate `CLAUDE.md` files
-> - **Architecture / workflow:** the root `CLAUDE.md` and `AGENTS.md`
+> **Status: historical roadmap — not current state.** This is the original v2
+> architecture plan. It captures the design vision and rationale; it describes
+> planned and in-progress work, and includes features that were later reshaped or
+> never built (e.g. some CLI subcommands, the Java frontend milestone, and a
+> project layout that predates the current crate set). It is **not** an
+> authoritative description of what Shatter does today.
 >
-> Use this document for the "why" behind the design; verify the "what" against the
-> sources above before relying on any specific claim.
+> For current, implemented behavior consult:
+> - **[SPEC.md](SPEC.md)** — the authoritative living specification of current
+>   behavior. When PLAN.md and SPEC.md disagree, SPEC.md reflects reality.
+> - **[docs/INDEX.md](docs/INDEX.md)** — documentation map: which document covers what.
+> - **[PROTOCOL.md](PROTOCOL.md)** and `protocol/registry.yaml` — the current wire protocol.
+>
+> Read this document for the "why" behind the design, not the "what" of the
+> implementation.
 
 ## The Core Problem with v1
 
