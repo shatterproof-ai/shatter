@@ -6074,6 +6074,24 @@ fn collect_rust_sources(
     }
 }
 
+/// Compute the path of a source file relative to its crate root for writing the
+/// instrumented copy into the staging crate.
+///
+/// str-oc67: the caller's `path` may be RELATIVE (e.g. `api/src/handlers/tags.rs`)
+/// while `crate_root` is canonicalized (absolute), so `path.strip_prefix(crate_root)`
+/// fails and would fall back to the full relative path — writing the instrumented
+/// source to a bogus `crate-shadow/api/src/handlers/tags.rs` location while cargo
+/// compiles the ORIGINAL uninstrumented `crate-shadow/src/handlers/tags.rs`,
+/// yielding 0 coverage despite a fully-executed handler. Strip the canonicalized
+/// `source_path` first; fall back to the raw `path` only if that also fails.
+fn staging_rel_file(source_path: &Path, path: &Path, crate_root: &Path) -> PathBuf {
+    source_path
+        .strip_prefix(crate_root)
+        .or_else(|_| path.strip_prefix(crate_root))
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_axum_handler_crate_backed(
     file_path: &str,
@@ -6170,8 +6188,8 @@ fn execute_axum_handler_crate_backed(
     let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
         ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
     })?;
-    let rel_file = path.strip_prefix(crate_root).unwrap_or(path);
-    let staging_file = staging_crate.join(rel_file);
+    let rel_file = staging_rel_file(&source_path, path, crate_root);
+    let staging_file = staging_crate.join(&rel_file);
     if let Some(parent) = staging_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             ExecuteError::IoError(io::Error::other(format!(
@@ -7945,6 +7963,31 @@ pub struct Nested {
         let reason = axum_state_unsupported_reason_with_replays(&params, &replays)
             .expect("State without a replay marker must be rejected");
         assert!(reason.contains("not constructible without an app-state generator"));
+    }
+
+    // str-oc67: a relative source `path` with a canonicalized (absolute)
+    // crate_root must strip to the crate-relative path so the instrumented
+    // source overwrites the real compiled file (not a bogus nested location).
+    #[test]
+    fn staging_rel_file_strips_canonical_source_when_path_is_relative() {
+        let crate_root = Path::new("/abs/proj/api");
+        let source_path = Path::new("/abs/proj/api/src/handlers/tags.rs");
+        let path = Path::new("api/src/handlers/tags.rs");
+        assert_eq!(
+            staging_rel_file(source_path, path, crate_root),
+            Path::new("src/handlers/tags.rs")
+        );
+    }
+
+    #[test]
+    fn staging_rel_file_handles_already_relative_to_root() {
+        let crate_root = Path::new("/abs/proj/api");
+        let source_path = Path::new("/abs/proj/api/src/lib.rs");
+        let path = Path::new("/abs/proj/api/src/lib.rs");
+        assert_eq!(
+            staging_rel_file(source_path, path, crate_root),
+            Path::new("src/lib.rs")
+        );
     }
 
     #[test]
