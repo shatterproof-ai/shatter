@@ -137,9 +137,6 @@ pub struct ExploreConfig {
     pub meta_config: crate::strategy::MetaConfig,
     /// Opaque execution profile selected for this function, if any.
     pub execution_profile: Option<crate::protocol::ExecutionProfile>,
-    /// Number of consecutive no-new-coverage observations before suppressing
-    /// negation for branches in a converged loop. 0 disables convergence detection.
-    pub loop_convergence_window: usize,
     /// Per-boundary refinement budget (executions). After the discovery loop,
     /// a separate refinement phase binary-searches between witness pairs.
     /// `None` or `Some(0)` disables refinement.
@@ -179,8 +176,6 @@ const BOUNDARY_FITNESS_FIRST: f64 = 1.0;
 /// Fitness boost for branches in the second loop iteration.
 const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
 
-/// Default number of consecutive no-new-coverage observations before marking a loop converged.
-const DEFAULT_LOOP_CONVERGENCE_WINDOW: usize = 3;
 /// Stall count threshold before bounded symbolic unrolling is eligible.
 const BOUNDED_UNROLL_STALL_THRESHOLD: u32 = drilling::DRILL_STALL_THRESHOLD + 1;
 /// Maximum stalled loop frontiers to target with bounded unroll per round.
@@ -207,7 +202,6 @@ impl Default for ExploreConfig {
             branch_profile: None,
             meta_config: crate::strategy::MetaConfig::default(),
             execution_profile: None,
-            loop_convergence_window: DEFAULT_LOOP_CONVERGENCE_WINDOW,
             refine_budget: None,
             shrink_budget: DEFAULT_SHRINK_BUDGET,
             mcdc: false,

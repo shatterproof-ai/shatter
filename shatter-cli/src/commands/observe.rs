@@ -117,7 +117,6 @@ pub(crate) async fn run_observe(
             branch_profile: None,
             meta_config: shatter_core::strategy::MetaConfig::default(),
             execution_profile: None,
-            loop_convergence_window: 3,
             refine_budget: None,
             shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             mcdc: false,
