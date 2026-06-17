@@ -16,7 +16,20 @@ If you want to use Shatter on your own code, start with [README.md](README.md) a
 - Node.js 22+
 - Go 1.24+
 - `libclang` (`sudo apt install libclang-dev` on Ubuntu/Debian)
+- Z3 (`sudo apt install libz3-dev` on Ubuntu/Debian; `brew install z3` on
+  macOS). `shatter-core` links the system Z3 library, so without the Z3
+  development package `cargo build` fails with a linker/bindgen error.
+- [go-task](https://taskfile.dev/installation/) — the task runner used for all
+  quality gates (`task test-quick`, `task check`, `task parity`, etc.)
+- Python 3 — used by repo tooling under `scripts/` (parity validation,
+  protocol codegen, release packaging, and so on)
 - [beads](https://github.com/steveyegge/beads): `npm install -g @beads/bd`
+
+On Ubuntu/Debian the system packages can be installed together:
+
+```bash
+sudo apt install libclang-dev libz3-dev
+```
 
 Or use the devcontainer in VS Code if you want a preconfigured environment.
 

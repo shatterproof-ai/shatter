@@ -51,6 +51,12 @@ Prerequisites:
 - Node.js 22+
 - Go 1.24+
 - `libclang`
+- Z3 (the development package — `shatter-core` links the system Z3 library, so
+  `cargo build` fails without it)
+
+On Ubuntu/Debian: `sudo apt install libclang-dev libz3-dev`. On macOS:
+`brew install llvm z3`. For the full contributor toolchain (including `go-task`
+and Python 3 for the quality gates), see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 2. Explore One Function
 
