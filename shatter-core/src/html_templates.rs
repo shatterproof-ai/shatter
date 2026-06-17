@@ -463,3 +463,404 @@ fn report_display_name<'a>(display_name: &'a str, function_name: &'a str) -> &'a
         display_name
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::{ExecutionSummary, ObservationOutput};
+    use crate::report::{
+        CodebaseReport, ConstraintStats, DiscoveredInput, FunctionReport, ScanReport,
+        SkippedFunctionReport,
+    };
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    /// A token guaranteed to appear in `templates/includes/style.html`. Used to
+    /// assert that the shared stylesheet is wired into a rendered page.
+    const STYLE_MARKER: &str = "box-sizing: border-box";
+
+    // -----------------------------------------------------------------------
+    // html_escape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn html_escape_escapes_all_special_chars() {
+        assert_eq!(
+            html_escape(r#"<a href="x">b & c</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;b &amp; c&lt;/a&gt;"
+        );
+    }
+
+    #[test]
+    fn html_escape_leaves_plain_text_untouched() {
+        assert_eq!(html_escape("hello world 123"), "hello world 123");
+    }
+
+    #[test]
+    fn html_escape_does_not_double_escape_ampersand() {
+        // '&' is replaced first, so the entities it produces for the other
+        // special characters are not re-escaped.
+        assert_eq!(html_escape("&lt;"), "&amp;lt;");
+    }
+
+    proptest! {
+        /// Core security invariant: no raw `<` may survive escaping, because
+        /// none of the entities `html_escape` emits contain `<`.
+        #[test]
+        fn html_escape_never_emits_raw_lt(s in any::<String>()) {
+            let escaped = html_escape(&s);
+            prop_assert!(!escaped.contains('<'), "raw '<' survived: {escaped:?}");
+        }
+
+        /// Every `&` in the output must begin a recognized entity — i.e. there
+        /// is no unescaped ampersand that could start an injected entity.
+        #[test]
+        fn html_escape_amp_always_starts_entity(s in any::<String>()) {
+            let escaped = html_escape(&s);
+            for (idx, _) in escaped.match_indices('&') {
+                let rest = &escaped[idx..];
+                prop_assert!(
+                    rest.starts_with("&amp;")
+                        || rest.starts_with("&lt;")
+                        || rest.starts_with("&gt;")
+                        || rest.starts_with("&quot;"),
+                    "unescaped '&' at byte {idx} in {escaped:?}"
+                );
+            }
+        }
+
+        /// Raw double-quotes must not survive, so escaped values are safe inside
+        /// double-quoted HTML attributes.
+        #[test]
+        fn html_escape_never_emits_raw_quote(s in any::<String>()) {
+            let escaped = html_escape(&s);
+            prop_assert!(!escaped.contains('"'), "raw '\"' survived: {escaped:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_location
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_location_valid_and_invalid() {
+        assert_eq!(parse_location("a/b.ts:10-20"), Some(("a/b.ts", 10, 20)));
+        assert_eq!(parse_location("no-colon"), None);
+        assert_eq!(parse_location("file:notrange"), None);
+        assert_eq!(parse_location("file:10-"), None);
+        assert_eq!(parse_location("file:-20"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // coverage helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn coverage_class_thresholds() {
+        assert_eq!(coverage_class(90.0), "cov-high");
+        assert_eq!(coverage_class(80.0), "cov-high");
+        assert_eq!(coverage_class(79.9), "cov-mid");
+        assert_eq!(coverage_class(50.0), "cov-mid");
+        assert_eq!(coverage_class(49.9), "cov-low");
+        assert_eq!(coverage_class(0.0), "cov-low");
+    }
+
+    proptest! {
+        #[test]
+        fn render_cov_bar_width_is_clamped(pct in -1000.0f64..1000.0) {
+            let html = render_cov_bar(pct);
+            let expected_width = pct.clamp(0.0, 100.0) as u32;
+            prop_assert!((0..=100).contains(&expected_width));
+            prop_assert!(
+                html.contains(&format!("width:{expected_width}%")),
+                "bar width not clamped: {html}"
+            );
+        }
+
+        #[test]
+        fn render_cov_bar_class_matches_coverage_class(pct in 0.0f64..=100.0) {
+            let html = render_cov_bar(pct);
+            prop_assert!(html.contains(coverage_class(pct)));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // render_source_block
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_source_block_marks_covered_and_uncovered_lines() {
+        let path = std::env::temp_dir().join("shatter_html_templates_src_block_test.txt");
+        std::fs::write(&path, "line one\nline two\nline three\n").unwrap();
+
+        let covered: HashSet<u32> = [2u32].into_iter().collect();
+        let html = render_source_block(path.to_str().unwrap(), None, 1, 3, &covered)
+            .expect("source block should render for a readable file");
+
+        let _ = std::fs::remove_file(&path);
+
+        assert!(html.contains(r#"data-line="1""#));
+        assert!(html.contains(r#"data-line="2""#));
+        assert!(html.contains(r#"data-line="3""#));
+        assert!(html.contains("src-line covered"));
+        assert!(html.contains("src-line uncovered"));
+        assert!(html.contains("line two"));
+    }
+
+    #[test]
+    fn render_source_block_rejects_invalid_range() {
+        let covered: HashSet<u32> = [1u32].into_iter().collect();
+        assert!(render_source_block("whatever", None, 0, 5, &covered).is_none());
+        assert!(render_source_block("whatever", None, 5, 2, &covered).is_none());
+    }
+
+    #[test]
+    fn render_source_block_returns_none_for_missing_file() {
+        let covered: HashSet<u32> = HashSet::new();
+        assert!(render_source_block("/no/such/file.rs", None, 1, 5, &covered).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // input / outcome formatting (escaping into |safe template fields)
+    // -----------------------------------------------------------------------
+
+    fn sample_exec(thrown_error: Option<&str>) -> ExecutionSummary {
+        ExecutionSummary {
+            inputs: vec![json!(1), json!("x")],
+            return_value: Some(json!("ok")),
+            thrown_error: thrown_error.map(str::to_string),
+            lines_executed: vec![10, 11],
+            is_new_path: true,
+            error_intent: None,
+        }
+    }
+
+    #[test]
+    fn format_inputs_wraps_and_escapes_values() {
+        let exec = ExecutionSummary {
+            inputs: vec![json!("<script>"), json!(42)],
+            ..sample_exec(None)
+        };
+        let html = format_inputs(&exec);
+        assert!(html.contains("<code>"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("42"));
+    }
+
+    #[test]
+    fn format_outcome_throws_escapes_error() {
+        let exec = ExecutionSummary {
+            return_value: None,
+            ..sample_exec(Some("<bad>"))
+        };
+        let html = format_outcome(&exec);
+        assert!(html.contains("outcome-throw"));
+        assert!(html.contains("&lt;bad&gt;"));
+        assert!(!html.contains("<bad>"));
+    }
+
+    #[test]
+    fn format_outcome_returns_escapes_value() {
+        let exec = ExecutionSummary {
+            return_value: Some(json!("<v>")),
+            thrown_error: None,
+            ..sample_exec(None)
+        };
+        let html = format_outcome(&exec);
+        assert!(html.contains("outcome-return"));
+        assert!(html.contains("&lt;v&gt;"));
+        assert!(!html.contains("<v>"));
+    }
+
+    #[test]
+    fn format_outcome_void_when_no_return_or_error() {
+        let exec = ExecutionSummary {
+            return_value: None,
+            thrown_error: None,
+            ..sample_exec(None)
+        };
+        assert!(format_outcome(&exec).contains("outcome-void"));
+    }
+
+    fn sample_discovered_input(thrown_error: Option<&str>) -> DiscoveredInput {
+        DiscoveredInput {
+            inputs: vec![json!(7)],
+            return_value: Some(json!("r")),
+            thrown_error: thrown_error.map(str::to_string),
+            lines_executed: vec![3, 4],
+            outcome_status: None,
+            outcome_reason: None,
+        }
+    }
+
+    #[test]
+    fn format_discovered_input_escapes_thrown_error() {
+        let inp = DiscoveredInput {
+            return_value: None,
+            ..sample_discovered_input(Some("<x>"))
+        };
+        let entry = format_discovered_input(&inp);
+        assert_eq!(entry.lines_executed_csv, "3,4");
+        assert!(entry.outcome_html.contains("outcome-throw"));
+        assert!(entry.outcome_html.contains("&lt;x&gt;"));
+        assert!(!entry.outcome_html.contains("<x>"));
+    }
+
+    // -----------------------------------------------------------------------
+    // report_display_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn report_display_name_prefers_display_name() {
+        assert_eq!(report_display_name("Display", "func"), "Display");
+        assert_eq!(report_display_name("", "func"), "func");
+    }
+
+    // -----------------------------------------------------------------------
+    // render_explore_fn / render_explore_page
+    // -----------------------------------------------------------------------
+
+    fn sample_observation(name: &str) -> ObservationOutput {
+        ObservationOutput {
+            function_name: name.to_string(),
+            iterations: 3,
+            unique_paths: 2,
+            lines_covered: 5,
+            total_lines: 10,
+            new_path_executions: vec![sample_exec(None), sample_exec(Some("boom"))],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn render_explore_fn_contains_structure_and_escapes_name() {
+        let obs = sample_observation("<script>alert(1)</script>");
+        let html = render_explore_fn(&obs, "src/foo.ts:10-20", None);
+
+        // Structural elements.
+        assert!(html.contains("<details>"));
+        assert!(html.contains("<summary>"));
+        assert!(html.contains("src/foo.ts:10-20"));
+        assert!(html.contains("cov-bar"));
+        assert!(html.contains("iteration(s)"));
+
+        // Function name is rendered without `|safe`, so Askama auto-escapes it.
+        // (Askama emits numeric character references, e.g. `<` -> `&#60;`.)
+        assert!(!html.contains("<script>alert"));
+        assert!(html.contains("&#60;script&#62;"));
+    }
+
+    #[test]
+    fn render_explore_fn_shows_empty_paths_message() {
+        let obs = ObservationOutput {
+            function_name: "f".into(),
+            total_lines: 4,
+            ..Default::default()
+        };
+        let html = render_explore_fn(&obs, "no-location", None);
+        assert!(html.contains("No new paths recorded."));
+    }
+
+    #[test]
+    fn render_explore_page_includes_stylesheet_and_fragments() {
+        let fragments = vec!["<p>FRAGMENT_ALPHA</p>".to_string()];
+        let html = render_explore_page(&fragments, 1, 2, 5, 10);
+
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Shatter Explore Report"));
+        assert!(html.contains(STYLE_MARKER), "shared stylesheet not wired in");
+        // Fragments are emitted with `|safe`, so they pass through verbatim.
+        assert!(html.contains("FRAGMENT_ALPHA"));
+    }
+
+    // -----------------------------------------------------------------------
+    // render_scan_report
+    // -----------------------------------------------------------------------
+
+    fn sample_function_report(name: &str) -> FunctionReport {
+        FunctionReport {
+            function_name: name.to_string(),
+            display_name: name.to_string(),
+            qualified_id: format!("src/x.ts::{name}"),
+            file_path: "src/x.ts".to_string(),
+            source_bucket: Default::default(),
+            branch_count: 2,
+            branches_covered: 2,
+            coverage_pct: 75.0,
+            discovered_inputs: vec![sample_discovered_input(None)],
+            behavior_clusters: vec![],
+            constraint_stats: ConstraintStats {
+                total_constraints: 0,
+                solver_guided_inputs: 0,
+            },
+            iterations: 4,
+            lines_covered: 6,
+            total_lines: 8,
+            mocks_used: vec![],
+            refactoring_recommendations: vec![],
+            completion_outcome: Default::default(),
+            completion_reason: None,
+        }
+    }
+
+    fn sample_scan_report(fn_name: &str, skipped_reason: Option<&str>) -> ScanReport {
+        let skipped: Vec<SkippedFunctionReport> = skipped_reason
+            .map(|r| {
+                vec![SkippedFunctionReport {
+                    function_name: "skippy".to_string(),
+                    display_name: "skippy".to_string(),
+                    qualified_id: String::new(),
+                    reason: r.to_string(),
+                    category: "expected".to_string(),
+                }]
+            })
+            .unwrap_or_default();
+
+        ScanReport {
+            version: 6,
+            functions: vec![sample_function_report(fn_name)],
+            codebase: CodebaseReport {
+                completed_functions: 1,
+                overall_coverage: 75.0,
+                skipped_functions_count: skipped.len(),
+                skipped_functions: skipped,
+                ..Default::default()
+            },
+            test_order: vec![fn_name.to_string()],
+            test_order_display_names: vec![fn_name.to_string()],
+            cumulative: None,
+        }
+    }
+
+    #[test]
+    fn render_scan_report_contains_structure_and_stylesheet() {
+        let report = sample_scan_report("doStuff", Some("unsupported param"));
+        let html = render_scan_report(&report, None);
+
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Shatter Scan Report"));
+        assert!(html.contains(STYLE_MARKER), "shared stylesheet not wired in");
+        assert!(html.contains("Function Summary"));
+        assert!(html.contains("doStuff"));
+        assert!(html.contains("Skipped Functions"));
+        assert!(html.contains("unsupported param"));
+    }
+
+    #[test]
+    fn render_scan_report_escapes_function_name() {
+        // `fn_name` is rendered with `|safe`, so html_templates must pre-escape
+        // it. A raw `<img>` payload must not survive into the page.
+        let report = sample_scan_report("<img src=x onerror=alert(1)>", None);
+        let html = render_scan_report(&report, None);
+        assert!(!html.contains("<img src=x"));
+        assert!(html.contains("&lt;img src=x"));
+    }
+
+    #[test]
+    fn render_scan_report_omits_skipped_section_when_empty() {
+        let report = sample_scan_report("f", None);
+        let html = render_scan_report(&report, None);
+        assert!(!html.contains("Skipped Functions"));
+    }
+}
