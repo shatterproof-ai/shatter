@@ -5095,7 +5095,6 @@ pub(crate) async fn run_explore(
                     branch_profile: None, // standalone concolic has no prior random phase
                     meta_config: meta_config.clone(),
                     execution_profile: explore_config.execution_profile.clone(),
-                    loop_convergence_window: 3,
                     refine_budget: if refine_budget > 0 {
                         Some(refine_budget)
                     } else {

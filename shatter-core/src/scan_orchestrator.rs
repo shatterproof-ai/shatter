@@ -2992,7 +2992,6 @@ async fn explore_with_scan_mode(
         branch_profile: None,
         meta_config: explore_config.meta_config.clone(),
         execution_profile: explore_config.execution_profile.clone(),
-        loop_convergence_window: 3,
         refine_budget: None,
         shrink_budget: explore_config.shrink_budget,
         mcdc: false,
