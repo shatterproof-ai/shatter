@@ -8,9 +8,9 @@ See `PLAN.md` for architecture and `AGENTS.md` for beads tracking, git workflow,
 
 - Dependencies flow in one direction: cli → core, frontends → protocol
 - **Parallel parity** in this project means `buildSymExpr` / `buildSymExprWithFlow`, random explorer / concolic orchestrator, CLI wiring for `--concolic` vs default. When adding a new AST node type, CLI flag, or config field, grep for the parallel code path before declaring done.
-- Integration tests use known-answer functions with expected branches and triggering inputs (model: `examples/go/04-nested-control-flow.go`)
+- Integration tests use known-answer functions with expected branches and triggering inputs (model: `examples/go/05-conditional-merge.go`, exercised by `shatter-core/tests/e2e_concolic_go.rs`)
 - Frontend protocol handlers have round-trip tests (serialize → deserialize → verify)
-- Regression snapshots are checked into the repo and verified in CI
+- Regression snapshots are checked into the repo; a CI gate to verify them is not yet in place (tracked in str-j5zp)
 
 Per-language standards: `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills. Formal methods / PBT / contracts policy: `/formal-methods-policy` skill and `shatter-core/CLAUDE.md`. Cross-frontend parity rules: `/frontend-parity` skill and `protocol/parity-matrix.yaml`.
 
@@ -65,7 +65,7 @@ See the `/pre-completion` skill for the verification runner.
 
 ### Subagent priming (nested CLAUDE.md)
 
-Per-crate CLAUDE.md files (`shatter-core/`, `shatter-cli/`, `shatter-ts/`, `shatter-go/`, `shatter-rust/`) are **not** `@`-imported. Claude Code injects them on demand when an agent reads a file in the target subdirectory. **When dispatching a subagent to work on a specific crate, instruct it to `Read` one representative file in the target subtree before reasoning** — this ensures the crate's rules load before the subagent plans. A subagent that reasons purely from its prompt can miss parity contracts, timeout contracts, invocation-model dispatch, and other nested rules. See `~/dotfiles/claude/docs/nested-claude-md-loading.md` for the mechanism.
+Per-crate CLAUDE.md files (`shatter-core/`, `shatter-cli/`, `shatter-ts/`, `shatter-go/`, `shatter-rust/`) are **not** `@`-imported. These five are the only `shatter-*` dirs that carry their own CLAUDE.md; the remaining dirs (`shatter-go-tool/`, `shatter-llm/`, `shatter-rust-runtime/`, `shatter-vs/`) have none, so nothing is auto-injected when working in them. Claude Code injects them on demand when an agent reads a file in the target subdirectory. **When dispatching a subagent to work on a specific crate, instruct it to `Read` one representative file in the target subtree before reasoning** — this ensures the crate's rules load before the subagent plans. A subagent that reasons purely from its prompt can miss parity contracts, timeout contracts, invocation-model dispatch, and other nested rules. See `~/dotfiles/claude/docs/nested-claude-md-loading.md` for the mechanism.
 
 ### Sprint Workflow
 
