@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(govulncheck:*)",
+      "Bash(bd show:*)",
+      "Bash(bd list:*)",
+      "Bash(bd ready:*)"
+    ]
+  }
+}
