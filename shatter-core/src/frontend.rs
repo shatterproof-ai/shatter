@@ -167,6 +167,25 @@ impl Frontend {
     ///
     /// Returns a ready-to-use `Frontend` after verifying protocol compatibility.
     pub async fn spawn(config: &FrontendConfig) -> Result<Self, FrontendError> {
+        let mut frontend = Self::launch(config)?;
+
+        frontend
+            .handshake(&config.capabilities)
+            .instrument(tracing::info_span!("frontend.handshake"))
+            .await?;
+
+        Ok(frontend)
+    }
+
+    /// Launch the frontend subprocess and wire up its stdio, but do **not**
+    /// perform the handshake.
+    ///
+    /// Split out from [`Frontend::spawn`] so the handshake can be driven
+    /// separately. This is what lets a test deterministically reproduce a
+    /// pre-handshake crash: launch the process, wait for it to exit, then
+    /// handshake — guaranteeing the handshake write hits an already-closed
+    /// pipe rather than racing the subprocess's exit.
+    fn launch(config: &FrontendConfig) -> Result<Self, FrontendError> {
         let mut child = {
             let _spawn_span = tracing::info_span!("frontend.spawn").entered();
             let mut cmd = Command::new(&config.command);
@@ -189,7 +208,7 @@ impl Frontend {
         let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let stderr_task = spawn_stderr_capture(stderr, Arc::clone(&stderr_buf));
 
-        let mut frontend = Self {
+        Ok(Self {
             child,
             stdin,
             reader,
@@ -202,14 +221,7 @@ impl Frontend {
             stderr_task: Some(stderr_task),
             pending_drain: 0,
             tainted: false,
-        };
-
-        frontend
-            .handshake(&config.capabilities)
-            .instrument(tracing::info_span!("frontend.handshake"))
-            .await?;
-
-        Ok(frontend)
+        })
     }
 
     /// Perform the protocol handshake with the frontend.
@@ -467,29 +479,58 @@ impl Frontend {
         }
     }
 
-    /// If `outcome` indicates the subprocess has gone away, wait briefly for
-    /// the child to terminate and attach the exit status plus captured stderr
-    /// tail. Other errors and `Ok` pass through.
+    /// If `outcome` indicates the subprocess has gone away, wait for the child
+    /// to terminate and attach the exit status plus captured stderr tail.
+    /// Other errors and `Ok` pass through.
+    ///
+    /// Two conditions mean the subprocess is gone:
+    ///
+    /// * `SubprocessExited` — `read_response` saw EOF on stdout.
+    /// * `Write(BrokenPipe)` — the request write failed because the subprocess
+    ///   closed its stdin read end, i.e. it has exited or is exiting.
+    ///
+    /// Both are surfaced as the same `SubprocessExited` diagnostic. A
+    /// write-side broken pipe is **never** returned to the caller as-is:
+    /// doing so was a race (str-9wu7) where a pre-handshake crash leaked a
+    /// low-level `BrokenPipe`, discarding the stderr tail and exit status the
+    /// diagnostic is meant to carry.
     async fn enrich_subprocess_exit(
         &mut self,
         outcome: Result<Response, FrontendError>,
     ) -> Result<Response, FrontendError> {
-        let exit_status = match outcome {
-            Err(FrontendError::SubprocessExited { .. }) => {
-                match tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
-                    Ok(Ok(status)) => Some(status),
-                    _ => None,
-                }
-            }
-            Err(FrontendError::Write(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
-                match tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
-                    Ok(Ok(status)) => Some(status),
-                    _ => return Err(FrontendError::Write(error)),
-                }
-            }
-            other => return other,
-        };
+        match &outcome {
+            Err(FrontendError::SubprocessExited { .. }) => {}
+            Err(FrontendError::Write(error))
+                if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+            _ => return outcome,
+        }
+
+        let exit_status = self.reap_for_diagnostic().await;
         self.subprocess_exited_error(exit_status).await
+    }
+
+    /// Wait for the (exiting) subprocess to terminate so its exit status can be
+    /// attached to the diagnostic.
+    ///
+    /// The subprocess has already closed its stdio, so `wait()` normally
+    /// returns immediately with the real exit status. The bounded wait guards
+    /// against a pathological child that closes its pipes without exiting; if
+    /// the grace period elapses we force-kill it so `wait()` can complete.
+    /// This keeps the diagnostic path deterministic — it always resolves to a
+    /// `SubprocessExited` error and never hangs or leaks a low-level pipe error
+    /// because a timer beat the reap under load.
+    async fn reap_for_diagnostic(&mut self) -> Option<std::process::ExitStatus> {
+        if let Ok(Ok(status)) = tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
+            return Some(status);
+        }
+        // Grace elapsed (or wait errored): the child is wedged with its pipes
+        // closed. Force termination so the follow-up wait is guaranteed to
+        // complete, then record whatever status we can.
+        let _ = self.child.start_kill();
+        match tokio::time::timeout(POST_EOF_WAIT, self.child.wait()).await {
+            Ok(Ok(status)) => Some(status),
+            _ => None,
+        }
     }
 
     async fn subprocess_exited_error(
@@ -1016,6 +1057,54 @@ mod tests {
             }
             Err(other) => panic!("expected SubprocessExited, got: {other:?}"),
             Ok(_) => panic!("expected SubprocessExited, got Ok(Frontend)"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_after_confirmed_child_exit_surfaces_subprocess_diagnostic() {
+        // Deterministic version of the pre-handshake crash (str-9wu7). The
+        // `handshake_subprocess_crash_surfaces_stderr_and_exit_status` test
+        // races the subprocess's exit against the handshake write, so it
+        // exercises *either* the EOF path *or* the broken-pipe path depending
+        // on scheduler timing. Here we launch the frontend, wait until the
+        // child has fully exited, and only then handshake. With the child's
+        // stdin read end already closed, the handshake write deterministically
+        // fails with BrokenPipe — pinning down the write-race path. It must
+        // still surface the SubprocessExited diagnostic with the stderr tail
+        // and exit status, never a bare Write(BrokenPipe).
+        let (config, _keep) = crashing_frontend_config(
+            "echo 'TypeError: Cannot read properties of undefined (reading \"foo\")' >&2\nexit 1\n",
+        );
+
+        let mut frontend = Frontend::launch(&config).expect("launch failed");
+
+        // Wait until the child has exited so the next write hits a closed pipe.
+        let mut waited = Duration::ZERO;
+        while frontend.is_alive() {
+            assert!(
+                waited < Duration::from_secs(5),
+                "crashing frontend should have exited promptly"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += Duration::from_millis(10);
+        }
+
+        match frontend.handshake(&config.capabilities).await {
+            Err(FrontendError::SubprocessExited {
+                exit_status,
+                stderr_tail,
+                binary,
+            }) => {
+                assert!(
+                    stderr_tail.contains("TypeError"),
+                    "stderr tail should preserve the thrown message, got: {stderr_tail:?}"
+                );
+                let status = exit_status.expect("exit status should be captured");
+                assert_eq!(status.code(), Some(1));
+                assert_eq!(binary, PathBuf::from("bash"));
+            }
+            Err(other) => panic!("expected SubprocessExited, got: {other:?}"),
+            Ok(()) => panic!("expected SubprocessExited, got Ok(())"),
         }
     }
 
