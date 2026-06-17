@@ -392,6 +392,20 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		resp.Message = fmt.Sprintf("file not found: %s", req.File)
 		return resp
 	}
+	// Normalize to absolute path so SourceFile entries stored in the
+	// analysis cache are always absolute. Relative paths survive os.Stat
+	// above but produce mismatches in hintConfigResolver: TargetRelpath
+	// passes clean relative paths through unchanged, so a relative
+	// SourceFile like "internal/fixture/loader.go" never matches a
+	// filename-scoped config glob like "loader.go:Func".
+	if !filepath.IsAbs(req.File) {
+		if abs, err := filepath.Abs(req.File); err == nil {
+			req.File = abs
+		} else {
+			h.log.Warn("analyze: failed to resolve relative path to absolute; hint config globs may not match",
+				"file", req.File, "err", err)
+		}
+	}
 
 	// file_not_found takes priority over env preflight — a typo'd path is
 	// more actionable, and TS/Rust agree on this ordering
@@ -521,6 +535,16 @@ func (h *Handler) finalizeAnalyzeFromCache(resp Response, req Request, cached []
 	for i := range cached {
 		if cached[i].SourceFile == "" {
 			cached[i].SourceFile = req.File
+		} else if !filepath.IsAbs(cached[i].SourceFile) {
+			// Normalize a relative SourceFile from an older cache entry to
+			// absolute so hintConfigResolver's TargetRelpath call reduces it
+			// to a plain basename and config globs like "loader.go:Func" match.
+			if abs, err := filepath.Abs(cached[i].SourceFile); err == nil {
+				cached[i].SourceFile = abs
+			} else {
+				h.log.Warn("analyze: failed to normalize cached relative SourceFile to absolute; hint config globs may not match",
+					"source_file", cached[i].SourceFile, "err", err)
+			}
 		}
 		key := req.File + "\x00" + cached[i].Name
 		h.cachedAnalyses[key] = &cached[i]
