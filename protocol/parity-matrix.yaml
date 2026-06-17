@@ -843,32 +843,3 @@ allowed_divergences:
     resolution: >
       Go ite production resolved in str-1hlk.17.3. Rust frontend deferred
       until full analyze implementation lands.
-
-  - id: error-code-preflight-failed-typescript-only
-    description: >
-      The `preflight_failed` error code and matching `OutcomeStatus`
-      variant are declared in all three frontend bindings (TS, Go,
-      Rust) for wire compatibility, but only the TypeScript frontend
-      currently runs an environment preflight that emits the code
-      (str-jeen.26 → str-jeen.40 — node_modules / install check before
-      analyze/instrument/prepare/execute/setup). Go and Rust have no
-      equivalent preflight emitter today; both accept and round-trip
-      the code on the wire but never produce it. The CLI's
-      batch_analyze and explore bucket logic treat `preflight_failed`
-      from any frontend identically, so adding emitters in Go/Rust
-      later requires no core-side change.
-    affected_frontends: [go, rust]
-    affected_commands: [analyze, instrument, prepare, execute, setup]
-    status: resolved
-    resolved_at: 2026-05-18
-    owner: Ketan Gangatirkar
-    tracking_issue: str-1hlk.18
-    resolution_condition: >
-      Go and Rust frontends emit preflight_failed for equivalent
-      missing-dependency or missing-toolchain conditions (missing go.sum
-      / module cache for Go; missing toolchain or target dir for Rust).
-    resolution: >
-      Add an environment preflight in the Go and Rust frontends that
-      emits `preflight_failed` for the equivalent missing-dependency or
-      missing-toolchain conditions (e.g. missing `go.sum` / module
-      cache for Go, missing toolchain or target dir for Rust).

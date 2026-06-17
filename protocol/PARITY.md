@@ -233,26 +233,6 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ---
 
-### `error-code-preflight-failed-typescript-only`
-
-**Description:** The `preflight_failed` error code is declared in all three frontend bindings for wire compatibility, but only TypeScript currently runs an environment preflight that emits it. Go and Rust accept and round-trip the code on the wire but never produce it.
-
-**Affected frontends:** go, rust
-
-**Affected commands:** analyze, instrument, prepare, execute, setup
-
-**Status:** tracked
-
-**Owner:** Ketan Gangatirkar
-
-**Tracking issue:** str-1hlk.18
-
-**Resolution condition:** Go and Rust frontends emit `preflight_failed` for equivalent missing-dependency or missing-toolchain conditions (missing `go.sum` / module cache for Go; missing toolchain or target dir for Rust).
-
-**Resolution:** Add an environment preflight in the Go and Rust frontends that emits `preflight_failed` for the equivalent conditions.
-
----
-
 ## Adding a New Divergence
 
 When a new cross-frontend mismatch is discovered:
