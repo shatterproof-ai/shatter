@@ -1,10 +1,21 @@
 # Beads Context
 
-Workflow rules (commands, issue types, priorities, decomposition, git merge,
-session-close protocol) live in `AGENTS.md` and shared `beads.md` — not repeated here.
+Use **bd** for all task tracking — not TodoWrite or markdown files.
+Create/claim the issue before writing code; mark it `in_progress` when starting.
 
-On session start or after compaction, recover dynamic state:
+## Session close
+
+Before saying "done": `git status` → `git add <files>` → `bd dolt pull` →
+`git commit`. This is an ephemeral branch; merge to main locally (no push).
+
+## Core commands
 
 - `bd ready` — issues ready to work (no blockers)
-- `bd list --status=in_progress` — your active work
-- `bd memories` — persistent insights across sessions (add with `bd remember "…"`)
+- `bd show <id>` — issue detail with dependencies
+- `bd create --title=… --description=… --type=task|bug|feature --priority=2`
+- `bd update <id> --claim` — claim work
+- `bd close <id1> <id2> …` — close completed issues
+- `bd dep add <issue> <depends-on>` — ordering constraint
+- `bd remember "insight"` / `bd memories <keyword>` — persistent knowledge
+
+Full command reference: `bd prime --export`. Shatter-specific extensions: `AGENTS.md`.
