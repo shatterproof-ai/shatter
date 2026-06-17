@@ -55,8 +55,9 @@ Prerequisites:
   `cargo build` fails without it)
 
 On Ubuntu/Debian: `sudo apt install libclang-dev libz3-dev`. On macOS:
-`brew install llvm z3`. For the full contributor toolchain (including `go-task`
-and Python 3 for the quality gates), see [CONTRIBUTING.md](CONTRIBUTING.md).
+`brew install llvm z3`. Running the quality gates also needs `go-task` and
+Python 3 with `pyyaml` + `jsonschema` (`pip install pyyaml jsonschema`); see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor toolchain.
 
 ## 2. Explore One Function
 

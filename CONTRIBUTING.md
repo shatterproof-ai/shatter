@@ -20,15 +20,22 @@ If you want to use Shatter on your own code, start with [README.md](README.md) a
   macOS). `shatter-core` links the system Z3 library, so without the Z3
   development package `cargo build` fails with a linker/bindgen error.
 - [go-task](https://taskfile.dev/installation/) — the task runner used for all
-  quality gates (`task test-quick`, `task check`, `task parity`, etc.)
-- Python 3 — used by repo tooling under `scripts/` (parity validation,
-  protocol codegen, release packaging, and so on)
+  quality gates (`task test-quick`, `task check`, `task parity`, etc.). Install
+  the `go-task` package or run
+  `sh -c "$(curl -ssL https://taskfile.dev/install.sh)"`.
+- Python 3 with the `pyyaml` and `jsonschema` packages — used by repo tooling
+  under `scripts/`, `protocol/`, and the `task parity` / `task conformance` /
+  schema-validation gates. Install with `pip install pyyaml jsonschema` (or your
+  distro's `python3-yaml` and `python3-jsonschema` packages). The schema and
+  parity tasks skip with a warning when these imports are missing, so a clone
+  without them silently runs fewer gates.
 - [beads](https://github.com/steveyegge/beads): `npm install -g @beads/bd`
 
 On Ubuntu/Debian the system packages can be installed together:
 
 ```bash
 sudo apt install libclang-dev libz3-dev
+pip install pyyaml jsonschema
 ```
 
 Or use the devcontainer in VS Code if you want a preconfigured environment.
@@ -63,6 +70,13 @@ docs/             Design notes, glossary, CI, plans
 ```
 
 ## Build And Test
+
+The raw `cargo` / `npm` / `go` commands below build and test the individual
+crates and frontends directly. For day-to-day development the **Taskfile targets
+are canonical** — `task test-quick`, `task test-standard`, `task check`, and the
+parity/conformance/E2E gates in [CLAUDE.md](CLAUDE.md) wrap these commands plus
+the cross-language gates, and are what CI runs. Use the raw commands when you
+want to drive a single crate; use `task ...` to reproduce the gates.
 
 ```bash
 # Build

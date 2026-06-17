@@ -65,9 +65,14 @@ linker/bindgen error. On Ubuntu/Debian:
 sudo apt install libclang-dev libz3-dev
 ```
 
-(macOS: `brew install llvm z3`.) See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-full toolchain used by the test and quality gates, including `go-task` and
-Python 3.
+(macOS: `brew install llvm z3`.)
+
+Running the test and quality gates additionally needs
+[go-task](https://taskfile.dev/installation/) (the `go-task` package, or
+`sh -c "$(curl -ssL https://taskfile.dev/install.sh)"`) and Python 3 with the
+`pyyaml` and `jsonschema` packages (`pip install pyyaml jsonschema`). These are
+not required for a plain `cargo build`. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for the full toolchain.
 
 ```bash
 git clone https://github.com/shatterproof-ai/shatter.git
