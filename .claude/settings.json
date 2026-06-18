@@ -5,6 +5,10 @@
       "Bash(go build:*)",
       "Bash(go vet:*)",
       "Bash(govulncheck:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo clippy:*)",
       "Bash(bd show:*)",
       "Bash(bd list:*)",
       "Bash(bd ready:*)"
