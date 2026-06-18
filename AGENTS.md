@@ -2,6 +2,28 @@
 
 This project uses **bd** (beads) for issue tracking. See shared agent rules (`beads.md`) for basic commands, issue decomposition, batch commands, and git merge workflow. Below are Shatter-specific extensions.
 
+## bd Quick Reference
+
+These are the verified verbs for the lifecycle of an issue. There is **no `bd claim` subcommand** — claiming is a flag on `bd update`. Do not run `bd --help` to rediscover these; use the sequence below.
+
+```bash
+bd ready                       # list issues ready to work
+bd show <id>                   # inspect an issue before starting
+bd update <id> --claim         # atomically claim: sets assignee=you, status=in_progress (idempotent)
+bd update <id> --status <s>    # change status (e.g. in_progress, blocked)
+bd note <id> "..."             # append a progress note
+bd close <id>                  # close a finished issue
+```
+
+Notes:
+- `bd update <id> --claim` is the **only** correct way to claim. `bd claim`, `bd assign --self`, and `bd start` do not exist.
+- Pass `--json` to any read command for programmatic use.
+- bd writes can be slow; run them in the background when batching.
+
+## Searching and Reading Files
+
+Use the **Grep**, **Glob**, and **Read** tools — not shell `grep`/`cat`/`sed`/`find`/`ls` pipelines — for searching and reading files. The dedicated tools are faster, return structured results, respect `.gitignore`, and keep the context window clean. Reserve shell text utilities for cases where a dedicated tool genuinely cannot do the job (e.g. piping command output through a filter).
+
 ## Kapow Refute Workflow
 
 For Kapow validation work that needs symbol-aware refactors, use the Shatter
@@ -199,6 +221,15 @@ agents is the primary cause of duplicate commits and orphan branches.
 - **Never cherry-pick commits.** Cherry-picking creates duplicate commits with
   different SHAs, making history confusing and leaving orphan branches that
   appear unmerged. Always merge or rebase entire branches instead.
+
+### Rebase Hygiene
+
+Rebasing a worktree with uncommitted runtime artifacts produces `error: Your local changes to the following files would be overwritten by merge` and leaves the rebase half-applied. To avoid it:
+
+- **Always run `git status --short` before `git rebase origin/main`** (or any merge/rebase). If the tree is dirty, deal with it deliberately — commit the changes that belong to your issue, or stash the rest — before rebasing.
+- **Never blindly retry `git stash pop` into a dirty tree.** A failed `stash pop` means there is a conflict or an untracked-file collision; retrying does not resolve it and can clobber work. Inspect the conflict, resolve it, then pop once.
+- The usual culprits are **build/run artifacts** that should not be committed: `target/`, `node_modules/`, `dist/`, `*.tsbuildinfo`, `.shatter/` run output, and demo/gauntlet scratch files. Add them to `.gitignore` or remove them; do not commit them just to make a rebase succeed.
+- **Do not blanket-ignore `.beads/`.** `bd sync` intentionally commits `.beads/*.jsonl` — those files are tracked on purpose. Ignore only the specific artifacts above, never the whole `.beads/` directory.
 
 ### Commit Early, Commit Often
 
