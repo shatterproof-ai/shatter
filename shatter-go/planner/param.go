@@ -298,8 +298,16 @@ func classifyParamFamily(p protocol.ParamInfo) (paramFamily, bool) {
 		}
 		return paramFamily{}, false
 	case "array":
-		// Without TypeName we can't distinguish []byte from []int; only treat
-		// an array family as []byte when the TypeName explicitly says so.
+		// str-79nvf: when the element type is go_byte the type checker has already
+		// identified the element as byte/uint8, so the array is definitively []byte
+		// even without TypeName. This lets byte-slice defaults hints apply on the
+		// type-checker analysis path that populates Element but not TypeName.
+		if p.Type.Element != nil &&
+			p.Type.Element.Kind == "complex" &&
+			p.Type.Element.ComplexKind == "go_byte" {
+			return byteSliceFamily(), true
+		}
+		// Without TypeName or go_byte element we can't distinguish []byte from []int.
 		return paramFamily{}, false
 	default:
 		return paramFamily{}, false

@@ -605,3 +605,54 @@ func TestPlanParam_GoDuration_IntegerNanosecondCandidates(t *testing.T) {
 		}
 	}
 }
+
+// str-79nvf: []byte params classified via go_byte element (TypeName absent) must
+// produce byteSlice candidates and honour defaults hints — the same as when
+// TypeName is explicitly set to "[]byte".
+func TestPlanParam_ByteSlice_GoByteElement_NoTypeName(t *testing.T) {
+	goByteElem := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_byte"}
+	param := protocol.ParamInfo{
+		Name: "data",
+		Type: protocol.TypeInfo{Kind: "array", Element: &goByteElem},
+		// TypeName intentionally absent — matches the type-checker path that emits
+		// Element.ComplexKind but no TypeName (e.g. NormalizeGeminiDiscovery.data).
+	}
+
+	t.Run("plans_without_hint", func(t *testing.T) {
+		plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{MaxPlansPerParam: 8})
+		if u != nil {
+			t.Fatalf("unexpected unsatisfied: %+v", u)
+		}
+		if len(plans) == 0 {
+			t.Fatal("expected at least one plan, got none")
+		}
+		for i, p := range plans {
+			if p.TypeHint != "[]byte" {
+				t.Errorf("plans[%d].TypeHint = %q, want []byte", i, p.TypeHint)
+			}
+		}
+	})
+
+	t.Run("hint_applied_as_first_plan", func(t *testing.T) {
+		hintLiteral := json.RawMessage(`"aGVsbG8="`) // base64("hello")
+		opts := planner.ParamPlanOptions{
+			MaxPlansPerParam: 8,
+			HintsByName: map[string]planner.ParamValueHint{
+				"data": {Literal: hintLiteral, TypeHint: "string"},
+			},
+		}
+		plans, u := planner.PlanParam(testTargetID, 0, param, opts)
+		if u != nil {
+			t.Fatalf("unexpected unsatisfied: %+v", u)
+		}
+		if len(plans) == 0 {
+			t.Fatal("expected at least one plan")
+		}
+		if plans[0].Kind != protocol.ValuePlanKindLiteral {
+			t.Fatalf("plans[0].Kind = %q, want literal (hint should be first)", plans[0].Kind)
+		}
+		if !bytes.Equal(plans[0].Literal, hintLiteral) {
+			t.Errorf("plans[0].Literal = %s, want %s (hint literal)", plans[0].Literal, hintLiteral)
+		}
+	})
+}
