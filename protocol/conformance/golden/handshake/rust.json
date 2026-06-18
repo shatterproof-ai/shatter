@@ -1,6 +1,10 @@
 {
   "capabilities": [
     "analyze",
+    "complex_type:date",
+    "complex_type:date_time",
+    "complex_type:url",
+    "complex_type:uuid",
     "execute",
     "generate",
     "instrument",
