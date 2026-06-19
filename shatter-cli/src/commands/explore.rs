@@ -163,7 +163,11 @@ fn new_discoveries_in_batch(
 ///
 /// Merge rules per field:
 /// - `iterations`: sum across batches (each batch ran a disjoint slice)
-/// - `unique_paths`: recomputed after merge from deduped `discoveries`
+/// - `unique_paths`: recomputed after merge as `new_path_executions.len()` so
+///   the rendered "N path(s)" header always matches the Call→Outcome table row
+///   count (str-4o07). Counting `discoveries` (branches) here previously made
+///   the header disagree with the table for functions whose path count differs
+///   from their branch count.
 /// - `lines_covered` / `total_lines`: max (line sets are not carried through,
 ///   so we conservatively take the largest single-batch observation)
 /// - `discoveries`: deduped by `branch_id`, earliest batch wins (HashMap insert
@@ -290,7 +294,17 @@ impl ExploreResultAccumulator {
         let mut stubbed = self.stubbed_modules;
         stubbed.sort();
         stubbed.dedup();
-        let unique_paths = self.discoveries.len();
+        // str-4o07: `unique_paths` is the count of distinct execution paths, which
+        // the renderer surfaces as the "N path(s)" header. It must equal the
+        // number of Call→Outcome table rows (`new_path_executions.len()`) so the
+        // header and table never disagree. The previous formula
+        // (`self.discoveries.len()`) counted *branches* discovered, not paths —
+        // a function with 3 branch points but 4 paths rendered "3 path(s)" over a
+        // 4-row table. Per-batch `new_path_executions` are already deduped by path
+        // hash (see `From<ExploreResult>` in pipeline.rs and the explorer
+        // aggregator), and concolic batches share `covered_paths` via resume
+        // state, so concatenation across batches does not double-count paths.
+        let unique_paths = self.new_path_executions.len();
         Ok(shatter_core::explorer::ObservationOutput {
             function_name: self.function_name,
             iterations: self.total_iterations,
@@ -7213,13 +7227,29 @@ mod tests {
         discoveries: Vec<(u32, shatter_core::coverage_metrics::DiscoveryMethod)>,
         stubbed: Vec<String>,
     ) -> shatter_core::explorer::ObservationOutput {
+        // Synthesise one new-path execution per discovery so the accumulator's
+        // `unique_paths = new_path_executions.len()` rule (str-4o07) has rows to
+        // count. The accumulator ignores the per-batch `unique_paths` field and
+        // recomputes from the concatenated `new_path_executions`, so this keeps
+        // per-batch path counts equal to the per-batch discovery counts.
+        let new_path_executions: Vec<shatter_core::explorer::ExecutionSummary> = discoveries
+            .iter()
+            .map(|(branch_id, _)| shatter_core::explorer::ExecutionSummary {
+                inputs: vec![serde_json::json!(branch_id)],
+                return_value: Some(serde_json::json!(branch_id)),
+                thrown_error: None,
+                lines_executed: vec![],
+                is_new_path: true,
+                error_intent: None,
+            })
+            .collect();
         shatter_core::explorer::ObservationOutput {
             function_name: "load/user".to_string(),
             iterations,
-            unique_paths: discoveries.len(),
+            unique_paths: new_path_executions.len(),
             lines_covered,
             total_lines,
-            new_path_executions: vec![],
+            new_path_executions,
             raw_results: vec![],
             discoveries,
             nondeterministic_fields: vec![],
@@ -7285,7 +7315,15 @@ mod tests {
             vec![],
         )));
         let obs = acc.into_result().expect("ok");
-        assert_eq!(obs.unique_paths, 2);
+        // Branch discoveries dedupe across batches (branch 5 re-discovered →
+        // first-wins Z3), so the discovery-id union has cardinality 2.
+        assert_eq!(obs.discoveries.len(), 2);
+        // `unique_paths` is now the path-row count, not the branch-union count:
+        // the two batches contributed 1 + 2 = 3 new-path executions (str-4o07).
+        // Path rows are not deduped across batches; in production concolic
+        // batches share `covered_paths` via resume state so they stay distinct.
+        assert_eq!(obs.unique_paths, 3);
+        assert_eq!(obs.new_path_executions.len(), 3);
         let by_id: std::collections::HashMap<u32, DiscoveryMethod> =
             obs.discoveries.into_iter().collect();
         assert_eq!(by_id.get(&5), Some(&DiscoveryMethod::Z3));
@@ -7409,16 +7447,16 @@ mod tests {
         assert_eq!(not_exhausted_count, 5);
         assert!(scheduler.is_complete());
 
-        // Accumulator semantics: fn_a summed 1700 iters across 4 batches and
-        // unique_paths is the cardinality of the discovery-id union
-        // (branches 1, 2, 3 — branch 1 re-discovered, not double-counted).
+        // Accumulator semantics: fn_a summed 1700 iters across 4 batches and the
+        // discovery-id union has cardinality 3 (branches 1, 2, 3 — branch 1
+        // re-discovered on batch 3, not double-counted).
         let fn_a = accs.remove(0).into_result().expect("fn_a merged");
         assert_eq!(fn_a.iterations, 1700);
-        assert_eq!(fn_a.unique_paths, 3);
+        assert_eq!(fn_a.discoveries.len(), 3);
 
         let fn_b = accs.remove(0).into_result().expect("fn_b merged");
         assert_eq!(fn_b.iterations, 1100);
-        assert_eq!(fn_b.unique_paths, 2);
+        assert_eq!(fn_b.discoveries.len(), 2);
     }
 
     #[test]
@@ -7534,11 +7572,11 @@ mod tests {
         // double-counted). fn_b ran 2 batches (600 iters, 3 branches).
         let fn_a = accs.remove(0).into_result().expect("fn_a merged");
         assert_eq!(fn_a.iterations, 1700);
-        assert_eq!(fn_a.unique_paths, 6);
+        assert_eq!(fn_a.discoveries.len(), 6);
 
         let fn_b = accs.remove(0).into_result().expect("fn_b merged");
         assert_eq!(fn_b.iterations, 600);
-        assert_eq!(fn_b.unique_paths, 3);
+        assert_eq!(fn_b.discoveries.len(), 3);
     }
 
     #[test]

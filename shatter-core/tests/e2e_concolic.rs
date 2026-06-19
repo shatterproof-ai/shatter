@@ -137,6 +137,167 @@ fn return_value_set(result: &ExploreResult) -> HashSet<String> {
         .collect()
 }
 
+/// Build a random-explorer [`explorer::ExploreConfig`] for the report-parity
+/// test, mirroring the field set the CLI fills in via `run_observe_stage`.
+fn random_explore_config(
+    file: &str,
+    capabilities: &[String],
+) -> shatter_core::explorer::ExploreConfig {
+    shatter_core::explorer::ExploreConfig {
+        file: file.to_string(),
+        max_iterations: Some(40),
+        observer_pool: 1,
+        observer_frontend_config: None,
+        candidate_queue_capacity: None,
+        seed: Some(0),
+        mocks: vec![],
+        mock_params: vec![],
+        setup_file: None,
+        setup_level: SetupLevel::Session,
+        value_sources: vec![],
+        capabilities: FrontendCapabilities::from_raw(capabilities),
+        user_seeds: vec![],
+        candidate_inputs: vec![],
+        pool_seeds: vec![],
+        project_root: None,
+        execution_profile: None,
+        loop_buckets: shatter_core::explorer::LoopBuckets::default(),
+        timeout_explore: None,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
+        budget_surplus: None,
+        claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
+        default_execute_plan: None,
+        prepare_id_override: None,
+    }
+}
+
+/// Run the observe stage for a single function in either random or concolic
+/// mode and return the resulting `ObservationOutput`.
+async fn run_observe(
+    frontend: &mut Frontend,
+    file: &str,
+    analysis: &shatter_core::protocol::FunctionAnalysis,
+    use_concolic: bool,
+    seeds: &[Vec<serde_json::Value>],
+) -> shatter_core::explorer::ObservationOutput {
+    let capabilities: Vec<String> = frontend.capabilities().to_vec();
+    let explore_config = random_explore_config(file, &capabilities);
+    let concolic_config = if use_concolic {
+        Some(ExploreConfig {
+            max_iterations: Some(40),
+            max_executions: Some(200),
+            plateau_threshold: 15,
+            ..Default::default()
+        })
+    } else {
+        None
+    };
+
+    let mut input = shatter_core::pipeline_orchestrator::ObserveInput {
+        frontend,
+        file: file.to_string(),
+        function_name: analysis.name.clone(),
+        analysis: analysis.clone(),
+        explore_config,
+        use_concolic,
+        concolic_config,
+        prepare_id: None,
+        project_root: None,
+        extra_seeds: vec![],
+    };
+
+    let result = shatter_core::pipeline_orchestrator::run_observe_stage(
+        &mut input,
+        shatter_core::pipeline_orchestrator::ObserveStageOptions {
+            concolic_seed_inputs: seeds,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("observe stage failed");
+
+    result.observe.observation
+}
+
+/// Regression for str-4o07: the concolic explore report must (1) carry concrete
+/// call inputs in every discovered-path row, (2) report the same `total_lines`
+/// the random explorer reports for the same function, and (3) keep
+/// `unique_paths` (the rendered "N path(s)" header) equal to the number of
+/// Call→Outcome table rows (`new_path_executions`).
+///
+/// `compareMagnitudes` is chosen because the TypeScript frontend reports an
+/// instrumentable line count smaller than the raw source span for it, so the
+/// concolic path's old `reconcile(None)` fallback inflated `total_lines` to the
+/// span and diverged from the random path. A function whose instrumentable
+/// count equals its span would not exercise the divergence.
+#[tokio::test]
+async fn concolic_report_matches_random_inputs_and_line_totals() {
+    let file = examples_dir().join("01-arithmetic.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    // Seeds that span the magnitude classes so both explorers reliably reach
+    // multiple paths without depending on solver/random ordering.
+    let seeds = vec![
+        vec![serde_json::json!(1), serde_json::json!(1)],
+        vec![serde_json::json!(60), serde_json::json!(60)],
+    ];
+
+    let mut frontend = spawn_ts_frontend().await;
+    let analysis = analyze_function(&mut frontend, &file_str, "compareMagnitudes").await;
+
+    let random_obs = run_observe(&mut frontend, &file_str, &analysis, false, &seeds).await;
+    let concolic_obs = run_observe(&mut frontend, &file_str, &analysis, true, &seeds).await;
+
+    // (1) Every concolic discovered-path row must carry concrete call inputs.
+    assert!(
+        !concolic_obs.new_path_executions.is_empty(),
+        "concolic explore should discover at least one path"
+    );
+    for (i, exec) in concolic_obs.new_path_executions.iter().enumerate() {
+        assert!(
+            !exec.inputs.is_empty(),
+            "concolic path row {i} dropped its call inputs: {exec:?}"
+        );
+        assert_eq!(
+            exec.inputs.len(),
+            analysis.params.len(),
+            "concolic path row {i} should carry one value per parameter"
+        );
+    }
+
+    // (2) Line totals must match the random explorer on the same function.
+    // Before str-4o07 the concolic path reconciled against the raw source span
+    // (`end_line - start_line + 1`) instead of the frontend's instrumentable
+    // line count, inflating `total_lines` versus the random path.
+    assert_eq!(
+        concolic_obs.total_lines, random_obs.total_lines,
+        "concolic total_lines ({}) must match random total_lines ({}) for the same function",
+        concolic_obs.total_lines, random_obs.total_lines
+    );
+
+    // (3) The rendered "N path(s)" header must equal the Call→Outcome table row
+    // count. That equality is enforced one layer up, in the CLI's
+    // `ExploreResultAccumulator::into_result` (which sets `unique_paths =
+    // new_path_executions.len()`), and is verified by the accumulator unit
+    // tests in shatter-cli. It is NOT an invariant of the raw observe output:
+    // the random explorer's float-probe pre-pass can grow `seen_paths` without
+    // emitting a path row, so `unique_paths` legitimately exceeds
+    // `new_path_executions.len()` here. We assert only that the concolic path
+    // produced rows to count.
+    assert!(
+        concolic_obs.unique_paths >= concolic_obs.new_path_executions.len(),
+        "unique_paths ({}) should be at least the path-row count ({})",
+        concolic_obs.unique_paths,
+        concolic_obs.new_path_executions.len(),
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// Test that concolic exploration of classifyNumber discovers all 4 branches.
 ///
 /// classifyNumber(n: number) has 4 paths:
