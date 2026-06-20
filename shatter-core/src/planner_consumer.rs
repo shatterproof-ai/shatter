@@ -7,11 +7,13 @@
 //! preserving the single-source-of-truth rule for parallel explorer/
 //! orchestrator code paths (see project-wide "parallel paths" contract).
 //!
-//! Scope: this pass materializes `Literal` and `Zero` `ValuePlanKind`s only.
-//! `Random`, `Symbolic`, and `RuntimeValue` plan entries yield no seed for
-//! the current target and fall through to the normal random / concolic input
-//! generation (or, for `RuntimeValue`, to the producing frontend's own
-//! runtime-value resolution at execute time). Callers that need to surface
+//! Scope: this pass materializes `Literal` and `Zero` `ValuePlanKind`s
+//! directly. A `RuntimeValue` entry materializes as `Null` in place so its
+//! sibling `Literal`/`Zero` plans survive — the producing frontend resolves
+//! the real runtime value at execute time (the `null` slot matches the input
+//! array shape, e.g. a Go `context.Context` argument). `Random` and `Symbolic`
+//! plan entries yield no seed for the current target and fall through to the
+//! normal random / concolic input generation. Callers that need to surface
 //! planner ordering should pass plans in priority order; seeds are produced
 //! in the order the frontend returned them.
 
@@ -135,11 +137,11 @@ pub async fn fetch_planner_seeds(
 /// Map planner outputs to ready-to-execute argument vectors.
 ///
 /// One seed is produced per `InvocationPlan` whose every `ValuePlan` is
-/// directly materializable (`Literal` or `Zero`). Plans containing `Random`,
-/// `Symbolic`, or `RuntimeValue` entries are skipped — those strategies are
-/// already covered by the explorer's random generator, the orchestrator's
-/// Z3 path, or the producing frontend's runtime-value resolution at execute
-/// time, respectively.
+/// either directly materializable (`Literal` or `Zero`) or a `RuntimeValue`
+/// (materialized as `Null` so its sibling plans survive; the frontend resolves
+/// the real value at execute time). Plans containing `Random` or `Symbolic`
+/// entries are skipped — those strategies are already covered by the explorer's
+/// random generator and the orchestrator's Z3 path, respectively.
 #[must_use]
 pub fn materialize_seeds(plans: &[InvocationPlan], param_infos: &[ParamInfo]) -> Vec<Vec<Value>> {
     let mut seeds = Vec::new();
@@ -331,7 +333,15 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
         ValuePlanKind::Zero => Some(zero_value(&param.typ)),
-        ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
+        // A `RuntimeValue` slot (e.g. a Go `ctx` whose wrapper bakes
+        // `context.Background()` at compile time) cannot be materialized here,
+        // but it must NOT drop the whole seed via `?` in
+        // `materialize_seed_for_plan` — that would take the sibling Literal/Zero
+        // plans down with it. Emit `Null`, which matches the actual input array
+        // shape where `null` occupies the context.Context slot and the frontend
+        // resolves the real value at execute time (zolem-cv4).
+        ValuePlanKind::RuntimeValue => Some(Value::Null),
+        ValuePlanKind::Random | ValuePlanKind::Symbolic => None,
     }
 }
 
@@ -909,12 +919,14 @@ mod tests {
     }
 
     #[test]
-    fn runtime_value_plan_is_skipped() {
+    fn runtime_value_plan_materializes_as_null() {
         // Mirrors the Go planner's runtimeValuePlans output: kind=runtime_value,
         // literal carries a JSON-encoded source expression, type_hint names the
-        // registered Go type. The consumer must accept the wire form
-        // (str-1hlk.4) but skip materialization — the Go launcher resolves the
-        // value at execute time via planner.LookupRuntimeValue.
+        // registered Go type. The consumer accepts the wire form (str-1hlk.4)
+        // and materializes the slot as `null` (zolem-cv4) — the Go launcher
+        // resolves the real value at execute time via
+        // planner.LookupRuntimeValue. Emitting `null` rather than dropping the
+        // seed keeps any sibling Literal/Zero plans alive.
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
@@ -931,9 +943,52 @@ mod tests {
             label: String::new(),
         };
         let seeds = materialize_seeds(&[plan], &[int_param("ctx")]);
-        assert!(
-            seeds.is_empty(),
-            "runtime_value plan should not materialize in core consumer",
+        assert_eq!(
+            seeds,
+            vec![vec![Value::Null]],
+            "runtime_value plan should materialize as a null slot",
+        );
+    }
+
+    #[test]
+    fn runtime_value_slot_does_not_drop_sibling_literals() {
+        // zolem-cv4 regression: a `runtime_value` plan for `ctx` (the Go wrapper
+        // bakes `context.Background()` at compile time) previously returned
+        // `None` from `materialize_value`, and the `?` in
+        // `materialize_seed_for_plan` dropped the ENTIRE seed — taking the valid
+        // Literal plans for `upstream` and `model` with it. The slot must now
+        // materialize as `null` so the sibling literals survive.
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![
+                ValuePlan {
+                    param_index: 0,
+                    param_name: "ctx".into(),
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(json!("context.Background()")),
+                    type_hint: "context.Context".into(),
+                },
+                literal_plan(1, "upstream", json!("https://api.example.com")),
+                literal_plan(2, "model", json!("claude-opus-4-8")),
+            ],
+            constructor_arg_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds = materialize_seeds(
+            &[plan],
+            &[str_param("ctx"), str_param("upstream"), str_param("model")],
+        );
+        assert_eq!(
+            seeds,
+            vec![vec![
+                Value::Null,
+                json!("https://api.example.com"),
+                json!("claude-opus-4-8"),
+            ]],
+            "runtime_value slot must not drop sibling literal seeds",
         );
     }
 
