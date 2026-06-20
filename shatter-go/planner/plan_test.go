@@ -758,6 +758,84 @@ func TestPlanRequirements_HTTPHandlerConstructorRuntimeValue(t *testing.T) {
 	}
 }
 
+// TestPlanRequirements_HTTPHandlerDirectFunctionRuntimeValue locks in the
+// str-nzn3 fix for the *direct free-function* path. A free function whose
+// parameter is net/http.Handler must NOT be pre-skipped as opaque: the
+// runtime-value registry can synthesize it as http.NewServeMux(), so the
+// planner must emit a runtime_value ValuePlan for that argument and report no
+// unsatisfied requirements.
+//
+// This is distinct from TestPlanRequirements_HTTPHandlerConstructorRuntimeValue,
+// which exercises http.Handler as a *constructor* parameter (satisfied via the
+// handler-discovered ConstructorRuntimeValuesByParam). The direct path is
+// satisfied through PlanParam -> runtimeValuePlans keyed on ParamInfo.TypeName,
+// the surface the original bug report named ("direct free-function parameter
+// feasibility still reports http.Handler as opaque").
+func TestPlanRequirements_HTTPHandlerDirectFunctionRuntimeValue(t *testing.T) {
+	t.Parallel()
+
+	const targetID = "example.com/pkg:startLocalHTTPServer"
+	// Mirror the analyzer's output for `func startLocalHTTPServer(addr string,
+	// handler http.Handler)`: synthesizable stdlib types are emitted as
+	// Kind:"unknown" with the canonical spelling carried on TypeName so the
+	// runtime-value registry can resolve them (see extractParamsWithContext).
+	analysis := &protocol.FunctionAnalysis{
+		Name: "startLocalHTTPServer",
+		Params: []protocol.ParamInfo{
+			{Name: "addr", Type: protocol.TypeInfo{Kind: "str"}, TypeName: strPtr("string")},
+			{Name: "handler", Type: protocol.TypeInfo{Kind: "unknown", Label: "http.Handler"}, TypeName: strPtr("http.Handler")},
+		},
+	}
+	lookup := analysisLookup(func(id string) *protocol.FunctionAnalysis {
+		if id == targetID {
+			return analysis
+		}
+		return nil
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+
+	if len(unsat) != 0 {
+		t.Fatalf("http.Handler direct-function param must not be pre-skipped; got unsatisfied: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan for free function with an http.Handler param")
+	}
+
+	// Every emitted plan must supply a runtime_value for the handler argument.
+	for _, p := range plans {
+		if p.ReceiverKind != "" {
+			t.Errorf("free-function plan should have empty receiver_kind, got %q", p.ReceiverKind)
+		}
+		if len(p.ArgumentPlans) != 2 {
+			t.Fatalf("expected 2 argument plans (addr, handler), got %d; plan=%+v", len(p.ArgumentPlans), p)
+		}
+		var handlerPlan *protocol.ValuePlan
+		for i := range p.ArgumentPlans {
+			if p.ArgumentPlans[i].ParamName == "handler" {
+				handlerPlan = &p.ArgumentPlans[i]
+				break
+			}
+		}
+		if handlerPlan == nil {
+			t.Fatalf("no argument plan for handler param; plan=%+v", p)
+		}
+		if handlerPlan.Kind != protocol.ValuePlanKindRuntimeValue {
+			t.Errorf("handler arg plan kind=%q, want %q", handlerPlan.Kind, protocol.ValuePlanKindRuntimeValue)
+		}
+		if got := string(handlerPlan.Literal); got != `"http.NewServeMux()"` {
+			t.Errorf("handler arg plan literal=%s, want \"http.NewServeMux()\"", got)
+		}
+		if handlerPlan.TypeHint != "http.Handler" {
+			t.Errorf("handler arg plan type_hint=%q, want http.Handler", handlerPlan.TypeHint)
+		}
+	}
+}
+
 func TestPlanRequirements_ConstructorInterfaceImplParamsDoNotConsumeInputPrefix(t *testing.T) {
 	t.Parallel()
 
