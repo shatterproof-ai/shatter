@@ -12110,6 +12110,84 @@ rust-version.workspace = true
         let _ = std::fs::remove_dir_all(&staging_root);
     }
 
+    /// str-2q7z: a workspace member crate that already declares a `[features]`
+    /// table (e.g. Pickpackit's `coverage-denominators`) must stage to a
+    /// crate-shadow Cargo.toml with exactly one `[features]` table, with both
+    /// the original feature and `shatter-crate-bridge` merged into it. The
+    /// regression was a duplicate `[features]` header that made cargo reject
+    /// the shadow manifest before any handler could execute.
+    #[test]
+    fn staging_then_inject_feature_with_existing_features_table() {
+        let ws_root = unique_tmp_dir("ws-root-2q7z");
+        let member_root = ws_root.join("api");
+        std::fs::create_dir_all(member_root.join("src")).unwrap();
+
+        std::fs::write(
+            ws_root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            member_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syn = { version = "2", features = ["full", "visit"], optional = true }
+proc-macro2 = { version = "1", features = ["span-locations"], optional = true }
+
+[features]
+coverage-denominators = ["dep:syn", "dep:proc-macro2"]
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(member_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let staging_root = unique_tmp_dir("staging-2q7z");
+        let staging_crate = create_crate_staging_copy(&member_root, &staging_root).unwrap();
+        inject_crate_bridge_feature(
+            &staging_crate.join("Cargo.toml"),
+            std::path::Path::new("/fake/runtime"),
+        )
+        .unwrap();
+
+        let staged_toml = std::fs::read_to_string(staging_crate.join("Cargo.toml")).unwrap();
+        let features_header_count = staged_toml
+            .lines()
+            .filter(|line| line.trim() == "[features]")
+            .count();
+        assert_eq!(
+            features_header_count, 1,
+            "crate-shadow Cargo.toml must have exactly one [features] table:\n{staged_toml}",
+        );
+
+        let features_section = section_body(&staged_toml, "[features]");
+        assert!(
+            features_section.contains("coverage-denominators"),
+            "must preserve the existing coverage-denominators feature:\n{staged_toml}",
+        );
+        assert!(
+            features_section.contains("shatter-crate-bridge"),
+            "must merge in the shatter-crate-bridge feature:\n{staged_toml}",
+        );
+
+        let _ = std::fs::remove_dir_all(&ws_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
     #[test]
     fn staging_copy_copies_workspace_lockfile_to_driver_root() {
         let ws_root = unique_tmp_dir("ws-lock-8j9k");
