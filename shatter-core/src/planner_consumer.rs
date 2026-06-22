@@ -7,13 +7,15 @@
 //! preserving the single-source-of-truth rule for parallel explorer/
 //! orchestrator code paths (see project-wide "parallel paths" contract).
 //!
-//! Scope: this pass materializes `Literal` and `Zero` `ValuePlanKind`s only.
-//! `Random`, `Symbolic`, and `RuntimeValue` plan entries yield no seed for
-//! the current target and fall through to the normal random / concolic input
-//! generation (or, for `RuntimeValue`, to the producing frontend's own
-//! runtime-value resolution at execute time). Callers that need to surface
-//! planner ordering should pass plans in priority order; seeds are produced
-//! in the order the frontend returned them.
+//! Scope: this pass materializes `Literal`, `Zero`, and `RuntimeValue`
+//! `ValuePlanKind`s. `Random` and `Symbolic` entries yield no seed and fall
+//! through to normal random / concolic input generation. `RuntimeValue`
+//! entries (e.g. `context.Context` params) are materialized as `null` — the
+//! Go wrapper bakes the runtime expression at wrapper-compile time (str-gxjs.1)
+//! and ignores the JSON input slot entirely, so `null` is always safe and
+//! allows sibling `Literal`/`Zero` plans on the same function to survive.
+//! Callers that need to surface planner ordering should pass plans in priority
+//! order; seeds are produced in the order the frontend returned them.
 
 use serde_json::Value;
 
@@ -331,7 +333,13 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
         ValuePlanKind::Zero => Some(zero_value(&param.typ)),
-        ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
+        // str-r2q7: RuntimeValue params (e.g. context.Context) are baked into the Go
+        // launcher wrapper as direct assignments at compile time (str-gxjs.1). The
+        // corresponding JSON input slot is ignored by the wrapper, so null is safe. We
+        // emit null rather than dropping the entire plan so that sibling Literal/Zero
+        // plans (e.g. an upstream URL hint on the same function) survive materialization.
+        ValuePlanKind::RuntimeValue => Some(Value::Null),
+        ValuePlanKind::Random | ValuePlanKind::Symbolic => None,
     }
 }
 
@@ -909,12 +917,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_value_plan_is_skipped() {
-        // Mirrors the Go planner's runtimeValuePlans output: kind=runtime_value,
-        // literal carries a JSON-encoded source expression, type_hint names the
-        // registered Go type. The consumer must accept the wire form
-        // (str-1hlk.4) but skip materialization — the Go launcher resolves the
-        // value at execute time via planner.LookupRuntimeValue.
+    fn runtime_value_plan_materializes_as_null() {
+        // str-r2q7: RuntimeValue params (e.g. context.Context) used to return
+        // None and drop the entire seed. Now they materialize as null — the Go
+        // wrapper bakes context.Background() at wrapper-compile time (str-gxjs.1)
+        // and ignores the JSON slot, so null is safe.
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
@@ -931,9 +938,43 @@ mod tests {
             label: String::new(),
         };
         let seeds = materialize_seeds(&[plan], &[int_param("ctx")]);
-        assert!(
-            seeds.is_empty(),
-            "runtime_value plan should not materialize in core consumer",
+        assert_eq!(
+            seeds,
+            vec![vec![Value::Null]],
+            "runtime_value param should materialize as null so the seed survives",
+        );
+    }
+
+    #[test]
+    fn runtime_value_sibling_literal_survives() {
+        // str-r2q7: when a function has a RuntimeValue param (e.g. ctx) alongside
+        // a Literal param (e.g. upstream URL hint), the entire seed must survive.
+        // Previously, RuntimeValue => None caused the ? in materialize_seed_for_plan
+        // to drop the whole seed, silently discarding the sibling Literal hint.
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![
+                ValuePlan {
+                    param_index: 0,
+                    param_name: "ctx".into(),
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(json!("context.Background()")),
+                    type_hint: "context.Context".into(),
+                },
+                literal_plan(1, "upstream", json!("http://localhost:11434")),
+            ],
+            constructor_arg_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds =
+            materialize_seeds(&[plan], &[int_param("ctx"), str_param("upstream")]);
+        assert_eq!(
+            seeds,
+            vec![vec![Value::Null, json!("http://localhost:11434")]],
+            "sibling Literal hint must survive when ctx is RuntimeValue",
         );
     }
 
