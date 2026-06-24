@@ -665,10 +665,30 @@ fn mocks_hash(mocks: &[Value]) -> u64 {
     h.finish()
 }
 
+/// Cache-busting version for compiled harness binaries.
+///
+/// `source_hash` keys every harness binary cache (crate-bridge `wrapper_hash`,
+/// axum-crate `wrapper_hash`, the main `src_hash`, and the Cargo.lock hash). It
+/// hashes only source *text*, so a frontend fix that changes harness *behavior*
+/// without changing the emitted source string — e.g. a fix to the staging WRITE
+/// PATH where instrumented source is written (str-oc67) — leaves every cache key
+/// identical and silently reuses the stale, pre-fix harness binary. The symptom
+/// is false 0% coverage from a harness that runs the uninstrumented handler.
+///
+/// **Bump this constant whenever a frontend change alters harness behavior but
+/// not the source text it emits.** Bumping invalidates all stale harness caches
+/// so the next run recompiles. Pure source-text changes do not need a bump —
+/// they already change the hash. See str-wcf3.
+const HARNESS_CACHE_VERSION: u64 = 1;
+
 /// Hash the source content for stable binary cache invalidation.
+///
+/// Folds [`HARNESS_CACHE_VERSION`] into the digest so behavior-only frontend
+/// fixes can invalidate stale harness binaries by bumping that constant.
 fn source_hash(content: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    HARNESS_CACHE_VERSION.hash(&mut h);
     content.hash(&mut h);
     h.finish()
 }
@@ -6381,6 +6401,36 @@ mod tests {
             runtime_path.is_ok(),
             "should find runtime crate: {:?}",
             runtime_path.err()
+        );
+    }
+
+    /// Reproduce `source_hash`'s digest with an explicit version, mirroring the
+    /// production folding order (version first, then content).
+    fn source_hash_with_version(version: u64, content: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        version.hash(&mut h);
+        content.hash(&mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn source_hash_folds_cache_version() {
+        let content = "fn target(n: i32) -> i32 { n }";
+
+        // `source_hash` uses the live HARNESS_CACHE_VERSION.
+        assert_eq!(
+            source_hash(content),
+            source_hash_with_version(HARNESS_CACHE_VERSION, content),
+            "source_hash must fold HARNESS_CACHE_VERSION into the digest"
+        );
+
+        // Bumping the version constant changes every cache key even when the
+        // source text is byte-for-byte identical — the str-wcf3 invariant.
+        assert_ne!(
+            source_hash_with_version(HARNESS_CACHE_VERSION, content),
+            source_hash_with_version(HARNESS_CACHE_VERSION + 1, content),
+            "a version bump must invalidate stale harness caches for identical source"
         );
     }
 
