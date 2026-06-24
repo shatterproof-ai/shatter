@@ -137,11 +137,12 @@ pub async fn fetch_planner_seeds(
 /// Map planner outputs to ready-to-execute argument vectors.
 ///
 /// One seed is produced per `InvocationPlan` whose every `ValuePlan` is
-/// directly materializable (`Literal` or `Zero`). Plans containing `Random`,
-/// `Symbolic`, or `RuntimeValue` entries are skipped — those strategies are
-/// already covered by the explorer's random generator, the orchestrator's
-/// Z3 path, or the producing frontend's runtime-value resolution at execute
-/// time, respectively.
+/// directly materializable. `Literal` plans produce their stored value;
+/// `Zero` plans produce the zero value for their type; `RuntimeValue` plans
+/// produce `null` (the Go wrapper bakes the runtime expression at compile
+/// time and ignores the JSON slot, so null is always safe there). Plans
+/// containing `Random` or `Symbolic` entries are skipped — those strategies
+/// are driven by the explorer's random generator or the orchestrator's Z3 path.
 #[must_use]
 pub fn materialize_seeds(plans: &[InvocationPlan], param_infos: &[ParamInfo]) -> Vec<Vec<Value>> {
     let mut seeds = Vec::new();
@@ -1007,5 +1008,165 @@ mod tests {
         };
         let seeds = materialize_seeds(&[mk(1), mk(2), mk(3)], &[int_param("a")]);
         assert_eq!(seeds, vec![vec![json!(1)], vec![json!(2)], vec![json!(3)]]);
+    }
+
+    // ── Property tests ──────────────────────────────────────────────────────
+    // Covers materialize_seeds invariants for all plan-kind combinations.
+
+    #[cfg(test)]
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+        use serde_json::json;
+
+        fn arb_value_plan(index: u32) -> impl Strategy<Value = ValuePlan> {
+            prop_oneof![
+                // Literal
+                any::<i64>().prop_map(move |n| ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Literal,
+                    literal: Some(json!(n)),
+                    type_hint: String::new(),
+                }),
+                // Zero
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Zero,
+                    literal: None,
+                    type_hint: String::new(),
+                }),
+                // RuntimeValue (str-r2q7: must materialize as null)
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(json!("context.Background()")),
+                    type_hint: "context.Context".into(),
+                }),
+                // Random/Symbolic (must drop the entire plan)
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Random,
+                    literal: None,
+                    type_hint: String::new(),
+                }),
+            ]
+        }
+
+        proptest! {
+            /// Every produced seed has exactly as many slots as param_infos.
+            #[test]
+            fn seed_length_equals_param_count(
+                plans in prop::collection::vec(
+                    (0u32..4).prop_flat_map(|n| {
+                        let slots: u32 = n + 1;
+                        prop::collection::vec(arb_value_plan(0), slots as usize)
+                            .prop_map(move |args| InvocationPlan {
+                                target_id: "t".into(),
+                                receiver_kind: String::new(),
+                                generic_type_args: vec![],
+                                argument_plans: args,
+                                constructor_arg_plans: vec![],
+                                priority: 0,
+                                label: String::new(),
+                            })
+                    }),
+                    0..5,
+                )
+            ) {
+                for plan in &plans {
+                    let arity = plan.argument_plans.len();
+                    let params: Vec<_> = (0..arity)
+                        .map(|i| int_param(&format!("p{i}")))
+                        .collect();
+                    let seeds = materialize_seeds(&[plan.clone()], &params);
+                    for seed in &seeds {
+                        prop_assert_eq!(seed.len(), arity,
+                            "seed length must equal param count");
+                    }
+                }
+            }
+
+            /// A plan with any Random entry never produces a seed.
+            #[test]
+            fn random_plan_never_materializes(extra_literal in any::<i64>()) {
+                let plan = InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: String::new(),
+                    generic_type_args: vec![],
+                    argument_plans: vec![
+                        ValuePlan {
+                            param_index: 0,
+                            param_name: "ctx".into(),
+                            kind: ValuePlanKind::RuntimeValue,
+                            literal: Some(json!("context.Background()")),
+                            type_hint: "context.Context".into(),
+                        },
+                        ValuePlan {
+                            param_index: 1,
+                            param_name: "rnd".into(),
+                            kind: ValuePlanKind::Random,
+                            literal: None,
+                            type_hint: String::new(),
+                        },
+                        ValuePlan {
+                            param_index: 2,
+                            param_name: "lit".into(),
+                            kind: ValuePlanKind::Literal,
+                            literal: Some(json!(extra_literal)),
+                            type_hint: String::new(),
+                        },
+                    ],
+                    constructor_arg_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                };
+                let seeds = materialize_seeds(
+                    &[plan],
+                    &[int_param("ctx"), int_param("rnd"), int_param("lit")],
+                );
+                prop_assert!(seeds.is_empty(),
+                    "plan with Random must not produce a seed");
+            }
+
+            /// RuntimeValue slots always materialize as null (never drop the plan).
+            #[test]
+            fn runtime_value_slot_is_always_null(literal_val in any::<i64>()) {
+                let plan = InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: String::new(),
+                    generic_type_args: vec![],
+                    argument_plans: vec![
+                        ValuePlan {
+                            param_index: 0,
+                            param_name: "ctx".into(),
+                            kind: ValuePlanKind::RuntimeValue,
+                            literal: Some(json!("context.Background()")),
+                            type_hint: "context.Context".into(),
+                        },
+                        ValuePlan {
+                            param_index: 1,
+                            param_name: "v".into(),
+                            kind: ValuePlanKind::Literal,
+                            literal: Some(json!(literal_val)),
+                            type_hint: String::new(),
+                        },
+                    ],
+                    constructor_arg_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                };
+                let seeds = materialize_seeds(
+                    &[plan],
+                    &[int_param("ctx"), int_param("v")],
+                );
+                prop_assert_eq!(seeds.len(), 1, "plan with RuntimeValue + Literal must produce one seed");
+                prop_assert_eq!(&seeds[0][0], &Value::Null, "RuntimeValue slot must be null");
+                prop_assert_eq!(&seeds[0][1], &json!(literal_val), "Literal slot must keep its value");
+            }
+        }
     }
 }
