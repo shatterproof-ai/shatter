@@ -7,13 +7,15 @@
 //! preserving the single-source-of-truth rule for parallel explorer/
 //! orchestrator code paths (see project-wide "parallel paths" contract).
 //!
-//! Scope: this pass materializes `Literal` and `Zero` `ValuePlanKind`s only.
-//! `Random`, `Symbolic`, and `RuntimeValue` plan entries yield no seed for
-//! the current target and fall through to the normal random / concolic input
-//! generation (or, for `RuntimeValue`, to the producing frontend's own
-//! runtime-value resolution at execute time). Callers that need to surface
-//! planner ordering should pass plans in priority order; seeds are produced
-//! in the order the frontend returned them.
+//! Scope: this pass materializes `Literal`, `Zero`, and `RuntimeValue`
+//! `ValuePlanKind`s. `Random` and `Symbolic` entries yield no seed and fall
+//! through to normal random / concolic input generation. `RuntimeValue`
+//! entries (e.g. `context.Context` params) are materialized as `null` — the
+//! Go wrapper bakes the runtime expression at wrapper-compile time (str-gxjs.1)
+//! and ignores the JSON input slot entirely, so `null` is always safe and
+//! allows sibling `Literal`/`Zero` plans on the same function to survive.
+//! Callers that need to surface planner ordering should pass plans in priority
+//! order; seeds are produced in the order the frontend returned them.
 
 use serde_json::Value;
 
@@ -135,11 +137,12 @@ pub async fn fetch_planner_seeds(
 /// Map planner outputs to ready-to-execute argument vectors.
 ///
 /// One seed is produced per `InvocationPlan` whose every `ValuePlan` is
-/// directly materializable (`Literal` or `Zero`). Plans containing `Random`,
-/// `Symbolic`, or `RuntimeValue` entries are skipped — those strategies are
-/// already covered by the explorer's random generator, the orchestrator's
-/// Z3 path, or the producing frontend's runtime-value resolution at execute
-/// time, respectively.
+/// directly materializable. `Literal` plans produce their stored value;
+/// `Zero` plans produce the zero value for their type; `RuntimeValue` plans
+/// produce `null` (the Go wrapper bakes the runtime expression at compile
+/// time and ignores the JSON slot, so null is always safe there). Plans
+/// containing `Random` or `Symbolic` entries are skipped — those strategies
+/// are driven by the explorer's random generator or the orchestrator's Z3 path.
 #[must_use]
 pub fn materialize_seeds(plans: &[InvocationPlan], param_infos: &[ParamInfo]) -> Vec<Vec<Value>> {
     let mut seeds = Vec::new();
@@ -331,7 +334,13 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
         ValuePlanKind::Zero => Some(zero_value(&param.typ)),
-        ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
+        // str-r2q7: RuntimeValue params (e.g. context.Context) are baked into the Go
+        // launcher wrapper as direct assignments at compile time (str-gxjs.1). The
+        // corresponding JSON input slot is ignored by the wrapper, so null is safe. We
+        // emit null rather than dropping the entire plan so that sibling Literal/Zero
+        // plans (e.g. an upstream URL hint on the same function) survive materialization.
+        ValuePlanKind::RuntimeValue => Some(Value::Null),
+        ValuePlanKind::Random | ValuePlanKind::Symbolic => None,
     }
 }
 
@@ -909,12 +918,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_value_plan_is_skipped() {
-        // Mirrors the Go planner's runtimeValuePlans output: kind=runtime_value,
-        // literal carries a JSON-encoded source expression, type_hint names the
-        // registered Go type. The consumer must accept the wire form
-        // (str-1hlk.4) but skip materialization — the Go launcher resolves the
-        // value at execute time via planner.LookupRuntimeValue.
+    fn runtime_value_plan_materializes_as_null() {
+        // str-r2q7: RuntimeValue params (e.g. context.Context) used to return
+        // None and drop the entire seed. Now they materialize as null — the Go
+        // wrapper bakes context.Background() at wrapper-compile time (str-gxjs.1)
+        // and ignores the JSON slot, so null is safe.
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
@@ -931,9 +939,43 @@ mod tests {
             label: String::new(),
         };
         let seeds = materialize_seeds(&[plan], &[int_param("ctx")]);
-        assert!(
-            seeds.is_empty(),
-            "runtime_value plan should not materialize in core consumer",
+        assert_eq!(
+            seeds,
+            vec![vec![Value::Null]],
+            "runtime_value param should materialize as null so the seed survives",
+        );
+    }
+
+    #[test]
+    fn runtime_value_sibling_literal_survives() {
+        // str-r2q7: when a function has a RuntimeValue param (e.g. ctx) alongside
+        // a Literal param (e.g. upstream URL hint), the entire seed must survive.
+        // Previously, RuntimeValue => None caused the ? in materialize_seed_for_plan
+        // to drop the whole seed, silently discarding the sibling Literal hint.
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![
+                ValuePlan {
+                    param_index: 0,
+                    param_name: "ctx".into(),
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(json!("context.Background()")),
+                    type_hint: "context.Context".into(),
+                },
+                literal_plan(1, "upstream", json!("http://localhost:11434")),
+            ],
+            constructor_arg_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds =
+            materialize_seeds(&[plan], &[int_param("ctx"), str_param("upstream")]);
+        assert_eq!(
+            seeds,
+            vec![vec![Value::Null, json!("http://localhost:11434")]],
+            "sibling Literal hint must survive when ctx is RuntimeValue",
         );
     }
 
@@ -966,5 +1008,165 @@ mod tests {
         };
         let seeds = materialize_seeds(&[mk(1), mk(2), mk(3)], &[int_param("a")]);
         assert_eq!(seeds, vec![vec![json!(1)], vec![json!(2)], vec![json!(3)]]);
+    }
+
+    // ── Property tests ──────────────────────────────────────────────────────
+    // Covers materialize_seeds invariants for all plan-kind combinations.
+
+    #[cfg(test)]
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+        use serde_json::json;
+
+        fn arb_value_plan(index: u32) -> impl Strategy<Value = ValuePlan> {
+            prop_oneof![
+                // Literal
+                any::<i64>().prop_map(move |n| ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Literal,
+                    literal: Some(json!(n)),
+                    type_hint: String::new(),
+                }),
+                // Zero
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Zero,
+                    literal: None,
+                    type_hint: String::new(),
+                }),
+                // RuntimeValue (str-r2q7: must materialize as null)
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(json!("context.Background()")),
+                    type_hint: "context.Context".into(),
+                }),
+                // Random/Symbolic (must drop the entire plan)
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Random,
+                    literal: None,
+                    type_hint: String::new(),
+                }),
+            ]
+        }
+
+        proptest! {
+            /// Every produced seed has exactly as many slots as param_infos.
+            #[test]
+            fn seed_length_equals_param_count(
+                plans in prop::collection::vec(
+                    (0u32..4).prop_flat_map(|n| {
+                        let slots: u32 = n + 1;
+                        prop::collection::vec(arb_value_plan(0), slots as usize)
+                            .prop_map(move |args| InvocationPlan {
+                                target_id: "t".into(),
+                                receiver_kind: String::new(),
+                                generic_type_args: vec![],
+                                argument_plans: args,
+                                constructor_arg_plans: vec![],
+                                priority: 0,
+                                label: String::new(),
+                            })
+                    }),
+                    0..5,
+                )
+            ) {
+                for plan in &plans {
+                    let arity = plan.argument_plans.len();
+                    let params: Vec<_> = (0..arity)
+                        .map(|i| int_param(&format!("p{i}")))
+                        .collect();
+                    let seeds = materialize_seeds(&[plan.clone()], &params);
+                    for seed in &seeds {
+                        prop_assert_eq!(seed.len(), arity,
+                            "seed length must equal param count");
+                    }
+                }
+            }
+
+            /// A plan with any Random entry never produces a seed.
+            #[test]
+            fn random_plan_never_materializes(extra_literal in any::<i64>()) {
+                let plan = InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: String::new(),
+                    generic_type_args: vec![],
+                    argument_plans: vec![
+                        ValuePlan {
+                            param_index: 0,
+                            param_name: "ctx".into(),
+                            kind: ValuePlanKind::RuntimeValue,
+                            literal: Some(json!("context.Background()")),
+                            type_hint: "context.Context".into(),
+                        },
+                        ValuePlan {
+                            param_index: 1,
+                            param_name: "rnd".into(),
+                            kind: ValuePlanKind::Random,
+                            literal: None,
+                            type_hint: String::new(),
+                        },
+                        ValuePlan {
+                            param_index: 2,
+                            param_name: "lit".into(),
+                            kind: ValuePlanKind::Literal,
+                            literal: Some(json!(extra_literal)),
+                            type_hint: String::new(),
+                        },
+                    ],
+                    constructor_arg_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                };
+                let seeds = materialize_seeds(
+                    &[plan],
+                    &[int_param("ctx"), int_param("rnd"), int_param("lit")],
+                );
+                prop_assert!(seeds.is_empty(),
+                    "plan with Random must not produce a seed");
+            }
+
+            /// RuntimeValue slots always materialize as null (never drop the plan).
+            #[test]
+            fn runtime_value_slot_is_always_null(literal_val in any::<i64>()) {
+                let plan = InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: String::new(),
+                    generic_type_args: vec![],
+                    argument_plans: vec![
+                        ValuePlan {
+                            param_index: 0,
+                            param_name: "ctx".into(),
+                            kind: ValuePlanKind::RuntimeValue,
+                            literal: Some(json!("context.Background()")),
+                            type_hint: "context.Context".into(),
+                        },
+                        ValuePlan {
+                            param_index: 1,
+                            param_name: "v".into(),
+                            kind: ValuePlanKind::Literal,
+                            literal: Some(json!(literal_val)),
+                            type_hint: String::new(),
+                        },
+                    ],
+                    constructor_arg_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                };
+                let seeds = materialize_seeds(
+                    &[plan],
+                    &[int_param("ctx"), int_param("v")],
+                );
+                prop_assert_eq!(seeds.len(), 1, "plan with RuntimeValue + Literal must produce one seed");
+                prop_assert_eq!(&seeds[0][0], &Value::Null, "RuntimeValue slot must be null");
+                prop_assert_eq!(&seeds[0][1], &json!(literal_val), "Literal slot must keep its value");
+            }
+        }
     }
 }
