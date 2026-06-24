@@ -47,7 +47,10 @@ curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install
 
 The installer reads the release manifest, verifies the archive checksum, and
 installs `shatter` into `~/.local/bin` by default. Set `INSTALL_DIR` to choose a
-different destination.
+different destination. The TypeScript and Go frontends are embedded in the
+`shatter` binary; the `shatter-rust` frontend ships as a sibling binary and is
+installed into the same directory, so Rust scans work out of the box once
+`INSTALL_DIR` is on your `PATH` (no source checkout required).
 
 Projects can also consume the same GitHub Release payloads through a
 registryless npm tarball dependency, a Go tool wrapper, or the GitHub setup

@@ -77,6 +77,39 @@ class InstallManifestTests(unittest.TestCase):
         )
         self.assertEqual(actual.splitlines()[-1], "continuous-test")
 
+    def test_install_binaries_installs_cli_and_rust_frontend(self):
+        with tempfile.TemporaryDirectory() as temp:
+            srcdir = Path(temp) / "extracted"
+            srcdir.mkdir()
+            (srcdir / "shatter").write_text("cli")
+            (srcdir / "shatter-rust").write_text("rust frontend")
+            install_dir = Path(temp) / "bin"
+
+            run_installer_snippet(
+                f'INSTALL_DIR="{install_dir}"\ninstall_binaries "{srcdir}"'
+            )
+
+            cli = install_dir / "shatter"
+            rust = install_dir / "shatter-rust"
+            self.assertTrue(cli.is_file())
+            self.assertTrue(rust.is_file())
+            self.assertTrue(os.access(cli, os.X_OK))
+            self.assertTrue(os.access(rust, os.X_OK))
+
+    def test_install_binaries_tolerates_missing_rust_frontend(self):
+        with tempfile.TemporaryDirectory() as temp:
+            srcdir = Path(temp) / "extracted"
+            srcdir.mkdir()
+            (srcdir / "shatter").write_text("cli")
+            install_dir = Path(temp) / "bin"
+
+            run_installer_snippet(
+                f'INSTALL_DIR="{install_dir}"\ninstall_binaries "{srcdir}"'
+            )
+
+            self.assertTrue((install_dir / "shatter").is_file())
+            self.assertFalse((install_dir / "shatter-rust").exists())
+
     def test_latest_resolution_selects_continuous_prerelease(self):
         with tempfile.TemporaryDirectory() as temp:
             curl = Path(temp) / "curl"

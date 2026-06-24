@@ -12,6 +12,12 @@ set -euo pipefail
 
 REPO="shatterproof-ai/shatter"
 BINARY="shatter"
+# Frontend binaries that ship alongside the CLI in the release archive and must
+# be installed next to it. TypeScript and Go are embedded in the `shatter`
+# binary; the Rust frontend is a separate executable discovered on PATH, so it
+# has to land in INSTALL_DIR too. Older archives may omit it, so installing each
+# sibling is best-effort.
+SIBLING_BINARIES=("shatter-rust")
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 CHANNEL="${CHANNEL:-latest}"
@@ -183,9 +189,27 @@ download() {
     error "Archive did not contain expected binary '${BINARY}'."
   fi
 
+  install_binaries "$tmpdir"
+}
+
+# Copy the CLI and any sibling frontend binaries from an extracted archive
+# directory into INSTALL_DIR. Factored out of download() so it can be unit
+# tested against a fake extraction directory.
+install_binaries() {
+  local srcdir="$1"
+
   mkdir -p "$INSTALL_DIR"
-  cp "$tmpdir/${BINARY}" "$INSTALL_DIR/${BINARY}"
+  cp "$srcdir/${BINARY}" "$INSTALL_DIR/${BINARY}"
   chmod +x "$INSTALL_DIR/${BINARY}"
+
+  local name
+  for name in "${SIBLING_BINARIES[@]}"; do
+    if [ -f "$srcdir/${name}" ]; then
+      cp "$srcdir/${name}" "$INSTALL_DIR/${name}"
+      chmod +x "$INSTALL_DIR/${name}"
+      info "Installed" "${name} frontend"
+    fi
+  done
 }
 
 verify() {
