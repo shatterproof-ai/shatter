@@ -4048,6 +4048,7 @@ fn build_no_target_spec_bundle(
         functions: Vec::new(),
         status: Some(shatter_core::spec::FileSpecBundleStatus::NoTargets),
         no_target_reason: Some(reason),
+        ..FileSpecBundle::default()
     }
 }
 

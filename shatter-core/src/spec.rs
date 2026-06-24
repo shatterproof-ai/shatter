@@ -223,12 +223,38 @@ pub enum FileSpecBundleStatus {
     NoTargets,
 }
 
+/// Schema version for the spec JSON bundle (`--spec-out` / `{file, functions}`).
+///
+/// **Bump policy.** Increment whenever the spec JSON wire format changes in a
+/// way a consumer could observe: adding/removing/renaming a field on
+/// [`FileSpecBundle`], [`FunctionSpec`], [`SpecClass`], or any nested type;
+/// changing a field's type or its serialized representation; or changing the
+/// meaning of an existing value. `skip_serializing_if` additions that never
+/// appear for existing producers still count — when in doubt, bump. Record the
+/// rationale for each bump in a comment here, mirroring
+/// [`crate::report::SCAN_REPORT_SCHEMA_VERSION`].
+///
+/// Released binaries are continuous builds with no semver promise, so this
+/// field is the only schema signal a consumer (e.g. the spec-diff CI
+/// regression workflow) has when comparing specs produced by different Shatter
+/// builds. Spec bundles written before this field existed deserialize with
+/// `version == 0`, distinguishing legacy/unversioned output from `v1`.
+///
+/// - v1: initial versioned spec bundle (str-12us).
+pub const SPEC_SCHEMA_VERSION: u32 = 1;
+
 /// Per-file spec bundle: all function specs from a single source file.
 ///
 /// Used by `--output` to write a single JSON file containing specs for every
 /// explored function in a source file, keyed by file path.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileSpecBundle {
+    /// Spec JSON schema version. See [`SPEC_SCHEMA_VERSION`] and its bump
+    /// policy. Freshly built bundles carry the current version; bundles written
+    /// before this field existed deserialize to `0` (legacy), so spec-diff can
+    /// flag a schema mismatch explicitly.
+    #[serde(default)]
+    pub version: u32,
     /// Source file path (e.g., "src/math.ts").
     pub file: String,
     /// Specs for each explored function in this file.
@@ -244,6 +270,25 @@ pub struct FileSpecBundle {
     /// Mirrors `ExploreSummary.no_target_reason` (str-jeen.21 schema).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_target_reason: Option<crate::protocol::NoTargetReason>,
+}
+
+impl Default for FileSpecBundle {
+    /// Freshly constructed bundles carry the current [`SPEC_SCHEMA_VERSION`].
+    ///
+    /// This is deliberately distinct from serde's field-level default (`0`):
+    /// a bundle Shatter builds is always current, whereas a bundle read from
+    /// disk that lacks the `version` field is legacy/unversioned. Every
+    /// `..FileSpecBundle::default()` writer site therefore stamps the current
+    /// version automatically.
+    fn default() -> Self {
+        Self {
+            version: SPEC_SCHEMA_VERSION,
+            file: String::new(),
+            functions: Vec::new(),
+            status: None,
+            no_target_reason: None,
+        }
+    }
 }
 
 /// Complete behavioral specification of a function.
@@ -637,6 +682,7 @@ struct FunctionSpecYaml<'a> {
 
 #[derive(Serialize)]
 struct FileSpecBundleYaml<'a> {
+    version: u32,
     file: &'a str,
     functions: Vec<FunctionSpecYaml<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -691,6 +737,7 @@ pub fn format_file_spec_yaml(bundles: &[FileSpecBundle]) -> Result<String, serde
     let views: Vec<FileSpecBundleYaml<'_>> = bundles
         .iter()
         .map(|b| FileSpecBundleYaml {
+            version: b.version,
             file: &b.file,
             functions: b.functions.iter().map(to_function_spec_yaml).collect(),
             status: b.status,
@@ -1819,6 +1866,7 @@ mod tests {
             functions: vec![],
             status: Some(FileSpecBundleStatus::NoTargets),
             no_target_reason: Some(crate::protocol::NoTargetReason::DeclarationOnly),
+            ..FileSpecBundle::default()
         };
 
         write_file_spec_bundle(&bundle, &path).expect("write");
@@ -1859,6 +1907,63 @@ mod tests {
         assert!(
             !raw.contains("no_target_reason"),
             "unexpected reason field: {raw}"
+        );
+    }
+
+    // --- str-12us: spec bundle schema version ---
+
+    #[test]
+    fn default_bundle_carries_current_schema_version() {
+        // A freshly built bundle must stamp the current SPEC_SCHEMA_VERSION,
+        // and the version field must always serialize (it is the only schema
+        // signal a cross-version consumer has).
+        let bundle = FileSpecBundle {
+            file: "src/math.ts".to_string(),
+            functions: vec![],
+            ..FileSpecBundle::default()
+        };
+        assert_eq!(bundle.version, SPEC_SCHEMA_VERSION);
+
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&bundle).expect("serialize"))
+                .expect("parse");
+        assert_eq!(value["version"], SPEC_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn legacy_bundle_without_version_deserializes_to_zero() {
+        // Spec bundles written before the version field existed must decode to
+        // version 0 (legacy/unversioned) so spec-diff can flag the schema
+        // mismatch instead of silently assuming the current version.
+        let legacy = r#"{"file": "src/math.ts", "functions": []}"#;
+        let bundle: FileSpecBundle = serde_json::from_str(legacy).expect("deserialize legacy");
+        assert_eq!(bundle.version, 0);
+    }
+
+    #[test]
+    fn bundle_version_round_trips() {
+        let bundle = FileSpecBundle {
+            file: "src/math.ts".to_string(),
+            functions: vec![],
+            ..FileSpecBundle::default()
+        };
+        let json = serde_json::to_string(&bundle).expect("serialize");
+        let loaded: FileSpecBundle = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(loaded.version, SPEC_SCHEMA_VERSION);
+        assert_eq!(loaded, bundle);
+    }
+
+    #[test]
+    fn yaml_bundle_includes_version() {
+        let bundle = FileSpecBundle {
+            file: "src/math.ts".to_string(),
+            functions: vec![],
+            ..FileSpecBundle::default()
+        };
+        let yaml = format_file_spec_yaml(std::slice::from_ref(&bundle)).expect("yaml");
+        assert!(
+            yaml.contains(&format!("version: {SPEC_SCHEMA_VERSION}")),
+            "yaml should carry the schema version, got: {yaml}"
         );
     }
 
