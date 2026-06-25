@@ -241,8 +241,6 @@ export interface ExecuteResponse extends BaseResponse {
    *  When non-empty, the function called a known encrypt or decrypt API;
    *  the core engine can use this for boundary splitting. */
   runtime_crypto_boundaries?: RuntimeCryptoBoundary[];
-  /** Runtime-detected adapter hints for failures that suggest a missing adapter. */
-  adapter_hints?: AdapterHint[];
   /** Standardized invocation outcome (str-hy9b.A1/A5). Always emitted by this frontend
    *  for execute responses. Status is one of completed | runtime_failed | timed_out
    *  on the executor's primary success/failure paths; build_failed and unsupported

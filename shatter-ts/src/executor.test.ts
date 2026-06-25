@@ -1410,7 +1410,6 @@ describe("scope events in execution", () => {
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: [],
     };
     const response = buildExecuteResponse(1, "0.6.0", raw);
     expect(response.scope_events).toHaveLength(2);
@@ -2009,7 +2008,6 @@ describe("buildExecuteResponse includes connection_failures", () => {
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: [],
     };
     const resp = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
     expect(resp.connection_failures).toBeUndefined();
@@ -2041,7 +2039,6 @@ describe("buildExecuteResponse includes connection_failures", () => {
         },
       ],
       runtime_crypto_boundaries: [],
-      adapter_hints: [],
     };
     const resp = buildExecuteResponse(1, PROTOCOL_VERSION, rawResult);
     expect(resp.connection_failures).toEqual([
