@@ -1625,110 +1625,6 @@ pub(crate) fn extract_loop_context(scope_events: &[TraceEvent]) -> HashMap<u32, 
     context
 }
 
-/// Tracks per-loop branch coverage and detects convergence. Retained for unit
-/// tests; not used in the main exploration loop after MetaStrategy migration.
-#[cfg(test)]
-#[derive(Clone)]
-pub(crate) struct LoopCoverageTracker {
-    /// Per loop_id: set of (branch_id, taken) pairs observed.
-    coverage: HashMap<u32, HashSet<(u32, bool)>>,
-    /// Per loop_id: consecutive observations with no new coverage.
-    stale_count: HashMap<u32, usize>,
-    /// Loops that have converged (stale_count >= window).
-    converged: HashSet<u32>,
-    /// Convergence window (0 = disabled).
-    window: usize,
-}
-
-#[cfg(test)]
-impl LoopCoverageTracker {
-    pub(crate) fn new(window: usize) -> Self {
-        Self {
-            coverage: HashMap::new(),
-            stale_count: HashMap::new(),
-            converged: HashSet::new(),
-            window,
-        }
-    }
-
-    /// Observe branch decisions in the context of their enclosing loops.
-    /// Updates coverage sets and stale counters. Marks loops as converged
-    /// when stale_count reaches the window.
-    pub(crate) fn observe(
-        &mut self,
-        loop_context: &HashMap<u32, HashSet<u32>>,
-        branch_path: &[BranchDecision],
-    ) {
-        if self.window == 0 {
-            return;
-        }
-
-        // Collect all loop_ids mentioned in this trace.
-        let mut loops_in_trace: HashSet<u32> = HashSet::new();
-        for loop_ids in loop_context.values() {
-            loops_in_trace.extend(loop_ids);
-        }
-
-        // For each loop, check if any new (branch_id, taken) pair appeared.
-        let mut new_coverage_per_loop: HashMap<u32, bool> = HashMap::new();
-
-        for bd in branch_path {
-            if let Some(loop_ids) = loop_context.get(&bd.branch_id) {
-                for &loop_id in loop_ids {
-                    let pair = (bd.branch_id, bd.taken);
-                    let coverage_set = self.coverage.entry(loop_id).or_default();
-                    if coverage_set.insert(pair) {
-                        new_coverage_per_loop.insert(loop_id, true);
-                    } else {
-                        new_coverage_per_loop.entry(loop_id).or_insert(false);
-                    }
-                }
-            }
-        }
-
-        // Update stale counts.
-        for &loop_id in &loops_in_trace {
-            let had_new = new_coverage_per_loop
-                .get(&loop_id)
-                .copied()
-                .unwrap_or(false);
-            if had_new {
-                self.stale_count.insert(loop_id, 0);
-                self.converged.remove(&loop_id);
-            } else {
-                let count = self.stale_count.entry(loop_id).or_insert(0);
-                *count += 1;
-                if *count >= self.window {
-                    self.converged.insert(loop_id);
-                }
-            }
-        }
-    }
-
-    /// Returns true if the branch's enclosing loop has converged.
-    pub(crate) fn should_skip_branch(
-        &self,
-        branch_id: u32,
-        loop_context: &HashMap<u32, HashSet<u32>>,
-    ) -> bool {
-        if self.window == 0 {
-            return false;
-        }
-        if let Some(loop_ids) = loop_context.get(&branch_id) {
-            loop_ids.iter().any(|id| self.converged.contains(id))
-        } else {
-            false
-        }
-    }
-
-    /// Return a snapshot of the converged loop IDs. Used by the pipelining path
-    /// to capture the convergence set at build-time so it can be moved into
-    /// `spawn_blocking` without borrowing `self`.
-    pub(crate) fn converged_snapshot(&self) -> HashSet<u32> {
-        self.converged.clone()
-    }
-}
-
 /// Input bundle for the Z3 solve phase. Used by unit tests to validate Z3 solving
 /// independently of the main exploration loop.
 #[cfg(test)]
@@ -1736,8 +1632,6 @@ struct Z3SolveInput {
     obs: Observation,
     solvable_with_idx: Vec<(usize, SymExpr)>,
     invariant_skip: HashSet<usize>,
-    loop_context: HashMap<u32, HashSet<u32>>,
-    converged_loops: HashSet<u32>,
     param_infos: Vec<ParamInfo>,
     param_names: Vec<String>,
     solver_timeout_ms: Option<u64>,
@@ -1788,18 +1682,12 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
         if input.invariant_skip.contains(&branch_idx) {
             continue;
         }
-        // Skip branches in converged loops.
         let branch_id = input
             .obs
             .result
             .branch_path
             .get(branch_idx)
             .map_or(0, |bd| bd.branch_id);
-        if let Some(loop_ids) = input.loop_context.get(&branch_id)
-            && loop_ids.iter().any(|id| input.converged_loops.contains(id))
-        {
-            continue;
-        }
 
         match solver::solve_for_new_path(
             &solvable,
@@ -4651,8 +4539,6 @@ mod tests {
             obs,
             solvable_with_idx,
             invariant_skip: HashSet::new(),
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos,
             param_names: vec!["x".to_string()],
             solver_timeout_ms: None,
@@ -4690,8 +4576,6 @@ mod tests {
             obs,
             solvable_with_idx: vec![],
             invariant_skip: HashSet::new(),
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos: vec![],
             param_names: vec![],
             solver_timeout_ms: None,
@@ -4701,69 +4585,6 @@ mod tests {
         assert!(output.candidates.is_empty());
         assert_eq!(output.z3_count, 0);
         assert!(output.stall_branch_ids.is_empty());
-    }
-
-    /// `z3_solve_step` skips branches in converged loops.
-    #[test]
-    fn z3_solve_step_skips_converged_loop_branches() {
-        let x_gt_0 = SymExpr::BinOp {
-            op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param {
-                name: "x".into(),
-                path: vec![],
-            }),
-            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
-        };
-
-        let obs = Observation {
-            inputs: vec![serde_json::json!(5)],
-            result: make_exec_result(vec![BranchDecision {
-                branch_id: 42,
-                line: 1,
-                taken: true,
-                constraint: SymConstraint::Expr {
-                    expr: x_gt_0.clone(),
-                },
-                conditions: None,
-            }]),
-            source: InputSource::Seed,
-            path_id: 99,
-            is_new_path: true,
-            is_sampled_skip: false,
-            mock_values: vec![],
-        };
-
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(42, {
-            let mut s = HashSet::new();
-            s.insert(1u32); // loop_id=1 encloses branch_id=42
-            s
-        });
-
-        let mut converged_loops = HashSet::new();
-        converged_loops.insert(1u32); // loop_id=1 is converged
-
-        let input = Z3SolveInput {
-            obs,
-            solvable_with_idx: vec![(0, x_gt_0)],
-            invariant_skip: HashSet::new(),
-            loop_context,
-            converged_loops,
-            param_infos: vec![ParamInfo {
-                name: "x".into(),
-                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
-                type_name: None,
-            }],
-            param_names: vec!["x".to_string()],
-            solver_timeout_ms: None,
-        };
-
-        let output = z3_solve_step(input);
-        assert!(
-            output.candidates.is_empty(),
-            "converged loop branch should be skipped by z3_solve_step"
-        );
-        assert_eq!(output.z3_count, 0);
     }
 
     #[test]
@@ -6237,8 +6058,6 @@ mod tests {
             obs: obs.clone(),
             solvable_with_idx: solvable_with_idx.clone(),
             invariant_skip,
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos: param_infos.clone(),
             param_names: param_names.clone(),
             solver_timeout_ms: None,
@@ -6255,8 +6074,6 @@ mod tests {
             obs: obs.clone(),
             solvable_with_idx: solvable_with_idx.clone(),
             invariant_skip: HashSet::new(),
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos: param_infos.clone(),
             param_names: param_names.clone(),
             solver_timeout_ms: None,
@@ -6270,219 +6087,6 @@ mod tests {
         assert!(
             out_with_detection.z3_count < out_no_detection.z3_count,
             "invariant detection should reduce Z3 attempts for a loop-invariant branch"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Coverage-guided diminishing returns tests (str-ztqi)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn loop_coverage_tracker_detects_convergence() {
-        let mut tracker = LoopCoverageTracker::new(2);
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(10, [1].into_iter().collect());
-
-        // First observation: new coverage.
-        let bp1 = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        tracker.observe(&loop_context, &bp1);
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-
-        // Second observation: same coverage — stale=1, not converged yet.
-        tracker.observe(&loop_context, &bp1);
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-
-        // Third observation: same again — stale=2 >= window=2 → converged.
-        tracker.observe(&loop_context, &bp1);
-        assert!(tracker.should_skip_branch(10, &loop_context));
-    }
-
-    #[test]
-    fn loop_coverage_tracker_resets_on_new_coverage() {
-        let mut tracker = LoopCoverageTracker::new(2);
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(10, [1].into_iter().collect());
-
-        let bp1 = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        tracker.observe(&loop_context, &bp1);
-        tracker.observe(&loop_context, &bp1); // stale=1
-
-        // New coverage resets stale count.
-        let bp2 = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: false,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        tracker.observe(&loop_context, &bp2);
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-    }
-
-    #[test]
-    fn loop_coverage_tracker_disabled_when_window_zero() {
-        let mut tracker = LoopCoverageTracker::new(0);
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(10, [1].into_iter().collect());
-
-        let bp = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        for _ in 0..10 {
-            tracker.observe(&loop_context, &bp);
-        }
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-    }
-
-    /// Integration test: enabling loop_convergence_window reduces Z3 solve attempts
-    /// for branches in converged loops without reducing coverage of non-loop paths.
-    ///
-    /// Scenario: f(x) has a loop (loop_id=1) containing branch 0 (`x > 10`, always
-    /// taken=true). Five new-path observations all produce the same loop coverage.
-    /// With window=3, the loop is marked converged on the 4th observation and Z3
-    /// negation is suppressed for observations 4 and 5.
-    #[test]
-    fn loop_convergence_suppresses_z3_for_converged_loop() {
-        use crate::sym_expr::SymExpr;
-        let x_gt_10 = SymExpr::BinOp {
-            op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param {
-                name: "x".into(),
-                path: vec![],
-            }),
-            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
-        };
-        let loop_branch = BranchDecision {
-            branch_id: 0,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::Expr {
-                expr: x_gt_10.clone(),
-            },
-            conditions: None,
-        };
-        // scope_events encode branch 0 as inside loop 1.
-        let scope_events_with_loop = vec![
-            TraceEvent::Scope {
-                event: ScopeEvent::LoopEnter { loop_id: 1 },
-            },
-            TraceEvent::Branch {
-                decision: loop_branch.clone(),
-            },
-            TraceEvent::Scope {
-                event: ScopeEvent::LoopExit { loop_id: 1 },
-            },
-        ];
-        let param_infos = vec![ParamInfo {
-            name: "x".into(),
-            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
-            type_name: None,
-        }];
-        let param_names = vec!["x".to_string()];
-        // 5 observations, all new-path, with the same loop branch coverage.
-        let observations: Vec<Observation> = (0..5u64)
-            .map(|i| Observation {
-                inputs: vec![serde_json::json!(15i64)],
-                result: ExecuteResult {
-                    branch_path: vec![loop_branch.clone()],
-                    scope_events: scope_events_with_loop.clone(),
-                    loop_body_states: vec![],
-                    return_value: None,
-                    thrown_error: None,
-                    lines_executed: vec![],
-                    calls_to_external: vec![],
-                    path_constraints: vec![],
-                    side_effects: vec![],
-                    capture_truncation: None,
-                    discovered_dependencies: vec![],
-                    connection_failures: vec![],
-                    runtime_crypto_boundaries: vec![],
-                    outcome: None,
-                    performance: empty_perf(),
-                },
-                source: InputSource::Seed,
-                path_id: i, // unique path_id per observation
-                is_new_path: true,
-                is_sampled_skip: false,
-                mock_values: vec![],
-            })
-            .collect();
-
-        // solvable_with_idx for a single-branch observation: [(0, x>10)]
-        let solvable_with_idx = vec![(0usize, x_gt_10)];
-
-        // Z3 solving now happens in z3_solve_step (called from Z3SolverStrategy.feedback),
-        // not in solve_and_generate. Simulate the main loop: process observations
-        // sequentially, updating LoopCoverageTracker and passing converged_loops to
-        // z3_solve_step each round.
-
-        // With window=3: obs 1–3 run Z3; obs 4 triggers convergence → skip; obs 5 → skip.
-        let mut tracker_conv = LoopCoverageTracker::new(3);
-        let mut z3_count_conv = 0usize;
-        for obs in &observations {
-            let loop_context = extract_loop_context(&obs.result.scope_events);
-            tracker_conv.observe(&loop_context, &obs.result.branch_path);
-            let converged = tracker_conv.converged_snapshot();
-            let out = z3_solve_step(Z3SolveInput {
-                obs: obs.clone(),
-                solvable_with_idx: solvable_with_idx.clone(),
-                invariant_skip: HashSet::new(),
-                loop_context,
-                converged_loops: converged,
-                param_infos: param_infos.clone(),
-                param_names: param_names.clone(),
-                solver_timeout_ms: None,
-            });
-            z3_count_conv += out.z3_count;
-        }
-
-        // Without convergence (window=0): all 5 run Z3.
-        let mut z3_count_no_conv = 0usize;
-        for obs in &observations {
-            let loop_context = extract_loop_context(&obs.result.scope_events);
-            let out = z3_solve_step(Z3SolveInput {
-                obs: obs.clone(),
-                solvable_with_idx: solvable_with_idx.clone(),
-                invariant_skip: HashSet::new(),
-                loop_context,
-                converged_loops: HashSet::new(),
-                param_infos: param_infos.clone(),
-                param_names: param_names.clone(),
-                solver_timeout_ms: None,
-            });
-            z3_count_no_conv += out.z3_count;
-        }
-
-        // Without convergence: all 5 observations attempt Z3.
-        assert_eq!(
-            z3_count_no_conv, 5,
-            "window=0 should attempt Z3 for all 5 observations"
-        );
-        // With window=3: obs 1 adds new coverage (stale=0); obs 2-4 are stale (stale=1,2,3→converged);
-        // obs 5 is already converged → skipped. Z3 runs for obs 1-3, skipped for 4-5. Net: 3.
-        assert_eq!(
-            z3_count_conv, 3,
-            "window=3 should skip obs 4 and 5 after loop converges"
-        );
-        assert!(
-            z3_count_conv < z3_count_no_conv,
-            "convergence should reduce Z3 candidates for saturated loop branches"
         );
     }
 
