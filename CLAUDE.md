@@ -10,7 +10,7 @@ See `PLAN.md` for architecture and `AGENTS.md` for beads tracking, git workflow,
 - **Parallel parity** in this project means `buildSymExpr` / `buildSymExprWithFlow`, random explorer / concolic orchestrator, CLI wiring for `--concolic` vs default. When adding a new AST node type, CLI flag, or config field, grep for the parallel code path before declaring done.
 - Integration tests use known-answer functions with expected branches and triggering inputs (model: `examples/go/05-conditional-merge.go`, exercised by `shatter-core/tests/e2e_concolic_go.rs`)
 - Frontend protocol handlers have round-trip tests (serialize → deserialize → verify)
-- Regression snapshots are checked into the repo; a CI gate to verify them is not yet in place (tracked in str-j5zp)
+- Regression snapshots are checked into the repo and verified in CI by `.github/workflows/ci.yml` (runs `task test-standard` + `parity` + `conformance` on push/PR to main)
 
 Per-language standards: `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills. Formal methods / PBT / contracts policy: `/formal-methods-policy` skill and `shatter-core/CLAUDE.md`. Cross-frontend parity rules: `/frontend-parity` skill and `protocol/parity-matrix.yaml`.
 
