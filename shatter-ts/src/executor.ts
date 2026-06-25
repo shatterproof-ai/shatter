@@ -18,7 +18,6 @@ import type {
   ExecuteResponse,
   ErrorInfo,
   ErrorCategory,
-  AdapterHint,
   PerformanceMetrics,
   BranchDecision,
   SymConstraint,
@@ -36,7 +35,6 @@ import type {
   LoopInfo,
   InvocationOutcome,
 } from "./protocol.js";
-import { detectRuntimeHints } from "./runtime-hints.js";
 import { WEB_GLOBALS, DEFAULT_IMPORT_META_ENV } from "./web-globals.js";
 import type {
   SandboxProvider,
@@ -1110,7 +1108,6 @@ interface RawExecuteResult {
   discovered_dependencies: DiscoveredDependency[];
   connection_failures: ConnectionFailure[];
   runtime_crypto_boundaries: RuntimeCryptoBoundary[];
-  adapter_hints: AdapterHint[];
 }
 
 function extractLoopBodyStates(
@@ -1977,9 +1974,6 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: metrics.thrownError
-        ? detectRuntimeHints(metrics.thrownError)
-        : [],
     };
   } else {
     // No-capture fast path: skip all capture infrastructure.
@@ -2008,9 +2002,6 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: metrics.thrownError
-        ? detectRuntimeHints(metrics.thrownError)
-        : [],
     };
   }
 }
@@ -2145,7 +2136,6 @@ export async function executeAdapterOwned(args: {
     discovered_dependencies: [],
     connection_failures: [],
     runtime_crypto_boundaries: [],
-    adapter_hints: thrownError ? detectRuntimeHints(thrownError) : [],
   };
 }
 
@@ -2679,9 +2669,6 @@ export async function executeInstrumented(
     discovered_dependencies: discoveredDeps,
     connection_failures: connectionFailures,
     runtime_crypto_boundaries: cryptoBoundaries,
-    adapter_hints: metrics.thrownError
-      ? detectRuntimeHints(metrics.thrownError)
-      : [],
   };
 }
 
@@ -2738,10 +2725,6 @@ export function buildExecuteResponse(
 
   if (rawResult.runtime_crypto_boundaries.length > 0) {
     response.runtime_crypto_boundaries = rawResult.runtime_crypto_boundaries;
-  }
-
-  if (rawResult.adapter_hints.length > 0) {
-    response.adapter_hints = rawResult.adapter_hints;
   }
 
   response.outcome = deriveOutcome(rawResult);
