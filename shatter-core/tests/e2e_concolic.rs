@@ -231,6 +231,144 @@ async fn concolic_classifynumber_discovers_all_branches() {
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
+/// Regression for str-4o07: the concolic explore path must (a) carry concrete
+/// call inputs into every rendered path execution and (b) report the same
+/// `total_lines` denominator as the random explorer on the same function.
+///
+/// Before the fix, the concolic path reconciled coverage against the raw source
+/// span (`end_line - start_line + 1`) instead of the frontend's instrumentable
+/// line count, so a function the random explorer reported at 100% (7/7) showed
+/// up at 58% (7/12) under `--concolic`. It also dropped the input witnesses,
+/// rendering every Call→Outcome row with an empty argument list.
+#[tokio::test]
+async fn concolic_matches_random_line_totals_and_keeps_inputs() {
+    use shatter_core::explorer::{LoopBuckets, ObservationOutput};
+    use shatter_core::observe::{ObserveConfig, observe_function, reconcile_observation_coverage};
+
+    let file = examples_dir().join("01-arithmetic.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyNumber").await;
+
+    // Capture the frontend's instrumentable line count — the denominator the
+    // random explorer uses and the value the concolic path previously ignored.
+    let instrument_resp = frontend
+        .send(ProtoCommand::Instrument {
+            file: file_str.clone(),
+            function: "classifyNumber".to_string(),
+            mocks: vec![],
+            project_root: None,
+            execution_profile: None,
+        })
+        .await
+        .expect("instrument command failed");
+    let instrumentable_line_count = match instrument_resp.result {
+        ResponseResult::Instrument {
+            instrumented,
+            instrumentable_line_count,
+            ..
+        } => {
+            assert!(instrumented, "instrumentation returned false");
+            instrumentable_line_count
+        }
+        other => panic!("expected Instrument response, got: {other:?}"),
+    };
+
+    // --- Concolic path: mirror pipeline_orchestrator::run_concolic_observe. ---
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(100),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+    let seed_inputs = vec![
+        vec![serde_json::json!(5)],
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(2)],
+    ];
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "classifyNumber",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let mut concolic_obs: ObservationOutput = result.into();
+    reconcile_observation_coverage(
+        &mut concolic_obs,
+        analysis.start_line,
+        analysis.end_line,
+        instrumentable_line_count,
+    );
+
+    // --- Random path: observe_function instruments and reconciles internally. ---
+    let observe_config = ObserveConfig {
+        file: file_str.clone(),
+        mocks: vec![],
+        setup_file: None,
+        setup_level: SetupLevel::Function,
+        capabilities: FrontendCapabilities {
+            commands: HashSet::new(),
+            complex_types: HashSet::new(),
+        },
+        project_root: None,
+        execution_profile: None,
+        loop_buckets: LoopBuckets::none(),
+        timeout: None,
+        skip_instrument: false,
+        capture_side_effects: false,
+    };
+    // Inputs that exercise all four branches so coverage matches the concolic run.
+    let random_inputs = vec![
+        vec![serde_json::json!(0)],
+        vec![serde_json::json!(5)],
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(2)],
+    ];
+    let random_obs = observe_function(&mut frontend, &analysis, random_inputs, &observe_config)
+        .await
+        .expect("random observation failed");
+
+    // (a) Line totals must agree across the two explorer paths.
+    assert_eq!(
+        concolic_obs.total_lines, random_obs.total_lines,
+        "concolic total_lines ({}) must match random total_lines ({})",
+        concolic_obs.total_lines, random_obs.total_lines,
+    );
+
+    // (b) Every rendered path execution must carry its concrete call inputs.
+    assert!(
+        !concolic_obs.new_path_executions.is_empty(),
+        "concolic run produced no path executions"
+    );
+    for exec in &concolic_obs.new_path_executions {
+        assert!(
+            !exec.inputs.is_empty(),
+            "concolic path execution dropped its call inputs: {exec:?}"
+        );
+    }
+
+    // classifyNumber has four semantic paths; all four should be rendered.
+    assert!(
+        concolic_obs.new_path_executions.len() >= 4,
+        "expected >= 4 rendered paths, got {}",
+        concolic_obs.new_path_executions.len()
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// Test concolic exploration on compareMagnitudes, which has compound arithmetic conditions.
 ///
 /// compareMagnitudes(a, b) has 4 paths:
