@@ -1131,6 +1131,32 @@ async fn main() -> ExitCode {
                 }
             };
         }
+        CliCommand::Doctor => {
+            let dm = cmd_start.elapsed().as_millis() as u64;
+            let result = commands::doctor::run_doctor(&colors);
+            return match result {
+                Ok(healthy) => finalize_exit_code(
+                    &subcommand_name,
+                    dm,
+                    if healthy { 0 } else { 1 },
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                ),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    queue_command_error_event(&subcommand_name, &*e);
+                    finalize_exit_code(
+                        &subcommand_name,
+                        dm,
+                        1,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    )
+                }
+            };
+        }
         CliCommand::ListTargets(args) => {
             let dm = cmd_start.elapsed().as_millis() as u64;
             let result = commands::list_targets::run(&args)

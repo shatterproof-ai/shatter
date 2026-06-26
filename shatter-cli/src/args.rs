@@ -99,9 +99,24 @@ pub(crate) fn infer_output_format(path: &std::path::Path) -> Result<StdoutFormat
     }
 }
 
+/// Long `--version` output: the package version plus the build-time hashes of
+/// each embedded frontend. The hashes make a stale binary self-describing — a
+/// developer (or `shatter doctor`) can compare the Go source hash here against
+/// a freshly computed hash of `shatter-go/` to detect an out-of-date embed
+/// (str-o09e).
+pub(crate) const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\ngo-frontend-source-hash: ",
+    env!("GO_FRONTEND_SOURCE_HASH"),
+    "\ngo-frontend-binary-hash: ",
+    env!("GO_FRONTEND_HASH"),
+    "\nts-frontend-bundle-hash: ",
+    env!("FRONTEND_BUNDLE_HASH"),
+);
+
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
-#[command(name = "shatter", version, about)]
+#[command(name = "shatter", version, long_version = LONG_VERSION, about)]
 pub(crate) struct Cli {
     /// Log verbosity level: error, warn, info (default), debug, trace.
     #[arg(long, global = true, default_value = "info")]
@@ -1557,6 +1572,13 @@ pub(crate) enum CliCommand {
     /// change tracking in CI.
     #[command(name = "list-targets")]
     ListTargets(ListTargetsArgs),
+
+    /// Diagnose the local Shatter install.
+    ///
+    /// Reports the embedded frontend hashes and, in a source checkout, whether
+    /// the embedded Go frontend is stale relative to the current `shatter-go/`
+    /// sources (str-o09e). Exits non-zero if a stale embed is detected.
+    Doctor,
 }
 
 /// Arguments for `shatter list-targets`.
