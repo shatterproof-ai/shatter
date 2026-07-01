@@ -259,6 +259,12 @@ The Rust core's random input generator (`shatter-core/src/input_gen.rs::generate
 
 Regression coverage: `shatter-go/wrapper/wrapper_duration_test.go` (static-source guards + compile + run with both wire shapes), `shatter-go/planner/param_test.go::TestPlanParam_Duration_IntegerNanosecondCandidates`, and `shatter-core/tests/e2e_concolic_go.rs::e2e_go_duration_param_categorize` (full pipeline against `examples/go/duration-param/duration.go`).
 
+## Error Parameter Wire Format (str-jn9r0)
+
+A bare builtin `error` parameter cannot be `json.Unmarshal`ed directly (the analyzer maps builtin `error` to `ComplexKind:"error"` in `complexKindFromNamed`; the param's `GoType` reaching the wrapper is the literal string `"error"`). The Rust core's random generator (`shatter-core/src/input_gen.rs::generate_error`) emits the cross-frontend shape `{"__complex_type":"error","class":...,"message":m}`. The wrapper generator special-cases `GoType == "error"` in `wrapper.writeErrorParamDeserialization` (dispatched beside the `time.Duration` case): it tries a plain decode first — JSON `null` decodes into the interface as a nil error, giving the caller the nil branch for free — and on any decode error falls back to the tagged object, reconstructing `errors.New(message)`. The `class` field is intentionally ignored (no typed-error reconstruction; sentinel `errors.Is`/`As` satisfaction is str-kvzh7). Any other shape preserves the original plain-decode error. The `errors` import is threaded through the wrapper import block via `wrapperNeedsErrorImport` (same mechanism as `time` for Duration params). Scope: bare builtin `error` only — named error-implementing types are out of scope.
+
+Regression coverage: `shatter-go/wrapper/wrapper_error_test.go` (static-source guards + compile + run with null and the object wire shape) and `shatter-core/tests/e2e_concolic_go.rs::e2e_go_error_param_classify` (full pipeline against `examples/go/error-param/classify.go`, both nil/non-nil branches).
+
 ## Workspace GOCACHE Binding (str-hy9b.B2)
 
 Every `go build` invoked from shatter-go pins `GOCACHE` to `<workspace>/cache/build` via `Workspace.GoEnv()`. Wiring lives in `instrument.applyGoBuildEnv` (for `instrument/` build sites) and `instrument.WorkspaceGoEnv()` (consumed by `setup/loader.go`). The handler installs the provider from its workspace handle in `newHandler()`; tests that construct a handler without a workspace fall back to the legacy `SHATTER_HARNESS_CACHE`-based cache hierarchy.

@@ -1099,3 +1099,109 @@ fn assert_no_unknown_receiver_kind(result: &ExploreResult, target: &str) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test: bare builtin `error` parameter (str-jn9r0).
+//
+// Classify(err error) string -- 2 paths:
+//   1. err == nil -> "ok"
+//   2. err != nil -> "err"
+//
+// Pre-fix, every generated input for an `error` param was rejected at decode
+// ("cannot unmarshal object into Go value of type error"), so 0 branches were
+// reached. The wrapper's writeErrorParamDeserialization now decodes the Rust
+// core's `{"__complex_type":"error",...}` object shape to errors.New(message)
+// and JSON null to a nil error. Seeding both wire forms pins the full
+// analyze -> instrument -> explore -> decode pipeline and proves both arms are
+// reachable.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_error_param_classify() {
+    let file = repo_examples_go_dir().join("error-param").join("classify.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("error-param").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Classify").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "Classify takes 1 param (err error)"
+    );
+    assert!(
+        analysis.branches.len() >= 1,
+        "Classify should have >= 1 branch; got {}",
+        analysis.branches.len()
+    );
+
+    instrument_function(&mut frontend, &file_str, "Classify").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(80),
+        plateau_threshold: 20,
+        ..Default::default()
+    };
+
+    // Seed both wire forms: JSON null (nil error -> "ok") and the
+    // cross-frontend tagged object (non-nil error -> "err"). This keeps the
+    // test independent of the random generator's exact output while exercising
+    // both decode paths in writeErrorParamDeserialization.
+    let seed_inputs = vec![
+        vec![serde_json::json!(null)],
+        vec![serde_json::json!({
+            "__complex_type": "error",
+            "class": "Error",
+            "message": "boom",
+        })],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "Classify",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    // No execution may carry the pre-fix decode error.
+    for exec in &result.executions {
+        if let Some(ref err) = exec.thrown_error {
+            assert!(
+                !err.message.contains("cannot unmarshal object into Go value of type error"),
+                "str-jn9r0 regression: wrapper rejected error object input; thrown_error={:?}",
+                err.message
+            );
+        }
+    }
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"ok\"", "\"err\""] {
+        assert!(
+            return_values.contains(expected),
+            "should discover branch returning {expected}; found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 2,
+        "should have at least 2 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
