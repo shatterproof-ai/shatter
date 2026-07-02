@@ -843,3 +843,40 @@ allowed_divergences:
     resolution: >
       Go ite production resolved in str-1hlk.17.3. Rust frontend deferred
       until full analyze implementation lands.
+
+  - id: adapter-owned-instrumentation-coverage-partial
+    description: >
+      Adapter-owned Execute responses (invocation_model = adapter) originally
+      returned empty branch_path / lines_executed / path_constraints /
+      calls_to_external by construction, so every target invoked through an
+      invocation-model adapter contributed zero line coverage (epic str-j49xg).
+      TypeScript now closes this for its only invocation-owned adapter, the
+      react-hook adapter (str-26fhi): executeAdapterOwned threads the target's
+      instrumented source through a shared instrumentation sandbox
+      (buildInstrumentedSandbox / loadInstrumentedModuleInSandbox in
+      shatter-ts/src/executor.ts) that the react-hook adapter mounts and
+      rerenders via ctx.loadInstrumentedExports, so adapter-owned coverage now
+      matches direct calls. path_constraints carries the per-branch constraints
+      along the taken path (the same set direct calls report); adapter-owned
+      calls have no separate solver input-path constraints, so no additional
+      constraint surface exists to populate. The TS browser-globals adapter is a
+      SandboxProvider, not an InvocationHook, so its targets stay
+      invocation_model = direct and have always reported real coverage.
+      Go (net/http, gin) and Rust (axum) adapter-owned launchers still return
+      empty instrumentation fields — tracked by the sibling children
+      str-1qd5i (Go) and str-3eki5 (Rust). Until those land, adapter-owned
+      coverage is TS-only.
+    affected_frontends: [go, rust]
+    affected_commands: [execute]
+    status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-j49xg
+    resolution_condition: >
+      Go and Rust adapter-owned executions propagate branch_path /
+      lines_executed from their instrumented launcher/overlay builds into
+      ExecuteResult, matching the TypeScript react-hook adapter's behavior.
+    resolution: >
+      Implement instrumentation propagation in the Go adapter launchers
+      (str-1qd5i) and audit/fix the Rust axum adapter (str-3eki5). Remove this
+      entry once all invocation-owned adapters across frontends report
+      non-empty coverage.

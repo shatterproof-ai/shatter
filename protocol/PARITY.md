@@ -233,6 +233,26 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ---
 
+### `adapter-owned-instrumentation-coverage-partial`
+
+**Description:** Adapter-owned Execute responses (`invocation_model = adapter`) originally returned empty `branch_path` / `lines_executed` / `path_constraints` / `calls_to_external` by construction, so targets invoked through invocation-model adapters contributed zero line coverage (epic str-j49xg). TypeScript now closes this for its only invocation-owned adapter, the react-hook adapter (str-26fhi): `executeAdapterOwned` threads the instrumented source through a shared instrumentation sandbox (`buildInstrumentedSandbox` / `loadInstrumentedModuleInSandbox`) that the adapter mounts/rerenders via `ctx.loadInstrumentedExports`, so adapter-owned coverage now matches direct calls. `path_constraints` carries the per-branch constraints along the taken path (no separate solver input-path constraints exist for adapter calls). The TS browser-globals adapter is a `SandboxProvider`, not an `InvocationHook`, so its targets stay `direct` and have always reported real coverage. Go (net/http, gin) and Rust (axum) adapter-owned launchers still return empty instrumentation fields.
+
+**Affected frontends:** go, rust
+
+**Affected commands:** execute
+
+**Status:** tracked
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-j49xg
+
+**Resolution condition:** Go and Rust adapter-owned executions propagate `branch_path` / `lines_executed` from their instrumented launcher/overlay builds into `ExecuteResult`, matching the TypeScript react-hook adapter.
+
+**Resolution:** Implement instrumentation propagation in the Go adapter launchers (str-1qd5i) and audit/fix the Rust axum adapter (str-3eki5).
+
+---
+
 ## Adding a New Divergence
 
 When a new cross-frontend mismatch is discovered:
