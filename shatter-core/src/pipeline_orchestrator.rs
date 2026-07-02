@@ -433,9 +433,24 @@ pub async fn run_observe_stage(
         })
         .await;
 
-    if let Err(e) = instrument_resp {
-        log::debug!("instrument failed: {e}");
-    }
+    // Capture the frontend's instrumentable-line count so the concolic path
+    // can reconcile coverage against the same denominator the random explorer
+    // uses (str-4o07). Without this the concolic path falls back to the raw
+    // source span (`end_line - start_line + 1`), inflating `total_lines` and
+    // under-reporting coverage versus the random explorer on the same function.
+    let instrumentable_line_count = match instrument_resp {
+        Ok(resp) => match resp.result {
+            ResponseResult::Instrument {
+                instrumentable_line_count,
+                ..
+            } => instrumentable_line_count,
+            _ => None,
+        },
+        Err(e) => {
+            log::debug!("instrument failed: {e}");
+            None
+        }
+    };
 
     // Propagate the per-target execute plan from ObserveStageOptions into both
     // the random-explorer and concolic-orchestrator configs so that every
@@ -448,7 +463,7 @@ pub async fn run_observe_stage(
     }
 
     let (observation, resume_state) = if input.use_concolic {
-        run_concolic_observe(input, &options).await?
+        run_concolic_observe(input, &options, instrumentable_line_count).await?
     } else {
         (run_random_observe(input, &options).await?, None)
     };
@@ -467,6 +482,7 @@ pub async fn run_observe_stage(
 async fn run_concolic_observe(
     input: &mut ObserveInput<'_>,
     options: &ObserveStageOptions<'_>,
+    instrumentable_line_count: Option<u32>,
 ) -> Result<
     (
         explorer::ObservationOutput,
@@ -523,7 +539,7 @@ async fn run_concolic_observe(
         &mut obs,
         input.analysis.start_line,
         input.analysis.end_line,
-        None,
+        instrumentable_line_count,
     );
     Ok((obs, Some(resume_state)))
 }
