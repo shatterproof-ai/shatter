@@ -688,12 +688,15 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 func computePrepareID(file, function string, mocks []instrument.MockConfig, receiverKind string, genericTypeArgs ...string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00", file, function)
-	symbols := make([]string, len(mocks))
+	// Key on symbol + substitution expression + behavior so config-driven
+	// mock substitutions (str-c8djq) with the same symbol but different
+	// expressions do not collide on a stale prepared harness.
+	fingerprints := make([]string, len(mocks))
 	for i, m := range mocks {
-		symbols[i] = m.Symbol
+		fingerprints[i] = m.Symbol + "\x1f" + m.Expression + "\x1f" + m.DefaultBehavior
 	}
-	sort.Strings(symbols)
-	for _, s := range symbols {
+	sort.Strings(fingerprints)
+	for _, s := range fingerprints {
 		fmt.Fprintf(h, "%s\x00", s)
 	}
 	fmt.Fprintf(h, "%s\x00", receiverKind)
@@ -753,6 +756,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 			DefaultBehavior:  m.DefaultBehavior,
 		})
 	}
+	execMocks = append(execMocks, configMockConfigs(file, *req.Function)...)
 
 	// Extract receiver_kind from the plan when present so the prepare_id
 	// keys on (file, function, mocks, receiver_kind), allowing plan-aware
@@ -825,6 +829,44 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	resp.Status = "prepare"
 	resp.PrepareID = prepareID
 	return finalizeResponse(resp, timing)
+}
+
+// configMockConfigs loads the `.shatter/config.yaml` `mocks` entries that
+// apply to (file, function) and returns them as expression-bearing
+// instrument.MockConfig values (str-c8djq). This is the execute-time bridge
+// that makes hint_config_v1 mocks affect execution, not just planning: the
+// planner already threads these through PerTargetHints, but nothing wired the
+// same expressions into the build/overlay path until now. Because it runs
+// frontend-side at execute time, it applies regardless of which Rust driver
+// (explorer or orchestrator) issued the Execute request.
+//
+// A missing or malformed config yields no mocks — the safety-policy gate is
+// the canonical place a corrupt config surfaces to the operator, mirroring
+// hintConfigResolver's error handling.
+func configMockConfigs(file, function string) []instrument.MockConfig {
+	if file == "" {
+		return nil
+	}
+	cfg, err := config.Load(file)
+	if err != nil {
+		return nil
+	}
+	entry := cfg.MatchTarget(config.TargetRelpath(file), function)
+	if len(entry.Mocks) == 0 {
+		return nil
+	}
+	mocks := make([]instrument.MockConfig, 0, len(entry.Mocks))
+	for qualified, expression := range entry.Mocks {
+		if strings.TrimSpace(expression) == "" {
+			continue
+		}
+		mocks = append(mocks, instrument.MockConfig{
+			Symbol:     qualified,
+			Expression: expression,
+		})
+	}
+	sort.Slice(mocks, func(i, j int) bool { return mocks[i].Symbol < mocks[j].Symbol })
+	return mocks
 }
 
 func (h *Handler) handleExecute(resp Response, req Request) Response {
@@ -985,6 +1027,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 			DefaultBehavior:  m.DefaultBehavior,
 		})
 	}
+	execMocks = append(execMocks, configMockConfigs(file, *req.Function)...)
 
 	var (
 		result       *instrument.ExecuteResult
