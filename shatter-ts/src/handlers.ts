@@ -683,6 +683,15 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
             inputs: request.inputs,
             capture,
             timing,
+            // Thread the instrumented source so the adapter records real
+            // coverage (lines_executed / branch_path / path_constraints)
+            // identically to direct calls (str-26fhi). Absent when the target
+            // was never instrumented — the adapter then yields empty coverage.
+            instrumentedSource,
+            mocks: request.mocks ?? [],
+            cacheKey: instrumentKey,
+            resolverAdapters,
+            sandboxProviders,
           });
           return {
             response: finalizeResponse(

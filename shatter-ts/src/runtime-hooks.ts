@@ -42,6 +42,22 @@ export interface InvocationContext {
   readonly invocationModel: AdapterInvocationModel;
   readonly inputs: readonly unknown[];
   readonly capture: boolean;
+  /**
+   * When present, loads the target module's **instrumented** exports into a
+   * live sandbox wired with coverage callbacks, so invoking the returned
+   * exports records lines_executed / branch_path / path_constraints exactly
+   * like a direct call. Hooks MUST prefer this over loading the raw module
+   * when it is provided, and pass any scenario-specific resolver adapters
+   * (e.g. a stateful React shim) through the `resolverAdapters` argument —
+   * the same override semantics as `loadModuleExports`.
+   *
+   * Absent when no instrumented source is available for the target (the hook
+   * then falls back to loading the raw module, yielding empty coverage).
+   * Call it exactly once per invocation; coverage accumulates in the sandbox.
+   */
+  readonly loadInstrumentedExports?: (
+    resolverAdapters?: ResolverAdapter[],
+  ) => Record<string, unknown>;
 }
 export type { InvocationOutcome } from "./protocol.js";
 

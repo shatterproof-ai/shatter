@@ -456,10 +456,14 @@ function executeRerenderScenario(
   const hookCtx = new HookExecutionContext();
   const shimAdapter = createStatefulReactShimAdapter(hookCtx);
 
-  // Load module with stateful shim (bypasses cache since custom resolverAdapters)
+  // Load module with stateful shim (bypasses cache since custom resolverAdapters).
+  // Prefer the instrumented loader so rerenders record real coverage; fall back
+  // to the raw module when no instrumented source is available (str-26fhi).
   let moduleExports: Record<string, unknown>;
   try {
-    moduleExports = loadModuleExports(ctx.fileForExec, [shimAdapter]);
+    moduleExports = ctx.loadInstrumentedExports
+      ? ctx.loadInstrumentedExports([shimAdapter])
+      : loadModuleExports(ctx.fileForExec, [shimAdapter]);
   } catch (e: unknown) {
     return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
   }
@@ -551,10 +555,15 @@ function createReactHookInvocationHook(): InvocationHook {
       }
 
       // All other scenarios use the default noop React shim
-      // 1. Load module (React shims applied automatically for .tsx)
+      // 1. Load module (React shims applied automatically for .tsx).
+      // Prefer the instrumented loader so the mount records real coverage;
+      // fall back to the raw module when no instrumented source is available
+      // (str-26fhi).
       let moduleExports: Record<string, unknown>;
       try {
-        moduleExports = loadModuleExports(ctx.fileForExec);
+        moduleExports = ctx.loadInstrumentedExports
+          ? ctx.loadInstrumentedExports()
+          : loadModuleExports(ctx.fileForExec);
       } catch (e: unknown) {
         return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
       }
