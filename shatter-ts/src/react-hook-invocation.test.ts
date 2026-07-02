@@ -5,9 +5,13 @@
  * generic invocation metadata (scenario_schema), not React-specific logic.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 
+import fc from "fast-check";
+
 import { executeAdapterOwned } from "./executor.js";
+import { instrumentFunction } from "./instrumentor.js";
 import {
   findCallable,
   createReactHookFactory,
@@ -775,5 +779,184 @@ describe("createReactHookFactory", () => {
     );
     expect(hooks!.invocation_hooks).toHaveLength(1);
     expect(hooks!.invocation_hooks![0]!.id).toBe(REACT_HOOK_ADAPTER_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Instrumented adapter-owned coverage (str-26fhi)
+//
+// When the execute handler threads instrumented source through
+// executeAdapterOwned, the react-hook adapter runs the target's instrumented
+// body in-process, so adapter-owned executions now report the SAME
+// lines_executed / branch_path / path_constraints as direct calls — instead of
+// the empty fields the pre-str-26fhi contract documented.
+// ---------------------------------------------------------------------------
+
+describe("react-hook adapter-owned instrumentation coverage (str-26fhi)", () => {
+  const COMPONENT_FIXTURE = path.join(FIXTURES_DIR, "react-component.tsx");
+  const COMPONENT_SOURCE = fs.readFileSync(COMPONENT_FIXTURE, "utf-8");
+
+  const model: AdapterInvocationModel = {
+    kind: "adapter",
+    adapter_id: REACT_HOOK_ADAPTER_ID,
+    scenario_schema: { kind: "hook_callable_return" },
+  };
+
+  function getHook() {
+    return createReactHookFactory().createRuntimeHooks!(
+      { id: REACT_HOOK_ADAPTER_ID },
+      { phase: "execute" },
+    )!.invocation_hooks![0]!;
+  }
+
+  /** 1-based line number of the first source line containing `needle`. */
+  function lineOf(needle: string): number {
+    const idx = COMPONENT_SOURCE.split("\n").findIndex((l) =>
+      l.includes(needle),
+    );
+    if (idx < 0) throw new Error(`fixture line not found: ${needle}`);
+    return idx + 1;
+  }
+
+  /** Instrument `fn` from the fixture and run it through the adapter path. */
+  async function runInstrumented(fn: string, inputs: unknown[]) {
+    const instr = instrumentFunction(COMPONENT_SOURCE, fn, COMPONENT_FIXTURE);
+    if ("error" in instr) {
+      throw new Error(`instrumentation failed: ${instr.error}`);
+    }
+    return executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: model,
+      fileForExec: COMPONENT_FIXTURE,
+      functionName: fn,
+      inputs,
+      instrumentedSource: instr.instrumentedSource,
+    });
+  }
+
+  it("records non-empty coverage consistent with a props-driven branch", async () => {
+    const activeReturn = lineOf('className="active"');
+    const inactiveReturn = lineOf('className="inactive"');
+
+    const result = await runInstrumented("StatusCard", [
+      { status: "active", count: 20 },
+    ]);
+
+    expect(result.thrown_error).toBeNull();
+    // Instrumentation was threaded through the adapter — coverage is real.
+    expect(result.lines_executed.length).toBeGreaterThan(0);
+    expect(result.branch_path.length).toBeGreaterThan(0);
+    // path_constraints mirrors the direct path: one constraint per branch.
+    expect(result.path_constraints).toHaveLength(result.branch_path.length);
+
+    // The taken branch's body line is covered; the untaken branch's is not.
+    expect(result.lines_executed).toContain(activeReturn);
+    expect(result.lines_executed).not.toContain(inactiveReturn);
+
+    // The status === "active" branch decision was recorded as taken.
+    const statusBranch = result.branch_path.find(
+      (b) => b.line === lineOf('props.status === "active"'),
+    );
+    expect(statusBranch?.taken).toBe(true);
+  });
+
+  it("explores both branches when varied props flip the condition", async () => {
+    const activeReturn = lineOf('className="active"');
+    const inactiveReturn = lineOf('className="inactive"');
+
+    const active = await runInstrumented("StatusCard", [
+      { status: "active", count: 20 },
+    ]);
+    const inactive = await runInstrumented("StatusCard", [
+      { status: "inactive", count: 1 },
+    ]);
+
+    // Each run covers only its own branch body.
+    expect(active.lines_executed).toContain(activeReturn);
+    expect(inactive.lines_executed).toContain(inactiveReturn);
+
+    // Together the two runs cover BOTH branch bodies.
+    const union = new Set([
+      ...active.lines_executed,
+      ...inactive.lines_executed,
+    ]);
+    expect(union.has(activeReturn)).toBe(true);
+    expect(union.has(inactiveReturn)).toBe(true);
+
+    // The shared branch flips taken between the two prop sets.
+    const branchLine = lineOf('props.status === "active"');
+    expect(active.branch_path.find((b) => b.line === branchLine)?.taken).toBe(
+      true,
+    );
+    expect(
+      inactive.branch_path.find((b) => b.line === branchLine)?.taken,
+    ).toBe(false);
+  });
+
+  it("records the useState-derived branch of a component (InitCounter)", async () => {
+    const positiveReturn = lineOf("Positive:");
+    const nonPositiveReturn = lineOf("Non-positive:");
+    const branchLine = lineOf("count > 0");
+
+    const positive = await runInstrumented("InitCounter", [{ start: 5 }]);
+    const nonPositive = await runInstrumented("InitCounter", [{ start: -5 }]);
+
+    expect(positive.lines_executed).toContain(positiveReturn);
+    expect(positive.lines_executed).not.toContain(nonPositiveReturn);
+    expect(positive.branch_path.find((b) => b.line === branchLine)?.taken).toBe(
+      true,
+    );
+
+    expect(nonPositive.lines_executed).toContain(nonPositiveReturn);
+    expect(nonPositive.lines_executed).not.toContain(positiveReturn);
+    expect(
+      nonPositive.branch_path.find((b) => b.line === branchLine)?.taken,
+    ).toBe(false);
+  });
+
+  it("falls back to empty coverage when no instrumented source is supplied", async () => {
+    // Backward-compatible contract: absent instrumented source ⇒ empty fields.
+    const result = await executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: model,
+      fileForExec: COMPONENT_FIXTURE,
+      functionName: "StatusCard",
+      inputs: [{ status: "active", count: 20 }],
+    });
+    expect(result.thrown_error).toBeNull();
+    expect(result.lines_executed).toEqual([]);
+    expect(result.branch_path).toEqual([]);
+    expect(result.path_constraints).toEqual([]);
+  });
+
+  it("property: the recorded branch decision agrees with the prop-driven condition", async () => {
+    // Invariant: for any status/count, the status==="active" branch decision's
+    // `taken` flag equals the actual predicate, and the covered return line
+    // matches the branch that ran.
+    const activeReturn = lineOf('className="active"');
+    const inactiveReturn = lineOf('className="inactive"');
+    const branchLine = lineOf('props.status === "active"');
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.oneof(fc.constant("active"), fc.string()),
+        fc.integer({ min: -50, max: 50 }),
+        async (status, count) => {
+          const result = await runInstrumented("StatusCard", [
+            { status, count },
+          ]);
+          const isActive = status === "active";
+          const branch = result.branch_path.find((b) => b.line === branchLine);
+          expect(branch?.taken).toBe(isActive);
+          expect(result.lines_executed).toContain(
+            isActive ? activeReturn : inactiveReturn,
+          );
+          expect(result.lines_executed).not.toContain(
+            isActive ? inactiveReturn : activeReturn,
+          );
+        },
+      ),
+      { numRuns: 40 },
+    );
   });
 });
