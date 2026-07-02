@@ -2007,6 +2007,48 @@ export async function executeFunction(
 }
 
 /**
+ * Assemble the coverage/trace subset of a `RawExecuteResult` from collector
+ * arrays. Shared by the direct instrumented path (`executeInstrumented`) and
+ * the adapter-owned path (`executeAdapterOwned`) so the two never drift on how
+ * these fields are derived — in particular, `path_constraints` is always the
+ * per-branch constraints of `branch_path` (1:1), so callers scope both together
+ * by passing the desired `branchPath` slice.
+ */
+function assembleCoverageFields(c: {
+  branchPath: BranchDecision[];
+  linesExecuted: number[];
+  externalCalls: ExternalCall[];
+  scopeEvents: TraceEvent[];
+  loopBodyStates: LoopBodyState[];
+  discoveredDeps: DiscoveredDependency[];
+  connectionFailures: ConnectionFailure[];
+  cryptoBoundaries: RuntimeCryptoBoundary[];
+}): Pick<
+  RawExecuteResult,
+  | "branch_path"
+  | "path_constraints"
+  | "lines_executed"
+  | "calls_to_external"
+  | "scope_events"
+  | "loop_body_states"
+  | "discovered_dependencies"
+  | "connection_failures"
+  | "runtime_crypto_boundaries"
+> {
+  return {
+    branch_path: c.branchPath,
+    path_constraints: c.branchPath.map((bd) => bd.constraint),
+    lines_executed: c.linesExecuted,
+    calls_to_external: c.externalCalls,
+    scope_events: c.scopeEvents,
+    loop_body_states: c.loopBodyStates,
+    discovered_dependencies: c.discoveredDeps,
+    connection_failures: c.connectionFailures,
+    runtime_crypto_boundaries: c.cryptoBoundaries,
+  };
+}
+
+/**
  * Execute a target through an adapter-owned invocation hook instead of
  * calling the exported symbol directly.
  *
@@ -2017,9 +2059,12 @@ export async function executeFunction(
  * is funnelled into a `RawExecuteResult` so the response wire shape stays
  * identical to direct-call execution — no new ExecuteResponse fields.
  *
- * Branch decisions, line coverage, path constraints, and call traces are
- * empty: adapter-owned execution is opaque to the instrumentor for now.
- * Surface them later when an instrumented adapter mode is required.
+ * When `instrumentedSource` is supplied, the hook loads the target's
+ * instrumented body in-process via `ctx.loadInstrumentedExports`, so
+ * adapter-owned execution now surfaces the SAME `branch_path` /
+ * `lines_executed` / `path_constraints` (and external-call / crypto / scope
+ * traces) that direct calls produce (str-26fhi). Without instrumented source
+ * the hook falls back to loading the raw module and coverage fields stay empty.
  */
 export async function executeAdapterOwned(args: {
   hook: InvocationHook;
@@ -2029,6 +2074,11 @@ export async function executeAdapterOwned(args: {
   inputs: unknown[];
   capture?: boolean;
   timing?: TimingCollector;
+  instrumentedSource?: string;
+  mocks?: MockConfig[];
+  cacheKey?: string;
+  resolverAdapters?: ResolverAdapter[];
+  sandboxProviders?: SandboxProvider[];
 }): Promise<RawExecuteResult> {
   const capture = args.capture ?? true;
   const sideEffects: SideEffect[] = [];
@@ -2036,12 +2086,77 @@ export async function executeAdapterOwned(args: {
   consoleTarget = capture ? createCapturingConsole(sideEffects) : NOOP_CONSOLE;
 
   const reconstructedInputs = args.inputs.map(reconstructValue);
+
+  // When instrumented source is available, hand the hook a loader that mounts
+  // the instrumented module in a sandbox wired with coverage callbacks. The
+  // loader stores its result so we can read the accumulated collectors after
+  // the hook finishes driving the target.
+  //
+  // Note: unlike the raw module load (which caches exports per session), this
+  // re-runs the target module's top level on every execute so each invocation
+  // gets fresh collectors. Modules with one-shot top-level side effects should
+  // be idempotent; if the instrumented load throws, the hook falls back to the
+  // raw module (coverage unavailable but the target still runs).
+  let load: InstrumentedModuleLoad | undefined;
+  // Branch-decision count at the end of the target's initial, props-driven
+  // render. `branch_path` / `path_constraints` are scoped to this prefix so
+  // state-driven rerenders (which can flip a branch and emit contradictory
+  // `X ∧ ¬X` constraints along one path) cannot make the conjoined path UNSAT
+  // for the core's negation search. Undefined ⇒ single-render adapter; the
+  // whole accumulated path is used. `lines_executed` and the other traces stay
+  // as the full cross-render union for coverage reporting.
+  let initialRenderBranchCount: number | undefined;
+  const loadInstrumentedExports = args.instrumentedSource
+    ? (scenarioAdapters?: ResolverAdapter[]): Record<string, unknown> => {
+        if (load !== undefined) {
+          // Single-call contract: the hook loads the instrumented module once
+          // per invocation and drives all renders against it. A second call
+          // would strand the first sandbox's collectors.
+          throw new Error(
+            "loadInstrumentedExports must be called at most once per adapter invocation",
+          );
+        }
+        // Compose the scenario's shim(s) (or the default React shim for the
+        // target file when the hook passes none) FIRST, then the
+        // execution-profile resolver adapters. The raw path always applies the
+        // shim, so composing rather than replacing avoids a regression where a
+        // profile carrying a resolver adapter (e.g. tsconfig-paths) would
+        // displace the shim and route `require("react")` to real React. Shims
+        // lead so React module ids resolve to the shim while profile adapters
+        // still handle path aliases etc.
+        const shims =
+          scenarioAdapters ?? getDefaultResolverAdapters(args.fileForExec);
+        const composedAdapters = [...shims, ...(args.resolverAdapters ?? [])];
+        load = loadInstrumentedModuleInSandbox({
+          instrumentedSource: args.instrumentedSource!,
+          mocks: args.mocks,
+          sourceFilePath: args.fileForExec,
+          capture,
+          cacheKey: args.cacheKey,
+          resolverAdapters: composedAdapters,
+          sandboxProviders: args.sandboxProviders,
+          timing: args.timing,
+        });
+        return load.exports;
+      }
+    : undefined;
+
+  const markInitialRenderComplete = args.instrumentedSource
+    ? (): void => {
+        if (initialRenderBranchCount === undefined && load) {
+          initialRenderBranchCount = load.branchDecisions.length;
+        }
+      }
+    : undefined;
+
   const ctx: InvocationContext = {
     fileForExec: args.fileForExec,
     functionName: args.functionName,
     invocationModel: args.invocationModel,
     inputs: reconstructedInputs,
     capture,
+    ...(loadInstrumentedExports ? { loadInstrumentedExports } : {}),
+    ...(markInitialRenderComplete ? { markInitialRenderComplete } : {}),
   };
 
   let returnValue: unknown = null;
@@ -2122,67 +2237,105 @@ export async function executeAdapterOwned(args: {
     sideEffects.push(...outcomeSideEffects);
   }
 
+  // Instrumented adapter execution captures console output through its own
+  // sandbox console (into `load.sideEffects`); surface those ahead of the
+  // outer-captured / structured effects so ordering matches the direct path.
+  const mergedSideEffects =
+    capture && load ? [...load.sideEffects, ...sideEffects] : sideEffects;
+
+  // Scope branch_path / path_constraints to the initial props-driven render so
+  // rerender branch flips can't produce an UNSAT conjunction; lines_executed
+  // and the other traces stay the full cross-render union (see
+  // assembleCoverageFields / initialRenderBranchCount). loop_body_states is
+  // intentionally not emitted on the adapter path — see the parity contract.
+  const branchDecisions = load ? load.branchDecisions : [];
+  const scopedBranchPath =
+    initialRenderBranchCount !== undefined
+      ? branchDecisions.slice(0, initialRenderBranchCount)
+      : branchDecisions;
+
   return {
     return_value: thrownError ? null : returnValue,
     thrown_error: thrownError,
-    side_effects: sideEffects,
-    branch_path: [],
-    path_constraints: [],
-    lines_executed: [],
+    side_effects: mergedSideEffects,
     performance,
-    calls_to_external: [],
-    scope_events: [],
-    loop_body_states: [],
-    discovered_dependencies: [],
-    connection_failures: [],
-    runtime_crypto_boundaries: [],
+    ...assembleCoverageFields({
+      branchPath: scopedBranchPath,
+      linesExecuted: load ? load.linesExecuted : [],
+      externalCalls: load ? load.externalCalls : [],
+      scopeEvents: load ? load.scopeEvents : [],
+      loopBodyStates: [],
+      discoveredDeps: load ? load.discoveredDeps : [],
+      connectionFailures: load ? load.connectionFailures : [],
+      cryptoBoundaries: load ? load.cryptoBoundaries : [],
+    }),
   };
 }
 
 /**
- * Execute instrumented TypeScript source code with branch-recording callbacks.
- *
- * The instrumented source must contain __shatter_record() and __shatter_branch()
- * calls inserted by the instrumentor. This function defines those callbacks,
- * executes the code, and collects the branch decisions.
+ * Transpile + compile instrumented TypeScript into a reusable vm.Script,
+ * reusing a cached script when `cacheKey` is present. The instrumented source
+ * for a given function is fixed after instrumentation, so both the TypeScript
+ * transpile and the JS bytecode compile are amortized across execute calls for
+ * the same function. Shared by the direct instrumented path and the
+ * adapter-owned path so the two never diverge on transpile options / caching.
  */
-export async function executeInstrumented(
+function compileInstrumentedSource(
   instrumentedSource: string,
-  functionName: string,
-  inputs: unknown[],
-  mocks: MockConfig[] = [],
-  sourceFilePath?: string,
+  sourceFilePath: string | undefined,
+  cacheKey: string | undefined,
   timing?: TimingCollector,
-  capture = true,
-  cacheKey?: string,
-  resolverAdapters?: ResolverAdapter[],
-  sandboxProviders?: SandboxProvider[],
-  loops: LoopInfo[] = [],
-): Promise<RawExecuteResult> {
-  // Transpile instrumented TS to JS, reusing a cached vm.Script when available.
-  // The instrumented source for a given function is fixed after instrumentation,
-  // so we can amortize both the TypeScript transpile and the JS bytecode compile
-  // across all execute calls for the same function.
+): vm.Script {
   const cachedScript = cacheKey ? compiledScriptCache.get(cacheKey) : undefined;
-  let compiledScript: vm.Script;
   if (cachedScript) {
-    compiledScript = cachedScript;
     // execute.transpile is intentionally absent from timing on cache hits
-  } else {
-    const compile = () =>
-      transpileAndCompile(
-        instrumentedSource,
-        sourceFilePath,
-        sourceFilePath ?? "instrumented.js",
-      );
-    compiledScript = timing
-      ? timing.sync("execute.transpile", compile)
-      : compile();
-    if (cacheKey) {
-      compiledScriptCache.set(cacheKey, compiledScript);
-    }
+    return cachedScript;
   }
+  const compile = () =>
+    transpileAndCompile(
+      instrumentedSource,
+      sourceFilePath,
+      sourceFilePath ?? "instrumented.js",
+    );
+  const compiledScript = timing
+    ? timing.sync("execute.transpile", compile)
+    : compile();
+  if (cacheKey) {
+    compiledScriptCache.set(cacheKey, compiledScript);
+  }
+  return compiledScript;
+}
 
+/**
+ * Build a VM sandbox wired with the full instrumentation runtime — the
+ * __shatter_record / __shatter_branch / __shatter_scope_event / mock / crypto
+ * callbacks bound to fresh collector arrays — plus the adapter-aware require,
+ * capturing console/process, and any sandbox providers. Shared by the direct
+ * instrumented path (executeInstrumented) and the adapter-owned path
+ * (executeAdapterOwned via loadInstrumentedModuleInSandbox) so both capture
+ * coverage identically. Callers run the compiled script in the returned
+ * sandbox, then read the collector arrays.
+ */
+function buildInstrumentedSandbox(params: {
+  mocks: MockConfig[];
+  sourceFilePath?: string;
+  capture: boolean;
+  resolverAdapters?: ResolverAdapter[];
+  sandboxProviders?: SandboxProvider[];
+}): {
+  sandbox: vm.Context;
+  linesExecuted: number[];
+  branchDecisions: BranchDecision[];
+  sideEffects: SideEffect[];
+  externalCalls: ExternalCall[];
+  connectionFailures: ConnectionFailure[];
+  cryptoBoundaries: RuntimeCryptoBoundary[];
+  scopeEvents: TraceEvent[];
+  loopBodyStates: LoopBodyState[];
+  discoveredDeps: DiscoveredDependency[];
+} {
+  const { mocks, sourceFilePath, capture, resolverAdapters, sandboxProviders } =
+    params;
   const linesExecuted: number[] = [];
   const branchDecisions: BranchDecision[] = [];
   const sideEffects: SideEffect[] = [];
@@ -2547,6 +2700,142 @@ export async function executeInstrumented(
     }
   }
 
+  return {
+    sandbox,
+    linesExecuted,
+    branchDecisions,
+    sideEffects,
+    externalCalls,
+    connectionFailures,
+    cryptoBoundaries,
+    scopeEvents,
+    loopBodyStates,
+    discoveredDeps,
+  };
+}
+
+/** Result of loading an instrumented module into a live instrumented sandbox. */
+export interface InstrumentedModuleLoad {
+  exports: Record<string, unknown>;
+  linesExecuted: number[];
+  branchDecisions: BranchDecision[];
+  scopeEvents: TraceEvent[];
+  externalCalls: ExternalCall[];
+  connectionFailures: ConnectionFailure[];
+  cryptoBoundaries: RuntimeCryptoBoundary[];
+  discoveredDeps: DiscoveredDependency[];
+  sideEffects: SideEffect[];
+}
+
+/**
+ * Load an instrumented module into a fresh instrumented sandbox and return its
+ * exports together with the coverage collectors wired into that sandbox.
+ *
+ * Used by the adapter-owned path so adapter hooks (e.g. react-hook) can invoke
+ * the target's instrumented body in-process and surface the SAME
+ * lines_executed / branch_path / path_constraints that direct calls produce.
+ *
+ * Unlike executeInstrumented, this does not resolve or call a named export —
+ * the adapter hook drives invocation (mount, callable, rerender). Every call
+ * the hook makes into the returned exports fires the __shatter_* callbacks, so
+ * the returned collectors accumulate coverage across the whole scenario.
+ *
+ * `resolverAdapters` follows the same override semantics as loadModuleExports:
+ * when omitted, the default React shims are applied for .tsx targets; when
+ * provided (e.g. the stateful rerender shim), it fully replaces the defaults.
+ */
+export function loadInstrumentedModuleInSandbox(args: {
+  instrumentedSource: string;
+  mocks?: MockConfig[];
+  sourceFilePath?: string;
+  capture: boolean;
+  cacheKey?: string;
+  resolverAdapters?: ResolverAdapter[];
+  sandboxProviders?: SandboxProvider[];
+  timing?: TimingCollector;
+}): InstrumentedModuleLoad {
+  const compiledScript = compileInstrumentedSource(
+    args.instrumentedSource,
+    args.sourceFilePath,
+    args.cacheKey,
+    args.timing,
+  );
+  const built = buildInstrumentedSandbox({
+    mocks: args.mocks ?? [],
+    sourceFilePath: args.sourceFilePath,
+    capture: args.capture,
+    resolverAdapters: args.resolverAdapters,
+    sandboxProviders: args.sandboxProviders,
+  });
+  const load = () =>
+    compiledScript.runInContext(built.sandbox, { timeout: getExecTimeoutMs() });
+  if (args.timing) {
+    args.timing.sync("execute.module_load", load);
+  } else {
+    load();
+  }
+  const finalExports = (built.sandbox as Record<string, unknown>)["module"] as {
+    exports: Record<string, unknown>;
+  };
+  return {
+    exports: finalExports.exports,
+    linesExecuted: built.linesExecuted,
+    branchDecisions: built.branchDecisions,
+    scopeEvents: built.scopeEvents,
+    externalCalls: built.externalCalls,
+    connectionFailures: built.connectionFailures,
+    cryptoBoundaries: built.cryptoBoundaries,
+    discoveredDeps: built.discoveredDeps,
+    sideEffects: built.sideEffects,
+  };
+}
+
+/**
+ * Execute instrumented TypeScript source code with branch-recording callbacks.
+ *
+ * The instrumented source must contain __shatter_record() and __shatter_branch()
+ * calls inserted by the instrumentor. This function defines those callbacks,
+ * executes the code, and collects the branch decisions.
+ */
+export async function executeInstrumented(
+  instrumentedSource: string,
+  functionName: string,
+  inputs: unknown[],
+  mocks: MockConfig[] = [],
+  sourceFilePath?: string,
+  timing?: TimingCollector,
+  capture = true,
+  cacheKey?: string,
+  resolverAdapters?: ResolverAdapter[],
+  sandboxProviders?: SandboxProvider[],
+  loops: LoopInfo[] = [],
+): Promise<RawExecuteResult> {
+  const compiledScript = compileInstrumentedSource(
+    instrumentedSource,
+    sourceFilePath,
+    cacheKey,
+    timing,
+  );
+
+  const {
+    sandbox,
+    linesExecuted,
+    branchDecisions,
+    sideEffects,
+    externalCalls,
+    connectionFailures,
+    cryptoBoundaries,
+    scopeEvents,
+    loopBodyStates,
+    discoveredDeps,
+  } = buildInstrumentedSandbox({
+    mocks,
+    sourceFilePath,
+    capture,
+    resolverAdapters,
+    sandboxProviders,
+  });
+
   const loadModule = (): void => {
     compiledScript.runInContext(sandbox, { timeout: getExecTimeoutMs() });
   };
@@ -2639,9 +2928,6 @@ export async function executeInstrumented(
     }
   }
 
-  // Build path_constraints: the conjunction of constraints along the taken path
-  const pathConstraints = branchDecisions.map((bd) => bd.constraint);
-
   if (sourceFilePath && loops.length > 0) {
     const sourceText = fs.readFileSync(sourceFilePath, "utf-8");
     loopBodyStates.push(
@@ -2659,16 +2945,17 @@ export async function executeInstrumented(
     return_value: metrics.returnValue ?? null,
     thrown_error: metrics.thrownError,
     side_effects: capture ? sideEffects : [],
-    branch_path: branchDecisions,
-    path_constraints: pathConstraints,
-    lines_executed: linesExecuted,
     performance: metrics.performance,
-    calls_to_external: externalCalls,
-    scope_events: scopeEvents,
-    loop_body_states: loopBodyStates,
-    discovered_dependencies: discoveredDeps,
-    connection_failures: connectionFailures,
-    runtime_crypto_boundaries: cryptoBoundaries,
+    ...assembleCoverageFields({
+      branchPath: branchDecisions,
+      linesExecuted,
+      externalCalls,
+      scopeEvents,
+      loopBodyStates,
+      discoveredDeps,
+      connectionFailures,
+      cryptoBoundaries,
+    }),
   };
 }
 

@@ -15,7 +15,7 @@ use shatter_core::genetic_explorer;
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities};
 use shatter_core::protocol::{
     Command as ProtoCommand, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile,
-    ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
+    InvocationModel, ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
 };
 use shatter_core::setup_manager::SetupManager;
 
@@ -703,6 +703,146 @@ async fn concolic_validateemail_with_literal_seeds() {
         "str-omrx: expected >=3 unique paths with boundary + literal seeds; got {}. \
          return_values: {return_values:?}",
         result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Adapter-owned instrumentation coverage E2E (str-26fhi)
+// ---------------------------------------------------------------------------
+
+/// A self-contained React component whose rendered branch is selected by its
+/// props. It calls `useMemo`, so the TS analyzer recognizes it as react-hook
+/// adapter-owned. Kept inline (not in the shared examples repo) so the
+/// known-answer coverage assertions below can't drift.
+const REACT_GREETING_FIXTURE: &str = r#"import { useMemo } from "react";
+
+interface User {
+  name: string;
+  role: string;
+}
+
+export function UserGreeting(props: { user: User }) {
+  const displayName = useMemo(
+    () => (props.user.name ? props.user.name : "there"),
+    [props.user.name],
+  );
+
+  if (props.user.role === "admin") {
+    return { kind: "admin", label: "Admin", greeting: `Welcome back, ${displayName}!` };
+  }
+
+  if (props.user.role === "member") {
+    return { kind: "member", greeting: `Hello, ${displayName}!` };
+  }
+
+  return { kind: "guest", greeting: `Hi ${displayName}, please sign up.` };
+}
+"#;
+
+/// Send an adapter-owned Execute (execution_profile None → the frontend bridges
+/// the react-hook invocation hooks from the cached analysis) and return the
+/// ExecuteResult.
+async fn execute_adapter_owned(
+    frontend: &mut Frontend,
+    function: &str,
+    inputs: Vec<serde_json::Value>,
+) -> shatter_core::protocol::ExecuteResult {
+    let response = frontend
+        .send(ProtoCommand::Execute {
+            function: function.to_string(),
+            inputs,
+            mocks: vec![],
+            setup_context: None,
+            capture: true,
+            prepare_id: None,
+            execution_profile: None,
+            plan: None,
+        })
+        .await
+        .expect("adapter-owned execute transport failed");
+
+    match response.result {
+        ResponseResult::Execute(result) => *result,
+        ResponseResult::Error { code, message, .. } => {
+            panic!("adapter-owned execute returned error ({code:?}): {message}")
+        }
+        other => panic!("expected Execute response, got: {other:?}"),
+    }
+}
+
+/// str-26fhi: adapter-owned React execution reports real coverage.
+///
+/// Before str-26fhi, `executeAdapterOwned` returned empty
+/// `lines_executed` / `branch_path` / `path_constraints` by construction, so
+/// every React target executed through the react-hook adapter contributed zero
+/// line coverage. This asserts the adapter now threads the SAME instrumentation
+/// capture that direct calls use: coverage is non-empty and consistent with the
+/// prop-selected branch.
+#[tokio::test]
+async fn adapter_owned_react_execution_reports_coverage() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("react-greeting.tsx");
+    std::fs::write(&file, REACT_GREETING_FIXTURE).expect("write react fixture");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Analyze caches the react-hook invocation model for the target.
+    let analysis = analyze_function(&mut frontend, &file_str, "UserGreeting").await;
+    assert!(
+        matches!(analysis.invocation_model, InvocationModel::Adapter { .. }),
+        "UserGreeting should be react-hook adapter-owned; got {:?}",
+        analysis.invocation_model
+    );
+
+    instrument_function(&mut frontend, &file_str, "UserGreeting").await;
+
+    // Admin props → the first branch renders.
+    let admin = execute_adapter_owned(
+        &mut frontend,
+        "UserGreeting",
+        vec![serde_json::json!({ "user": { "name": "Ada", "role": "admin" } })],
+    )
+    .await;
+
+    assert!(
+        admin.thrown_error.is_none(),
+        "admin execute errored: {:?}",
+        admin.thrown_error
+    );
+    assert!(
+        !admin.lines_executed.is_empty(),
+        "adapter-owned lines_executed must be non-empty (str-26fhi)"
+    );
+    assert!(
+        !admin.branch_path.is_empty(),
+        "adapter-owned branch_path must be non-empty (str-26fhi)"
+    );
+    assert_eq!(
+        admin.path_constraints.len(),
+        admin.branch_path.len(),
+        "path_constraints must mirror branch_path length, as on the direct path"
+    );
+
+    // Guest props → a different branch renders, so a different line set runs.
+    let guest = execute_adapter_owned(
+        &mut frontend,
+        "UserGreeting",
+        vec![serde_json::json!({ "user": { "name": "", "role": "guest" } })],
+    )
+    .await;
+    assert!(
+        !guest.lines_executed.is_empty(),
+        "adapter-owned lines_executed must be non-empty for the guest branch"
+    );
+
+    let admin_lines: HashSet<u32> = admin.lines_executed.iter().copied().collect();
+    let guest_lines: HashSet<u32> = guest.lines_executed.iter().copied().collect();
+    assert_ne!(
+        admin_lines, guest_lines,
+        "different props should drive different line coverage; admin={admin_lines:?} guest={guest_lines:?}"
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");

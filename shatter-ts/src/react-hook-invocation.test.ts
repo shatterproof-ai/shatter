@@ -5,9 +5,13 @@
  * generic invocation metadata (scenario_schema), not React-specific logic.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { executeAdapterOwned } from "./executor.js";
+import fc from "fast-check";
+
+import { executeAdapterOwned, type ResolverAdapter } from "./executor.js";
+import { instrumentFunction } from "./instrumentor.js";
 import {
   findCallable,
   createReactHookFactory,
@@ -17,7 +21,11 @@ import {
   type RerenderOutcome,
 } from "./react-hook-invocation.js";
 import { REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
-import type { AdapterInvocationModel, InvocationContext } from "./runtime-hooks.js";
+import type {
+  AdapterInvocationModel,
+  InvocationContext,
+  InvocationHook,
+} from "./runtime-hooks.js";
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
 const HOOK_FIXTURE = path.join(FIXTURES_DIR, "adapter-hooks.tsx");
@@ -775,5 +783,342 @@ describe("createReactHookFactory", () => {
     );
     expect(hooks!.invocation_hooks).toHaveLength(1);
     expect(hooks!.invocation_hooks![0]!.id).toBe(REACT_HOOK_ADAPTER_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Instrumented adapter-owned coverage (str-26fhi)
+//
+// When the execute handler threads instrumented source through
+// executeAdapterOwned, the react-hook adapter runs the target's instrumented
+// body in-process, so adapter-owned executions now report the SAME
+// lines_executed / branch_path / path_constraints as direct calls — instead of
+// the empty fields the pre-str-26fhi contract documented.
+// ---------------------------------------------------------------------------
+
+describe("react-hook adapter-owned instrumentation coverage (str-26fhi)", () => {
+  const COMPONENT_FIXTURE = path.join(FIXTURES_DIR, "react-component.tsx");
+  const COMPONENT_SOURCE = fs.readFileSync(COMPONENT_FIXTURE, "utf-8");
+
+  const model: AdapterInvocationModel = {
+    kind: "adapter",
+    adapter_id: REACT_HOOK_ADAPTER_ID,
+    scenario_schema: { kind: "hook_callable_return" },
+  };
+
+  function getHook() {
+    return createReactHookFactory().createRuntimeHooks!(
+      { id: REACT_HOOK_ADAPTER_ID },
+      { phase: "execute" },
+    )!.invocation_hooks![0]!;
+  }
+
+  /** 1-based line number of the first source line containing `needle`. */
+  function lineOf(needle: string): number {
+    const idx = COMPONENT_SOURCE.split("\n").findIndex((l) =>
+      l.includes(needle),
+    );
+    if (idx < 0) throw new Error(`fixture line not found: ${needle}`);
+    return idx + 1;
+  }
+
+  /** Instrument `fn` from the fixture and run it through the adapter path. */
+  async function runInstrumented(fn: string, inputs: unknown[]) {
+    const instr = instrumentFunction(COMPONENT_SOURCE, fn, COMPONENT_FIXTURE);
+    if ("error" in instr) {
+      throw new Error(`instrumentation failed: ${instr.error}`);
+    }
+    return executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: model,
+      fileForExec: COMPONENT_FIXTURE,
+      functionName: fn,
+      inputs,
+      instrumentedSource: instr.instrumentedSource,
+    });
+  }
+
+  it("records non-empty coverage consistent with a props-driven branch", async () => {
+    const activeReturn = lineOf('className="active"');
+    const inactiveReturn = lineOf('className="inactive"');
+
+    const result = await runInstrumented("StatusCard", [
+      { status: "active", count: 20 },
+    ]);
+
+    expect(result.thrown_error).toBeNull();
+    // Instrumentation was threaded through the adapter — coverage is real.
+    expect(result.lines_executed.length).toBeGreaterThan(0);
+    expect(result.branch_path.length).toBeGreaterThan(0);
+    // path_constraints mirrors the direct path: one constraint per branch.
+    expect(result.path_constraints).toHaveLength(result.branch_path.length);
+
+    // The taken branch's body line is covered; the untaken branch's is not.
+    expect(result.lines_executed).toContain(activeReturn);
+    expect(result.lines_executed).not.toContain(inactiveReturn);
+
+    // The status === "active" branch decision was recorded as taken.
+    const statusBranch = result.branch_path.find(
+      (b) => b.line === lineOf('props.status === "active"'),
+    );
+    expect(statusBranch?.taken).toBe(true);
+  });
+
+  it("explores both branches when varied props flip the condition", async () => {
+    const activeReturn = lineOf('className="active"');
+    const inactiveReturn = lineOf('className="inactive"');
+
+    const active = await runInstrumented("StatusCard", [
+      { status: "active", count: 20 },
+    ]);
+    const inactive = await runInstrumented("StatusCard", [
+      { status: "inactive", count: 1 },
+    ]);
+
+    // Each run covers only its own branch body.
+    expect(active.lines_executed).toContain(activeReturn);
+    expect(inactive.lines_executed).toContain(inactiveReturn);
+
+    // Together the two runs cover BOTH branch bodies.
+    const union = new Set([
+      ...active.lines_executed,
+      ...inactive.lines_executed,
+    ]);
+    expect(union.has(activeReturn)).toBe(true);
+    expect(union.has(inactiveReturn)).toBe(true);
+
+    // The shared branch flips taken between the two prop sets.
+    const branchLine = lineOf('props.status === "active"');
+    expect(active.branch_path.find((b) => b.line === branchLine)?.taken).toBe(
+      true,
+    );
+    expect(
+      inactive.branch_path.find((b) => b.line === branchLine)?.taken,
+    ).toBe(false);
+  });
+
+  it("records the useState-derived branch of a component (InitCounter)", async () => {
+    const positiveReturn = lineOf("Positive:");
+    const nonPositiveReturn = lineOf("Non-positive:");
+    const branchLine = lineOf("count > 0");
+
+    const positive = await runInstrumented("InitCounter", [{ start: 5 }]);
+    const nonPositive = await runInstrumented("InitCounter", [{ start: -5 }]);
+
+    expect(positive.lines_executed).toContain(positiveReturn);
+    expect(positive.lines_executed).not.toContain(nonPositiveReturn);
+    expect(positive.branch_path.find((b) => b.line === branchLine)?.taken).toBe(
+      true,
+    );
+
+    expect(nonPositive.lines_executed).toContain(nonPositiveReturn);
+    expect(nonPositive.lines_executed).not.toContain(positiveReturn);
+    expect(
+      nonPositive.branch_path.find((b) => b.line === branchLine)?.taken,
+    ).toBe(false);
+  });
+
+  it("falls back to empty coverage when no instrumented source is supplied", async () => {
+    // Backward-compatible contract: absent instrumented source ⇒ empty fields.
+    const result = await executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: model,
+      fileForExec: COMPONENT_FIXTURE,
+      functionName: "StatusCard",
+      inputs: [{ status: "active", count: 20 }],
+    });
+    expect(result.thrown_error).toBeNull();
+    expect(result.lines_executed).toEqual([]);
+    expect(result.branch_path).toEqual([]);
+    expect(result.path_constraints).toEqual([]);
+  });
+
+  it("property: the recorded branch decision agrees with the prop-driven condition", async () => {
+    // Invariant: for any status/count, the status==="active" branch decision's
+    // `taken` flag equals the actual predicate, and the covered return line
+    // matches the branch that ran.
+    const activeReturn = lineOf('className="active"');
+    const inactiveReturn = lineOf('className="inactive"');
+    const branchLine = lineOf('props.status === "active"');
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.oneof(fc.constant("active"), fc.string()),
+        fc.integer({ min: -50, max: 50 }),
+        async (status, count) => {
+          const result = await runInstrumented("StatusCard", [
+            { status, count },
+          ]);
+          const isActive = status === "active";
+          const branch = result.branch_path.find((b) => b.line === branchLine);
+          expect(branch?.taken).toBe(isActive);
+          expect(result.lines_executed).toContain(
+            isActive ? activeReturn : inactiveReturn,
+          );
+          expect(result.lines_executed).not.toContain(
+            isActive ? inactiveReturn : activeReturn,
+          );
+        },
+      ),
+      { numRuns: 40 },
+    );
+  });
+
+  // --- Resolver-adapter composition (#1/#3): the React shim must survive a
+  // profile that supplies its own resolver adapters. ---
+  it("keeps the React shim when the execution profile supplies resolver adapters", async () => {
+    // A profile resolver adapter that resolves nothing (models e.g.
+    // tsconfig-paths on a component with no aliased imports). Before the
+    // composition fix, passing profile adapters displaced the default React
+    // shim, so require("react") hit real React and the mount crashed with a
+    // null-dispatcher error.
+    const passthrough: ResolverAdapter = {
+      id: "test/passthrough",
+      resolveModule: () => ({ kind: "continue" }),
+    };
+    const instr = instrumentFunction(
+      COMPONENT_SOURCE,
+      "StatusCard",
+      COMPONENT_FIXTURE,
+    );
+    if ("error" in instr) throw new Error(`instrumentation failed: ${instr.error}`);
+
+    const result = await executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: model,
+      fileForExec: COMPONENT_FIXTURE,
+      functionName: "StatusCard",
+      inputs: [{ status: "active", count: 20 }],
+      instrumentedSource: instr.instrumentedSource,
+      resolverAdapters: [passthrough],
+    });
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.lines_executed.length).toBeGreaterThan(0);
+    expect(result.branch_path.length).toBeGreaterThan(0);
+  });
+
+  // --- Single-call contract (#7) ---
+  it("throws if a hook loads instrumented exports more than once", async () => {
+    const instr = instrumentFunction(
+      COMPONENT_SOURCE,
+      "StatusCard",
+      COMPONENT_FIXTURE,
+    );
+    if ("error" in instr) throw new Error(`instrumentation failed: ${instr.error}`);
+
+    const doubleLoadHook: InvocationHook = {
+      id: REACT_HOOK_ADAPTER_ID,
+      invoke(ctx) {
+        ctx.loadInstrumentedExports!();
+        ctx.loadInstrumentedExports!(); // second call violates the contract
+        return { status: "completed", return_value: null };
+      },
+    };
+
+    const result = await executeAdapterOwned({
+      hook: doubleLoadHook,
+      invocationModel: model,
+      fileForExec: COMPONENT_FIXTURE,
+      functionName: "StatusCard",
+      inputs: [{ status: "active", count: 20 }],
+      instrumentedSource: instr.instrumentedSource,
+    });
+
+    expect(result.thrown_error).not.toBeNull();
+    expect(result.thrown_error!.message).toContain("at most once");
+  });
+
+  // --- Raw fallback + attribution when instrumented load throws (#4) ---
+  it("falls back to the raw module with a marker when instrumented load throws", async () => {
+    const result = await executeAdapterOwned({
+      hook: getHook(),
+      invocationModel: {
+        kind: "adapter",
+        adapter_id: REACT_HOOK_ADAPTER_ID,
+        scenario_schema: { kind: "hook_callable_return" },
+      },
+      fileForExec: HOOK_FIXTURE,
+      functionName: "useToggle",
+      inputs: [true],
+      // Instrumented source whose top level throws → loader fails, hook falls
+      // back to loading the raw module (adapter-hooks.tsx).
+      instrumentedSource: "throw new Error('instrumented top-level boom');",
+    });
+
+    // Raw fallback ran the real module → no thrown_error, but coverage empty.
+    expect(result.thrown_error).toBeNull();
+    expect(result.lines_executed).toEqual([]);
+    expect(result.branch_path).toEqual([]);
+    // The empty coverage is attributable via a warning side effect.
+    const note = result.side_effects.find(
+      (s) =>
+        s.kind === "console_output" &&
+        s.message.includes("coverage unavailable"),
+    );
+    expect(note).toBeDefined();
+  });
+
+  // --- First-render scoping across stateful rerenders (#2/#8) ---
+  describe("stateful rerender coverage scoping (str-26fhi)", () => {
+    const HOOK_SOURCE = fs.readFileSync(HOOK_FIXTURE, "utf-8");
+
+    function hookLineOf(needle: string): number {
+      const idx = HOOK_SOURCE.split("\n").findIndex((l) => l.includes(needle));
+      if (idx < 0) throw new Error(`fixture line not found: ${needle}`);
+      return idx + 1;
+    }
+
+    async function runRerender(fn: string, inputs: unknown[]) {
+      const instr = instrumentFunction(HOOK_SOURCE, fn, HOOK_FIXTURE);
+      if ("error" in instr) {
+        throw new Error(`instrumentation failed: ${instr.error}`);
+      }
+      return executeAdapterOwned({
+        hook: getHook(),
+        invocationModel: {
+          kind: "adapter",
+          adapter_id: REACT_HOOK_ADAPTER_ID,
+          scenario_schema: { kind: "hook_rerender", max_rerenders: 1 },
+        },
+        fileForExec: HOOK_FIXTURE,
+        functionName: fn,
+        inputs,
+        instrumentedSource: instr.instrumentedSource,
+      });
+    }
+
+    it("keeps lines_executed as the cross-render union but branch_path contradiction-free", async () => {
+      // useToggle(true): render0 takes the `if (on)` branch (on=true) and
+      // returns state "on"; toggle → render1 has on=false, returns "off".
+      // Line coverage should union both return branches; the negated path
+      // (branch_path / path_constraints) must stay scoped to the initial
+      // render so it never carries the `if (on)` branch as BOTH true and false.
+      const onReturn = hookLineOf('state: "on"');
+      const offReturn = hookLineOf('state: "off"');
+
+      const result = await runRerender("useToggle", [true]);
+      expect(result.thrown_error).toBeNull();
+
+      // Two renders happened → lines_executed unions both branch bodies.
+      expect(result.lines_executed).toContain(onReturn);
+      expect(result.lines_executed).toContain(offReturn);
+
+      // No branch line appears with both polarities (would be UNSAT for the
+      // core's negation search).
+      const polaritiesByLine = new Map<number, Set<boolean>>();
+      for (const b of result.branch_path) {
+        const set = polaritiesByLine.get(b.line) ?? new Set<boolean>();
+        set.add(b.taken);
+        polaritiesByLine.set(b.line, set);
+      }
+      for (const [, polarities] of polaritiesByLine) {
+        expect(polarities.size).toBe(1);
+      }
+
+      // path_constraints mirrors the scoped branch_path 1:1.
+      expect(result.path_constraints).toHaveLength(result.branch_path.length);
+      expect(result.branch_path.length).toBeGreaterThan(0);
+    });
   });
 });
