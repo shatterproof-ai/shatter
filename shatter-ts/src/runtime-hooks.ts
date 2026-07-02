@@ -58,6 +58,18 @@ export interface InvocationContext {
   readonly loadInstrumentedExports?: (
     resolverAdapters?: ResolverAdapter[],
   ) => Record<string, unknown>;
+  /**
+   * Optional. A multi-render adapter (e.g. the react-hook rerender scenario)
+   * calls this exactly once, immediately after the target's initial,
+   * props-driven render (and its mount effects), before any state-driven
+   * rerender. It marks the boundary the executor uses to scope
+   * `branch_path` / `path_constraints` to the props-driven path — later renders
+   * can flip a branch and emit contradictory `X ∧ ¬X` constraints that would
+   * otherwise make the conjoined path UNSAT for the core's negation search.
+   * Single-render adapters should not call it (their whole path is coherent).
+   * No-op when the executor did not supply instrumented capture.
+   */
+  readonly markInitialRenderComplete?: () => void;
 }
 export type { InvocationOutcome } from "./protocol.js";
 

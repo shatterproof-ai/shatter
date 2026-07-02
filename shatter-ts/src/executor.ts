@@ -2007,6 +2007,48 @@ export async function executeFunction(
 }
 
 /**
+ * Assemble the coverage/trace subset of a `RawExecuteResult` from collector
+ * arrays. Shared by the direct instrumented path (`executeInstrumented`) and
+ * the adapter-owned path (`executeAdapterOwned`) so the two never drift on how
+ * these fields are derived — in particular, `path_constraints` is always the
+ * per-branch constraints of `branch_path` (1:1), so callers scope both together
+ * by passing the desired `branchPath` slice.
+ */
+function assembleCoverageFields(c: {
+  branchPath: BranchDecision[];
+  linesExecuted: number[];
+  externalCalls: ExternalCall[];
+  scopeEvents: TraceEvent[];
+  loopBodyStates: LoopBodyState[];
+  discoveredDeps: DiscoveredDependency[];
+  connectionFailures: ConnectionFailure[];
+  cryptoBoundaries: RuntimeCryptoBoundary[];
+}): Pick<
+  RawExecuteResult,
+  | "branch_path"
+  | "path_constraints"
+  | "lines_executed"
+  | "calls_to_external"
+  | "scope_events"
+  | "loop_body_states"
+  | "discovered_dependencies"
+  | "connection_failures"
+  | "runtime_crypto_boundaries"
+> {
+  return {
+    branch_path: c.branchPath,
+    path_constraints: c.branchPath.map((bd) => bd.constraint),
+    lines_executed: c.linesExecuted,
+    calls_to_external: c.externalCalls,
+    scope_events: c.scopeEvents,
+    loop_body_states: c.loopBodyStates,
+    discovered_dependencies: c.discoveredDeps,
+    connection_failures: c.connectionFailures,
+    runtime_crypto_boundaries: c.cryptoBoundaries,
+  };
+}
+
+/**
  * Execute a target through an adapter-owned invocation hook instead of
  * calling the exported symbol directly.
  *
@@ -2049,20 +2091,61 @@ export async function executeAdapterOwned(args: {
   // the instrumented module in a sandbox wired with coverage callbacks. The
   // loader stores its result so we can read the accumulated collectors after
   // the hook finishes driving the target.
+  //
+  // Note: unlike the raw module load (which caches exports per session), this
+  // re-runs the target module's top level on every execute so each invocation
+  // gets fresh collectors. Modules with one-shot top-level side effects should
+  // be idempotent; if the instrumented load throws, the hook falls back to the
+  // raw module (coverage unavailable but the target still runs).
   let load: InstrumentedModuleLoad | undefined;
+  // Branch-decision count at the end of the target's initial, props-driven
+  // render. `branch_path` / `path_constraints` are scoped to this prefix so
+  // state-driven rerenders (which can flip a branch and emit contradictory
+  // `X ∧ ¬X` constraints along one path) cannot make the conjoined path UNSAT
+  // for the core's negation search. Undefined ⇒ single-render adapter; the
+  // whole accumulated path is used. `lines_executed` and the other traces stay
+  // as the full cross-render union for coverage reporting.
+  let initialRenderBranchCount: number | undefined;
   const loadInstrumentedExports = args.instrumentedSource
-    ? (resolverAdapters?: ResolverAdapter[]): Record<string, unknown> => {
+    ? (scenarioAdapters?: ResolverAdapter[]): Record<string, unknown> => {
+        if (load !== undefined) {
+          // Single-call contract: the hook loads the instrumented module once
+          // per invocation and drives all renders against it. A second call
+          // would strand the first sandbox's collectors.
+          throw new Error(
+            "loadInstrumentedExports must be called at most once per adapter invocation",
+          );
+        }
+        // Compose the scenario's shim(s) (or the default React shim for the
+        // target file when the hook passes none) FIRST, then the
+        // execution-profile resolver adapters. The raw path always applies the
+        // shim, so composing rather than replacing avoids a regression where a
+        // profile carrying a resolver adapter (e.g. tsconfig-paths) would
+        // displace the shim and route `require("react")` to real React. Shims
+        // lead so React module ids resolve to the shim while profile adapters
+        // still handle path aliases etc.
+        const shims =
+          scenarioAdapters ?? getDefaultResolverAdapters(args.fileForExec);
+        const composedAdapters = [...shims, ...(args.resolverAdapters ?? [])];
         load = loadInstrumentedModuleInSandbox({
           instrumentedSource: args.instrumentedSource!,
           mocks: args.mocks,
           sourceFilePath: args.fileForExec,
           capture,
           cacheKey: args.cacheKey,
-          resolverAdapters: resolverAdapters ?? args.resolverAdapters,
+          resolverAdapters: composedAdapters,
           sandboxProviders: args.sandboxProviders,
           timing: args.timing,
         });
         return load.exports;
+      }
+    : undefined;
+
+  const markInitialRenderComplete = args.instrumentedSource
+    ? (): void => {
+        if (initialRenderBranchCount === undefined && load) {
+          initialRenderBranchCount = load.branchDecisions.length;
+        }
       }
     : undefined;
 
@@ -2073,6 +2156,7 @@ export async function executeAdapterOwned(args: {
     inputs: reconstructedInputs,
     capture,
     ...(loadInstrumentedExports ? { loadInstrumentedExports } : {}),
+    ...(markInitialRenderComplete ? { markInitialRenderComplete } : {}),
   };
 
   let returnValue: unknown = null;
@@ -2159,26 +2243,32 @@ export async function executeAdapterOwned(args: {
   const mergedSideEffects =
     capture && load ? [...load.sideEffects, ...sideEffects] : sideEffects;
 
-  // Populate coverage from the instrumented sandbox collectors when the hook
-  // ran the instrumented body; otherwise leave them empty (raw fallback).
-  // path_constraints mirrors the direct path: the per-branch constraints along
-  // the taken path.
+  // Scope branch_path / path_constraints to the initial props-driven render so
+  // rerender branch flips can't produce an UNSAT conjunction; lines_executed
+  // and the other traces stay the full cross-render union (see
+  // assembleCoverageFields / initialRenderBranchCount). loop_body_states is
+  // intentionally not emitted on the adapter path — see the parity contract.
+  const branchDecisions = load ? load.branchDecisions : [];
+  const scopedBranchPath =
+    initialRenderBranchCount !== undefined
+      ? branchDecisions.slice(0, initialRenderBranchCount)
+      : branchDecisions;
+
   return {
     return_value: thrownError ? null : returnValue,
     thrown_error: thrownError,
     side_effects: mergedSideEffects,
-    branch_path: load ? load.branchDecisions : [],
-    path_constraints: load
-      ? load.branchDecisions.map((bd) => bd.constraint)
-      : [],
-    lines_executed: load ? load.linesExecuted : [],
     performance,
-    calls_to_external: load ? load.externalCalls : [],
-    scope_events: load ? load.scopeEvents : [],
-    loop_body_states: [],
-    discovered_dependencies: load ? load.discoveredDeps : [],
-    connection_failures: load ? load.connectionFailures : [],
-    runtime_crypto_boundaries: load ? load.cryptoBoundaries : [],
+    ...assembleCoverageFields({
+      branchPath: scopedBranchPath,
+      linesExecuted: load ? load.linesExecuted : [],
+      externalCalls: load ? load.externalCalls : [],
+      scopeEvents: load ? load.scopeEvents : [],
+      loopBodyStates: [],
+      discoveredDeps: load ? load.discoveredDeps : [],
+      connectionFailures: load ? load.connectionFailures : [],
+      cryptoBoundaries: load ? load.cryptoBoundaries : [],
+    }),
   };
 }
 
@@ -2838,9 +2928,6 @@ export async function executeInstrumented(
     }
   }
 
-  // Build path_constraints: the conjunction of constraints along the taken path
-  const pathConstraints = branchDecisions.map((bd) => bd.constraint);
-
   if (sourceFilePath && loops.length > 0) {
     const sourceText = fs.readFileSync(sourceFilePath, "utf-8");
     loopBodyStates.push(
@@ -2858,16 +2945,17 @@ export async function executeInstrumented(
     return_value: metrics.returnValue ?? null,
     thrown_error: metrics.thrownError,
     side_effects: capture ? sideEffects : [],
-    branch_path: branchDecisions,
-    path_constraints: pathConstraints,
-    lines_executed: linesExecuted,
     performance: metrics.performance,
-    calls_to_external: externalCalls,
-    scope_events: scopeEvents,
-    loop_body_states: loopBodyStates,
-    discovered_dependencies: discoveredDeps,
-    connection_failures: connectionFailures,
-    runtime_crypto_boundaries: cryptoBoundaries,
+    ...assembleCoverageFields({
+      branchPath: branchDecisions,
+      linesExecuted,
+      externalCalls,
+      scopeEvents,
+      loopBodyStates,
+      discoveredDeps,
+      connectionFailures,
+      cryptoBoundaries,
+    }),
   };
 }
 
