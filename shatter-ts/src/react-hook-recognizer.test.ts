@@ -1,4 +1,5 @@
 import * as ts from "typescript";
+import fc from "fast-check";
 import {
   recognizeReactHooks,
   isHookName,
@@ -320,20 +321,249 @@ export function App() {
     expect(hints[0]).toBeUndefined();
   });
 
-  it("does not tag JSX components in files without a React import", () => {
-    // Without a React import the recognizer cannot tell a JSX component
-    // apart from a JSX-construction helper used by a non-React framework.
+  it("tags JSX components in .tsx files without a React import (automatic JSX runtime, str-cd4ur)", () => {
+    // React 17+ automatic JSX runtime: components need no `react` import.
+    // The .tsx extension plus JSX in the body is the decided recognition
+    // predicate — do NOT consult tsconfig.
     const source = `
 import { something } from "./other";
+export function App() {
+  return <div>{something}</div>;
+}
+`;
+    const sf = createSourceFile(source, "App.tsx");
+    const fns = [stubAnalysis({ name: "App", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.adapter.id).toBe(REACT_HOOK_ADAPTER_ID);
+    expect(hints[0]!.reasons).toContain(
+      "Returns JSX (PascalCase function component)",
+    );
+  });
+
+  it("does not tag JSX components in non-.tsx/.jsx files without a React import (str-cd4ur)", () => {
+    // Extension gate: a .ts file (no JSX runtime) with a JSX-shaped body and
+    // no React import stays unrecognized — the extension predicate fails.
+    const source = `
 export function App() {
   return <div/>;
 }
 `;
-    const sf = createSourceFile(source);
-    const fns = [stubAnalysis({ name: "App", start_line: 3, end_line: 5 })];
+    const sf = createSourceFile(source, "app.ts");
+    const fns = [stubAnalysis({ name: "App", start_line: 2, end_line: 4 })];
     const hints = recognizeReactHooks(sf, fns);
 
     expect(hints[0]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// str-cd4ur: automatic JSX runtime, third-party hooks, arrow/HOC unwrapping
+// ---------------------------------------------------------------------------
+
+describe("recognizeReactHooks — automatic JSX runtime (str-cd4ur)", () => {
+  it("recognizes a .jsx component with no react import", () => {
+    const source = `
+export function Banner(props) {
+  return <section>{props.title}</section>;
+}
+`;
+    const sf = createSourceFile(source, "Banner.jsx");
+    const fns = [stubAnalysis({ name: "Banner", start_line: 2, end_line: 4 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.confidence).toBe("high");
+  });
+
+  it("does not recognize a PascalCase non-component util (no JSX, no hooks)", () => {
+    // Negative: PascalCase alone must never trigger recognition.
+    const source = `
+export function FormatCurrency(cents: number) {
+  return "$" + (cents / 100).toFixed(2);
+}
+`;
+    const sf = createSourceFile(source, "money.tsx");
+    const fns = [stubAnalysis({ name: "FormatCurrency", start_line: 2, end_line: 4 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeUndefined();
+  });
+});
+
+describe("recognizeReactHooks — third-party hooks from any module (str-cd4ur)", () => {
+  it("recognizes a component using only @mantine/hooks-style third-party hooks (no react import)", () => {
+    // Mirrors kapow: no `react` import; a useXxx imported from a non-react
+    // package is a hook-usage signal.
+    const source = `
+import { useDisclosure } from "@mantine/hooks";
+import { Modal } from "@mantine/core";
+export function Dialog() {
+  const [opened, handlers] = useDisclosure(false);
+  return <Modal opened={opened} onClose={handlers.close} />;
+}
+`;
+    const sf = createSourceFile(source, "Dialog.tsx");
+    const fns = [stubAnalysis({ name: "Dialog", start_line: 4, end_line: 7 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.adapter.id).toBe(REACT_HOOK_ADAPTER_ID);
+    expect(hints[0]!.reasons).toContain("Calls custom hook useDisclosure");
+    // A JSX component must render under the adapter even though it also calls
+    // a store/third-party hook: high confidence so it is auto-applied (active),
+    // not merely suggested. This is the dominant kapow pattern (str-cd4ur).
+    expect(hints[0]!.confidence).toBe("high");
+    expect(hints[0]!.reasons).toContain(
+      "Returns JSX (PascalCase function component)",
+    );
+  });
+
+  it("classifies a JSX component that also calls a store hook (no react import) as high confidence", () => {
+    // Mirrors kapow's CardFieldPicker: `export function X()` in a .tsx file,
+    // no react import, calls a `useXxxStore` selector, returns JSX. Must be
+    // high-confidence so the react-hook adapter is auto-applied.
+    const source = `
+import { useCardFieldStore } from "@/stores/cardFieldStore";
+export function CardFieldPicker() {
+  const fields = useCardFieldStore((s) => s.visibleFields);
+  return <div>{fields.length}</div>;
+}
+`;
+    const sf = createSourceFile(source, "CardFieldPicker.tsx");
+    const fns = [stubAnalysis({ name: "CardFieldPicker", start_line: 3, end_line: 6 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.confidence).toBe("high");
+  });
+
+  it("recognizes a custom hook (no JSX, no react import) wrapping a third-party hook", () => {
+    // A .ts custom hook file that imports its hook from a store/third-party
+    // module — no JSX, so the extension predicate cannot help; the imported
+    // useXxx call is the signal.
+    const source = `
+import { useStore } from "@/stores/thing";
+export function useThing() {
+  const value = useStore((s) => s.value);
+  return value * 2;
+}
+`;
+    const sf = createSourceFile(source, "useThing.ts");
+    const fns = [stubAnalysis({ name: "useThing", start_line: 3, end_line: 6 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.reasons).toContain("Calls custom hook useStore");
+  });
+
+  it("does not recognize a locally-defined useXxx call that is not imported (no react import)", () => {
+    // Guard against over-broadening: a useXxx call whose callee is neither a
+    // react hook nor imported from any module is not a recognition signal.
+    const source = `
+export function usePlain(x: number) {
+  return useLocalThing(x);
+  function useLocalThing(n: number) { return n + 1; }
+}
+`;
+    const sf = createSourceFile(source, "usePlain.ts");
+    const fns = [stubAnalysis({ name: "usePlain", start_line: 2, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeUndefined();
+  });
+});
+
+describe("recognizeReactHooks — arrow and HOC-wrapped components (str-cd4ur)", () => {
+  it("recognizes a const-arrow component (no react import)", () => {
+    const source = `
+export const Panel = (props: { label: string }) => {
+  return <div>{props.label}</div>;
+};
+`;
+    const sf = createSourceFile(source, "Panel.tsx");
+    // Arrow spans the initializer: `(props...) => { ... }` on lines 2-4.
+    const fns = [stubAnalysis({ name: "Panel", start_line: 2, end_line: 4 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.reasons).toContain(
+      "Returns JSX (PascalCase function component)",
+    );
+  });
+
+  it("recognizes a memo-wrapped component by unwrapping the call expression", () => {
+    const source = `
+import { memo } from "react";
+export const Card = memo(function Card(props: { n: number }) {
+  return <article>{props.n}</article>;
+});
+`;
+    const sf = createSourceFile(source, "Card.tsx");
+    // Analysis line range points at the whole `memo(...)` call declaration.
+    const fns = [stubAnalysis({ name: "Card", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.reasons).toContain(
+      "Returns JSX (PascalCase function component)",
+    );
+  });
+
+  it("recognizes a forwardRef-wrapped arrow component by unwrapping", () => {
+    const source = `
+import { forwardRef } from "react";
+export const Input = forwardRef((props: { name: string }, ref) => {
+  return <input name={props.name} ref={ref} />;
+});
+`;
+    const sf = createSourceFile(source, "Input.tsx");
+    const fns = [stubAnalysis({ name: "Input", start_line: 3, end_line: 5 })];
+    const hints = recognizeReactHooks(sf, fns);
+
+    expect(hints[0]).toBeDefined();
+  });
+});
+
+describe("recognizeReactHooks — recognition invariants (str-cd4ur property)", () => {
+  it("recognizes any PascalCase JSX component and never a lowercase one, in a .tsx file with no react import", () => {
+    const pascal = fc
+      .tuple(
+        fc.constantFrom(..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        fc.stringMatching(/^[a-zA-Z]{0,10}$/),
+      )
+      .map(([head, rest]) => head + rest);
+    const lower = fc
+      .tuple(
+        fc.constantFrom(..."abcdefghijklmnopqrstuvwxyz"),
+        fc.stringMatching(/^[a-zA-Z]{0,10}$/),
+      )
+      .map(([head, rest]) => head + rest)
+      // exclude useXxx names — those are hook-shaped, a separate signal
+      .filter((n) => !isHookName(n));
+
+    fc.assert(
+      fc.property(pascal, lower, (Comp, helper) => {
+        const source = `
+export function ${Comp}() {
+  return <div>x</div>;
+}
+export function ${helper}() {
+  return <div>y</div>;
+}
+`;
+        const sf = createSourceFile(source, "gen.tsx");
+        const fns = [
+          stubAnalysis({ name: Comp, start_line: 2, end_line: 4 }),
+          stubAnalysis({ name: helper, start_line: 5, end_line: 7 }),
+        ];
+        const hints = recognizeReactHooks(sf, fns);
+        expect(hints[0]).toBeDefined();
+        expect(hints[1]).toBeUndefined();
+      }),
+      { numRuns: 100 },
+    );
   });
 });
 
@@ -376,7 +606,7 @@ export function useTheme() {
     expect(hints[0]!.confidence).toBe("high");
   });
 
-  it("tags a custom hook called via useXxx pattern (medium confidence)", () => {
+  it("tags a custom hook called via useXxx pattern imported from any module (medium confidence, str-cd4ur)", () => {
     const source = `
 import { useTheme } from "./useTheme";
 export function useThemedClass() {
@@ -388,12 +618,12 @@ export function useThemedClass() {
     const fns = [stubAnalysis({ name: "useThemedClass", start_line: 3, end_line: 6 })];
     const hints = recognizeReactHooks(sf, fns);
 
-    // useTheme is imported but not from a React module, so this is a
-    // medium-confidence "custom hook" signal driven by the useXxx call name.
-    // Imported from "./useTheme" doesn't set hasReactImport, so the
-    // recognizer returns undefined unless React itself is imported elsewhere.
-    // Add a React import to exercise the medium path.
-    expect(hints[0]).toBeUndefined();
+    // useTheme is imported (from any module, here "./useTheme") and matches the
+    // useXxx naming convention, so it is a hook-usage signal even without a
+    // React import (str-cd4ur, change #2). Medium confidence: no builtin call.
+    expect(hints[0]).toBeDefined();
+    expect(hints[0]!.confidence).toBe("medium");
+    expect(hints[0]!.reasons).toContain("Calls custom hook useTheme");
   });
 
   it("emits medium confidence for custom hook calls when React is imported", () => {
