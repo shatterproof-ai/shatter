@@ -319,6 +319,13 @@ func GenerateWrapper(
 		filteredExtra = appendStringIfMissing(filteredExtra, "time")
 		sort.Strings(filteredExtra)
 	}
+	// str-jn9r0: bare builtin `error` params decode via errors.New in
+	// writeErrorParamDeserialization, so thread the "errors" import when any
+	// target or constructor takes an error param.
+	if wrapperNeedsErrorImport(sorted, sortedCtors) {
+		filteredExtra = appendStringIfMissing(filteredExtra, "errors")
+		sort.Strings(filteredExtra)
+	}
 	needsMapNormalizer := wrapperNeedsMapInputNormalizer(sorted) || constructorsNeedMapInputNormalizer(sortedCtors)
 	needsFuncNormalizer := wrapperNeedsFuncInputNormalizer(sorted)
 	needsRuntimeValueNormalizer := wrapperNeedsRuntimeValueInputNormalizer(sorted)
@@ -560,6 +567,10 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 		writeDurationParamDeserialization(b, p.Name, inputIndex, indent)
 		return
 	}
+	if p.GoType == "error" {
+		writeErrorParamDeserialization(b, p.Name, inputIndex, indent)
+		return
+	}
 	fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
 	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, inputIndex)
 	inputExpr := fmt.Sprintf("_shatterInputs[%d]", inputIndex)
@@ -608,6 +619,36 @@ func constructorsNeedMapInputNormalizer(constructors []ConstructorCandidate) boo
 	for _, c := range constructors {
 		for _, p := range c.Parameters {
 			if strings.Contains(p.GoType, "map[") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// wrapperNeedsErrorImport reports whether any target or constructor parameter
+// is a bare builtin `error` that the wrapper will actually decode via
+// errors.New in writeErrorParamDeserialization (str-jn9r0), and therefore
+// require the "errors" import. Threaded through the import block the same way
+// "time" is for Duration params. The predicate must match the emission path
+// exactly: params satisfied by a runtime-value expression emit a direct Go
+// expression instead of the errors.New block (writeParamDeserialization*
+// short-circuits on RuntimeValueExpr), so those must NOT thread the import —
+// otherwise the generated wrapper carries an unused "errors" import and fails
+// `go build`. Targets short-circuit on p.RuntimeValueExpr; constructor params
+// resolve through constructorParamRuntimeValueExpr, which also consults the
+// runtimeval registry, so use that predicate for the ctor side.
+func wrapperNeedsErrorImport(targets []WrapperTarget, constructors []ConstructorCandidate) bool {
+	for _, t := range targets {
+		for _, p := range t.Parameters {
+			if p.RuntimeValueExpr == "" && p.GoType == "error" {
+				return true
+			}
+		}
+	}
+	for _, c := range constructors {
+		for _, p := range c.Parameters {
+			if p.GoType == "error" && constructorParamRuntimeValueExpr(p) == "" {
 				return true
 			}
 		}
@@ -1241,6 +1282,36 @@ func writeDurationParamDeserialization(b *strings.Builder, name string, idx int,
 	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
 	fmt.Fprintf(b, "%s\t\t}\n", indent)
 	fmt.Fprintf(b, "%s\t\t%s = time.Duration(*_shatterDur.Ms) * time.Millisecond\n", indent, name)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+// writeErrorParamDeserialization emits a decode block for a bare builtin
+// `error`-interface parameter (str-jn9r0), mirroring
+// writeDurationParamDeserialization. The Go analyzer maps builtin `error` to
+// ComplexKind "error" (analyzer.go complexKindFromNamed) and the Rust core's
+// random generator emits the cross-frontend shape
+// `{"__complex_type":"error","class":...,"message":m}` (input_gen.rs
+// generate_error). A bare `error` interface cannot be json.Unmarshaled
+// directly, so this block: (a) tries a plain decode first — JSON `null`
+// decodes into the interface as a nil error with no error, giving the caller
+// the nil branch for free; (b) on any decode error, falls back to reading the
+// tagged object and reconstructing `errors.New(message)` (the `class` field is
+// intentionally ignored — no typed-error reconstruction yet, str-kvzh7).
+// Any other shape preserves the original plain-decode error so the failure
+// message stays specific.
+func writeErrorParamDeserialization(b *strings.Builder, name string, idx int, indent string) {
+	fmt.Fprintf(b, "%svar %s error\n", indent, name)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, idx)
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, idx, name)
+	fmt.Fprintf(b, "%s\t\tvar _shatterErr struct {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tComplexType string  `json:\"__complex_type\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tMessage     *string `json:\"message\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\tif _e2 := json.Unmarshal(_shatterInputs[%d], &_shatterErr); _e2 != nil || _shatterErr.Message == nil || _shatterErr.ComplexType != \"error\" {\n", indent, idx)
+	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\t%s = errors.New(*_shatterErr.Message)\n", indent, name)
 	fmt.Fprintf(b, "%s\t}\n", indent)
 	fmt.Fprintf(b, "%s}\n", indent)
 }
