@@ -291,7 +291,15 @@ func cacheKey(req BuildRequest) string {
 	h := sha256.New()
 	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00")
 	for _, mock := range req.Mocks {
-		fmt.Fprint(h, mock.Symbol, "\x00")
+		// Include Expression so two configs that mock the same symbol with
+		// different substitutions (str-c8djq) do not collide on a stale
+		// cached binary. DefaultBehavior/ReturnValues likewise change the
+		// generated harness and must discriminate the cache key.
+		fmt.Fprint(h, mock.Symbol, "\x00", mock.Expression, "\x00", mock.DefaultBehavior, "\x00")
+		for _, rv := range mock.ReturnValues {
+			fmt.Fprintf(h, "%v\x00", rv)
+		}
+		fmt.Fprint(h, "\x01")
 	}
 	return base + "-" + hex.EncodeToString(h.Sum(nil))[:8]
 }

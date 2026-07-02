@@ -50,6 +50,21 @@ func (b *Builder) writeOverlayManifest(
 				}
 			}
 		}
+
+		// Execute-time mock substitution (str-c8djq): replace call sites of
+		// configured mock symbols with their Go-source expressions in the
+		// already-instrumented target sources, so `go build -overlay`
+		// compiles the substituted bodies. Applies to expression-bearing
+		// mocks only (hint_config_v1 `.shatter/config.yaml` `mocks`); wire
+		// mocks carrying only return_values are untouched here.
+		if subs := instrument.MockSubstitutionsFromConfigs(req.Mocks); len(subs) > 0 {
+			for _, file := range instrumentedFiles {
+				if _, err := instrument.RewriteMockCallSitesInFile(file.InstrumentedPath, subs); err != nil {
+					return "", "", fmt.Errorf("build: mock substitution %q: %w", file.InstrumentedPath, err)
+				}
+			}
+		}
+
 		if err := instrument.RegisterInstrumentedOverlay(builder, instrumentedFiles); err != nil {
 			return "", "", fmt.Errorf("build: register instrumented overlay: %w", err)
 		}
