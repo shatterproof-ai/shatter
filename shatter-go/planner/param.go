@@ -252,11 +252,16 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 	return plans, nil
 }
 
+// httpRequestBodySeeds are schema-agnostic JSON bodies that push a handler
+// past its parse guard: an empty object reaches decode-success/validation
+// branches, a small nested object reaches field-extraction branches, and an
+// array covers handlers that decode into slices. API-specific payloads do not
+// belong here — they come from the project's `.shatter/config.yaml` hints
+// (HintsByName / StringLiteralsByParam), which are planned ahead of these.
 var httpRequestBodySeeds = []string{
-	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`,
-	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
-	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"system":"be concise","messages":[{"role":"user","content":"hello"}]}`,
-	`{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":true}`,
+	`{}`,
+	`{"data":{"id":"1","name":"a"},"items":["a"]}`,
+	`[]`,
 }
 
 func isHTTPRequestBodyParam(p protocol.ParamInfo) bool {

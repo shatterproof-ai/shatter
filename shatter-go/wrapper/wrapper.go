@@ -617,10 +617,12 @@ func isSymbolicHTTPRequestParam(goType string) bool {
 
 // writeSymbolicHTTPRequestDeserialization emits a *http.Request whose body is
 // read from the param's symbolic input slot (str-e41w). The method, path, and
-// API key header are fixed so httptest.NewRequest cannot panic on an invalid
-// verb and provider handlers do not return before reading the body. Only the
-// body is symbolic, which is what handler bodies read and branch on. Making
-// method/path/headers symbolic is deferred follow-up work.
+// auth headers are fixed so httptest.NewRequest cannot panic on an invalid
+// verb and handlers do not return before reading the body. Both common API
+// auth conventions are stubbed (`x-api-key` and `Authorization: Bearer`) so a
+// presence-check on either passes. Only the body is symbolic, which is what
+// handler bodies read and branch on. Making method/path/headers symbolic is
+// deferred follow-up work.
 func writeSymbolicHTTPRequestDeserialization(b *strings.Builder, name string, inputIndex int, indent string) {
 	bodyVar := fmt.Sprintf("_shatterReqBody%d", inputIndex)
 	fmt.Fprintf(b, "%svar %s string\n", indent, bodyVar)
@@ -631,6 +633,8 @@ func writeSymbolicHTTPRequestDeserialization(b *strings.Builder, name string, in
 	fmt.Fprintf(b, "%s}\n", indent)
 	fmt.Fprintf(b, "%svar %s *http.Request = httptest.NewRequest(\"POST\", \"/\", strings.NewReader(%s))\n", indent, name, bodyVar)
 	fmt.Fprintf(b, "%s%s.Header.Set(\"x-api-key\", \"shatter\")\n", indent, name)
+	fmt.Fprintf(b, "%s%s.Header.Set(\"Authorization\", \"Bearer shatter\")\n", indent, name)
+	fmt.Fprintf(b, "%s%s.Header.Set(\"Content-Type\", \"application/json\")\n", indent, name)
 }
 
 func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {

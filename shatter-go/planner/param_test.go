@@ -3,7 +3,6 @@ package planner_test
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/planner"
@@ -260,8 +259,12 @@ func TestPlanParam_HTTPRequestBodyIncludesJSONRequestSeeds(t *testing.T) {
 	if err := json.Unmarshal(plans[0].Literal, &seededBody); err != nil {
 		t.Fatalf("first plan literal does not decode as string: %v; literal=%s", err, plans[0].Literal)
 	}
-	if !strings.Contains(seededBody, `"messages"`) || !strings.Contains(seededBody, `"max_tokens"`) {
-		t.Fatalf("first request body seed = %q, want valid provider-style JSON body before target-local string literals", seededBody)
+	var parsed any
+	if err := json.Unmarshal([]byte(seededBody), &parsed); err != nil {
+		t.Fatalf("first request body seed %q is not valid JSON: %v; schema-agnostic JSON seeds must precede target-local string literals", seededBody, err)
+	}
+	if _, isObject := parsed.(map[string]any); !isObject {
+		t.Fatalf("first request body seed = %q, want a JSON object so decode-into-struct handlers pass their parse guard", seededBody)
 	}
 	if plans[0].TypeHint != "string" {
 		t.Fatalf("first plan TypeHint = %q, want string", plans[0].TypeHint)

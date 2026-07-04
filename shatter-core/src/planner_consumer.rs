@@ -618,6 +618,16 @@ mod tests {
         }
     }
 
+    fn runtime_plan(param_index: u32, param_name: &str, type_hint: &str) -> ValuePlan {
+        ValuePlan {
+            param_index,
+            param_name: param_name.to_string(),
+            kind: ValuePlanKind::RuntimeValue,
+            literal: Some(json!("runtime")),
+            type_hint: type_hint.to_string(),
+        }
+    }
+
     #[test]
     fn materialize_literal_and_zero_produces_seed() {
         let plan = InvocationPlan {
@@ -977,6 +987,29 @@ mod tests {
             vec![vec![Value::Null, json!("http://localhost:11434")]],
             "sibling Literal hint must survive when ctx is RuntimeValue",
         );
+    }
+
+    #[test]
+    fn runtime_value_placeholder_keeps_literal_method_seed() {
+        let body = json!(
+            r#"{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}"#
+        );
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewHandler".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![
+                runtime_plan(0, "w", "http.ResponseWriter"),
+                literal_plan(1, "r", body.clone()),
+            ],
+            constructor_arg_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+
+        let seeds = materialize_seeds(&[plan], &[int_param("w"), str_param("r")]);
+
+        assert_eq!(seeds, vec![vec![Value::Null, body]]);
     }
 
     #[test]

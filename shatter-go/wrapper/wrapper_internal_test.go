@@ -416,6 +416,12 @@ func Handle(r *http.Request) bool { return r != nil }
 	if !strings.Contains(out, `.Header.Set("x-api-key", "shatter")`) {
 		t.Fatalf("wrapper missing non-empty x-api-key header for provider handlers; source:\n%s", out)
 	}
+	if !strings.Contains(out, `.Header.Set("Authorization", "Bearer shatter")`) {
+		t.Fatalf("wrapper missing Bearer Authorization header for provider handlers; source:\n%s", out)
+	}
+	if !strings.Contains(out, `.Header.Set("Content-Type", "application/json")`) {
+		t.Fatalf("wrapper missing Content-Type header; source:\n%s", out)
+	}
 	if strings.Contains(out, "bytes.NewReader(nil)") {
 		t.Fatalf("wrapper still uses fixed empty body bytes.NewReader(nil); body must be symbolic; source:\n%s", out)
 	}
