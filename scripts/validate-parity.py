@@ -22,6 +22,14 @@ Emits warnings (not failures) if:
     status: accepted or status: tracked
   - A resolved divergence is within the grace window but not yet removed
 
+The --warn-as-error-within-days N flag escalates that last warning to a
+failure (exit 1) once a resolved entry is within N days of its removal
+deadline. The scheduled parity-expiry workflow (.github/workflows/parity-
+expiry.yml) runs with this flag so an impending expiry surfaces as a red
+scheduled run — an owner-actionable signal — before the hard deadline first
+manifests as a red gate on someone's unrelated parity-touching branch
+(str-5dx0).
+
 Parity matrix schema (protocol/parity-matrix.yaml):
 
     commands:
@@ -56,6 +64,7 @@ Parity matrix schema (protocol/parity-matrix.yaml):
 
 Usage:
     python3 scripts/validate-parity.py [--matrix PATH] [--verbose] [--today YYYY-MM-DD]
+                                       [--warn-as-error-within-days N]
 """
 
 from __future__ import annotations
@@ -439,6 +448,7 @@ def validate_divergence_metadata(
     today: _dt.date,
     result: Result,
     grace_days: int = DRIFT_RESOLUTION_GRACE_DAYS,
+    warn_as_error_within_days: int | None = None,
 ) -> None:
     """Enforce required metadata + grace-period rules on allowed_divergences.
 
@@ -541,11 +551,28 @@ def validate_divergence_metadata(
                             f"protocol/PARITY.md"
                         )
                     else:
-                        result.warn(
-                            f"allowed_divergences[{id_label}]: resolved on "
-                            f"{resolved_at.isoformat()} — schedule removal "
-                            f"within {grace_days - age_days} day(s)"
-                        )
+                        remaining = grace_days - age_days
+                        if (
+                            warn_as_error_within_days is not None
+                            and remaining <= warn_as_error_within_days
+                        ):
+                            result.error(
+                                f"allowed_divergences[{id_label}]: resolved on "
+                                f"{resolved_at.isoformat()} — grace period "
+                                f"expires in {remaining} day(s); remove this "
+                                f"entry from parity-matrix.yaml and "
+                                f"protocol/PARITY.md now, before the hard "
+                                f"deadline blocks an unrelated parity-touching "
+                                f"branch (escalated by "
+                                f"--warn-as-error-within-days="
+                                f"{warn_as_error_within_days})"
+                            )
+                        else:
+                            result.warn(
+                                f"allowed_divergences[{id_label}]: resolved on "
+                                f"{resolved_at.isoformat()} — schedule removal "
+                                f"within {remaining} day(s)"
+                            )
 
     # PARITY.md ↔ parity-matrix.yaml sync check.
     if parity_md_ids is None:
@@ -581,6 +608,7 @@ def validate(
     verbose: bool,
     today: _dt.date | None = None,
     parity_md_path: Path = PARITY_MD_PATH,
+    warn_as_error_within_days: int | None = None,
 ) -> None:
     allowed_divergences: list[dict] = matrix.get("allowed_divergences", []) or []
     validate_divergence_metadata(
@@ -588,6 +616,7 @@ def validate(
         parity_md_divergence_ids(parity_md_path),
         today or _dt.date.today(),
         result,
+        warn_as_error_within_days=warn_as_error_within_days,
     )
     excused = build_divergence_index(allowed_divergences)
 
@@ -804,6 +833,19 @@ def parse_args() -> argparse.Namespace:
             "deterministic)"
         ),
     )
+    parser.add_argument(
+        "--warn-as-error-within-days",
+        metavar="N",
+        type=int,
+        default=None,
+        help=(
+            "Escalate resolved-divergence grace-window warnings to errors "
+            "(exit 1) when an entry is within N days of its removal deadline. "
+            "Used by the scheduled parity-expiry workflow to surface an "
+            "impending expiry to owners before it blocks an unrelated "
+            "parity-touching branch (str-5dx0)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -823,6 +865,15 @@ def main() -> int:
             return 1
     else:
         today = _dt.date.today()
+
+    warn_as_error_within_days: int | None = args.warn_as_error_within_days
+    if warn_as_error_within_days is not None and warn_as_error_within_days < 0:
+        print(
+            "ERROR: --warn-as-error-within-days must be >= 0, got "
+            f"{warn_as_error_within_days}",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"Loading parity matrix: {matrix_path}")
     matrix = load_matrix(matrix_path)
@@ -870,7 +921,8 @@ def main() -> int:
     result = Result()
     print("\nValidating...")
     validate(
-        matrix, detected_per_frontend, registry_caps, result, verbose, today=today
+        matrix, detected_per_frontend, registry_caps, result, verbose, today=today,
+        warn_as_error_within_days=warn_as_error_within_days,
     )
 
     # Report
