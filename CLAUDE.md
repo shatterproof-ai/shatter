@@ -69,7 +69,7 @@ Per-crate CLAUDE.md files (`shatter-core/`, `shatter-cli/`, `shatter-ts/`, `shat
 
 ### Sprint Workflow
 
-When asked to work on ready issues in parallel, invoke `/swarm` (handles team/worktree/merge mechanics). For epic-based work or Shatter-specific quality gates, also invoke `/swarm-project` which adds wave scheduling via `bd swarm` and runs `/check-all` + `/walkthrough-review`.
+When asked to work on ready issues in parallel, invoke the `bento:swarm` skill (handles team/worktree/merge mechanics; see AGENTS.md "Parallel work with agent teams" for the swarm and worktree doctrine). For epic-based work, use `bd swarm` to wave-schedule an epic's children by dependency order. Run the Shatter-specific quality gates — `/check-all` + `/walkthrough-review` — before landing.
 
 ## Output Review
 
