@@ -419,6 +419,9 @@ func Handle(r *http.Request) bool { return r != nil }
 	if !strings.Contains(out, `.Header.Set("Authorization", "Bearer shatter")`) {
 		t.Fatalf("wrapper missing Bearer Authorization header for provider handlers; source:\n%s", out)
 	}
+	if !strings.Contains(out, `.Header.Set("x-goog-api-key", "shatter")`) {
+		t.Fatalf("wrapper missing x-goog-api-key header for Google-style handlers; source:\n%s", out)
+	}
 	if !strings.Contains(out, `.Header.Set("Content-Type", "application/json")`) {
 		t.Fatalf("wrapper missing Content-Type header; source:\n%s", out)
 	}
