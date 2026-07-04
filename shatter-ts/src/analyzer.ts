@@ -603,7 +603,9 @@ function analyzeParameter(
     ? checker.getTypeOfSymbolAtLocation(symbol, param)
     : checker.getTypeAtLocation(param);
 
-  let typ = convertType(paramType, checker, sourceFile ?? null);
+  // Recover array-ness from the declared type node when the checker has lost
+  // it (e.g. a lib-less bundled frontend degrading `Widget[]` — str-9cqde).
+  let typ = convertTypeWithNode(paramType, param.type, checker, sourceFile ?? null, new Set());
 
   // If the parameter has a ? token and the type isn't already nullable, wrap it
   if (param.questionToken && typ.kind !== "nullable") {
@@ -615,6 +617,132 @@ function analyzeParameter(
 
 /** Maximum type recursion depth before bailing out to {kind: "unknown"}. */
 const MAX_TYPE_DEPTH = 32;
+
+/**
+ * Fallback used when `convertType` must bail out early (cycle detection or the
+ * depth guard). A bare `{kind: "unknown"}` throws away array-ness: the core may
+ * then realize a non-array value for what is actually an array field, and target
+ * code doing `.map` / `.filter` / `.find` on it crashes with
+ * `.map is not a function` (str-9cqde). When the bailed-out type is recognizably
+ * an array or tuple, keep the `array` kind with a degraded (`unknown`) element so
+ * the generator still produces a real array; otherwise fall back to `unknown`.
+ */
+function degradedType(type: ts.Type, checker: ts.TypeChecker): TypeInfo {
+  if (checker.isArrayType(type) || checker.isTupleType(type)) {
+    return { kind: "array", element: { kind: "unknown" } };
+  }
+  return { kind: "unknown" };
+}
+
+/**
+ * If `typeNode` syntactically denotes an array — `T[]`, `readonly T[]`,
+ * `Array<T>`, or `ReadonlyArray<T>` — return its element TypeNode; otherwise
+ * null.
+ *
+ * This is the syntactic escape hatch for a subtle failure mode (str-9cqde):
+ * `checker.isArrayType` needs the global `Array` symbol, which comes from the
+ * TypeScript standard library. When the frontend runs without `lib.d.ts`
+ * resolvable — as it does when the CLI extracts the esbuild-bundled frontend
+ * to a cache directory with no lib files alongside — `checker.isArrayType`
+ * returns false for `string[]`, the type collapses to an anonymous object with
+ * no properties, and the element type is irrecoverable from the *type* alone
+ * (no symbol, no type arguments). The AST type node still carries the element
+ * syntactically, so we recover it from there.
+ */
+function arrayElementTypeNode(typeNode: ts.TypeNode): ts.TypeNode | null {
+  let node: ts.TypeNode = typeNode;
+  // Unwrap `(T)[]` and the `readonly T[]` operator (which may itself be
+  // parenthesized) so we reach the underlying array/reference node.
+  if (ts.isParenthesizedTypeNode(node)) {
+    node = node.type;
+  }
+  if (ts.isTypeOperatorNode(node) && node.operator === ts.SyntaxKind.ReadonlyKeyword) {
+    node = node.type;
+  }
+  if (ts.isParenthesizedTypeNode(node)) {
+    node = node.type;
+  }
+
+  if (ts.isArrayTypeNode(node)) {
+    return node.elementType;
+  }
+  if (
+    ts.isTypeReferenceNode(node) &&
+    ts.isIdentifier(node.typeName) &&
+    (node.typeName.text === "Array" || node.typeName.text === "ReadonlyArray") &&
+    node.typeArguments?.length === 1
+  ) {
+    return node.typeArguments[0]!;
+  }
+  return null;
+}
+
+/**
+ * Resolve the declared TypeNode of a symbol's value declaration, when it is a
+ * property or parameter. Used to recover array-ness from syntax (see
+ * `arrayElementTypeNode`) at the sites — object fields and parameters — where
+ * both the resolved type and its declaration are in hand.
+ */
+function declaredTypeNode(symbol: ts.Symbol): ts.TypeNode | undefined {
+  const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  if (
+    decl &&
+    (ts.isPropertySignature(decl) ||
+      ts.isPropertyDeclaration(decl) ||
+      ts.isParameter(decl))
+  ) {
+    return decl.type;
+  }
+  return undefined;
+}
+
+/**
+ * Convert an array element from its syntactic TypeNode, recursing through
+ * nested array nodes (`number[][]`) so array-ness survives at every level even
+ * without `lib.d.ts`. Non-array element nodes are resolved back through the
+ * checker + `convertType`, which handles primitives, cross-file interfaces,
+ * unions, etc. — and honors the shared `seen` set so cyclic element types
+ * terminate.
+ */
+function convertElementNode(
+  elementNode: ts.TypeNode,
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile | null | undefined,
+  seen: Set<ts.Type>,
+): TypeInfo {
+  const nested = arrayElementTypeNode(elementNode);
+  if (nested) {
+    return { kind: "array", element: convertElementNode(nested, checker, sourceFile, seen) };
+  }
+  const elementType = checker.getTypeFromTypeNode(elementNode);
+  return convertType(elementType, checker, sourceFile, seen);
+}
+
+/**
+ * Convert `type`, but when the checker has lost array-ness that the declared
+ * `typeNode` still expresses syntactically, recover the array from the node
+ * (str-9cqde). With `lib.d.ts` present this is a no-op: `convertType` already
+ * returns an `array` kind, so the recovery branch never fires and behavior is
+ * byte-identical. The recovery only triggers on the degraded (lib-less) path,
+ * where `T[]` would otherwise collapse to `{kind:"object", fields:[]}`.
+ */
+export function convertTypeWithNode(
+  type: ts.Type,
+  typeNode: ts.TypeNode | undefined,
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile | null | undefined,
+  seen: Set<ts.Type>,
+): TypeInfo {
+  const converted = convertType(type, checker, sourceFile, seen);
+  if (converted.kind === "array" || !typeNode) {
+    return converted;
+  }
+  const elementNode = arrayElementTypeNode(typeNode);
+  if (elementNode) {
+    return { kind: "array", element: convertElementNode(elementNode, checker, sourceFile, seen) };
+  }
+  return converted;
+}
 
 /**
  * Convert a TypeScript compiler type to our protocol TypeInfo.
@@ -631,14 +759,14 @@ export function convertType(
   sourceFile?: ts.SourceFile | null,
   seen: Set<ts.Type> = new Set(),
 ): TypeInfo {
-  // Cycle detection: if we're already converting this type, bail out
+  // Cycle detection: if we're already converting this type, bail out.
   if (seen.has(type)) {
-    return { kind: "unknown" };
+    return degradedType(type, checker);
   }
 
-  // Depth guard: the seen set size is bounded by recursion depth
+  // Depth guard: the seen set size is bounded by recursion depth.
   if (seen.size >= MAX_TYPE_DEPTH) {
-    return { kind: "unknown" };
+    return degradedType(type, checker);
   }
 
   // Track this type to detect cycles — add before any recursive branch,
@@ -1779,7 +1907,15 @@ function convertObjectType(
 
     // Do not pass sourceFile into field types to avoid false positives on
     // fields whose types happen to match heuristic patterns out of context.
-    const converted = convertType(propType, checker, undefined, seen);
+    // Use the declared type node to recover array-ness the checker may have
+    // lost when lib.d.ts is unavailable (str-9cqde).
+    const converted = convertTypeWithNode(
+      propType,
+      declaredTypeNode(prop),
+      checker,
+      undefined,
+      seen,
+    );
     const fieldType =
       isOptional && converted.kind !== "nullable"
         ? { kind: "nullable" as const, inner: converted }
