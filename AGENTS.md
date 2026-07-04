@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. See shared agent rules (`beads.md`) for basic commands, issue decomposition, batch commands, and git merge workflow. Below are Shatter-specific extensions.
+This project uses **bd** (beads) for issue tracking. The verified command basics live in the [bd Quick Reference](#bd-quick-reference) section below; the `bento:beads-issue-flow` skill covers the read → claim → update → close lifecycle. Below are Shatter-specific extensions.
 
 ## bd Quick Reference
 
@@ -285,32 +285,52 @@ Issues: str-a1b, str-c2d
 
 For parallel work on multiple issues, use Claude Code's **agent teams** instead
 of manually running separate Claude instances in different worktrees. Teams
-coordinate through the Task tool and each teammate runs in an isolated worktree
-automatically (via `isolation: "worktree"` on the Task tool).
+coordinate through the Task tool and each teammate works on its own branch in a
+linked worktree under `~/.local/share/worktrees/shatter/`.
 
 **Why teams over manual worktrees:**
 - Claude manages concurrency — no Dolt database conflicts
 - Teammates coordinate via task lists and messages
-- Worktree lifecycle is fully automatic
 - The team lead merges results back to `main`
 
-**Supervision:** Always spawn teammates with `mode: "plan"`. Each teammate
-must write a plan and get approval from the team lead before implementing.
-This ensures the user can review proposed approaches before code is written.
+**Worktree setup is not automatic for background teammates.** `isolation:
+"worktree"` on a *background* Agent/Task call creates the worktree but does NOT
+set the agent's working directory to it — background agents wake up in the
+primary checkout on `main`. Always include explicit worktree setup in the
+teammate prompt (`git worktree add -b <branch> ~/.local/share/worktrees/shatter/<branch> main`,
+then `cd` into it) and have the teammate verify with
+`swarm-worktree-verify.py --require-linked-worktree` before making any edit.
+Foreground teammates spawned via `TeamCreate` land in their worktree directly.
 
-**Quick start:** Use `/swarm` to automate the full parallel workflow — triage,
-team setup, plan review, merge, quality gates, and close protocol.
+**Supervision:** For well-scoped issues with clear acceptance criteria, spawn
+teammates with `mode: "acceptEdits"` (or `"bypassPermissions"`) so they proceed
+without a serial plan-approval bottleneck. Reserve `mode: "plan"` for genuinely
+ambiguous or risky issues whose approach should be reviewed before code is
+written. Spawn teammates in the **foreground** so they appear as visible tmux
+panes; background agents silently stall on permission prompts.
 
-**Manual workflow (if not using `/swarm`):**
+**Team-lead liveness:** The team lead must actively poll teammate liveness
+(e.g. `Monitor` / heartbeat checks) and auto-resume or report a stalled or
+crashed teammate — never idle until the user notices. A swarm where the lead
+waits passively for teammates that have died is a stalled swarm; detect it and
+act.
+
+**Quick start:** Use the `bento:swarm` skill to automate the full parallel
+workflow — triage, team setup, worktree isolation, plan review, merge, quality
+gates, and close protocol.
+
+**Manual workflow (if not using `bento:swarm`):**
 ```
 1. Create tasks for each issue (TaskCreate)
-2. Spawn teammates with isolation: "worktree", mode: "plan" (Task tool)
+2. Spawn teammates in the foreground with mode: "acceptEdits", including
+   explicit worktree setup in the prompt (see above); one issue per teammate
 3. Each teammate works on exactly ONE issue on its own branch
-4. Each teammate researches and proposes a plan
-5. Team lead reviews and approves/rejects each plan
-6. Approved teammates implement, team lead merges results ONE AT A TIME
+4. Team lead polls teammate liveness and resumes any that stall
+5. Teammates implement; team lead merges results ONE AT A TIME
    (merge branch A → main → push, then merge branch B → main → push, etc.)
 ```
+For genuinely ambiguous issues, spawn with `mode: "plan"` instead and review
+each teammate's plan before it implements.
 
 **Preventing duplicate work across agents:**
 - The team lead must assign each issue to exactly one teammate. Never assign
@@ -324,7 +344,7 @@ team setup, plan review, merge, quality gates, and close protocol.
 After all teammates finish and their branches are merged, the team lead must:
 1. Delete all merged worktree branches: `git branch -d <branch>`
 2. Verify no orphan branches remain: `git branch --no-merged main`
-3. Clean up worktree directories if any remain under `.claude/worktrees/`
+3. Clean up worktree directories if any remain under `~/.local/share/worktrees/shatter/`
 
 If any branch appears in `git branch --no-merged main`, do not delete it unless
 the user explicitly approves that deletion.
@@ -354,12 +374,12 @@ copy of the repo. **Violating isolation corrupts other agents' work.**
 
 **Rules:**
 - **Never `cd` to the main repo**. Stay in your worktree directory (under
-  `.claude/worktrees/`). If unsure, run `git rev-parse --show-toplevel`.
+  `~/.local/share/worktrees/shatter/`). If unsure, run `git rev-parse --show-toplevel`.
 - **Never `git checkout`** to switch branches. You are already on your branch.
 - **Never run git commands with `-C` pointing to the main repo**. All git
   operations must target your worktree.
 - **Verify isolation** before critical operations: `git rev-parse --show-toplevel`
-  must return a path containing `.claude/worktrees/`.
+  must return a path containing `~/.local/share/worktrees/shatter/`.
 - **Commit and push only your branch**. The team lead merges to main.
 
 **Why this matters:** All worktrees share the same `.git` directory. Running
@@ -384,7 +404,7 @@ directory yourself — the user is prompted to keep or remove it when the sessio
 ends. Manually removing the worktree mid-session can break the working directory
 and cause confusing errors.
 
-<!-- Beads commands, types, priorities, workflow, and auto-sync are in shared agent rules (beads.md).
+<!-- Beads command basics are in the "bd Quick Reference" section above and the bento:beads-issue-flow skill.
      Shatter-specific beads extensions: issue types always specify -t, use discovered-from for linked bugs,
      always use --json for programmatic use. -->
 
