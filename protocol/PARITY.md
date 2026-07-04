@@ -195,6 +195,26 @@ While a `resolved` entry sits inside its 30-day grace window the validator only 
 
 ---
 
+### `go-symbolic-http-request-body`
+
+**Description:** A direct `*http.Request` parameter in the Go frontend is analyzed as `{kind: "str", label: "*http.Request"}` and consumes one string input slot: the generated wrapper builds the request via `httptest.NewRequest("POST", "/", strings.NewReader(<body>))` with stub `x-api-key`, `Authorization: Bearer`, `x-goog-api-key`, and `Content-Type: application/json` headers, so the explorer/solver drive symbolic JSON bodies into HTTP handlers instead of a constant empty-body runtime value (str-e41w). The Go planner also seeds schema-agnostic JSON bodies ordered after project config hints. Nested `*http.Request` occurrences keep the fixed runtime-value expression. TypeScript and Rust have no equivalent native-request synthesis.
+
+**Affected frontends:** typescript, rust
+
+**Affected commands:** analyze, execute
+
+**Status:** tracked
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-e41w
+
+**Resolution condition:** TS/Rust gain an equivalent symbolic-request-body synthesis for their native HTTP request types (e.g. express `Request`, `http::Request`), reporting the body param as a symbolic string in analyze output, or this stays a documented Go-only capability alongside `adapter_http_nethttp`.
+
+**Resolution:** Mirror the design when TS/Rust handler exploration becomes a priority: analyzer reports the request param as a symbolic string body; the execution shim constructs the framework request around it; planner seeds stay schema-agnostic with config hints taking precedence.
+
+---
+
 ### `medium-opacity-analyze-partial`
 
 **Description:** The `medium_opacity` field on `TypeInfo` opaque variants is an optional advisory field. TypeScript and Go frontends emit it when medium-confidence heuristics fire. The Rust frontend performs static analysis but does not yet implement this medium-opacity heuristic, so it never emits `medium_opacity`. The field is intentionally non-skip-causing in the Rust core.
