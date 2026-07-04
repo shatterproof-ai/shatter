@@ -60,6 +60,11 @@ type BuildRequest struct {
 	// uses it when generating loop-harness support files and when deriving a
 	// cache key for mock-sensitive launcher binaries.
 	Mocks []instrument.MockConfig
+	// MockSubstitutions carries execute-time call-site substitutions
+	// (str-c8djq), pre-resolved against the loaded package's TypesInfo so the
+	// overlay build rewrites only genuine package-qualified call sites. When
+	// empty, the builder derives syntactic-fallback substitutions from Mocks.
+	MockSubstitutions []instrument.MockSubstitution
 }
 
 // BuildResult is returned by Builder.Build on success.
@@ -289,18 +294,10 @@ func cacheKey(req BuildRequest) string {
 	}
 
 	h := sha256.New()
-	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00")
-	for _, mock := range req.Mocks {
-		// Include Expression so two configs that mock the same symbol with
-		// different substitutions (str-c8djq) do not collide on a stale
-		// cached binary. DefaultBehavior/ReturnValues likewise change the
-		// generated harness and must discriminate the cache key.
-		fmt.Fprint(h, mock.Symbol, "\x00", mock.Expression, "\x00", mock.DefaultBehavior, "\x00")
-		for _, rv := range mock.ReturnValues {
-			fmt.Fprintf(h, "%v\x00", rv)
-		}
-		fmt.Fprint(h, "\x01")
-	}
+	// Include the full mock fingerprint (symbol + expression + behavior +
+	// return values) so any mock change invalidates the cached binary. Shared
+	// with computePrepareID via instrument.MockFingerprint (str-c8djq).
+	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00", instrument.MockFingerprint(req.Mocks))
 	return base + "-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
