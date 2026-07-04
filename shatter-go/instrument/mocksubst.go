@@ -13,41 +13,107 @@ import (
 )
 
 // MockSubstitution describes a single execute-time call-site replacement:
-// every call to QualifiedFunction (source-qualified, e.g. "auth.GetAccount")
-// is replaced by the Go source Expression. This is the runtime half of the
-// hint_config_v1 `.shatter/config.yaml` `mocks` contract (str-c8djq).
+// every genuine package-qualified call to QualifiedFunction (e.g.
+// "auth.GetAccount") is replaced by the Go source Expression. This is the
+// runtime half of the hint_config_v1 `.shatter/config.yaml` `mocks` contract
+// (str-c8djq).
+//
+// Matching must not fire on a method call on a same-named local
+// (`auth := newClient(); auth.GetAccount(id)`). Two mechanisms guard against
+// that:
+//
+//   - Type-resolved (preferred): when the loaded package's TypesInfo is
+//     available at build time, AllowedFuncs enumerates the qualified names of
+//     the enclosing functions where the qualifier provably resolves to an
+//     imported package (via *types.PkgName). AllowPackageScope covers
+//     package-level initializer calls. TypeResolved is set true so the
+//     rewriter trusts the allow-list (an empty allow-list then means "rewrite
+//     nowhere").
+//   - Syntactic fallback: when TypeResolved is false (no type info), the
+//     rewriter falls back to scope-aware syntactic matching — it rewrites a
+//     call only when the qualifier is an imported package in that file and is
+//     not shadowed by a local binding in the enclosing function.
 type MockSubstitution struct {
 	// QualifiedFunction is the source-level call spelling: the local package
-	// qualifier followed by the function name, e.g. "auth.GetAccount". The
-	// qualifier is whatever the target file imports the package as (its alias
-	// or default name), because substitution matches AST selector syntax, not
-	// import paths.
+	// qualifier followed by the function name, e.g. "auth.GetAccount".
 	QualifiedFunction string
 	// Expression is the Go source expression pasted in place of the whole
 	// call. It must reference only packages already imported by the target
 	// file (call-site substitution does not add imports).
 	Expression string
+	// AllowedFuncs, when TypeResolved is true, is the set of enclosing
+	// function keys (funcKey) where a call to QualifiedFunction provably
+	// targets the imported package. nil/empty with TypeResolved true means the
+	// symbol is never a genuine package call and is rewritten nowhere.
+	AllowedFuncs map[string]bool
+	// AllowPackageScope, when TypeResolved is true, permits rewriting a
+	// matching call that appears at package scope (e.g. a package-level var
+	// initializer) rather than inside a function.
+	AllowPackageScope bool
+	// TypeResolved reports whether AllowedFuncs/AllowPackageScope were computed
+	// from real type information. False selects the syntactic fallback.
+	TypeResolved bool
 }
 
 // MockSubstitutionsFromConfigs extracts the expression-bearing subset of mocks
 // as MockSubstitution entries. Wire mocks (ReturnValues only, empty Expression)
-// are ignored — they flow through the ShatterMock shim path instead.
+// are ignored — they flow through the ShatterMock shim path instead. When two
+// mocks normalize to the same qualified function the first wins; callers that
+// care about precedence should dedupe upstream (config Expression is deduped
+// against wire mocks in the protocol handler).
+//
+// The returned substitutions are not type-resolved; callers with access to a
+// loaded package should pass them through ResolveMockSubstitutionScopes.
 func MockSubstitutionsFromConfigs(mocks []MockConfig) []MockSubstitution {
 	var subs []MockSubstitution
+	seen := make(map[string]bool)
 	for _, m := range mocks {
 		if strings.TrimSpace(m.Expression) == "" {
 			continue
 		}
 		key := normalizeMockSymbol(m.Symbol)
-		if key == "" {
+		if key == "" || seen[key] {
 			continue
 		}
+		seen[key] = true
 		subs = append(subs, MockSubstitution{
 			QualifiedFunction: key,
 			Expression:        m.Expression,
 		})
 	}
 	return subs
+}
+
+// DedupeMocks collapses mocks that normalize to the same qualified function,
+// preserving first-seen order. When both a wire mock (ReturnValues, empty
+// Expression) and a config mock (Expression) target the same symbol, the
+// expression-bearing entry wins — otherwise sanitizeMockName would collapse
+// both into one ShatterMock_<name> and generateLoopMockFile would emit a
+// duplicate function declaration that fails to compile (str-c8djq review
+// fix 2). Config call-site substitution takes precedence over a wire
+// return-value shim for the same symbol.
+func DedupeMocks(mocks []MockConfig) []MockConfig {
+	if len(mocks) < 2 {
+		return mocks
+	}
+	pos := make(map[string]int, len(mocks))
+	out := make([]MockConfig, 0, len(mocks))
+	for _, m := range mocks {
+		key := normalizeMockSymbol(m.Symbol)
+		if key == "" {
+			key = "\x00raw\x00" + m.Symbol
+		}
+		if i, seen := pos[key]; seen {
+			// Upgrade to the expression-bearing entry (config wins).
+			if strings.TrimSpace(out[i].Expression) == "" && strings.TrimSpace(m.Expression) != "" {
+				out[i] = m
+			}
+			continue
+		}
+		pos[key] = len(out)
+		out = append(out, m)
+	}
+	return out
 }
 
 // normalizeMockSymbol converts a mock symbol into the source-qualified
@@ -89,14 +155,130 @@ func normalizeMockSymbol(symbol string) string {
 	return qualifier + "." + fn
 }
 
-// RewriteMockCallSites replaces, in file, every call whose callee is a
-// selector matching one of subs.QualifiedFunction with that substitution's
-// parsed Expression. It returns the number of call sites rewritten.
+// FuncKeyForDecl is the exported form of funcKey, used by the protocol layer's
+// type-resolution pass so both sides compute identical enclosing-function keys.
+func FuncKeyForDecl(fd *ast.FuncDecl) string { return funcKey(fd) }
+
+// funcKey returns a package-unique identity for a top-level function or method
+// declaration: "Name" for a free function, "(recv).Name" for a method. Package
+// funcs and (receiver, method) pairs are unique within a Go package, so the
+// key correlates the same declaration between the original (type-resolved)
+// AST and the instrumented AST, which preserves declaration names.
+func funcKey(fd *ast.FuncDecl) string {
+	name := fd.Name.Name
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return name
+	}
+	var b strings.Builder
+	_ = printer.Fprint(&b, token.NewFileSet(), fd.Recv.List[0].Type)
+	return "(" + b.String() + ")." + name
+}
+
+// importedPackageNames returns the set of local package qualifiers a file
+// imports (alias when present, else the final import-path segment). Dot and
+// blank imports are excluded — neither introduces a usable selector qualifier.
+func importedPackageNames(file *ast.File) map[string]bool {
+	names := make(map[string]bool)
+	for _, imp := range file.Imports {
+		if imp.Name != nil {
+			switch imp.Name.Name {
+			case "_", ".":
+				continue
+			default:
+				names[imp.Name.Name] = true
+				continue
+			}
+		}
+		path := strings.Trim(imp.Path.Value, `"`)
+		seg := path
+		if idx := strings.LastIndex(seg, "/"); idx >= 0 {
+			seg = seg[idx+1:]
+		}
+		if seg != "" {
+			names[seg] = true
+		}
+	}
+	return names
+}
+
+// collectBoundNames returns the set of identifier names bound as locals
+// anywhere within a function declaration (parameters, receiver, named results,
+// type params, `:=` targets, var/const declarations, range variables, and
+// type-switch guards), including within nested function literals. It is used
+// by the syntactic fallback to detect a qualifier shadowed by a local; it is
+// deliberately conservative at function granularity — if a function binds
+// `auth` anywhere, no `auth.X` call inside it is treated as a package call.
+func collectBoundNames(fd *ast.FuncDecl) map[string]bool {
+	bound := make(map[string]bool)
+	add := func(idents ...*ast.Ident) {
+		for _, id := range idents {
+			if id != nil && id.Name != "_" {
+				bound[id.Name] = true
+			}
+		}
+	}
+	addFieldList := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, f := range fl.List {
+			add(f.Names...)
+		}
+	}
+	addFieldList(fd.Recv)
+	if fd.Type != nil {
+		addFieldList(fd.Type.TypeParams)
+		addFieldList(fd.Type.Params)
+		addFieldList(fd.Type.Results)
+	}
+	ast.Inspect(fd, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			if s.Tok == token.DEFINE {
+				for _, lhs := range s.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						add(id)
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			add(s.Names...)
+		case *ast.RangeStmt:
+			if s.Tok == token.DEFINE {
+				if id, ok := s.Key.(*ast.Ident); ok {
+					add(id)
+				}
+				if id, ok := s.Value.(*ast.Ident); ok {
+					add(id)
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			if assign, ok := s.Assign.(*ast.AssignStmt); ok && len(assign.Lhs) == 1 {
+				if id, ok := assign.Lhs[0].(*ast.Ident); ok {
+					add(id)
+				}
+			}
+		case *ast.FuncLit:
+			if s.Type != nil {
+				addFieldList(s.Type.Params)
+				addFieldList(s.Type.Results)
+			}
+		}
+		return true
+	})
+	return bound
+}
+
+// RewriteMockCallSites replaces, in file, every genuine package-qualified call
+// matching a substitution's QualifiedFunction with that substitution's parsed
+// Expression, and returns the number of call sites rewritten.
 //
-// Matching is purely syntactic: a call `q.Fn(args...)` matches
-// "q.Fn" regardless of what `q` resolves to. The whole *ast.CallExpr
-// (including its arguments) is replaced, so the mock expression fully
-// supplants the original call and its side effects.
+// Type-resolved substitutions (TypeResolved == true) rewrite only inside the
+// enclosing functions listed in AllowedFuncs (plus package scope when
+// AllowPackageScope is set). Non-type-resolved substitutions use scope-aware
+// syntactic matching: a call is rewritten only when the qualifier is an
+// imported package in this file and is not shadowed by a local binding in the
+// enclosing function.
 //
 // Invalid substitution expressions are skipped (reported via the returned
 // error) rather than aborting the rewrite of valid ones.
@@ -105,7 +287,7 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 		return 0, nil
 	}
 
-	byKey := make(map[string]string, len(subs))
+	byKey := make(map[string]MockSubstitution, len(subs))
 	var parseErrs []string
 	for _, s := range subs {
 		if s.QualifiedFunction == "" || strings.TrimSpace(s.Expression) == "" {
@@ -115,7 +297,7 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 			parseErrs = append(parseErrs, fmt.Sprintf("%s: %v", s.QualifiedFunction, err))
 			continue
 		}
-		byKey[s.QualifiedFunction] = s.Expression
+		byKey[s.QualifiedFunction] = s
 	}
 	if len(byKey) == 0 {
 		if len(parseErrs) > 0 {
@@ -124,40 +306,101 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 		return 0, nil
 	}
 
+	imports := importedPackageNames(file)
+
+	// Precompute per-top-level-function bound names for the syntactic fallback.
+	boundByFunc := make(map[string]map[string]bool)
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok {
+			boundByFunc[funcKey(fd)] = collectBoundNames(fd)
+		}
+	}
+
+	// Track the enclosing top-level function key as Apply descends. Function
+	// literals inherit the nearest named function's key (they cannot be named
+	// targets and their local bindings are already folded into that function's
+	// bound-name set).
+	var funcStack []string
+	currentFunc := func() string {
+		if len(funcStack) == 0 {
+			return ""
+		}
+		return funcStack[len(funcStack)-1]
+	}
+
 	count := 0
-	astutil.Apply(file, nil, func(c *astutil.Cursor) bool {
-		call, ok := c.Node().(*ast.CallExpr)
-		if !ok {
-			return true
+	pre := func(c *astutil.Cursor) bool {
+		switch n := c.Node().(type) {
+		case *ast.FuncDecl:
+			funcStack = append(funcStack, funcKey(n))
+		case *ast.FuncLit:
+			funcStack = append(funcStack, currentFunc())
+		case *ast.CallExpr:
+			sel, ok := n.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			sub, ok := byKey[ident.Name+"."+sel.Sel.Name]
+			if !ok {
+				return true
+			}
+			if !mockCallSiteAllowed(sub, currentFunc(), ident.Name, imports, boundByFunc) {
+				return true
+			}
+			// Parse a fresh expression per call site so replaced nodes never
+			// share AST identity (which would confuse the printer).
+			repl, err := parser.ParseExpr(sub.Expression)
+			if err != nil {
+				return true
+			}
+			c.Replace(repl)
+			count++
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		ident, ok := sel.X.(*ast.Ident)
-		if !ok {
-			return true
-		}
-		key := ident.Name + "." + sel.Sel.Name
-		exprSrc, ok := byKey[key]
-		if !ok {
-			return true
-		}
-		// Parse a fresh expression per call site so replaced nodes never
-		// share AST identity (which would confuse the printer / later passes).
-		repl, err := parser.ParseExpr(exprSrc)
-		if err != nil {
-			return true
-		}
-		c.Replace(repl)
-		count++
 		return true
-	})
+	}
+	post := func(c *astutil.Cursor) bool {
+		switch c.Node().(type) {
+		case *ast.FuncDecl, *ast.FuncLit:
+			if len(funcStack) > 0 {
+				funcStack = funcStack[:len(funcStack)-1]
+			}
+		}
+		return true
+	}
+	astutil.Apply(file, pre, post)
 
 	if len(parseErrs) > 0 {
 		return count, fmt.Errorf("mock substitution: %s", strings.Join(parseErrs, "; "))
 	}
 	return count, nil
+}
+
+// mockCallSiteAllowed decides whether a matched call site should be rewritten.
+func mockCallSiteAllowed(
+	sub MockSubstitution,
+	enclosingFunc, qualifier string,
+	imports map[string]bool,
+	boundByFunc map[string]map[string]bool,
+) bool {
+	if sub.TypeResolved {
+		if enclosingFunc == "" {
+			return sub.AllowPackageScope
+		}
+		return sub.AllowedFuncs[enclosingFunc]
+	}
+	// Syntactic fallback: the qualifier must be an imported package and must
+	// not be shadowed by a local binding in the enclosing function.
+	if !imports[qualifier] {
+		return false
+	}
+	if bound := boundByFunc[enclosingFunc]; bound != nil && bound[qualifier] {
+		return false
+	}
+	return true
 }
 
 // RewriteMockCallSitesInFile parses the Go source at path, applies

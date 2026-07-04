@@ -83,13 +83,16 @@ type PerTargetHints struct {
 // appear on the protocol wire because hint_config_v1 is a Go-only
 // capability.
 //
-// IMPORTANT: emitting a MockSpec is the planner-side half of mock
-// substitution. The execute-time half — a build-time symbol swap or
-// launcher-level shim that actually replaces the call site at runtime — is
-// NOT IMPLEMENTED in str-hy9b.G3 (str-ruw0). Anyone relying on user-
-// supplied mocks taking effect at runtime today is unsupported. The
-// substitution mechanism is tracked under follow-up issue str-8v66
-// ("hint_config_v1 mocks substitution mechanism", blocked by str-ruw0).
+// MockSpec is the planner-side view of a configured mock, used for planning
+// and reporting. The execute-time substitution half is now implemented
+// separately (str-c8djq): the protocol handler loads the same
+// `.shatter/config.yaml` `mocks` entries at execute/prepare time and the
+// overlay build rewrites each call site via instrument.RewriteMockCallSites.
+// That path consumes config expressions directly (through
+// protocol.configMockConfigs), not MockSpec, so MockSpec remains a
+// planning/reporting artifact. Only the wire ReturnValues-based auto-mock
+// path (str-8v66, blocked by str-ruw0) is still unsubstituted at the call
+// site.
 type MockSpec struct {
 	// TargetID is the planner-scoped target the mock applies to (e.g.
 	// "example.com/pkg:Func").
@@ -108,15 +111,15 @@ type MockSpec struct {
 // hints carry no mocks. Ordering is alphabetical by QualifiedFunction so
 // callers and tests see deterministic output.
 //
-// This is the planner-output half of str-hy9b.G3 AC2 — the artifact a
-// future code generator will consume to substitute mocks at execute time.
-// The substitution itself (build-time symbol swap or launcher-level shim)
-// is NOT IMPLEMENTED yet; it is tracked under str-8v66 ("hint_config_v1
-// mocks substitution mechanism", blocked by str-ruw0). Until str-8v66
-// ships, calling this function and observing its output is safe and
-// deterministic, but the resulting MockSpec entries do not affect runtime
-// behaviour. Callers MUST NOT assume that a mock declared in the user's
-// `.shatter/config.yaml` takes effect when execute is invoked today.
+// This is the planner-output half of str-hy9b.G3 AC2 — a planning/reporting
+// artifact. Execute-time substitution of config `mocks` IS implemented
+// (str-c8djq), but through a separate path: the protocol handler reads the
+// same `.shatter/config.yaml` `mocks` at execute/prepare time and the overlay
+// build rewrites each call site (see instrument/mocksubst.go and
+// protocol.configMockConfigs). That path consumes config expressions directly
+// rather than these MockSpec entries. A `.shatter/config.yaml` mock therefore
+// DOES take effect at execute time today; only the wire ReturnValues-based
+// auto-mock path (str-8v66, blocked by str-ruw0) remains unsubstituted.
 func ResolveMockSpecs(targetID string, hints PerTargetHints) []MockSpec {
 	if len(hints.Mocks) == 0 {
 		return nil
