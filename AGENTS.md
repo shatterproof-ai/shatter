@@ -76,7 +76,7 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
    git push origin main
    git status  # MUST show clean working tree on main
    ```
-5. **Clean up** - Clear stashes, prune remote branches
+5. **Clean up** - Clear stashes; delete the merged feature branch locally and on the remote (`git push origin --delete <branch>`); `bd sync` once here so the landing yields a single sync commit
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
 
@@ -215,8 +215,19 @@ agents is the primary cause of duplicate commits and orphan branches.
 - **Merge one branch at a time** — merge branch A to `main`, push, then merge branch B. Never batch-merge multiple branches in a single operation.
 - Merge to `main` directly — do NOT create pull requests
 - After merge, delete the feature branch both locally and remotely
+  (`git push origin --delete <branch>`). Skipping the remote delete is why merged
+  branches accumulate — a periodic sweep is available (see below) but the primary
+  fix is deleting at merge time.
 - **Never delete an unmerged branch without explicit user approval.** If a branch
   is not fully merged, stop and ask before deleting it locally or remotely.
+
+**Periodic merged-remote-branch cleanup.** When merged branches have piled up on
+the remote, run `scripts/cleanup-merged-remote-branches.sh` (dry-run by default;
+`--execute` to delete). It deletes a remote branch only when it is fully merged
+into `origin/main`, is not tied to an active worktree, and its issue id is not
+in-progress (the in-progress set is read from the tracked `.beads/issues.jsonl`,
+so it works even when the Dolt server is down). Always review the dry-run list
+before passing `--execute`.
 - Work is complete when changes are on `main` and pushed, not when a branch is pushed
 - **Never cherry-pick commits.** Cherry-picking creates duplicate commits with
   different SHAs, making history confusing and leaving orphan branches that
@@ -281,6 +292,38 @@ bd sync: close str-a1b, str-c2d
 Issues: str-a1b, str-c2d
 ```
 
+### Beads Sync Cadence
+
+**Target: at most one `bd sync` commit per landing.** A recent audit found
+~48% of commits were bare `bd sync` commits (touching only `.beads/issues.jsonl`
+and `.beads/export-state.json`), halving `git log` signal density. This comes
+from running `bd sync` repeatedly across an issue's lifecycle — each call with
+pending state exports the JSONL, commits it, and (because
+`backup.git-push: true` in `.beads/config.yaml`) pushes it.
+
+**Separate the two kinds of beads writes:**
+
+- **State transitions** — `bd create`, `bd update --claim`, `bd update`,
+  `bd close` — write to the local Dolt database. Do these freely; they do **not**
+  create git commits on their own.
+- **Sync** — `bd sync` (and any `bd export` that writes `.beads/*.jsonl`) is what
+  produces the git commit + push. This is the noisy part.
+
+**Rules:**
+
+- **Do not run `bd sync` during feature work.** Claim, update, and close issues
+  as normal; those changes live in Dolt and get flushed to JSONL by a single sync
+  later.
+- **Sync once, at landing.** Run `bd sync` a single time when landing (as part of
+  the `land-work` / merge step) so an issue's entire lifecycle collapses into one
+  `bd sync` commit. Use the `bd sync: close <id>` message convention above.
+- **Leave the managed git hooks alone.** `.git/hooks/post-merge` and
+  `post-checkout` run `bd hooks run <hook>` to hydrate the local DB from JSONL;
+  they are managed by beads (do not hand-edit) and are shared by every worktree.
+  Do **not** disable or `core.hooksPath`-bypass them except transiently for a
+  known-hanging rebase/merge in your own worktree — never in a way that persists
+  or affects other worktrees.
+
 ### Parallel work with agent teams (preferred)
 
 For parallel work on multiple issues, use Claude Code's **agent teams** instead
@@ -343,8 +386,11 @@ each teammate's plan before it implements.
 **Post-swarm cleanup:**
 After all teammates finish and their branches are merged, the team lead must:
 1. Delete all merged worktree branches: `git branch -d <branch>`
-2. Verify no orphan branches remain: `git branch --no-merged main`
-3. Clean up worktree directories if any remain under `~/.local/share/worktrees/shatter/`
+2. Delete the merged branches from the remote too: `git push origin --delete <branch>`,
+   or run `scripts/cleanup-merged-remote-branches.sh` (dry-run first, then `--execute`)
+   to sweep every merged remote branch not tied to active/in-progress work.
+3. Verify no orphan branches remain: `git branch --no-merged main`
+4. Clean up worktree directories if any remain under `~/.local/share/worktrees/shatter/`
 
 If any branch appears in `git branch --no-merged main`, do not delete it unless
 the user explicitly approves that deletion.
