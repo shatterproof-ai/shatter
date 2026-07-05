@@ -3,7 +3,6 @@ package instrument
 import (
 	"encoding/json"
 	"fmt"
-	"go/ast"
 	"go/parser"
 	"go/token"
 	"math"
@@ -322,38 +321,43 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 		return nil
 	}
 
-	// Build the mocked-import matchers from mock symbols. Two symbol shapes:
-	//   "module:export" / "module/path" — suppress by exact import path;
-	//   "pkg.Func" (config-mock source qualifier, str-c8djq) — suppress any
-	//   import whose local name (alias, or path base by Go convention) is the
-	//   qualifier.
+	// Build the mocked-import matchers from mock symbols. Shapes:
+	//   "module:export" / "module/path"   — suppress the exact import path;
+	//   "module/path.Func"                — suppress the exact import path;
+	//   "pkg.Func" (config-mock qualifier) — suppress any import whose local
+	//     name (alias, or path base; instrument.ImportLocalName) is the
+	//     qualifier. Bare qualifiers can't distinguish same-base-name modules,
+	//     so this over-suppresses when e.g. two different `auth` packages are
+	//     imported — an accepted limit of the source-qualifier spelling; use
+	//     the path-qualified form when it matters.
 	mockedModules := make(map[string]bool)
 	mockedQualifiers := make(map[string]bool)
 	for _, m := range mocks {
-		switch {
-		case strings.Contains(m.Symbol, ":"):
-			mockedModules[m.Symbol[:strings.Index(m.Symbol, ":")]] = true
-		case !strings.Contains(m.Symbol, "/") && strings.Contains(m.Symbol, "."):
-			mockedQualifiers[m.Symbol[:strings.Index(m.Symbol, ".")]] = true
-		default:
-			mockedModules[m.Symbol] = true
+		sym := m.Symbol
+		if module, _, found := strings.Cut(sym, ":"); found {
+			mockedModules[module] = true
+			continue
 		}
-	}
-	importLocalName := func(imp *ast.ImportSpec, importPath string) string {
-		if imp.Name != nil {
-			return imp.Name.Name
+		if slash := strings.LastIndex(sym, "/"); slash >= 0 {
+			if dot := strings.Index(sym[slash:], "."); dot >= 0 {
+				mockedModules[sym[:slash+dot]] = true
+			} else {
+				mockedModules[sym] = true
+			}
+			continue
 		}
-		if idx := strings.LastIndex(importPath, "/"); idx >= 0 {
-			return importPath[idx+1:]
+		if qualifier, _, found := strings.Cut(sym, "."); found {
+			mockedQualifiers[qualifier] = true
+			continue
 		}
-		return importPath
+		mockedModules[sym] = true
 	}
 
 	var deps []DiscoveredDependency
 	for _, imp := range f.Imports {
 		importPath := strings.Trim(imp.Path.Value, `"`)
 
-		if mockedModules[importPath] || mockedQualifiers[importLocalName(imp, importPath)] {
+		if mockedModules[importPath] || mockedQualifiers[ImportLocalName(imp)] {
 			continue
 		}
 

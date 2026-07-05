@@ -77,6 +77,14 @@ func (b *Builder) writeOverlayManifest(
 		// loaded package so only genuine package-qualified call sites match);
 		// fall back to syntactic substitutions derived from Mocks for callers
 		// (e.g. tests) that don't pre-resolve.
+		//
+		// INVARIANT: len(subs) == 0 here means "the caller never resolved",
+		// NOT "resolution proved nothing matches" — resolveMockSubstitutionScopes
+		// deliberately returns resolved entries with empty allow-lists rather
+		// than filtering them out. Do not "optimize" that away upstream: a
+		// filtered-empty resolved set would fall back to syntactic matching
+		// for exactly the symbols type resolution proved must not be
+		// rewritten.
 		subs := req.MockSubstitutions
 		if len(subs) == 0 {
 			subs = instrument.MockSubstitutionsFromConfigs(req.Mocks)

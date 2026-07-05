@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"strings"
+	"unicode"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
@@ -149,10 +150,28 @@ func normalizeMockSymbol(symbol string) string {
 	if idx := strings.LastIndex(qualifier, "/"); idx >= 0 {
 		qualifier = qualifier[idx+1:]
 	}
-	if qualifier == "" || fn == "" {
+	// Both halves must be plausible Go identifiers: a selector call site can
+	// only ever match identifier.identifier, so anything else (stray colons,
+	// spaces, empty segments from malformed config) is inert junk — reject it
+	// here rather than letting it pollute dedupe keys and rewrite maps.
+	if !isGoIdentifier(qualifier) || !isGoIdentifier(fn) {
 		return ""
 	}
 	return qualifier + "." + fn
+}
+
+// isGoIdentifier reports whether s is a valid Go identifier.
+func isGoIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if unicode.IsLetter(r) || r == '_' || (i > 0 && unicode.IsDigit(r)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // FuncKeyForDecl is the exported form of funcKey, used by the protocol layer's
@@ -180,25 +199,33 @@ func funcKey(fd *ast.FuncDecl) string {
 func importedPackageNames(file *ast.File) map[string]bool {
 	names := make(map[string]bool)
 	for _, imp := range file.Imports {
-		if imp.Name != nil {
-			switch imp.Name.Name {
-			case "_", ".":
-				continue
-			default:
-				names[imp.Name.Name] = true
-				continue
-			}
-		}
-		path := strings.Trim(imp.Path.Value, `"`)
-		seg := path
-		if idx := strings.LastIndex(seg, "/"); idx >= 0 {
-			seg = seg[idx+1:]
-		}
-		if seg != "" {
-			names[seg] = true
+		if name := ImportLocalName(imp); name != "" {
+			names[name] = true
 		}
 	}
 	return names
+}
+
+// ImportLocalName returns the name by which an import is referenced in its
+// file: the alias when present, else the last path segment (the Go
+// convention; packages whose declared name differs from their directory are
+// the type-resolved pass's job). Blank and dot imports return "". Shared by
+// the call-site rewriter and dependency discovery so the two sides can never
+// disagree on which import a qualifier names (str-c8djq review).
+func ImportLocalName(imp *ast.ImportSpec) string {
+	if imp.Name != nil {
+		switch imp.Name.Name {
+		case "_", ".":
+			return ""
+		default:
+			return imp.Name.Name
+		}
+	}
+	path := strings.Trim(imp.Path.Value, `"`)
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		path = path[idx+1:]
+	}
+	return path
 }
 
 // collectBoundNames returns the set of identifier names bound as locals
@@ -269,6 +296,37 @@ func collectBoundNames(fd *ast.FuncDecl) map[string]bool {
 	return bound
 }
 
+// packageScopeFuncLitBoundNames collects names bound inside function literals
+// that appear outside any FuncDecl (package-level var initializers and the
+// like). Call sites inside such literals report an empty enclosing-function
+// key, so their local bindings must feed the ""-scope shadow check — without
+// it, `var H = func() int { dep := newClient(); return dep.Make() }` would
+// have the local's method call rewritten (str-c8djq cross-review). Only
+// FuncLit-internal bindings are collected: package-level identifiers resolve
+// after file-block imports and are the type-resolved pass's job.
+func packageScopeFuncLitBoundNames(file *ast.File) map[string]bool {
+	bound := make(map[string]bool)
+	for _, decl := range file.Decls {
+		if _, isFunc := decl.(*ast.FuncDecl); isFunc {
+			continue
+		}
+		ast.Inspect(decl, func(n ast.Node) bool {
+			lit, ok := n.(*ast.FuncLit)
+			if !ok {
+				return true
+			}
+			// Wrap the literal in a synthetic FuncDecl so the existing
+			// collector sees its params, results, and body bindings.
+			synth := &ast.FuncDecl{Name: ast.NewIdent("_"), Type: lit.Type, Body: lit.Body}
+			for name := range collectBoundNames(synth) {
+				bound[name] = true
+			}
+			return false // collectBoundNames already walks nested literals
+		})
+	}
+	return bound
+}
+
 // RewriteMockCallSites replaces, in file, every genuine package-qualified call
 // matching a substitution's QualifiedFunction with that substitution's parsed
 // Expression, and returns the number of call sites rewritten.
@@ -308,13 +366,16 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 
 	imports := importedPackageNames(file)
 
-	// Precompute per-top-level-function bound names for the syntactic fallback.
+	// Precompute per-top-level-function bound names for the shadow checks.
+	// The "" key holds bindings from package-scope function literals, whose
+	// call sites also report an empty enclosing-function key.
 	boundByFunc := make(map[string]map[string]bool)
 	for _, decl := range file.Decls {
 		if fd, ok := decl.(*ast.FuncDecl); ok {
 			boundByFunc[funcKey(fd)] = collectBoundNames(fd)
 		}
 	}
+	boundByFunc[""] = packageScopeFuncLitBoundNames(file)
 
 	// Track the enclosing top-level function key as Apply descends. Function
 	// literals inherit the nearest named function's key (they cannot be named
@@ -388,6 +449,11 @@ func mockCallSiteAllowed(
 ) bool {
 	if sub.TypeResolved {
 		if enclosingFunc == "" {
+			// Package scope: a package-level FuncLit binding the qualifier
+			// makes ""-scope call sites ambiguous — skip them all.
+			if bound := boundByFunc[""]; bound != nil && bound[qualifier] {
+				return false
+			}
 			return sub.AllowPackageScope
 		}
 		if !sub.AllowedFuncs[enclosingFunc] {

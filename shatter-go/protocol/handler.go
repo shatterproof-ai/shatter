@@ -70,17 +70,26 @@ type Handler struct {
 	policyConfigLoader func(file string) (config.File, error)
 
 	// configCache memoizes parsed .shatter/config.yaml by resolved path,
-	// invalidated on mtime change (str-c8djq review fix 4). The orchestrator
-	// issues thousands of executes; without this each pays a directory walk +
-	// read + YAML unmarshal even when the prepared-harness fast path ignores
-	// the result. Guarded by configCacheMu.
-	configCacheMu sync.Mutex
-	configCache   map[string]cachedConfigEntry
+	// invalidated on mtime or size change (str-c8djq review fix 4; size
+	// guards against writes within one mtime-granularity tick). The
+	// orchestrator issues thousands of executes; without this each pays a
+	// directory walk + read + YAML unmarshal even when the prepared-harness
+	// fast path ignores the result. configPathCache memoizes the upward
+	// FindConfigFile walk per source directory (including "no config here"),
+	// cutting the per-execute cost to two stats. Both guarded by
+	// configCacheMu.
+	configCacheMu   sync.Mutex
+	configCache     map[string]cachedConfigEntry
+	configPathCache map[string]string
+	// adapterMockWarned dedupes the "config mocks inactive for adapter-owned
+	// target" warning per file\x00function. Guarded by configCacheMu.
+	adapterMockWarned map[string]bool
 }
 
 // cachedConfigEntry is one memoized .shatter/config.yaml parse.
 type cachedConfigEntry struct {
 	mtime time.Time
+	size  int64
 	file  config.File
 }
 
@@ -758,17 +767,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		return resp
 	}
 
-	var execMocks []instrument.MockConfig
-	for _, m := range req.Mocks {
-		execMocks = append(execMocks, instrument.MockConfig{
-			Symbol:           m.Symbol,
-			ReturnValues:     m.ReturnValues,
-			ShouldTrackCalls: m.ShouldTrackCalls,
-			DefaultBehavior:  m.DefaultBehavior,
-		})
-	}
-	execMocks = append(execMocks, h.configMockConfigs(file, *req.Function)...)
-	execMocks = instrument.DedupeMocks(execMocks)
+	execMocks := h.resolveExecMocks(file, *req.Function, req.Mocks)
 
 	// Extract receiver_kind from the plan when present so the prepare_id
 	// keys on (file, function, mocks, receiver_kind), allowing plan-aware
@@ -882,6 +881,50 @@ func (h *Handler) configMockConfigs(file, function string) []instrument.MockConf
 	return mocks
 }
 
+// resolveExecMocks builds the effective mock set for one prepare/execute
+// request: wire mocks converted to instrument.MockConfig, config-declared
+// mocks appended, duplicates collapsed. Both handlePrepare and handleExecute
+// MUST build their mock set through this helper — a branch that assembles its
+// own set can silently diverge on which mocks are active for the same target
+// (this repo's parallel-path trap; str-c8djq review).
+func (h *Handler) resolveExecMocks(file, function string, wireMocks []MockConfig) []instrument.MockConfig {
+	var execMocks []instrument.MockConfig
+	for _, m := range wireMocks {
+		execMocks = append(execMocks, instrument.MockConfig{
+			Symbol:           m.Symbol,
+			ReturnValues:     m.ReturnValues,
+			ShouldTrackCalls: m.ShouldTrackCalls,
+			DefaultBehavior:  m.DefaultBehavior,
+		})
+	}
+	execMocks = append(execMocks, h.configMockConfigs(file, function)...)
+	return instrument.DedupeMocks(execMocks)
+}
+
+// warnAdapterMocksInactiveOnce emits the "config mocks inactive for
+// adapter-owned target" warning at most once per (file, function). The
+// orchestrator issues thousands of executes per target; an undeduplicated
+// WARN floods the protocol stderr (str-c8djq cross-file review).
+func (h *Handler) warnAdapterMocksInactiveOnce(file, function, adapterID string) {
+	n := countExpressionMocks(h.configMockConfigs(file, function))
+	if n == 0 {
+		return
+	}
+	key := file + "\x00" + function
+	h.configCacheMu.Lock()
+	if h.adapterMockWarned == nil {
+		h.adapterMockWarned = make(map[string]bool)
+	}
+	warned := h.adapterMockWarned[key]
+	h.adapterMockWarned[key] = true
+	h.configCacheMu.Unlock()
+	if warned {
+		return
+	}
+	h.log.Warn("config mocks inactive for adapter-owned target (not substituted through the adapter harness)",
+		"function", function, "adapter", adapterID, "expression_mocks", n)
+}
+
 // countExpressionMocks reports how many mocks carry a call-site substitution
 // expression (str-c8djq).
 func countExpressionMocks(mocks []instrument.MockConfig) int {
@@ -909,10 +952,8 @@ func (h *Handler) loadMockConfig(file string) (config.File, bool) {
 		return cfg, true
 	}
 
-	path, err := config.FindConfigFile(file)
-	if err != nil {
-		h.log.Warn("mock config: locating .shatter/config.yaml failed; config mocks inactive",
-			"file", file, "error", err)
+	path, ok := h.resolveConfigPath(file)
+	if !ok {
 		return config.File{}, false
 	}
 	if path == "" {
@@ -926,7 +967,7 @@ func (h *Handler) loadMockConfig(file string) (config.File, bool) {
 
 	h.configCacheMu.Lock()
 	defer h.configCacheMu.Unlock()
-	if ent, hit := h.configCache[path]; hit && ent.mtime.Equal(info.ModTime()) {
+	if ent, hit := h.configCache[path]; hit && ent.mtime.Equal(info.ModTime()) && ent.size == info.Size() {
 		return ent.file, true
 	}
 	cfg, loadErr := config.Load(file)
@@ -938,8 +979,39 @@ func (h *Handler) loadMockConfig(file string) (config.File, bool) {
 	if h.configCache == nil {
 		h.configCache = make(map[string]cachedConfigEntry)
 	}
-	h.configCache[path] = cachedConfigEntry{mtime: info.ModTime(), file: cfg}
+	h.configCache[path] = cachedConfigEntry{mtime: info.ModTime(), size: info.Size(), file: cfg}
 	return cfg, true
+}
+
+// resolveConfigPath memoizes config.FindConfigFile's upward directory walk per
+// source directory, including the "no config" result. The walk stats every
+// ancestor directory; on the execute hot path that is thousands of redundant
+// syscalls per explore. Consequence of memoizing absence: a .shatter/config.yaml
+// CREATED mid-session is only picked up by a new session — the same freshness
+// contract as the prepared-harness cache. ok is false only on a walk error
+// (logged, mocks inactive).
+func (h *Handler) resolveConfigPath(file string) (string, bool) {
+	dir := filepath.Dir(file)
+	h.configCacheMu.Lock()
+	if path, hit := h.configPathCache[dir]; hit {
+		h.configCacheMu.Unlock()
+		return path, true
+	}
+	h.configCacheMu.Unlock()
+
+	path, err := config.FindConfigFile(file)
+	if err != nil {
+		h.log.Warn("mock config: locating .shatter/config.yaml failed; config mocks inactive",
+			"file", file, "error", err)
+		return "", false
+	}
+	h.configCacheMu.Lock()
+	if h.configPathCache == nil {
+		h.configPathCache = make(map[string]string)
+	}
+	h.configPathCache[dir] = path
+	h.configCacheMu.Unlock()
+	return path, true
 }
 
 func (h *Handler) handleExecute(resp Response, req Request) Response {
@@ -1068,10 +1140,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		// the overlay build, so call-site mock substitution does not apply
 		// (str-c8djq review fix 7). Warn if the operator configured expression
 		// mocks for this target so an inactive mock isn't silent.
-		if n := countExpressionMocks(h.configMockConfigs(file, *req.Function)); n > 0 {
-			h.log.Warn("config mocks inactive for adapter-owned target (not substituted through the adapter harness)",
-				"function", *req.Function, "adapter", strategy.AdapterID, "expression_mocks", n)
-		}
+		h.warnAdapterMocksInactiveOnce(file, *req.Function, strategy.AdapterID)
 		finishExecute := timing.Start("execute.total")
 		result, err := ExecuteAdapterOwned(strategy.Hook, InvocationContext{
 			File:            file,
@@ -1099,17 +1168,7 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 
 	// --- Direct execution via builder/launcher ---
 
-	var execMocks []instrument.MockConfig
-	for _, m := range req.Mocks {
-		execMocks = append(execMocks, instrument.MockConfig{
-			Symbol:           m.Symbol,
-			ReturnValues:     m.ReturnValues,
-			ShouldTrackCalls: m.ShouldTrackCalls,
-			DefaultBehavior:  m.DefaultBehavior,
-		})
-	}
-	execMocks = append(execMocks, h.configMockConfigs(file, *req.Function)...)
-	execMocks = instrument.DedupeMocks(execMocks)
+	execMocks := h.resolveExecMocks(file, *req.Function, req.Mocks)
 
 	var (
 		result       *instrument.ExecuteResult

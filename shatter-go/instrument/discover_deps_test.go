@@ -61,6 +61,29 @@ func F() { f.NewCacheOnly("") }
 	}
 }
 
+// A path-qualified config spelling ("module/path.Func") suppresses exactly
+// its own import — and, unlike the bare-qualifier form, does NOT suppress a
+// same-base-name import from a different module.
+func TestDiscoverDependenciesPathQualifiedSymbol(t *testing.T) {
+	path := writeDepSource(t, `package target
+
+import (
+	"github.com/acme/fetch"
+	thirdfetch "thirdparty.io/fetch"
+)
+
+func F() { fetch.NewCacheOnly(""); thirdfetch.NewCacheOnly("") }
+`)
+	deps := discoverDependencies(path, []MockConfig{{Symbol: "github.com/acme/fetch.NewCacheOnly", Expression: "nil"}})
+	mods := reportedModules(deps)
+	if mods["github.com/acme/fetch"] {
+		t.Fatalf("path-qualified mock should suppress its exact import; got %v", mods)
+	}
+	if !mods["thirdparty.io/fetch"] {
+		t.Fatalf("same-base-name import from a DIFFERENT module must stay reported; got %v", mods)
+	}
+}
+
 // Module-path style symbols ("module" / "module:export") keep their existing
 // exact-import-path suppression semantics.
 func TestDiscoverDependenciesModuleSymbolStillSuppresses(t *testing.T) {

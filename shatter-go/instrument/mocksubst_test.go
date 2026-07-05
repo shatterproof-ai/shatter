@@ -345,6 +345,48 @@ func Clean() int { return dep.Make() }
 	}
 }
 
+// TestRewriteMockCallSites_PackageScopeFuncLitShadow: a package-level function
+// literal that binds the qualifier locally makes ALL package-scope call sites
+// ambiguous (they share the "" enclosing-function key), so none are rewritten
+// in either matching mode (str-c8djq cross-review, finder A/C).
+func TestRewriteMockCallSites_PackageScopeFuncLitShadow(t *testing.T) {
+	src := `package target
+
+import "dep"
+
+type client struct{}
+
+func (c client) Make() int { return 99 }
+
+func newClient() client { return client{} }
+
+var genuine = dep.Make()
+
+var H = func() int {
+	dep := newClient()
+	return dep.Make()
+}
+`
+	// Syntactic fallback: the "" bound-name set must block both sites.
+	out, n := rewrite(t, src, []MockSubstitution{{
+		QualifiedFunction: "dep.Make",
+		Expression:        "7",
+	}})
+	if n != 0 {
+		t.Fatalf("syntactic: expected 0 rewrites with package-scope FuncLit shadow, got %d\n%s", n, out)
+	}
+	// Type-resolved with package scope allowed: same conservative skip.
+	out, n = rewrite(t, src, []MockSubstitution{{
+		QualifiedFunction: "dep.Make",
+		Expression:        "7",
+		TypeResolved:      true,
+		AllowPackageScope: true,
+	}})
+	if n != 0 {
+		t.Fatalf("type-resolved: expected 0 rewrites with package-scope FuncLit shadow, got %d\n%s", n, out)
+	}
+}
+
 // TestRewriteMockCallSites_TypeResolvedEmptyRewritesNothing: a type-resolved
 // substitution whose allow-list is empty (symbol never a genuine package call)
 // rewrites nowhere, even though the qualifier is imported.
