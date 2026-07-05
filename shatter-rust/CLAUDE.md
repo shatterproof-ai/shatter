@@ -169,6 +169,29 @@ and Instrument set `last_file` (`src/handler.rs:552, 620`) and Execute
 falls back to it when no `file` is provided (line 803). No protocol
 extension is needed.
 
+## Capture Parity Contract
+
+The Execute request carries an optional `capture` field (`Option<bool>` on
+`Request` in `src/protocol.rs`, registry-declared, defaults to `true` when
+omitted). When `capture` is `false`, the low-overhead no-capture mode returns
+an **empty `side_effects` list**; `return_value`, `thrown_error`, and
+`branch_path` are preserved regardless — matching the TS/Go frontends
+(str-kv9n).
+
+Rust honors this at the **response level**: `apply_capture(side_effects,
+req.capture)` in `src/handler.rs` empties the list when `capture == Some(false)`
+before it is placed on the response. The generated harness still captures side
+effects internally (fd redirection, `static mut` snapshots, `catch_unwind`), so
+Rust achieves **output parity** without the TS/Go execution-time saving. This
+is an accepted implementation difference, not an output divergence — the wire
+output is identical to TS/Go, so there is no `allowed_divergences` entry; it is
+tracked as `feature_capabilities.execute_capture` (rust: supported) in
+`protocol/parity-matrix.yaml`.
+
+If Rust later grows a genuinely no-capture harness path (skipping the capture
+instrumentation when `capture: false`), the wire contract stays the same and
+only the performance note above changes.
+
 ## Timeout Contract
 
 5s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `exec_timeout_from_env()` in `src/handler.rs`. Execute passes the configured timeout to the harness runner, which kills timed-out subprocesses and emits a timeout-shaped `thrown_error`.

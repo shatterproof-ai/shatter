@@ -570,6 +570,12 @@ pub struct Request {
     pub inputs: Vec<serde_json::Value>,
     #[serde(default)]
     pub mocks: Vec<serde_json::Value>,
+    /// Whether to capture side effects during execution. Optional; defaults to
+    /// `true` when omitted, matching the TS/Go frontends. When `false`, the
+    /// execute response carries an empty `side_effects` list (the low-overhead
+    /// no-capture mode). See the "Capture Parity Contract" in `CLAUDE.md`.
+    #[serde(default)]
+    pub capture: Option<bool>,
     /// Opaque handle from a prior prepare command.
     #[serde(default)]
     pub prepare_id: Option<String>,
@@ -1055,6 +1061,59 @@ mod tests {
         let req: Request =
             serde_json::from_str(json).expect("deserialize execute without setup_context");
         assert_eq!(req.setup_context, None);
+    }
+
+    // -- Execute `capture` field (str-kv9n) --
+
+    #[test]
+    fn execute_request_with_capture_false_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":30,"command":"execute","function":"fn1","inputs":[],"mocks":[],"capture":false}"#;
+        let req: Request =
+            serde_json::from_str(json).expect("deserialize execute with capture=false");
+        assert_eq!(req.capture, Some(false));
+        // The handler treats the optional field as `capture.unwrap_or(true)`.
+        assert!(!req.capture.unwrap_or(true), "capture=false must disable capture");
+    }
+
+    #[test]
+    fn execute_request_with_capture_true_deserializes() {
+        let json = r#"{"protocol_version":"0.1.0","id":31,"command":"execute","function":"fn1","inputs":[],"mocks":[],"capture":true}"#;
+        let req: Request =
+            serde_json::from_str(json).expect("deserialize execute with capture=true");
+        assert_eq!(req.capture, Some(true));
+        assert!(req.capture.unwrap_or(true));
+    }
+
+    #[test]
+    fn execute_request_without_capture_defaults_to_none_and_true() {
+        // Omitted `capture` deserializes to None, which the handler interprets
+        // as true — matching the TS (`?? true`) and Go (`== nil || *`) frontends.
+        let json = r#"{"protocol_version":"0.1.0","id":32,"command":"execute","function":"fn1","inputs":[],"mocks":[]}"#;
+        let req: Request =
+            serde_json::from_str(json).expect("deserialize execute without capture");
+        assert_eq!(req.capture, None);
+        assert!(req.capture.unwrap_or(true), "omitted capture defaults to true");
+    }
+
+    proptest::proptest! {
+        /// The optional `capture` flag survives a JSON round-trip through a
+        /// deserialized Request for every boolean value and when omitted,
+        /// mirroring Go's `TestPropertyCaptureFieldRoundtrip`.
+        #[test]
+        fn capture_field_round_trips(capture in proptest::option::of(proptest::bool::ANY)) {
+            let req = serde_json::json!({
+                "protocol_version": "0.1.0",
+                "id": 1,
+                "command": "execute",
+                "function": "fn1",
+                "inputs": [],
+                "mocks": [],
+                "capture": capture,
+            });
+            let decoded: Request =
+                serde_json::from_value(req).expect("deserialize execute request");
+            proptest::prop_assert_eq!(decoded.capture, capture);
+        }
     }
 
     // -- Response round-trip tests for new statuses --

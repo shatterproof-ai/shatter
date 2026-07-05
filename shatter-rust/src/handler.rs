@@ -79,6 +79,23 @@ fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
     Ok(out_path.to_string_lossy().into_owned())
 }
 
+/// Apply the optional execute `capture` flag (str-kv9n) to a run's captured
+/// side effects. `capture` defaults to `true` when omitted (`None`), matching
+/// the TS (`?? true`) and Go (`== nil || *`) frontends. When `false`, the
+/// low-overhead no-capture mode discards side effects and returns an empty
+/// list; only `side_effects` is affected — the caller preserves `return_value`,
+/// `thrown_error`, and `branch_path` regardless.
+fn apply_capture(
+    side_effects: Vec<serde_json::Value>,
+    capture: Option<bool>,
+) -> Vec<serde_json::Value> {
+    if capture.unwrap_or(true) {
+        side_effects
+    } else {
+        Vec::new()
+    }
+}
+
 /// Build an `InvocationOutcome` for a successful execute path (str-hy9b.A1/A5).
 ///
 /// Mapping:
@@ -1072,7 +1089,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 resp.lines_executed = Some(result.lines_executed);
                 resp.calls_to_external = Some(result.calls_to_external);
                 resp.path_constraints = Some(result.path_constraints);
-                resp.side_effects = Some(result.side_effects);
+                // Honor the optional execute `capture` field. Defaults to true;
+                // when false, the low-overhead no-capture mode returns an empty
+                // side-effects list, matching the TS/Go frontends. Only
+                // `side_effects` is affected — return_value, thrown_error, and
+                // branch_path are preserved regardless (parity with TS/Go).
+                resp.side_effects = Some(apply_capture(result.side_effects, req.capture));
                 resp.loop_body_states = Some(result.loop_body_states);
                 resp.performance = Some(result.performance);
                 self.finalize_response(resp, timing.as_mut())
@@ -1432,6 +1454,33 @@ fn attach_native_replay_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- apply_capture: execute `capture` flag semantics (str-kv9n) --
+
+    fn sample_side_effects() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"kind": "console_output", "level": "log", "message": "hi"}),
+            serde_json::json!({"kind": "thrown_error", "error_type": "runtime_error"}),
+        ]
+    }
+
+    #[test]
+    fn apply_capture_false_yields_empty_side_effects() {
+        assert!(apply_capture(sample_side_effects(), Some(false)).is_empty());
+    }
+
+    #[test]
+    fn apply_capture_true_preserves_side_effects() {
+        let effects = sample_side_effects();
+        assert_eq!(apply_capture(effects.clone(), Some(true)), effects);
+    }
+
+    #[test]
+    fn apply_capture_none_defaults_to_capturing() {
+        // Omitted `capture` (None) must behave like capture=true, matching TS/Go.
+        let effects = sample_side_effects();
+        assert_eq!(apply_capture(effects.clone(), None), effects);
+    }
 
     /// Send a single request and read the response.
     fn send_recv(req_json: &str) -> Response {

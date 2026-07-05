@@ -573,6 +573,36 @@ feature_capabilities:
       go: supported
       rust: supported
 
+  execute_capture:
+    status: optional
+    notes: >
+      Optional `capture` field on the Execute request (registry-declared,
+      defaults to true when omitted). When false, the frontend runs in
+      low-overhead no-capture mode and the execute response carries an empty
+      `side_effects` list; `return_value`, `thrown_error`, and `branch_path`
+      are preserved regardless. All three frontends now reach OUTPUT parity
+      on this flag (str-kv9n).
+
+      TypeScript honors it via the executor no-capture fast path
+      (`capture` param, `?? true` default in src/executor.ts) — it installs a
+      NOOP console and skips capture infrastructure entirely. Go honors it in
+      the handler (`capture := req.Capture == nil || *req.Capture`, threaded
+      into the harness invoke) — capture instrumentation is skipped.
+
+      Rust honors the wire contract at the handler level: `apply_capture` in
+      src/handler.rs empties `side_effects` on the response when
+      `capture == Some(false)`. The generated harness still captures
+      internally (fd redirection / static-mut snapshots / catch_unwind), so
+      Rust matches the observable wire output but does not get the TS/Go
+      execution-time saving. Because output parity is the required contract
+      and implementation parity is not, this is an accepted implementation
+      difference, not an output divergence — there is no `allowed_divergences`
+      entry. See shatter-rust/CLAUDE.md "Capture Parity Contract".
+    frontends:
+      typescript: supported
+      go: supported
+      rust: supported
+
   invocation_plan:
     status: optional
     notes: >
