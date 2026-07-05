@@ -1115,7 +1115,7 @@ mod tests {
                     let params: Vec<_> = (0..arity)
                         .map(|i| int_param(&format!("p{i}")))
                         .collect();
-                    let seeds = materialize_seeds(&[plan.clone()], &params);
+                    let seeds = materialize_seeds(std::slice::from_ref(plan), &params);
                     for seed in &seeds {
                         prop_assert_eq!(seed.len(), arity,
                             "seed length must equal param count");
