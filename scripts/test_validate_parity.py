@@ -61,7 +61,12 @@ def _md_with_ids(*ids: str) -> str:
     )
 
 
-def _run_validate_md(md_text: str, allowed: list[dict], today: _dt.date):
+def _run_validate_md(
+    md_text: str,
+    allowed: list[dict],
+    today: _dt.date,
+    warn_as_error_within_days: int | None = None,
+):
     """Invoke validate_divergence_metadata against an in-memory PARITY.md."""
     with tempfile.TemporaryDirectory() as tmp:
         md = Path(tmp) / "PARITY.md"
@@ -72,6 +77,7 @@ def _run_validate_md(md_text: str, allowed: list[dict], today: _dt.date):
             validate_parity.parity_md_divergence_ids(md),
             today,
             result,
+            warn_as_error_within_days=warn_as_error_within_days,
         )
         return result
 
@@ -174,6 +180,74 @@ class DivergenceMetadataTest(unittest.TestCase):
         resolved_at = (self.today - _dt.timedelta(days=31)).isoformat()
         entry = _full_entry(status="resolved", resolved_at=resolved_at)
         result = _run_validate_md(_md_with_ids(entry["id"]), [entry], self.today)
+        self.assertFalse(result.ok())
+        self.assertTrue(
+            any("grace period of 30 days has expired" in e for e in result.errors)
+        )
+
+    def test_warn_as_error_within_window_escalates_to_error(self) -> None:
+        # Resolved 20 days ago: grace expires in 10 days. Within a 14-day
+        # escalation window, so the warning must become a hard error.
+        resolved_at = (self.today - _dt.timedelta(days=20)).isoformat()
+        entry = _full_entry(status="resolved", resolved_at=resolved_at)
+        result = _run_validate_md(
+            _md_with_ids(entry["id"]),
+            [entry],
+            self.today,
+            warn_as_error_within_days=14,
+        )
+        self.assertFalse(result.ok())
+        self.assertTrue(
+            any("grace period expires in 10 day(s)" in e for e in result.errors)
+        )
+        # It must not also be reported as a warning.
+        self.assertFalse(any("schedule removal" in w for w in result.warnings))
+
+    def test_warn_as_error_outside_window_stays_warning(self) -> None:
+        # Resolved 10 days ago: grace expires in 20 days, outside a 14-day
+        # escalation window, so it stays an informational warning.
+        resolved_at = (self.today - _dt.timedelta(days=10)).isoformat()
+        entry = _full_entry(status="resolved", resolved_at=resolved_at)
+        result = _run_validate_md(
+            _md_with_ids(entry["id"]),
+            [entry],
+            self.today,
+            warn_as_error_within_days=14,
+        )
+        self.assertTrue(result.ok(), msg=f"unexpected errors: {result.errors}")
+        self.assertTrue(any("schedule removal" in w for w in result.warnings))
+
+    def test_warn_as_error_boundary_is_inclusive(self) -> None:
+        # Resolved 16 days ago: grace expires in exactly 14 days == window.
+        resolved_at = (self.today - _dt.timedelta(days=16)).isoformat()
+        entry = _full_entry(status="resolved", resolved_at=resolved_at)
+        result = _run_validate_md(
+            _md_with_ids(entry["id"]),
+            [entry],
+            self.today,
+            warn_as_error_within_days=14,
+        )
+        self.assertFalse(result.ok())
+
+    def test_warn_as_error_default_none_never_escalates(self) -> None:
+        # Without the flag, an entry deep inside the window still only warns.
+        resolved_at = (self.today - _dt.timedelta(days=29)).isoformat()
+        entry = _full_entry(status="resolved", resolved_at=resolved_at)
+        result = _run_validate_md(_md_with_ids(entry["id"]), [entry], self.today)
+        self.assertTrue(result.ok(), msg=f"unexpected errors: {result.errors}")
+        self.assertTrue(any("schedule removal" in w for w in result.warnings))
+
+    def test_warn_as_error_does_not_touch_past_grace_message(self) -> None:
+        # Past-grace entries are already hard errors; the flag must not change
+        # their (distinct) expiry message.
+        resolved_at = (self.today - _dt.timedelta(days=31)).isoformat()
+        entry = _full_entry(status="resolved", resolved_at=resolved_at)
+        result = _run_validate_md(
+            _md_with_ids(entry["id"]),
+            [entry],
+            self.today,
+            warn_as_error_within_days=14,
+        )
         self.assertFalse(result.ok())
         self.assertTrue(
             any("grace period of 30 days has expired" in e for e in result.errors)

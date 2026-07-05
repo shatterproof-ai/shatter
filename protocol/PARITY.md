@@ -153,6 +153,8 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 - an id appears in this document but not in `parity-matrix.yaml`, or vice versa;
 - a `resolved` entry remains in either file more than 30 days past its `resolved_at` date.
 
+While a `resolved` entry sits inside its 30-day grace window the validator only emits a warning ("schedule removal within N day(s)"). Because that warning is otherwise seen only by whoever happens to run `task parity` locally, the hard failure can first surface as a red gate on an unrelated parity-touching branch. The **Parity Expiry Watch** scheduled workflow (`.github/workflows/parity-expiry.yml`) closes that governance gap (str-5dx0): it runs `scripts/validate-parity.py --warn-as-error-within-days 14` weekly, escalating any resolved entry within 14 days of its removal deadline to a failure. The red *scheduled* run (and its failure notification) is the owner-actionable signal to remove the entry before the deadline blocks someone else's change. Run the same check locally at any time with `python3 scripts/validate-parity.py --warn-as-error-within-days N`.
+
 ### `ts-rust-execute-plan-not-implemented`
 
 **Description:** The `Command::Execute.plan` field carries an optional `InvocationPlan` that Go consumes for method-receiver invocation. TypeScript and Rust accept the field on the wire but do not consume it; Execute behavior on those frontends is unchanged. Method targets observe a second axis: Go yields `runtime_failed`/`completed` based on plan presence; TS/Rust always yield `unsupported`/`method_not_supported`.
@@ -267,4 +269,4 @@ When resolving a divergence:
 1. Set `status: resolved` and add `resolved_at: YYYY-MM-DD` in `parity-matrix.yaml`. Mirror in this document.
 2. Remove the matching `known_drifts` entry from `conformance_cases.yaml`.
 3. Verify conformance harness passes without warnings.
-4. Delete both entries within 30 days of `resolved_at` — the validator fails after the grace window expires.
+4. Delete both entries within 30 days of `resolved_at` — the validator fails after the grace window expires. The weekly **Parity Expiry Watch** workflow (`.github/workflows/parity-expiry.yml`) turns red ~2 weeks before that deadline so the owner is notified in advance rather than discovering the failure on an unrelated branch.
