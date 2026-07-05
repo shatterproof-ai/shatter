@@ -297,8 +297,30 @@ func cacheKey(req BuildRequest) string {
 	// Include the full mock fingerprint (symbol + expression + behavior +
 	// return values) so any mock change invalidates the cached binary. Shared
 	// with computePrepareID via instrument.MockFingerprint (str-c8djq).
-	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00", instrument.MockFingerprint(req.Mocks))
+	// Also include the instrumented source CONTENT, not just its path: mock
+	// substitution rewrites call sites based on what the source says, so a
+	// body edit that adds/removes/shadows a mocked call must miss the cache
+	// even when target signatures and mock config are unchanged.
+	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00",
+		sourceContentDigest(req.InstrumentedSourceFile), "\x00",
+		instrument.MockFingerprint(req.Mocks))
 	return base + "-" + hex.EncodeToString(h.Sum(nil))[:8]
+}
+
+// sourceContentDigest hashes the file's bytes for cacheKey. An unreadable
+// file contributes a sentinel that never matches a real digest, so a key
+// computed while the file is missing can't collide with one computed after
+// it appears.
+func sourceContentDigest(path string) string {
+	if path == "" {
+		return "no-source"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "unreadable"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // launchBuildWithLog builds the launcher and writes go build output to logPath.

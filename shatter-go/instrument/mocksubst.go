@@ -390,7 +390,18 @@ func mockCallSiteAllowed(
 		if enclosingFunc == "" {
 			return sub.AllowPackageScope
 		}
-		return sub.AllowedFuncs[enclosingFunc]
+		if !sub.AllowedFuncs[enclosingFunc] {
+			return false
+		}
+		// The allow-list is function-granular while this rewriter is
+		// position-blind: in a function that both calls the package AND binds
+		// a same-named local (`dep.Make(); dep := newClient(); dep.Make()`),
+		// rewriting would also hit the local's method call. Skip the whole
+		// function — conservative under-mocking, the real dependency runs.
+		if bound := boundByFunc[enclosingFunc]; bound != nil && bound[qualifier] {
+			return false
+		}
+		return true
 	}
 	// Syntactic fallback: the qualifier must be an imported package and must
 	// not be shadowed by a local binding in the enclosing function.

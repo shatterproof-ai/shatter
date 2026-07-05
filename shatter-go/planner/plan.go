@@ -100,9 +100,9 @@ type MockSpec struct {
 	// QualifiedFunction is the call site intended for replacement (e.g.
 	// "fmt.Println"). Comes verbatim from the user's hint config.
 	QualifiedFunction string
-	// Expression is the Go source expression intended to replace the call
-	// site once the executor-side substitution mechanism (str-8v66) is
-	// wired.
+	// Expression is the Go source expression that replaces the call site at
+	// execute time (instrument/mocksubst.go, str-c8djq). Only the wire
+	// MockConfig.ReturnValues typed-decode path remains deferred (str-8v66).
 	Expression string
 }
 

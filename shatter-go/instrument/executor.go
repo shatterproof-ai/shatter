@@ -3,6 +3,7 @@ package instrument
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"math"
@@ -321,21 +322,38 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 		return nil
 	}
 
-	// Build set of mocked module prefixes from mock symbols ("module:export" → "module").
+	// Build the mocked-import matchers from mock symbols. Two symbol shapes:
+	//   "module:export" / "module/path" — suppress by exact import path;
+	//   "pkg.Func" (config-mock source qualifier, str-c8djq) — suppress any
+	//   import whose local name (alias, or path base by Go convention) is the
+	//   qualifier.
 	mockedModules := make(map[string]bool)
+	mockedQualifiers := make(map[string]bool)
 	for _, m := range mocks {
-		if idx := strings.Index(m.Symbol, ":"); idx >= 0 {
-			mockedModules[m.Symbol[:idx]] = true
-		} else {
+		switch {
+		case strings.Contains(m.Symbol, ":"):
+			mockedModules[m.Symbol[:strings.Index(m.Symbol, ":")]] = true
+		case !strings.Contains(m.Symbol, "/") && strings.Contains(m.Symbol, "."):
+			mockedQualifiers[m.Symbol[:strings.Index(m.Symbol, ".")]] = true
+		default:
 			mockedModules[m.Symbol] = true
 		}
+	}
+	importLocalName := func(imp *ast.ImportSpec, importPath string) string {
+		if imp.Name != nil {
+			return imp.Name.Name
+		}
+		if idx := strings.LastIndex(importPath, "/"); idx >= 0 {
+			return importPath[idx+1:]
+		}
+		return importPath
 	}
 
 	var deps []DiscoveredDependency
 	for _, imp := range f.Imports {
 		importPath := strings.Trim(imp.Path.Value, `"`)
 
-		if mockedModules[importPath] {
+		if mockedModules[importPath] || mockedQualifiers[importLocalName(imp, importPath)] {
 			continue
 		}
 

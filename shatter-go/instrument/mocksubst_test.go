@@ -279,8 +279,9 @@ func (s S) Do(id int) int {
 }
 
 // TestRewriteMockCallSites_TypeResolvedAllowedFuncs exercises the type-resolved
-// path: only call sites inside AllowedFuncs are rewritten, regardless of
-// imports/shadowing heuristics.
+// path: only call sites inside AllowedFuncs are rewritten (the imports
+// heuristic does not apply; the shadow check still does — see
+// TestRewriteMockCallSites_TypeResolvedMixedShadowSkipsFunction).
 func TestRewriteMockCallSites_TypeResolvedAllowedFuncs(t *testing.T) {
 	src := `package target
 
@@ -301,6 +302,46 @@ func B() int { return dep.Make() }
 	// Exactly one dep.Make() survives — the one inside B (not in AllowedFuncs).
 	if c := strings.Count(out, "dep.Make()"); c != 1 {
 		t.Fatalf("expected 1 surviving dep.Make() (in B), got %d:\n%s", c, out)
+	}
+}
+
+// TestRewriteMockCallSites_TypeResolvedMixedShadowSkipsFunction: a function
+// containing BOTH a genuine package call and a call on a same-named local
+// (`dep := newClient(); dep.Make()`) is skipped entirely in the type-resolved
+// path. The allow-list is function-granular while the rewriter is
+// position-blind, so rewriting anything here would also rewrite the local's
+// method call. Conservative under-mocking (the real dependency runs) is the
+// contract (str-c8djq cross-review, finding 1).
+func TestRewriteMockCallSites_TypeResolvedMixedShadowSkipsFunction(t *testing.T) {
+	src := `package target
+
+import "dep"
+
+type client struct{}
+
+func (c client) Make() int { return 99 }
+
+func newClient() client { return client{} }
+
+func Mixed() int {
+	a := dep.Make() // genuine package call: resolve marked Mixed allowed
+	dep := newClient()
+	return a + dep.Make() // method call on the shadowing local
+}
+
+func Clean() int { return dep.Make() }
+`
+	out, n := rewrite(t, src, []MockSubstitution{{
+		QualifiedFunction: "dep.Make",
+		Expression:        "7",
+		TypeResolved:      true,
+		AllowedFuncs:      map[string]bool{"Mixed": true, "Clean": true},
+	}})
+	if n != 1 {
+		t.Fatalf("expected exactly 1 rewrite (Clean only; Mixed skipped as shadow-ambiguous), got %d\n%s", n, out)
+	}
+	if c := strings.Count(out, "dep.Make()"); c != 2 {
+		t.Fatalf("expected both dep.Make() calls in Mixed to survive, got %d surviving:\n%s", c, out)
 	}
 }
 
