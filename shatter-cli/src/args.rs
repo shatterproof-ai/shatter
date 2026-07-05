@@ -1589,8 +1589,16 @@ pub(crate) enum CliCommand {
     ///
     /// Reports the embedded frontend hashes and, in a source checkout, whether
     /// the embedded Go frontend is stale relative to the current `shatter-go/`
-    /// sources (str-o09e). Exits non-zero if a stale embed is detected.
-    Doctor,
+    /// sources (str-o09e). Also checks the target project for any configured
+    /// output path (cache, seeds, artifacts, report) that its `.gitignore`
+    /// fails to cover (str-1fwt). Exits non-zero if a stale embed or an
+    /// un-ignored generated path is detected.
+    Doctor {
+        /// Project directory to check for un-ignored generated paths
+        /// (default: auto-detected project root).
+        #[arg(short, long)]
+        directory: Option<PathBuf>,
+    },
 }
 
 /// Arguments for `shatter list-targets`.
