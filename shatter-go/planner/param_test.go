@@ -213,6 +213,132 @@ func TestPlanParam_PrimitiveFamilies(t *testing.T) {
 	}
 }
 
+func TestPlanParam_HTTPRequestBodySymbolicStringPlans(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatalf("no plans produced")
+	}
+	for i, plan := range plans {
+		if plan.Kind == protocol.ValuePlanKindRuntimeValue {
+			t.Fatalf("plan[%d] is runtime-value plan; direct *http.Request must consume a symbolic body input", i)
+		}
+		if plan.TypeHint != "string" {
+			t.Fatalf("plan[%d].TypeHint = %q, want string", i, plan.TypeHint)
+		}
+	}
+}
+
+func TestPlanParam_HTTPRequestBodyIncludesJSONRequestSeeds(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	mined := []string{"model-alpha", "exact-match-payload"}
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		StringLiteralsByParam: map[string][]string{"r": mined},
+		MaxPlansPerParam:      8,
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) < len(mined)+1 {
+		t.Fatalf("len(plans) = %d, want mined literals plus at least one seed", len(plans))
+	}
+	// Source-mined comparison literals are exact known-answer payloads and
+	// must precede the schema-agnostic seeds so a tight MaxPlansPerParam cap
+	// never evicts them.
+	for i, want := range mined {
+		var got string
+		if err := json.Unmarshal(plans[i].Literal, &got); err != nil {
+			t.Fatalf("plan[%d] literal does not decode as string: %v", i, err)
+		}
+		if got != want {
+			t.Fatalf("plan[%d] = %q, want mined literal %q before body seeds", i, got, want)
+		}
+	}
+	var seededBody string
+	if err := json.Unmarshal(plans[len(mined)].Literal, &seededBody); err != nil {
+		t.Fatalf("first seed literal does not decode as string: %v", err)
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(seededBody), &parsed); err != nil {
+		t.Fatalf("first request body seed %q is not valid JSON: %v", seededBody, err)
+	}
+	if _, isObject := parsed.(map[string]any); !isObject {
+		t.Fatalf("first request body seed = %q, want a JSON object so decode-into-struct handlers pass their parse guard", seededBody)
+	}
+	if plans[len(mined)].TypeHint != "string" {
+		t.Fatalf("first seed TypeHint = %q, want string", plans[len(mined)].TypeHint)
+	}
+}
+
+func TestPlanParam_HTTPRequestBodyStructuredHintReencodedAsString(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	structured := json.RawMessage(`{"model":"m","max_tokens":32}`)
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		HintsByName: map[string]planner.ParamValueHint{"r": {Literal: structured}},
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatalf("no plans produced")
+	}
+	// The wrapper decodes the body slot as a JSON string; a structured YAML
+	// hint must arrive re-encoded as a string literal, not an object.
+	var body string
+	if err := json.Unmarshal(plans[0].Literal, &body); err != nil {
+		t.Fatalf("structured hint was not re-encoded as a JSON string: %v; literal=%s", err, plans[0].Literal)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal([]byte(body), &roundTrip); err != nil {
+		t.Fatalf("re-encoded body %q does not round-trip to the hinted object: %v", body, err)
+	}
+	if roundTrip["model"] != "m" {
+		t.Fatalf("re-encoded body lost hint content: %q", body)
+	}
+}
+
+func TestPlanParam_HTTPRequestBodyRejectsGenerator(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		GeneratorsByName: map[string]string{"r": "*http.Request"},
+	})
+	if plans != nil {
+		t.Fatalf("expected no plans for generator on symbolic request body, got %d", len(plans))
+	}
+	// A runtime-value generator plan would materialize as a null slot and
+	// silently produce an empty-body request; the conflict must surface.
+	if unsat == nil {
+		t.Fatalf("expected unsatisfied requirement explaining the generator conflict")
+	}
+}
+
 func TestPlanParam_Cap(t *testing.T) {
 	plans, _ := planner.PlanParam(testTargetID, 0, intParam("n"), planner.ParamPlanOptions{MaxPlansPerParam: 2})
 	if len(plans) != 2 {
@@ -314,6 +440,91 @@ func TestPlanParam_ComplexKindFamilies_Unsatisfied(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Rapid property (str-e41w): for any *http.Request body param and any mix of
+// config hint, mined string literals, and plan cap —
+//   - no plan is ever kind runtime_value (the gen-v12 wrapper always consumes
+//     the slot as a symbolic body; a runtime_value plan would silently yield
+//     an empty-body request);
+//   - a config hint, when present, is always plan[0] and its literal is a
+//     JSON string (structured hints are re-encoded);
+//   - mined literals precede the schema-agnostic seeds;
+//   - the MaxPlansPerParam cap holds.
+func TestPlanParam_HTTPRequestBodyInvariants(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		typeName := "*http.Request"
+		param := protocol.ParamInfo{
+			Name:     "r",
+			Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+			TypeName: &typeName,
+		}
+		maxPlans := rapid.IntRange(1, 8).Draw(rt, "maxPlans")
+		seedSet := map[string]bool{`{}`: true, `{"data":{"id":"1","name":"a"},"items":["a"]}`: true, `[]`: true}
+		drawn := rapid.SliceOfN(rapid.StringMatching(`[a-z{}":,0-9]{0,20}`), 0, 4).Draw(rt, "mined")
+		mined := make([]string, 0, len(drawn))
+		for _, m := range drawn {
+			// A mined literal identical to a seed would make seed-order
+			// detection ambiguous below; the collision carries no signal.
+			if !seedSet[m] {
+				mined = append(mined, m)
+			}
+		}
+		opts := planner.ParamPlanOptions{
+			MaxPlansPerParam:      maxPlans,
+			StringLiteralsByParam: map[string][]string{"r": mined},
+		}
+		hasHint := rapid.Bool().Draw(rt, "hasHint")
+		var hintJSON json.RawMessage
+		if hasHint {
+			if rapid.Bool().Draw(rt, "structuredHint") {
+				hintJSON = json.RawMessage(`{"model":"m"}`)
+			} else {
+				hintJSON = json.RawMessage(`"{\"model\":\"m\"}"`)
+			}
+			opts.HintsByName = map[string]planner.ParamValueHint{"r": {Literal: hintJSON}}
+		}
+
+		plans, unsat := planner.PlanParam(testTargetID, 0, param, opts)
+		if unsat != nil {
+			rt.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+		}
+		if len(plans) > maxPlans {
+			rt.Fatalf("len(plans) = %d exceeds cap %d", len(plans), maxPlans)
+		}
+		minedSet := map[string]bool{}
+		for _, m := range mined {
+			minedSet[m] = true
+		}
+		lastMined, firstSeed := -1, len(plans)
+		for i, plan := range plans {
+			if plan.Kind == protocol.ValuePlanKindRuntimeValue {
+				rt.Fatalf("plan[%d] is runtime_value; symbolic body params must never plan runtime values", i)
+			}
+			if plan.Kind != protocol.ValuePlanKindLiteral || len(plan.Literal) == 0 {
+				continue
+			}
+			var s string
+			if err := json.Unmarshal(plan.Literal, &s); err != nil {
+				continue
+			}
+			if minedSet[s] && i > lastMined {
+				lastMined = i
+			}
+			if seedSet[s] && i < firstSeed {
+				firstSeed = i
+			}
+		}
+		if lastMined > firstSeed {
+			rt.Fatalf("mined literal at plan[%d] ranked after generic seed at plan[%d]", lastMined, firstSeed)
+		}
+		if hasHint && len(plans) > 0 {
+			var s string
+			if err := json.Unmarshal(plans[0].Literal, &s); err != nil {
+				rt.Fatalf("hint plan literal is not a JSON string: %s", plans[0].Literal)
+			}
+		}
+	})
 }
 
 // Rapid property: priorities are strictly increasing, cap is respected,

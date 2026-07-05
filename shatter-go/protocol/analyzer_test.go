@@ -1117,7 +1117,6 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 		{"AcceptsIOWriter", "io.Writer"},
 		{"AcceptsResponseWriter", "http.ResponseWriter"},
 		{"AcceptsHTTPHandler", "http.Handler"},
-		{"AcceptsRequestPointer", "*http.Request"},
 		{"AcceptsIOReadCloser", "io.ReadCloser"},
 		{"AcceptsContext", "context.Context"},
 		{"AcceptsTemplatePointer", "*template.Template"},
@@ -1142,6 +1141,29 @@ func TestAnalyzeSynthesizableStdlibTypes(t *testing.T) {
 				t.Errorf("TypeName = %q, want %q", *p.TypeName, tc.wantTypeName)
 			}
 		})
+	}
+}
+
+// TestAnalyzeHTTPRequestParamIsSymbolicString is the str-e41w regression: a
+// direct *http.Request param is reported as a symbolic string (Kind "str")
+// rather than the "unknown" runtime-value contract, so the explorer/solver
+// generate request body payloads. The canonical *http.Request spelling is still
+// carried on TypeName so the wrapper can wrap the symbolic body via
+// httptest.NewRequest.
+func TestAnalyzeHTTPRequestParamIsSymbolicString(t *testing.T) {
+	results, err := AnalyzeFile(testdataPath("opaque.go"), "AcceptsRequestPointer")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	if len(results) == 0 || len(results[0].Params) < 1 {
+		t.Fatalf("no params returned for AcceptsRequestPointer")
+	}
+	p := results[0].Params[0]
+	if p.Type.Kind != "str" {
+		t.Errorf("Type.Kind = %q, want %q (*http.Request body must be symbolic)", p.Type.Kind, "str")
+	}
+	if p.TypeName == nil || *p.TypeName != "*http.Request" {
+		t.Fatalf("TypeName = %v, want %q so the wrapper can build the request from the symbolic body", p.TypeName, "*http.Request")
 	}
 }
 

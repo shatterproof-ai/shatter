@@ -357,6 +357,148 @@ func Handle(h http.Handler) bool { return h != nil }
 	}
 }
 
+// TestGenerateWrapper_HTTPRequestBodyIsSymbolic is the str-e41w regression:
+// a direct *http.Request parameter must be constructed from a symbolic body
+// input (so the solver can drive request payloads into handlers) rather than
+// the fixed empty-body runtime value httptest.NewRequest("GET","/",nil). The
+// param must consume one string input slot, feed it through
+// httptest.NewRequest(..., strings.NewReader(<body>)), and include a benign
+// API-key header so common provider handlers do not return before reading the
+// body.
+func TestGenerateWrapper_HTTPRequestBodyIsSymbolic(t *testing.T) {
+	const src = `package svc
+
+import "net/http"
+
+func Handle(r *http.Request) bool { return r != nil }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "h.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("svc", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "svc",
+		PkgPath:   "example.com/svc",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("len(targets) = %d, want 1", len(targets))
+	}
+	target := targets[0]
+	// The body is symbolic, so the param must NOT be bound to the fixed
+	// empty-body runtime value.
+	if got := target.Parameters[0].RuntimeValueExpr; got != "" {
+		t.Fatalf("RuntimeValueExpr = %q, want empty (symbolic body); the fixed httptest.NewRequest binding should be skipped for direct *http.Request params", got)
+	}
+
+	out := GenerateWrapper("svc", targets, nil)
+	if !strings.Contains(out, "httptest.NewRequest(") {
+		t.Fatalf("wrapper missing httptest.NewRequest construction; source:\n%s", out)
+	}
+	if !strings.Contains(out, "strings.NewReader(") {
+		t.Fatalf("wrapper missing strings.NewReader body wrapper; source:\n%s", out)
+	}
+	if !strings.Contains(out, `.Header.Set("x-api-key", "shatter")`) {
+		t.Fatalf("wrapper missing non-empty x-api-key header for provider handlers; source:\n%s", out)
+	}
+	if !strings.Contains(out, `.Header.Set("Authorization", "Bearer shatter")`) {
+		t.Fatalf("wrapper missing Bearer Authorization header for provider handlers; source:\n%s", out)
+	}
+	if !strings.Contains(out, `.Header.Set("x-goog-api-key", "shatter")`) {
+		t.Fatalf("wrapper missing x-goog-api-key header for Google-style handlers; source:\n%s", out)
+	}
+	if !strings.Contains(out, `.Header.Set("Content-Type", "application/json")`) {
+		t.Fatalf("wrapper missing Content-Type header; source:\n%s", out)
+	}
+	if strings.Contains(out, "bytes.NewReader(nil)") {
+		t.Fatalf("wrapper still uses fixed empty body bytes.NewReader(nil); body must be symbolic; source:\n%s", out)
+	}
+	// The body must come from a symbolic input slot.
+	if !strings.Contains(out, "json.Unmarshal(_shatterInputs[0]") {
+		t.Fatalf("wrapper does not decode the request body from _shatterInputs[0]; body is not symbolic; source:\n%s", out)
+	}
+}
+
+func TestBuildWrapperTargets_HTTPRequestBodyStaysSymbolicWithImportedPackageSyntax(t *testing.T) {
+	modDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/httpfixture\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	const src = `package httpfixture
+
+import "net/http"
+
+type Handler struct{}
+
+func NewHandler() *Handler { return &Handler{} }
+
+func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusAccepted)
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "handler.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write handler.go: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps,
+		Dir: modDir,
+		Env: append(os.Environ(), "GOFLAGS="),
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("loaded %d packages, want 1", len(pkgs))
+	}
+	for _, pkgErr := range pkgs[0].Errors {
+		t.Fatalf("package load error: %v", pkgErr)
+	}
+
+	targets := BuildWrapperTargets(pkgs[0])
+	target := findWrapperTargetBySymbol(t, targets, "Handle")
+	if len(target.Parameters) != 2 {
+		t.Fatalf("Handle param count = %d, want 2", len(target.Parameters))
+	}
+	if got := target.Parameters[1].RuntimeValueExpr; got != "" {
+		t.Fatalf("request RuntimeValueExpr = %q, want symbolic body input", got)
+	}
+
+	constructors := []ConstructorCandidate{{
+		FuncName:       "NewHandler",
+		TargetType:     "Handler",
+		ReturnsPointer: true,
+	}}
+	out := GenerateWrapper("httpfixture", []WrapperTarget{target}, constructors)
+	if strings.Contains(out, `http.NewRequest("", "http://127.0.0.1:0", strings.NewReader(""))`) {
+		t.Fatalf("wrapper rebound *http.Request through imported net/http constructor; source:\n%s", out)
+	}
+	if !strings.Contains(out, `var r *http.Request = httptest.NewRequest("POST", "/", strings.NewReader(_shatterReqBody1))`) {
+		t.Fatalf("wrapper did not synthesize request from symbolic body input; source:\n%s", out)
+	}
+	if !strings.Contains(out, `r.Header.Set("x-api-key", "shatter")`) {
+		t.Fatalf("wrapper missing provider-friendly API key header; source:\n%s", out)
+	}
+}
+
 func TestGenerateWrapper_RuntimeValueSubstitutesTemplate(t *testing.T) {
 	const src = `package svc
 
