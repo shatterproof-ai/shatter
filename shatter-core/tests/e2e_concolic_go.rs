@@ -1136,7 +1136,7 @@ async fn e2e_go_error_param_classify() {
         "Classify takes 1 param (err error)"
     );
     assert!(
-        analysis.branches.len() >= 1,
+        !analysis.branches.is_empty(),
         "Classify should have >= 1 branch; got {}",
         analysis.branches.len()
     );

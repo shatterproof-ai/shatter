@@ -2099,6 +2099,76 @@ impl ScanFailurePolicy {
 /// Prevents reaping the last worker, ensuring fast checkout for the next task.
 const MIN_IDLE_WORKERS: usize = 1;
 
+/// str-tbk9e: serializes the first per-function harness build of a scan.
+///
+/// On a cold host language build cache, launching every harness build
+/// concurrently makes each build redundantly compile the shared dependency
+/// graph (the Go build cache does not deduplicate in-flight work across
+/// concurrent `go build` processes), the CPU is oversubscribed N-fold, every
+/// build blows `build_timeout`, and the scan completes zero functions.
+/// Running exactly one task to completion first warms the build cache, so
+/// the remaining builds are cheap incremental compiles.
+///
+/// The first caller of [`BuildWarmupGate::enter`] becomes the leader and
+/// receives a [`WarmupLeaderGuard`]; every other caller waits until that
+/// guard drops. The gate opens even when the leader's task fails — a failed
+/// attempt still warms the cache as a side effect of its build — and stays
+/// open for the remainder of the scan. On a warm cache the only cost is one
+/// function's exploration running before the fan-out.
+///
+/// The mechanism is language-agnostic: TS (tsc incremental state) and Rust
+/// (cargo target dir) frontends have the same cold-cache stampede shape.
+pub(crate) struct BuildWarmupGate {
+    leader_chosen: std::sync::atomic::AtomicBool,
+    done: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl BuildWarmupGate {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            leader_chosen: std::sync::atomic::AtomicBool::new(false),
+            done: std::sync::atomic::AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Returns `Some(guard)` for the single leader; followers resolve to
+    /// `None` only after the leader's guard drops. Hold the guard across the
+    /// leader's build+explore, then drop it to release the fleet.
+    pub(crate) async fn enter(self: &Arc<Self>) -> Option<WarmupLeaderGuard> {
+        use std::sync::atomic::Ordering;
+        if self.done.load(Ordering::Acquire) {
+            return None;
+        }
+        if !self.leader_chosen.swap(true, Ordering::AcqRel) {
+            return Some(WarmupLeaderGuard(Arc::clone(self)));
+        }
+        loop {
+            let notified = self.notify.notified();
+            if self.done.load(Ordering::Acquire) {
+                return None;
+            }
+            notified.await;
+        }
+    }
+
+    fn open(&self) {
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+/// Guard held by the warm-up leader; dropping it opens the gate for all
+/// waiting and future tasks.
+pub(crate) struct WarmupLeaderGuard(Arc<BuildWarmupGate>);
+
+impl Drop for WarmupLeaderGuard {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
 /// A channel-based pool of frontend worker subprocesses with adaptive growth.
 ///
 /// Workers are checked out via `checkout()` and returned via `return_worker()`.
@@ -3128,6 +3198,7 @@ async fn run_layer_function_mode(
     fe_config: Arc<FrontendConfig>,
     tasks: Vec<ExploreTask>,
     max_concurrent: usize,
+    warmup_gate: Arc<BuildWarmupGate>,
     concolic: bool,
     timeout: Duration,
     build_timeout: Duration,
@@ -3158,6 +3229,7 @@ async fn run_layer_function_mode(
     } in tasks
     {
         let semaphore = Arc::clone(&semaphore);
+        let warmup_gate = Arc::clone(&warmup_gate);
         let fe_config = Arc::clone(&fe_config);
         let behavior_maps = Arc::clone(behavior_maps);
         let input_pool = Arc::clone(input_pool);
@@ -3170,6 +3242,10 @@ async fn run_layer_function_mode(
         let handle_func_name = func_name.clone();
 
         let handle = tokio::spawn(async move {
+            // str-tbk9e: first task of the scan runs alone to warm the
+            // language build cache; the guard drops when this task's
+            // build+explore finishes (task scope end), releasing the rest.
+            let _warmup = warmup_gate.enter().await;
             // Acquire a concurrency slot before spawning the frontend.
             let _permit = semaphore
                 .acquire()
@@ -3733,6 +3809,10 @@ pub async fn parallel_scan_with_progress(
 
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
+
+    // str-tbk9e: one gate for the whole scan — the first task anywhere runs
+    // alone to warm the language build cache before the fleet fans out.
+    let warmup_gate = BuildWarmupGate::new();
 
     // Load the interesting input pool for cross-function seed sharing.
     let input_pool: Arc<Mutex<InterestingPool>> = {
@@ -4333,6 +4413,7 @@ pub async fn parallel_scan_with_progress(
                     Arc::clone(&fe_config_persistent),
                     tasks,
                     effective_parallelism,
+                    Arc::clone(&warmup_gate),
                     config.concolic,
                     config.timeout_per_fn,
                     config.build_timeout,
@@ -4444,12 +4525,17 @@ pub async fn parallel_scan_with_progress(
                     let handle_func_name = func_name.clone();
                     let handle_progress_index = progress_index;
                     let file_limiter = file_limiters.get(&file_path).cloned();
+                    let warmup_gate = Arc::clone(&warmup_gate);
                     let lease = Arc::new(WorkerTaskLease::new(
                         Arc::clone(&pool),
                         Arc::clone(&tasks_remaining),
                     ));
                     let handle_lease = Arc::clone(&lease);
                     let handle = tokio::spawn(async move {
+                        // str-tbk9e: gate BEFORE the same-file permit — a
+                        // follower holding a file permit while parked at the
+                        // gate would deadlock a leader that needs that file.
+                        let warmup = warmup_gate.enter().await;
                         let _same_file_permit = match file_limiter {
                             Some(limiter) => limiter.acquire_owned().await.ok(),
                             None => None,
@@ -4546,6 +4632,10 @@ pub async fn parallel_scan_with_progress(
                                 }
                             }
                         };
+
+                        // str-tbk9e: leader's build+explore is done (success
+                        // or failure) — open the gate for the fleet.
+                        drop(warmup);
 
                         let timed_out = matches!(
                             result,
@@ -6301,6 +6391,86 @@ mod tests {
 
     /// Request timeout for integration tests using the noop frontend.
     const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// str-tbk9e regression: with N tasks queued behind the warm-up gate,
+    /// exactly one (the leader) proceeds while the gate is closed; the rest
+    /// fan out only after the leader's guard drops.
+    #[tokio::test]
+    async fn warmup_gate_serializes_first_task_then_fans_out() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let gate = BuildWarmupGate::new();
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak_while_closed = Arc::new(AtomicUsize::new(0));
+        let leader_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let gate = Arc::clone(&gate);
+            let running = Arc::clone(&running);
+            let peak_while_closed = Arc::clone(&peak_while_closed);
+            let leader_done = Arc::clone(&leader_done);
+            handles.push(tokio::spawn(async move {
+                let guard = gate.enter().await;
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                if guard.is_some() {
+                    // Leader: no one else may be running yet.
+                    peak_while_closed.fetch_max(now, Ordering::SeqCst);
+                    // Simulate the build taking a while so followers pile up.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    peak_while_closed.fetch_max(running.load(Ordering::SeqCst), Ordering::SeqCst);
+                    leader_done.store(true, Ordering::SeqCst);
+                } else {
+                    // Follower: must only run after the leader finished.
+                    assert!(
+                        leader_done.load(Ordering::SeqCst),
+                        "follower ran while the warm-up leader was still building"
+                    );
+                }
+                running.fetch_sub(1, Ordering::SeqCst);
+                drop(guard);
+            }));
+        }
+        for h in handles {
+            h.await.expect("task panicked");
+        }
+        assert_eq!(
+            peak_while_closed.load(Ordering::SeqCst),
+            1,
+            "only the leader may run while the warm-up gate is closed"
+        );
+    }
+
+    /// str-tbk9e: the gate opens even when the leader's task fails (guard
+    /// dropped on an error path) — a failed attempt still warms the cache.
+    #[tokio::test]
+    async fn warmup_gate_opens_when_leader_drops_on_failure() {
+        let gate = BuildWarmupGate::new();
+        let guard = gate.enter().await;
+        assert!(guard.is_some(), "first caller must be the leader");
+        // Simulate the leader failing: guard dropped without any success signal.
+        drop(guard);
+
+        // Followers (and any future entrant) proceed immediately.
+        let follower = tokio::time::timeout(Duration::from_secs(1), gate.enter())
+            .await
+            .expect("gate must be open after the leader guard drops");
+        assert!(follower.is_none(), "post-open entrants are not leaders");
+    }
+
+    /// str-tbk9e: on a warm cache the gate costs exactly one serialized task;
+    /// once open it never closes for the rest of the scan.
+    #[tokio::test]
+    async fn warmup_gate_stays_open_for_later_layers() {
+        let gate = BuildWarmupGate::new();
+        drop(gate.enter().await);
+        for _ in 0..3 {
+            assert!(
+                gate.enter().await.is_none(),
+                "gate must stay open after first release"
+            );
+        }
+    }
 
     /// str-ubp1: phase-tagged reasons distinguish build vs execution timeouts
     /// so users can tell whether `--build-timeout` or `--timeout-per-fn` is
