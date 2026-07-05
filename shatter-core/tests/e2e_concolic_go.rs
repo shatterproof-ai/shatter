@@ -1205,3 +1205,93 @@ async fn e2e_go_error_param_classify() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// str-e41w: direct *http.Request params take a symbolic JSON body.
+//
+// ClassifyRequest(r *http.Request) branches on the DECODED body: parse
+// error -> 0, missing model -> 1, model+stream=false -> 2, model+stream=true
+// -> 3. The pre-e41w fixed empty-body request could only ever reach one
+// outcome; discovering all four return codes proves the full pipeline —
+// analyzer reports the param as a symbolic string, the planner/explorer
+// drive body payloads through the slot, and the generated wrapper builds
+// the request (with stub auth headers, so the -1 auth branch stays
+// unreachable) around each body.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_http_request_symbolic_body_discovers_body_branches() {
+    let file = repo_examples_go_dir()
+        .join("http-request-body")
+        .join("handler.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("http-request-body").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "ClassifyRequest").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "ClassifyRequest takes 1 param (r *http.Request)"
+    );
+
+    instrument_function(&mut frontend, &file_str, "ClassifyRequest").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+
+    // Known-answer body seeds, one per post-auth branch. The explorer only
+    // has to replay them through the symbolic body slot; mutation/solver may
+    // find more.
+    let seed_inputs = vec![
+        vec![serde_json::json!("not json")],
+        vec![serde_json::json!("{}")],
+        vec![serde_json::json!(r#"{"model":"m"}"#)],
+        vec![serde_json::json!(r#"{"model":"m","stream":true}"#)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "ClassifyRequest",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    for expected in ["0", "1", "2", "3"] {
+        assert!(
+            return_values.contains(expected),
+            "should discover body-gated branch returning {expected}; found: {return_values:?}"
+        );
+    }
+    assert!(
+        !return_values.contains("-1"),
+        "auth branch must be unreachable (stub headers always set); found: {return_values:?}"
+    );
+    assert!(
+        result.unique_paths >= 4,
+        "should have at least 4 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

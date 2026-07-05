@@ -771,6 +771,24 @@ func stringBasicLiteral(expr ast.Expr) (string, bool) {
 
 // --- Parameter and Return Type Extraction ---
 
+// isASTHTTPRequestPointer reports whether expr is spelled `*http.Request` in
+// source, without consulting the type checker. It mirrors the wrapper's
+// AST-derived GoType fallback so the analyzer's symbolic-body decision
+// (str-e41w) and the wrapper's slot consumption cannot diverge when the type
+// checker has no entry for the expression.
+func isASTHTTPRequestPointer(expr ast.Expr) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "http" && sel.Sel.Name == "Request"
+}
+
 func extractParams(fn *ast.FuncDecl, info *types.Info) []ParamInfo {
 	return extractParamsWithContext(fn, info, nil)
 }
@@ -806,6 +824,14 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 		// TypeName (carried below) and wraps the symbolic string via
 		// httptest.NewRequest. Nested *http.Request (struct fields, slice
 		// elements) keep the runtime-value path in goTypeToTypeInfoRec.
+		//
+		// The AST-spelling fallback mirrors the wrapper's AST-derived GoType
+		// (used when the type checker has no entry for the expression):
+		// analyzer and wrapper MUST agree on whether this param consumes a
+		// symbolic input slot, or every subsequent param's input index shifts.
+		if synthSpelling == "" && isASTHTTPRequestPointer(field.Type) {
+			synthSpelling = "*http.Request"
+		}
 		if synthSpelling == "*http.Request" {
 			ti = TypeInfo{Kind: "str", Label: "*http.Request"}
 		}

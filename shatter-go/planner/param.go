@@ -122,6 +122,18 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 	// falling through, so configuration typos surface as
 	// UnsatisfiedRequirementKindComplexType.
 	if generatorName, ok := opts.GeneratorsByName[p.Name]; ok && generatorName != "" {
+		// str-e41w: the gen-v12 wrapper always builds a direct *http.Request
+		// from its symbolic body input slot; a runtime-value generator plan for
+		// such a param would materialize as a null slot and silently produce an
+		// empty-body request instead of the configured expression. Surface the
+		// conflict loudly, matching the typo-surfacing policy below.
+		if isHTTPRequestBodyParam(p) {
+			return nil, &protocol.UnsatisfiedRequirement{
+				Kind:     protocol.UnsatisfiedRequirementKindComplexType,
+				TargetID: targetID,
+				Detail:   fmt.Sprintf("parameter %q: direct *http.Request params take a symbolic request body and cannot use generator %q; supply the body via defaults instead", p.Name, generatorName),
+			}
+		}
 		plans := generatorPlans(paramIndex, p, generatorName, maxPlans)
 		if len(plans) > 0 {
 			return plans, nil
@@ -191,43 +203,34 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		if typeHint == "" {
 			typeHint = family.typeHint
 		}
+		literal := hint.Literal
+		// str-e41w: the wrapper decodes a *http.Request body slot as a JSON
+		// string. A structured YAML hint (defaults: r: {model: ...}) arrives
+		// here as an object/array literal; re-encode it as a JSON string so
+		// the natural config spelling works instead of failing wrapper-side
+		// deserialization on every execution.
+		if isHTTPRequestBodyParam(p) && !isJSONStringLiteral(literal) {
+			if encoded, err := json.Marshal(string(literal)); err == nil {
+				literal = encoded
+			}
+		}
 		add(protocol.ValuePlan{
 			Kind:     protocol.ValuePlanKindLiteral,
-			Literal:  hint.Literal,
+			Literal:  literal,
 			TypeHint: typeHint,
 		})
 	}
 
-	if family.typeHint == paramTypeHintString && isHTTPRequestBodyParam(p) {
-		for _, literal := range httpRequestBodySeeds {
-			encoded, err := json.Marshal(literal)
-			if err != nil {
-				continue
-			}
-			if !add(protocol.ValuePlan{
-				Kind:     protocol.ValuePlanKindLiteral,
-				Literal:  encoded,
-				TypeHint: family.typeHint,
-			}) {
-				break
-			}
-		}
+	if family.typeHint == paramTypeHintString {
+		addStringLiteralPlans(add, opts.StringLiteralsByParam[p.Name], family.typeHint)
 	}
 
-	if family.typeHint == paramTypeHintString {
-		for _, literal := range opts.StringLiteralsByParam[p.Name] {
-			encoded, err := json.Marshal(literal)
-			if err != nil {
-				continue
-			}
-			if !add(protocol.ValuePlan{
-				Kind:     protocol.ValuePlanKindLiteral,
-				Literal:  encoded,
-				TypeHint: family.typeHint,
-			}) {
-				break
-			}
-		}
+	// str-e41w: schema-agnostic request-body seeds rank BELOW config hints and
+	// below source-mined string literals (StringLiteralsByParam) — mined
+	// comparison literals are exact known-answer payloads and must not be
+	// evicted by generic seeds under MaxPlansPerParam.
+	if family.typeHint == paramTypeHintString && isHTTPRequestBodyParam(p) {
+		addStringLiteralPlans(add, httpRequestBodySeeds, family.typeHint)
 	}
 
 	for _, cand := range family.candidates {
@@ -256,12 +259,38 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 // past its parse guard: an empty object reaches decode-success/validation
 // branches, a small nested object reaches field-extraction branches, and an
 // array covers handlers that decode into slices. API-specific payloads do not
-// belong here — they come from the project's `.shatter/config.yaml` hints
-// (HintsByName / StringLiteralsByParam), which are planned ahead of these.
+// belong here — they come from the project's `.shatter/config.yaml` defaults
+// (HintsByName), which the planner orders ahead of these seeds. Source-mined
+// comparison literals (StringLiteralsByParam) also rank ahead: they are exact
+// known-answer payloads for the target's own branches.
 var httpRequestBodySeeds = []string{
 	`{}`,
 	`{"data":{"id":"1","name":"a"},"items":["a"]}`,
 	`[]`,
+}
+
+// addStringLiteralPlans JSON-encodes each string and appends it as a literal
+// ValuePlan via add, stopping when the plan cap is reached.
+func addStringLiteralPlans(add func(protocol.ValuePlan) bool, literals []string, typeHint string) {
+	for _, literal := range literals {
+		encoded, err := json.Marshal(literal)
+		if err != nil {
+			continue
+		}
+		if !add(protocol.ValuePlan{
+			Kind:     protocol.ValuePlanKindLiteral,
+			Literal:  encoded,
+			TypeHint: typeHint,
+		}) {
+			return
+		}
+	}
+}
+
+// isJSONStringLiteral reports whether raw is a JSON-encoded string value.
+func isJSONStringLiteral(raw json.RawMessage) bool {
+	var s string
+	return json.Unmarshal(raw, &s) == nil
 }
 
 func isHTTPRequestBodyParam(p protocol.ParamInfo) bool {
