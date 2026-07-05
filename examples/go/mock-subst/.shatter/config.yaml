@@ -1,0 +1,20 @@
+# str-c8djq execute-time mock substitution fixture config.
+#
+# The Go frontend discovers this file by walking UP from the analyzed file's
+# directory (config/loader.go findConfigFile), so it lives in the fixture's
+# module root. At execute time the handler loads the matched `mocks` entry
+# (protocol/handler.go configMockConfigs) and rewrites the `dep.Fetch(x)` call
+# site in the instrumented overlay to the Go expression below
+# (instrument/mocksubst.go via build/instrumented_overlay.go), so the real
+# dep.Fetch body never runs.
+#
+# `dep.Result{Code: x % 7}` is a bounded expression (Code in [-6, 6]); it
+# references the in-scope parameter `x` of Classify and the already-imported
+# `dep` package (which keeps that import live after the call site is rewritten),
+# and adds no new imports. Its Code range can never satisfy Classify's `>= 100`
+# sentinel gate, so the real dependency's sentinel branch becomes unreachable
+# once the mock is applied.
+functions:
+  "classify.go:Classify":
+    mocks:
+      "dep.Fetch": "dep.Result{Code: x % 7}"
