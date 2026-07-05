@@ -196,6 +196,36 @@ func TestGenerateWrapper_InitializedMapsReceiverKind(t *testing.T) {
 	}
 }
 
+func TestGenerateWrapper_ConfiguredReceiverKind(t *testing.T) {
+	target := WrapperTarget{
+		ID:            "example.com/fixture:(*Service).Run",
+		SymbolName:    "Run",
+		Kind:          TargetKindMethod,
+		ReceiverType:  "Service",
+		IsPointerRecv: true,
+		ConfiguredReceivers: []ConfiguredReceiver{{
+			ReceiverKind: "configured:seeded_service",
+			Expression:   "&Service{backend: fakeBackend{}}",
+			Imports:      []string{"example.com/fixture/fakes"},
+		}},
+		HasResult:     true,
+		ResultGoType:  "int",
+		ResultGoTypes: []string{"int"},
+		ResultCount:   1,
+	}
+	out := GenerateWrapper("fixture", []WrapperTarget{target}, nil)
+
+	if !strings.Contains(out, `"example.com/fixture/fakes"`) {
+		t.Fatalf("generated wrapper missing configured receiver import; source:\n%s", out)
+	}
+	if !strings.Contains(out, `case "configured:seeded_service":`) {
+		t.Fatalf("generated wrapper missing configured receiver case; source:\n%s", out)
+	}
+	if !strings.Contains(out, `_recv := &Service{backend: fakeBackend{}}`) {
+		t.Fatalf("generated wrapper missing configured receiver expression; source:\n%s", out)
+	}
+}
+
 func TestBuildWrapperTargets_InitializedMapsSkipsNonMapHiddenState(t *testing.T) {
 	const src = `package fixture
 

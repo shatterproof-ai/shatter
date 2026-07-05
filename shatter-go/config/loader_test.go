@@ -131,6 +131,43 @@ functions:
 	}
 }
 
+func TestLoad_ReceiverSection(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "target.go:(*Service).Run":
+    receiver:
+      label: seeded_service
+      expression: |
+        &Service{backend: fakeBackend{}}
+      imports:
+        - example.com/project/internal/fakes
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(file.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", file.Warnings)
+	}
+	entry := file.MatchTarget("target.go", "(*Service).Run")
+	if entry.Receiver == nil {
+		t.Fatal("receiver config missing")
+	}
+	if entry.Receiver.Label != "seeded_service" {
+		t.Errorf("receiver label = %q, want seeded_service", entry.Receiver.Label)
+	}
+	if !strings.Contains(entry.Receiver.Expression, "&Service{backend: fakeBackend{}}") {
+		t.Errorf("receiver expression = %q, want configured expression", entry.Receiver.Expression)
+	}
+	if got, want := entry.Receiver.Imports, []string{"example.com/project/internal/fakes"}; len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("receiver imports = %v, want %v", got, want)
+	}
+	if got := entry.Receiver.ReceiverKind(); got != "configured:seeded_service" {
+		t.Errorf("receiver kind = %q, want configured:seeded_service", got)
+	}
+}
+
 func TestLoad_GoRuntimeValuesSection(t *testing.T) {
 	t.Parallel()
 	target := writeConfig(t, `
