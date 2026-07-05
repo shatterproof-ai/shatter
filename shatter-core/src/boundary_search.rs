@@ -138,7 +138,7 @@ fn interpolate_value(a: &Value, b: &Value, typ: &TypeInfo, max_steps: usize) -> 
         TypeInfo::Array { element } => interpolate_array(a, b, element, max_steps),
         TypeInfo::Object { fields } => interpolate_object(a, b, fields, max_steps),
         TypeInfo::Nullable { inner } => interpolate_nullable(a, b, inner, max_steps),
-        TypeInfo::Union { variants } => interpolate_union(a, b, variants, max_steps),
+        TypeInfo::Union { variants, .. } => interpolate_union(a, b, variants, max_steps),
         TypeInfo::Bool
         | TypeInfo::Str
         | TypeInfo::Complex { .. }

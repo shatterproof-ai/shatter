@@ -293,6 +293,7 @@ type TypeInfo struct {
 	Element       *TypeInfo              `json:"element,omitempty"`        // array
 	Fields        []ObjectField          `json:"fields,omitempty"`         // object
 	Variants      []TypeInfo             `json:"variants,omitempty"`       // union
+	EnumValues    []interface{}          `json:"enum_values,omitempty"`    // union: concrete value domain (str-pjlc1)
 	Inner         *TypeInfo              `json:"inner,omitempty"`          // nullable, complex wrapper
 	ComplexKind   string                 `json:"complex_kind,omitempty"`   // complex
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`       // complex

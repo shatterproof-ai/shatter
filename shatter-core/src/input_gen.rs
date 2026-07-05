@@ -14,6 +14,12 @@ use crate::types::{ComplexKind, TypeInfo};
 
 const GENERATOR_PREFETCH_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Percentage of the time a union carrying an `enum_values` domain generates an
+/// off-domain probe (via random per-variant generation) instead of a valid
+/// member. Keeps decoder-rejection paths covered while still hitting the
+/// function body most of the time (str-pjlc1).
+const ENUM_INVALID_PROBE_PERCENT: i32 = 15;
+
 // ---------------------------------------------------------------------------
 // Param-name heuristic string generation
 // ---------------------------------------------------------------------------
@@ -125,7 +131,10 @@ pub fn generate_random_value(
         TypeInfo::Bool => json!(rng.random_bool(0.5)),
         TypeInfo::Array { element } => generate_array(element, rng, caps),
         TypeInfo::Object { fields } => generate_object(fields, rng, caps),
-        TypeInfo::Union { variants } => generate_union(variants, rng, caps),
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => generate_union(variants, enum_values, rng, caps),
         TypeInfo::Nullable { inner } => generate_nullable(inner, rng, caps),
         TypeInfo::Complex {
             kind,
@@ -223,7 +232,7 @@ fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
         TypeInfo::Array { .. } => value.is_array(),
         TypeInfo::Object { .. } => value.is_object(),
         TypeInfo::Nullable { inner } => value.is_null() || value_matches_type_shape(value, inner),
-        TypeInfo::Union { variants } => variants.iter().any(|v| value_matches_type_shape(value, v)),
+        TypeInfo::Union { variants, .. } => variants.iter().any(|v| value_matches_type_shape(value, v)),
         TypeInfo::Complex {
             kind: ComplexKind::GoByte,
             ..
@@ -377,7 +386,7 @@ fn default_for_type(typ: &TypeInfo) -> Value {
             Value::Object(obj)
         }
         TypeInfo::Nullable { .. } => Value::Null,
-        TypeInfo::Union { variants } => variants
+        TypeInfo::Union { variants, .. } => variants
             .first()
             .map(default_for_type)
             .unwrap_or(Value::Null),
@@ -545,12 +554,27 @@ fn generate_object(
     Value::Object(obj)
 }
 
-/// Pick a random variant from a union type.
+/// Pick a value for a union type.
+///
+/// When `enum_values` is non-empty the type carries a concrete value domain
+/// (a Go `const` set, a TS string-literal union, etc.; str-pjlc1). Most of the
+/// time we draw a valid member so validating decoders (`UnmarshalJSON` /
+/// `IsValid`) accept the input and the function body actually executes;
+/// `ENUM_INVALID_PROBE_PERCENT` of the time we fall through to random
+/// per-variant generation so off-domain rejection paths stay covered. When the
+/// domain is empty this behaves as a plain type union: pick a random variant.
 fn generate_union(
     variants: &[TypeInfo],
+    enum_values: &[Value],
     rng: &mut impl Rng,
     caps: Option<&FrontendCapabilities>,
 ) -> Value {
+    if !enum_values.is_empty()
+        && (variants.is_empty() || rng.random_range(0..100) >= ENUM_INVALID_PROBE_PERCENT)
+    {
+        let idx = rng.random_range(0..enum_values.len());
+        return enum_values[idx].clone();
+    }
     if variants.is_empty() {
         return Value::Null;
     }
@@ -1727,7 +1751,7 @@ pub fn mutate_value(
         TypeInfo::Str => mutate_string(value, dictionary, rng),
         TypeInfo::Array { element } => mutate_array(value, element, dictionary, rng),
         TypeInfo::Object { fields } => mutate_object(value, fields, dictionary, rng),
-        TypeInfo::Union { variants } => mutate_union(value, variants, dictionary, rng),
+        TypeInfo::Union { variants, .. } => mutate_union(value, variants, dictionary, rng),
         TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
         TypeInfo::Complex {
             kind: ComplexKind::Buffer,
@@ -3266,7 +3290,7 @@ pub fn shrink_candidates(value: &Value, type_info: &TypeInfo) -> Vec<Value> {
         TypeInfo::Array { element } => shrink_array(value, element),
         TypeInfo::Object { fields } => shrink_object(value, fields),
         TypeInfo::Nullable { inner } => shrink_nullable(value, inner),
-        TypeInfo::Union { variants } => shrink_union(value, variants),
+        TypeInfo::Union { variants, .. } => shrink_union(value, variants),
         TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => Vec::new(),
     };
     // Filter out duplicates and any candidate that equals the original.
@@ -3689,7 +3713,7 @@ fn literal_matches_type(lit: &LiteralValue, typ: &TypeInfo) -> Option<Value> {
         (LiteralValue::Str { value }, TypeInfo::Str) => Some(json!(value)),
         (LiteralValue::Bool { value }, TypeInfo::Bool) => Some(json!(value)),
         // For union types, try each variant
-        (_, TypeInfo::Union { variants }) => {
+        (_, TypeInfo::Union { variants, .. }) => {
             variants.iter().find_map(|v| literal_matches_type(lit, v))
         }
         // For nullable, try the inner type
@@ -3730,7 +3754,7 @@ fn literal_matches_array_string_elements(lit: &LiteralValue, typ: &TypeInfo) -> 
             };
             vec![Value::Array(vec![value])]
         }
-        TypeInfo::Union { variants } => variants
+        TypeInfo::Union { variants, .. } => variants
             .iter()
             .flat_map(|v| literal_matches_array_string_elements(lit, v))
             .collect(),
@@ -3742,7 +3766,7 @@ fn literal_matches_array_string_elements(lit: &LiteralValue, typ: &TypeInfo) -> 
 fn type_accepts_string_literal(typ: &TypeInfo) -> bool {
     match typ {
         TypeInfo::Str => true,
-        TypeInfo::Union { variants } => variants.iter().any(type_accepts_string_literal),
+        TypeInfo::Union { variants, .. } => variants.iter().any(type_accepts_string_literal),
         TypeInfo::Nullable { inner } => type_accepts_string_literal(inner),
         _ => false,
     }
@@ -3816,7 +3840,7 @@ fn generate_mock_return_values(
 
     // Union-with-Error: alternate success and error variants.
     // Error variants use generate_error() directly for the tagged format.
-    if let TypeInfo::Union { variants } = return_type {
+    if let TypeInfo::Union { variants, .. } = return_type {
         let (error_indices, success_indices) = partition_error_variants(variants);
         if !error_indices.is_empty() && !success_indices.is_empty() {
             let mut values = Vec::with_capacity(count);
@@ -4091,6 +4115,7 @@ mod tests {
         let mut rng = seeded_rng();
         let typ = TypeInfo::Union {
             variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
+            enum_values: Vec::new(),
         };
         let mut saw_int = false;
         let mut saw_str = false;
@@ -4103,6 +4128,35 @@ mod tests {
             }
         }
         assert!(saw_int && saw_str, "expected both int and string variants");
+    }
+
+    /// str-pjlc1: a union with a concrete `enum_values` domain generates
+    /// valid domain members most of the time (so validating decoders accept
+    /// the input and the body executes) while still emitting occasional
+    /// off-domain probes from the base variant (so rejection paths stay
+    /// covered). Both must be observed across a run.
+    #[test]
+    fn generates_enum_domain_values_and_invalid_probes() {
+        let mut rng = seeded_rng();
+        let domain = vec![json!("RED"), json!("GREEN"), json!("BLUE")];
+        let typ = TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: domain.clone(),
+        };
+        let mut saw_valid = false;
+        let mut saw_probe = false;
+        for _ in 0..500 {
+            let val = generate_random_value(&typ, &mut rng, None);
+            if domain.contains(&val) {
+                saw_valid = true;
+            } else {
+                // Off-domain string from the base `Str` variant.
+                assert!(val.is_string(), "probe should still respect base type, got {val}");
+                saw_probe = true;
+            }
+        }
+        assert!(saw_valid, "expected valid enum-domain members");
+        assert!(saw_probe, "expected occasional off-domain probes");
     }
 
     #[test]
@@ -4130,7 +4184,14 @@ mod tests {
     #[test]
     fn empty_union_produces_null() {
         let mut rng = seeded_rng();
-        let val = generate_random_value(&TypeInfo::Union { variants: vec![] }, &mut rng, None);
+        let val = generate_random_value(
+            &TypeInfo::Union {
+                variants: vec![],
+                enum_values: Vec::new(),
+            },
+            &mut rng,
+            None,
+        );
         assert!(val.is_null());
     }
 
@@ -5391,6 +5452,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let mut rng = seeded_rng();
         let typ = TypeInfo::Union {
             variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
+            enum_values: Vec::new(),
         };
         for _ in 0..50 {
             let mutated = mutate_value(&json!(42), &typ, &[], &mut rng);
@@ -6455,7 +6517,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 TypeInfo::Array { .. } => value.is_array(),
                 TypeInfo::Object { .. } => value.is_object(),
                 TypeInfo::Nullable { inner } => value.is_null() || value_matches_type(value, inner),
-                TypeInfo::Union { variants } => {
+                TypeInfo::Union { variants, .. } => {
                     variants.is_empty() || variants.iter().any(|v| value_matches_type(value, v))
                 }
                 TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => true,
@@ -6526,6 +6588,26 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 let v = generate_random_value(&typ, &mut rng, None);
                 let n = v.as_i64().expect("i8 generates an integer");
                 prop_assert!((-128..=127).contains(&n), "i8 produced out-of-range {n}");
+            }
+
+            /// str-pjlc1: a union carrying a concrete `enum_values` domain but
+            /// no fallback variants must ALWAYS generate a member of that
+            /// domain — there is nothing else it could validly produce, and an
+            /// off-domain value would be rejected by the frontend's validating
+            /// decoder. Holds for every seed.
+            #[test]
+            fn generate_union_pure_domain_stays_in_domain(seed in 0u64..2000) {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let domain = vec![json!("RED"), json!("GREEN"), json!("BLUE")];
+                let typ = TypeInfo::Union {
+                    variants: vec![],
+                    enum_values: domain.clone(),
+                };
+                let v = generate_random_value(&typ, &mut rng, None);
+                prop_assert!(
+                    domain.contains(&v),
+                    "pure enum domain produced off-domain value {v}"
+                );
             }
 
             /// Call-graph-aware pool seeding produces valid-length rows with
@@ -7672,6 +7754,7 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
         let params = vec![MockParam {
             symbol: "fetchData".to_string(),
             return_type: TypeInfo::Union {
+                enum_values: Vec::new(),
                 variants: vec![
                     TypeInfo::Str,
                     TypeInfo::Complex {

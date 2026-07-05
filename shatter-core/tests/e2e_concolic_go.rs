@@ -1424,3 +1424,177 @@ async fn e2e_go_mock_substitution_reaches_mock_only_branches() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test: enum value-domain extraction (str-pjlc1), concolic path.
+//
+// ClassifyColor(c Color) string, where `Color` is a named string enum with a
+// {RED, GREEN, BLUE} const set, switches over all three plus a default arm:
+//   RED   -> "warm"
+//   GREEN -> "cool-green"
+//   BLUE  -> "cool-blue"
+//   *     -> "invalid"
+//
+// The three valid arms are reachable ONLY when the generator produces valid
+// enum members. We seed a single OFF-domain string ("zzz") so the run starts
+// without being handed any valid answer; the analyzer's enum_values domain on
+// the param's union TypeInfo is what lets the core draw RED/GREEN/BLUE and
+// reach every valid arm. Before str-pjlc1 the param was a plain string and only
+// the "invalid" default arm was ever hit.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_enum_value_domain_reaches_all_arms() {
+    let file = repo_examples_go_dir().join("enum-color").join("color.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("enum-value-domain").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "ClassifyColor").await;
+    assert_eq!(analysis.params.len(), 1, "ClassifyColor takes 1 param");
+    // The analyzer must surface the value domain as a union with enum_values.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
+            assert!(
+                !enum_values.is_empty(),
+                "analyzer should carry a non-empty enum_values domain for Color"
+            );
+            assert_eq!(
+                variants.len(),
+                1,
+                "Color union should have a single str base variant"
+            );
+        }
+        other => panic!("Color param should be a union with enum_values; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "ClassifyColor").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(60),
+        max_executions: Some(120),
+        plateau_threshold: 40,
+        ..Default::default()
+    };
+
+    // Deliberately off-domain seed: generation from enum_values must find the
+    // valid members on its own.
+    let seed_inputs = vec![vec![serde_json::json!("zzz")]];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "ClassifyColor",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"warm\"", "\"cool-green\"", "\"cool-blue\""] {
+        assert!(
+            return_values.contains(expected),
+            "enum value-domain generation should reach valid arm {expected}; found: {return_values:?}"
+        );
+    }
+    // The off-domain probe path (default arm) should also stay covered.
+    assert!(
+        return_values.contains("\"invalid\""),
+        "off-domain probes should still reach the default arm; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test: enum value-domain extraction (str-pjlc1), RANDOM explorer path.
+//
+// Parallel-path rule (CLAUDE.md): the random explorer and the concolic
+// orchestrator are wired separately. Both build a MetaStrategy whose Random
+// strategy generates from the param's TypeInfo, so the enum_values domain must
+// benefit the random explorer too. This asserts a valid enum arm is reached
+// with NO Z3 and NO hand-fed seeds.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_enum_value_domain_random_explorer_reaches_valid_arms() {
+    let file = repo_examples_go_dir().join("enum-color").join("color.go");
+    assert!(file.exists(), "fixture missing: {}", file.display());
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("enum-value-domain-random").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "ClassifyColor").await;
+    instrument_function(&mut frontend, &file_str, "ClassifyColor").await;
+
+    let config = shatter_core::explorer::ExploreConfig {
+        file: file_str,
+        max_iterations: Some(40),
+        observer_pool: 1,
+        observer_frontend_config: None,
+        candidate_queue_capacity: None,
+        seed: Some(7),
+        mocks: vec![],
+        mock_params: vec![],
+        setup_file: None,
+        setup_level: shatter_core::protocol::SetupLevel::Function,
+        value_sources: vec![],
+        capabilities: shatter_core::orchestrator::FrontendCapabilities::default(),
+        user_seeds: vec![],
+        candidate_inputs: vec![],
+        pool_seeds: vec![],
+        project_root: None,
+        execution_profile: None,
+        loop_buckets: Default::default(),
+        timeout_explore: None,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
+        budget_surplus: None,
+        claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
+        default_execute_plan: None,
+        prepare_id_override: None,
+    };
+
+    let result =
+        shatter_core::explorer::explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("random explorer failed on enum param");
+
+    let mut valid_arms = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            valid_arms.insert(v.to_string());
+        }
+    }
+    // Random generation over a 3-member domain across 40 iterations should hit
+    // at least one valid arm — impossible unless enum_values drove generation.
+    let hit_valid = ["\"warm\"", "\"cool-green\"", "\"cool-blue\""]
+        .iter()
+        .any(|arm| valid_arms.contains(*arm));
+    assert!(
+        hit_valid,
+        "random explorer should reach a valid enum arm via enum_values; found: {valid_arms:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

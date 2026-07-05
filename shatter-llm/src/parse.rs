@@ -115,7 +115,7 @@ fn type_matches(t: &TypeInfo, v: &Value) -> bool {
                 .all(|(n, ft)| map.get(n).is_some_and(|fv| type_matches(ft, fv))),
             _ => false,
         },
-        TypeInfo::Union { variants } => variants.iter().any(|vt| type_matches(vt, v)),
+        TypeInfo::Union { variants, .. } => variants.iter().any(|vt| type_matches(vt, v)),
         TypeInfo::Nullable { inner } => v.is_null() || type_matches(inner, v),
         TypeInfo::Complex { inner, .. } => match inner {
             Some(inner) => type_matches(inner, v),

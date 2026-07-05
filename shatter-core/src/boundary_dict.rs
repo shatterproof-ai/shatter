@@ -68,7 +68,7 @@ pub fn get_boundary_values(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
             entries.extend(get_boundary_values(inner));
             entries
         }
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union { variants, .. } => {
             let mut entries = Vec::new();
             for variant in variants {
                 entries.extend(get_boundary_values(variant));

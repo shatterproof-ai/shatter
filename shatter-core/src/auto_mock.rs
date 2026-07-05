@@ -254,7 +254,7 @@ fn default_for_type(typ: &TypeInfo) -> Value {
             Value::Object(obj)
         }
         TypeInfo::Nullable { .. } => Value::Null,
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union { variants, .. } => {
             if let Some(first) = variants.first() {
                 default_for_type(first)
             } else {

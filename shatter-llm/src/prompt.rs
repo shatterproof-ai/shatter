@@ -92,7 +92,7 @@ fn type_to_schema(t: &TypeInfo) -> Value {
                 "additionalProperties": false,
             })
         }
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union { variants, .. } => {
             let any_of: Vec<Value> = variants.iter().map(type_to_schema).collect();
             json!({ "anyOf": any_of })
         }
@@ -122,7 +122,7 @@ fn type_label(t: &TypeInfo) -> String {
                 .join(", ");
             format!("object{{{body}}}")
         }
-        TypeInfo::Union { variants } => variants
+        TypeInfo::Union { variants, .. } => variants
             .iter()
             .map(type_label)
             .collect::<Vec<_>>()

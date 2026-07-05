@@ -149,6 +149,16 @@ pub enum TypeInfo {
     },
     Union {
         variants: Vec<TypeInfo>,
+        /// Concrete value domain for named enum-like types (Go `const` sets,
+        /// TS string-literal unions, Rust fieldless enums). When non-empty the
+        /// input generator draws valid variants directly from this list, mixing
+        /// in occasional off-domain probes from `variants` so decoder-rejection
+        /// paths stay covered (str-pjlc1). Entries are raw JSON scalars (e.g.
+        /// `"STARS"`, `3`). Kept value-list-shaped so a later sentinel/errors.Is
+        /// follow-up can reuse it for expression-kind entries. Empty for plain
+        /// type unions, which fall back to random per-variant generation.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enum_values: Vec<serde_json::Value>,
     },
     Nullable {
         inner: Box<TypeInfo>,
@@ -197,7 +207,7 @@ impl TypeInfo {
             TypeInfo::Opaque { .. } => true,
             TypeInfo::Array { element } => element.has_opaque(),
             TypeInfo::Object { fields } => fields.iter().any(|(_, t)| t.has_opaque()),
-            TypeInfo::Union { variants } => variants.iter().any(|t| t.has_opaque()),
+            TypeInfo::Union { variants, .. } => variants.iter().any(|t| t.has_opaque()),
             TypeInfo::Nullable { inner } => inner.has_opaque(),
             TypeInfo::Complex { inner, .. } => inner.as_deref().is_some_and(|t| t.has_opaque()),
             TypeInfo::Int { .. }
@@ -261,7 +271,7 @@ impl TypeInfo {
                 }
                 None
             }
-            TypeInfo::Union { variants } => {
+            TypeInfo::Union { variants, .. } => {
                 for t in variants {
                     path.push(PathSegment::UnionVariant);
                     if let Some(result) = t.find_opaque_node(path) {
@@ -401,6 +411,18 @@ mod tests {
     fn union_type_round_trips() {
         round_trip(&TypeInfo::Union {
             variants: vec![TypeInfo::Str, int()],
+            enum_values: Vec::new(),
+        });
+    }
+
+    #[test]
+    fn union_with_enum_values_round_trips() {
+        round_trip(&TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: vec![
+                serde_json::json!("STARS"),
+                serde_json::json!("HALF_STARS"),
+            ],
         });
     }
 
