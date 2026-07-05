@@ -725,6 +725,21 @@ function convertElementNode(
  * returns an `array` kind, so the recovery branch never fires and behavior is
  * byte-identical. The recovery only triggers on the degraded (lib-less) path,
  * where `T[]` would otherwise collapse to `{kind:"object", fields:[]}`.
+ *
+ * The recovery is gated on the *exact* degraded shapes the lib-less checker
+ * produces for an array — bare `unknown` or an empty-`fields` object — rather
+ * than on "not already an array". A looser `converted.kind !== "array"` guard
+ * would misfire even with `lib.d.ts` present:
+ *   - Optional array fields/params: `convertType` returns
+ *     `nullable{array{...}}`, and stripping to a bare `array` would drop the
+ *     nullable wrapper (and re-run `convertElementNode`, diverging depth/seen
+ *     state). Today the call sites re-wrap on `questionToken`/`isOptional`, so
+ *     the strip is invisible — but it is still a double conversion.
+ *   - A user type literally named `Array` / `ReadonlyArray` shadowing the
+ *     global: its correct object conversion would be overridden to a bogus
+ *     `array` kind because `arrayElementTypeNode` matches the reference by name.
+ * Neither degraded shape is producible for a genuine non-array once `lib.d.ts`
+ * resolves, so gating on them keeps the recovery inert on the healthy path.
  */
 export function convertTypeWithNode(
   type: ts.Type,
@@ -734,7 +749,15 @@ export function convertTypeWithNode(
   seen: Set<ts.Type>,
 ): TypeInfo {
   const converted = convertType(type, checker, sourceFile, seen);
-  if (converted.kind === "array" || !typeNode) {
+  if (!typeNode) {
+    return converted;
+  }
+  // Only recover for the degraded shapes a lib-less checker yields for an
+  // array: bare `unknown`, or an object that resolved to zero fields.
+  const degraded =
+    converted.kind === "unknown" ||
+    (converted.kind === "object" && converted.fields.length === 0);
+  if (!degraded) {
     return converted;
   }
   const elementNode = arrayElementTypeNode(typeNode);

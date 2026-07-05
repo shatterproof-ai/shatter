@@ -505,6 +505,122 @@ describe("analyzeFile", () => {
         });
       });
     });
+
+    // Review finding (Merge-with-fixes): the syntactic recovery in
+    // convertTypeWithNode must fire ONLY on the degraded shapes a lib-LESS
+    // checker produces for an array (bare `unknown` / empty-`fields` object).
+    // With lib.d.ts present it must stay inert; a looser "not already array"
+    // guard would misfire in two ways proven below.
+    describe("recovery stays inert when lib.d.ts is present (str-9cqde review)", () => {
+      // Compile `src` WITH the real standard library — lib.d.ts resolves from
+      // disk while the virtual entry file is served in-memory — then return the
+      // TypeInfo of `entry`'s sole parameter via the production convertTypeWithNode.
+      function convertEntryParamWithLib(src: string): TypeInfo {
+        const fileName = "/virtual/entry.ts";
+        const sf = ts.createSourceFile(
+          fileName,
+          src,
+          ts.ScriptTarget.ES2022,
+          true,
+        );
+        // strictNullChecks so an optional `items?: T[]` carries `| undefined`
+        // in its *type* while the declared type *node* stays a bare `T[]` — the
+        // exact combination that produces `nullable{array}` from convertType and
+        // would trip a loose recovery guard into stripping the nullable wrapper.
+        const options: ts.CompilerOptions = {
+          target: ts.ScriptTarget.ES2022,
+          strictNullChecks: true,
+        };
+        const host = ts.createCompilerHost(options, true);
+        const origGetSourceFile = host.getSourceFile.bind(host);
+        host.getSourceFile = (fn, v, onError, shouldCreate) =>
+          fn === fileName ? sf : origGetSourceFile(fn, v, onError, shouldCreate);
+        const origFileExists = host.fileExists.bind(host);
+        host.fileExists = (fn) => fn === fileName || origFileExists(fn);
+        const program = ts.createProgram([fileName], options, host);
+        const checker = program.getTypeChecker();
+        let result: TypeInfo | undefined;
+        const visit = (node: ts.Node): void => {
+          if (ts.isFunctionDeclaration(node) && node.name?.text === "entry") {
+            const param = node.parameters[0]!;
+            const type = checker.getTypeAtLocation(param);
+            result = convertTypeWithNode(type, param.type, checker, sf, new Set());
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(sf);
+        if (!result) throw new Error("entry not found");
+        return result;
+      }
+
+      it("sanity: lib IS resolvable here (isArrayType true for T[])", () => {
+        // Guard the premise: if lib stopped resolving, isArrayType would be
+        // false and the no-misfire assertions below would become vacuous.
+        const fileName = "/virtual/entry.ts";
+        const sf = ts.createSourceFile(
+          fileName,
+          "export function entry(xs: string[]): void {}\n",
+          ts.ScriptTarget.ES2022,
+          true,
+        );
+        const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022 };
+        const host = ts.createCompilerHost(options, true);
+        const orig = host.getSourceFile.bind(host);
+        host.getSourceFile = (fn, v, e, s) =>
+          fn === fileName ? sf : orig(fn, v, e, s);
+        const origExists = host.fileExists.bind(host);
+        host.fileExists = (fn) => fn === fileName || origExists(fn);
+        const program = ts.createProgram([fileName], options, host);
+        const checker = program.getTypeChecker();
+        let isArr = false;
+        const visit = (node: ts.Node): void => {
+          if (ts.isFunctionDeclaration(node) && node.name?.text === "entry") {
+            isArr = checker.isArrayType(
+              checker.getTypeAtLocation(node.parameters[0]!),
+            );
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(sf);
+        expect(isArr).toBe(true);
+      });
+
+      // Misfire (a): an OPTIONAL array param converts to `nullable{array}`.
+      // The loose guard would strip the nullable wrapper (recovery returns a
+      // bare `array`), a double conversion masked only because analyzeParameter
+      // re-wraps on the `?` token. The degraded-shape gate leaves it untouched.
+      it("keeps an optional array parameter nullable (no wrapper stripping)", () => {
+        const t = convertEntryParamWithLib(
+          "interface Widget { id: number; }\n" +
+            "export function entry(items?: Widget[]): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "nullable",
+          inner: {
+            kind: "array",
+            element: { kind: "object", fields: [["id", { kind: "float" }]] },
+          },
+        });
+      });
+
+      // Misfire (b): a user type literally named `Array` (shadowing the global
+      // in a namespace, so no declaration merging) resolves to a real object.
+      // `arrayElementTypeNode` keys off the identifier text `Array`, so the
+      // loose guard would override the object to a bogus `array` kind. The
+      // degraded-shape gate returns the object unchanged.
+      it("does not override a user type named Array<T> to array kind", () => {
+        const t = convertEntryParamWithLib(
+          "namespace Shadow {\n" +
+            "  export interface Array<T> { widgets: T }\n" +
+            "  export function entry(x: Array<number>): void {}\n" +
+            "}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [["widgets", { kind: "float" }]],
+        });
+      });
+    });
   });
 
   describe("union and nullable types", () => {
