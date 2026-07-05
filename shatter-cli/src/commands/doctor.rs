@@ -24,12 +24,18 @@ const TS_FRONTEND_BUNDLE_HASH: &str = env!("FRONTEND_BUNDLE_HASH");
 const GO_FRONTEND_SOURCE_DIR: &str = env!("GO_FRONTEND_SOURCE_DIR");
 
 /// Run `shatter doctor`. Returns `Ok(true)` when healthy, `Ok(false)` when a
-/// stale embedded frontend is detected (so the caller can exit non-zero).
-pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
-    crate::helpers::print_stdout(&format!(
-        "{}Shatter doctor{}\n\n",
-        colors.bold, colors.reset
-    ));
+/// stale embedded frontend or an un-ignored generated project path is detected
+/// (so the caller can exit non-zero).
+///
+/// `directory` selects the project to check for `.gitignore` coverage of
+/// generated output paths (str-1fwt) and for the config-presence report
+/// (str-mktn); when `None` the project root is auto-detected from the current
+/// directory.
+pub fn run_doctor(
+    directory: Option<&Path>,
+    colors: &Colors,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    crate::helpers::print_stdout(&format!("{}Shatter doctor{}\n\n", colors.bold, colors.reset));
 
     crate::helpers::print_stdout(&format!(
         "shatter version:          {}\n",
@@ -45,16 +51,30 @@ pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
         "ts-frontend bundle hash:  {TS_FRONTEND_BUNDLE_HASH}\n\n"
     ));
 
+    let project_root = resolve_project_root(directory);
+
     // Project configuration report (str-mktn). Printed before the embedded
     // frontend staleness check so it is visible to installed binaries too —
     // integrators run an installed `shatter`, where the staleness section
-    // early-returns below.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    for line in config_report_lines(&detect_config_presence(&cwd)) {
+    // early-returns below. Uses the same resolved project root as the
+    // generated-paths check below (str-1fwt) so `--directory` is honored
+    // consistently by every section of the report.
+    for line in config_report_lines(&detect_config_presence(&project_root)) {
         crate::helpers::print_stdout(&format!("{line}\n"));
     }
     crate::helpers::print_stdout("\n");
 
+    let frontend_ok = check_embedded_frontend(colors);
+    crate::helpers::print_stdout("\n");
+    let gitignore_ok = check_generated_paths_ignored(&project_root, colors);
+
+    Ok(frontend_ok && gitignore_ok)
+}
+
+/// Check whether the embedded Go frontend is up to date with the on-disk
+/// `shatter-go/` sources. Returns `true` when healthy or when the check is not
+/// applicable (installed binary outside its source checkout).
+fn check_embedded_frontend(colors: &Colors) -> bool {
     let source_dir = Path::new(GO_FRONTEND_SOURCE_DIR);
     if !source_dir.is_dir() {
         crate::helpers::print_stdout(
@@ -63,7 +83,7 @@ pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
         crate::helpers::print_stdout(
             "  (This is expected for an installed binary outside its source checkout.)\n",
         );
-        return Ok(true);
+        return true;
     }
 
     let current_hash = match hash_go_source_tree(source_dir) {
@@ -72,13 +92,13 @@ pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
             crate::helpers::print_stdout(&format!(
                 "Embedded Go frontend: could not hash source tree ({e}) — staleness check skipped.\n"
             ));
-            return Ok(true);
+            return true;
         }
     };
 
     if current_hash == GO_FRONTEND_SOURCE_HASH {
         crate::helpers::print_stdout("Embedded Go frontend: up to date.\n");
-        Ok(true)
+        true
     } else {
         crate::helpers::print_stdout(&format!(
             "{}Embedded Go frontend is stale{} — the binary was built from a different \
@@ -92,8 +112,58 @@ pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
         crate::helpers::print_stdout(
             "  Run `cargo build -p shatter-cli` to rebuild the embedded frontend.\n",
         );
-        Ok(false)
+        false
     }
+}
+
+/// Check that the target project's `.gitignore` covers every output path
+/// Shatter's config says it generates (str-1fwt). Returns `true` when clean or
+/// not applicable (no `.shatter/` project), `false` when any configured path is
+/// un-ignored so the caller exits non-zero.
+fn check_generated_paths_ignored(project_root: &Path, colors: &Colors) -> bool {
+    // Only projects that have been `shatter init`-ed carry generated paths to
+    // worry about. Outside a project, this check is not applicable.
+    if !project_root.join(".shatter").exists() {
+        crate::helpers::print_stdout(
+            "Generated-path gitignore: no `.shatter/` project here — check skipped.\n",
+        );
+        return true;
+    }
+
+    let unignored = crate::generated_paths::unignored_generated_paths(project_root);
+    if unignored.is_empty() {
+        crate::helpers::print_stdout(
+            "Generated-path gitignore: all configured output paths are ignored.\n",
+        );
+        true
+    } else {
+        crate::helpers::print_stdout(&format!(
+            "{}Generated paths are not ignored{} — {} configured output path(s) would \
+             pollute `git status`:\n",
+            colors.bold,
+            colors.reset,
+            unignored.len()
+        ));
+        for entry in &unignored {
+            crate::helpers::print_stdout(&format!("  {entry}\n"));
+        }
+        crate::helpers::print_stdout(
+            "  Run `shatter init` to write the managed `.gitignore` block.\n",
+        );
+        false
+    }
+}
+
+/// Resolve the project root for the gitignore check: the explicit directory if
+/// given, else the auto-detected project root, else the current directory.
+fn resolve_project_root(directory: Option<&Path>) -> PathBuf {
+    if let Some(dir) = directory {
+        return dir.to_path_buf();
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    shatter_core::project::detect_project_root(&cwd)
+        .map(|root| root.path)
+        .unwrap_or(cwd)
 }
 
 /// Whether a file contributes to the Go frontend build. Must mirror
@@ -326,5 +396,47 @@ mod tests {
         assert_ne!(before, after, "adding a .go file must change the hash");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn generated_paths_check_skips_when_no_shatter_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let colors = Colors::new(false);
+        // No `.shatter/` dir: the check is not applicable and reports healthy.
+        assert!(check_generated_paths_ignored(dir.path(), &colors));
+    }
+
+    #[test]
+    fn generated_paths_check_flags_unignored_seeds_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let colors = Colors::new(false);
+        // An initialized project whose hand-written .gitignore covers cache and
+        // artifacts but misses the default seeds dir (the refute failure mode).
+        std::fs::create_dir_all(dir.path().join(".shatter")).unwrap();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            ".shatter-cache/\nshatter-artifacts/\n",
+        )
+        .unwrap();
+
+        assert!(
+            !check_generated_paths_ignored(dir.path(), &colors),
+            "an un-ignored generated path must be reported unhealthy"
+        );
+    }
+
+    #[test]
+    fn generated_paths_check_passes_when_all_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let colors = Colors::new(false);
+        std::fs::create_dir_all(dir.path().join(".shatter")).unwrap();
+        // Write the managed block exactly as `shatter init` would.
+        let entries = crate::generated_paths::collect_generated_ignore_entries(dir.path());
+        crate::generated_paths::sync_gitignore(dir.path(), &entries).unwrap();
+
+        assert!(
+            check_generated_paths_ignored(dir.path(), &colors),
+            "a fully-ignored project must be reported healthy"
+        );
     }
 }

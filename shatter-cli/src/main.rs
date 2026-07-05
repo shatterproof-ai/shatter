@@ -11,6 +11,7 @@ mod args;
 mod commands;
 mod embedded_frontend;
 mod embedded_go_frontend;
+mod generated_paths;
 mod helpers;
 mod host_writes;
 mod render;
@@ -1155,9 +1156,9 @@ async fn main() -> ExitCode {
                 }
             };
         }
-        CliCommand::Doctor => {
+        CliCommand::Doctor { directory } => {
             let dm = cmd_start.elapsed().as_millis() as u64;
-            let result = commands::doctor::run_doctor(&colors);
+            let result = commands::doctor::run_doctor(directory.as_deref(), &colors);
             return match result {
                 Ok(healthy) => finalize_exit_code(
                     &subcommand_name,
