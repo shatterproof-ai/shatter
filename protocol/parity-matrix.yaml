@@ -666,7 +666,12 @@ feature_capabilities:
     notes: >
       .shatter/config.yaml hint schema (str-hy9b.G3). Declarative hints that
       influence target discovery, adapter selection, and planner behavior for
-      Go packages. Go-only at this stage.
+      Go packages. Since str-c8djq, configured `mocks` expressions also take
+      effect at execute time: the instrumented-overlay build rewrites
+      type-resolved package-function call sites to the configured mock
+      expression (instrument/mocksubst.go), so mocked dependencies never run.
+      The wire MockConfig.ReturnValues typed-decode path remains deferred
+      (str-8v66). Go-only at this stage.
     frontends:
       typescript: not_supported
       go: supported
