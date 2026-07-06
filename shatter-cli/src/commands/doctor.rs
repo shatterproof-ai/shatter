@@ -10,18 +10,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use crate::frontend_versions::{
+    GO_FRONTEND_BINARY_HASH, GO_FRONTEND_SOURCE_DIR, GO_FRONTEND_SOURCE_HASH, TS_FRONTEND_BUNDLE_HASH,
+};
 use crate::helpers::Colors;
-
-/// Build-time hash of the Go frontend source tree (see `build.rs`).
-const GO_FRONTEND_SOURCE_HASH: &str = env!("GO_FRONTEND_SOURCE_HASH");
-/// Build-time hash of the compiled Go frontend binary that is embedded.
-const GO_FRONTEND_BINARY_HASH: &str = env!("GO_FRONTEND_HASH");
-/// Build-time hash of the embedded TypeScript bundle pair.
-const TS_FRONTEND_BUNDLE_HASH: &str = env!("FRONTEND_BUNDLE_HASH");
-/// Path to the `shatter-go/` source tree at build time. In an installed binary
-/// this directory typically does not exist, in which case the staleness check
-/// is skipped.
-const GO_FRONTEND_SOURCE_DIR: &str = env!("GO_FRONTEND_SOURCE_DIR");
 
 /// Run `shatter doctor`. Returns `Ok(true)` when healthy, `Ok(false)` when a
 /// stale embedded frontend is detected (so the caller can exit non-zero).

@@ -11,6 +11,7 @@ mod args;
 mod commands;
 mod embedded_frontend;
 mod embedded_go_frontend;
+mod frontend_versions;
 mod helpers;
 mod render;
 mod telemetry_flush;

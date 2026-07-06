@@ -840,6 +840,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn batch_analyze_keys_cache_by_per_language_analyzer_version() {
+        // str-2cihu: batch_analyze must key each file's cached analysis on the
+        // analyzer version of *that file's language*, and fall back to an empty
+        // version for languages absent from the map. Uses a real on-disk cache
+        // and asserts the stored entries against each language's own version.
+        use crate::analysis_cache::AnalysisCache;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Files must exist on disk — the cache hashes their contents on store.
+        let go_file = dir.path().join("handler.go");
+        let ts_file = dir.path().join("app.ts");
+        let rs_file = dir.path().join("lib.rs");
+        std::fs::write(&go_file, "package main").unwrap();
+        std::fs::write(&ts_file, "export const x = 1;").unwrap();
+        std::fs::write(&rs_file, "pub fn f() {}").unwrap();
+
+        let mut frontends = HashMap::new();
+        frontends.insert(
+            Language::Go,
+            Frontend::spawn(&noop_config()).await.expect("spawn go"),
+        );
+        frontends.insert(
+            Language::TypeScript,
+            Frontend::spawn(&noop_config()).await.expect("spawn ts"),
+        );
+        frontends.insert(
+            Language::Rust,
+            Frontend::spawn(&noop_config()).await.expect("spawn rust"),
+        );
+
+        let files = vec![
+            (go_file.clone(), Language::Go),
+            (ts_file.clone(), Language::TypeScript),
+            // Rust is intentionally omitted from the analyzer_versions map.
+            (rs_file.clone(), Language::Rust),
+        ];
+
+        let cache = AnalysisCache::new(dir.path().join("cache")).unwrap();
+        let mut analyzer_versions = HashMap::new();
+        analyzer_versions.insert(Language::Go, "go-analyzer-v1".to_string());
+        analyzer_versions.insert(Language::TypeScript, "ts-analyzer-v1".to_string());
+
+        batch_analyze(
+            &mut frontends,
+            &files,
+            Some(&cache),
+            &analyzer_versions,
+            None,
+        )
+        .await
+        .expect("batch analyze failed");
+
+        // The Go entry keys on the Go version, not the TS version.
+        assert!(cache.lookup(&go_file, "go-analyzer-v1").unwrap().is_some());
+        assert!(cache.lookup(&go_file, "ts-analyzer-v1").unwrap().is_none());
+
+        // The TS entry keys on the TS version, not the Go version.
+        assert!(cache.lookup(&ts_file, "ts-analyzer-v1").unwrap().is_some());
+        assert!(cache.lookup(&ts_file, "go-analyzer-v1").unwrap().is_none());
+
+        // Rust, absent from the map, keys on the empty (legacy) version.
+        assert!(cache.lookup(&rs_file, "").unwrap().is_some());
+        assert!(cache.lookup(&rs_file, "go-analyzer-v1").unwrap().is_none());
+
+        for (_, frontend) in frontends {
+            frontend.shutdown().await.expect("shutdown failed");
+        }
+    }
+
+    #[tokio::test]
     async fn batch_analyze_skips_not_supported_files() {
         let config = generated_skip_config();
         let frontend = Frontend::spawn(&config).await.expect("spawn failed");
