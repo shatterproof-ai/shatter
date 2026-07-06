@@ -11,9 +11,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(test)]
 use std::sync::Mutex as StdMutex;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -2190,9 +2190,7 @@ fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
         // &[E]
         syn::Type::Slice(slice) => match &*slice.elem {
             // &[&str] → Vec<String>, re-borrowed as Vec<&str>.
-            syn::Type::Reference(inner)
-                if matches!(&*inner.elem, syn::Type::Path(p) if type_path_leaf_is(p, "str")) =>
-            {
+            syn::Type::Reference(inner) if matches!(&*inner.elem, syn::Type::Path(p) if type_path_leaf_is(p, "str")) => {
                 Some(OwnedTypeMapping {
                     deser_type: "Vec<String>".to_string(),
                     needs_slice_conversion: true,
@@ -2312,7 +2310,9 @@ fn generate_harness(
             h.push_str(&format!(
                 "        let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{__dcast}>() {{\n"
             ));
-            h.push_str(&format!("            Ok(value) => {__wpre}*value{__wpost},\n"));
+            h.push_str(&format!(
+                "            Ok(value) => {__wpre}*value{__wpost},\n"
+            ));
             h.push_str(&format!(
                 "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {__dcast}\"}})), 0.0, vec![]),\n"
             ));
@@ -2596,7 +2596,8 @@ fn generate_dispatch_harness(
         ));
         // Axum `State<T>` short-circuits with a clear "not supported" before
         // emitting any uncompilable `from_value::<State<T>>` code.
-        if let Some(reason) = axum_state_unsupported_reason_with_replays(param_types, native_replays)
+        if let Some(reason) =
+            axum_state_unsupported_reason_with_replays(param_types, native_replays)
         {
             h.push_str(&format!(
                 "                break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":{:?}}})), 0.0);\n",
@@ -3177,10 +3178,11 @@ fn cargo_toml_declares_serde(cargo_toml: &str) -> bool {
             in_deps = trimmed == "[dependencies]";
             continue;
         }
-        if in_deps && let Some(rest) = trimmed.strip_prefix("serde") {
-            if rest.starts_with(' ') || rest.starts_with('=') || rest.starts_with('.') {
-                return true;
-            }
+        if in_deps
+            && let Some(rest) = trimmed.strip_prefix("serde")
+            && (rest.starts_with(' ') || rest.starts_with('=') || rest.starts_with('.'))
+        {
+            return true;
         }
     }
     false
@@ -3874,7 +3876,8 @@ fn generate_crate_bridge_wrapper(
         // Axum `State<T>` extractors are not constructible by the generic
         // wrapper (no `Deserialize` impl). Short-circuit with a clear
         // not-supported error instead of emitting `from_value::<State<T>>`.
-        if let Some(reason) = axum_state_unsupported_reason_with_replays(param_types, native_replays)
+        if let Some(reason) =
+            axum_state_unsupported_reason_with_replays(param_types, native_replays)
         {
             w.push_str("    let _ = inputs;\n");
             w.push_str(&format!(
@@ -4128,7 +4131,9 @@ fn generate_crate_bridge_wrapper(
     w.push_str("        if line.is_empty() { continue; }\n");
     w.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
     w.push_str("        let function_name = req[\"function\"].as_str().unwrap_or(\"\");\n");
-    w.push_str("        let mut inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n");
+    w.push_str(
+        "        let mut inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n",
+    );
     w.push_str("        for __input in inputs.iter_mut() { shatter_rust_runtime::materialize_complex(__input); }\n");
     w.push_str("        let exec_result = match function_name {\n");
     for fn_info in fns {
@@ -4601,8 +4606,8 @@ fn execute_function_crate_bridge(
     // `__shatter` wrapper land at a bogus nested path while cargo compiles the
     // ORIGINAL file — leaving `shatter_crate_bridge_entry` undefined (link error)
     // for every non-axum function. Strip the canonicalized source_path.
-    let source_path = std::fs::canonicalize(file_path)
-        .unwrap_or_else(|_| Path::new(file_path).to_path_buf());
+    let source_path =
+        std::fs::canonicalize(file_path).unwrap_or_else(|_| Path::new(file_path).to_path_buf());
     let crate_root_canon =
         std::fs::canonicalize(crate_root).unwrap_or_else(|_| crate_root.to_path_buf());
     let rel_file = staging_rel_file(&source_path, Path::new(file_path), &crate_root_canon);
@@ -5724,8 +5729,6 @@ fn generate_axum_harness(
 /// the `use {crate_alias}::*;` glob emitted alongside this output covers any
 /// crate-local types those relative paths referenced.
 fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
-    use quote::ToTokens;
-
     let Ok(file) = syn::parse_file(source) else {
         return String::new();
     };
@@ -5771,15 +5774,15 @@ fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
 /// `serde_json::Value` and should be dropped entirely. Non-serde_json trees pass
 /// through unchanged.
 fn prune_serde_json_value(tree: &syn::UseTree) -> Option<syn::UseTree> {
-    if let syn::UseTree::Path(path) = tree {
-        if path.ident == "serde_json" {
-            let inner = prune_value_leaf(&path.tree)?;
-            return Some(syn::UseTree::Path(syn::UsePath {
-                ident: path.ident.clone(),
-                colon2_token: path.colon2_token,
-                tree: Box::new(inner),
-            }));
-        }
+    if let syn::UseTree::Path(path) = tree
+        && path.ident == "serde_json"
+    {
+        let inner = prune_value_leaf(&path.tree)?;
+        return Some(syn::UseTree::Path(syn::UsePath {
+            ident: path.ident.clone(),
+            colon2_token: path.colon2_token,
+            tree: Box::new(inner),
+        }));
     }
     Some(tree.clone())
 }
@@ -12218,7 +12221,11 @@ members = ["api"]
         .unwrap();
         let workspace_lockfile = "version = 4\nworkspace = true\n";
         std::fs::write(ws_root.join("Cargo.lock"), workspace_lockfile).unwrap();
-        std::fs::write(member_root.join("Cargo.lock"), "version = 4\nstale = true\n").unwrap();
+        std::fs::write(
+            member_root.join("Cargo.lock"),
+            "version = 4\nstale = true\n",
+        )
+        .unwrap();
         std::fs::write(
             member_root.join("Cargo.toml"),
             r#"[package]
