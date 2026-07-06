@@ -1,0 +1,26 @@
+# Configuration for the docs examples smoke gate (scripts/docs-smoke.py,
+# str-u394l.2). See CONTRIBUTING.md "Documentation examples smoke gate".
+#
+# `docs`: user-facing documents whose fenced examples are validated. Shell
+# (```bash/sh/shell/console) `shatter` invocations are checked against the
+# built CLI; ```json / ```yaml blocks are parsed for syntax. Illustrative
+# blocks are exempted inline with a directive on the line above the fence:
+#
+#     <!-- docs-smoke: skip reason="why this block is not checkable" -->
+#
+# `smoke_commands`: self-contained commands executed in a throwaway temp dir to
+# prove the command surface is live. Keep these fast and side-effect-free (no
+# network, no project mutation) — they should be safe to run anywhere.
+
+docs:
+  - README.md
+  - QUICKSTART.md
+  - SPEC.md
+  - docs/INDEX.md
+
+smoke_commands:
+  - shatter --version
+  - shatter --help
+  - shatter explore --help
+  - shatter scan --help
+  - shatter list-targets --help
