@@ -158,6 +158,12 @@ func Load(fromFile string) (File, error) {
 	return parsed, nil
 }
 
+// FindConfigFile is the exported form of findConfigFile: it walks upward from
+// fromFile's directory and returns the path to the nearest .shatter/config.yaml,
+// or "" if none exists. Callers use it to stat the resolved config for
+// mtime-based caching (str-c8djq).
+func FindConfigFile(fromFile string) (string, error) { return findConfigFile(fromFile) }
+
 // findConfigFile walks upward from fromFile's directory looking for a
 // .shatter/config.yaml. Returns "" if none is found before reaching the
 // filesystem root.

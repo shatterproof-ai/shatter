@@ -1295,3 +1295,132 @@ async fn e2e_go_http_request_symbolic_body_discovers_body_branches() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test: execute-time config mock substitution (str-c8djq).
+//
+// Classify(x int) string calls dep.Fetch(x) and branches on the result:
+//   1. dep.Fetch(x) >= 100 -> "sentinel"
+//   2. dep.Fetch(x) <  0    -> "mock-neg"
+//   3. dep.Fetch(x) == 0    -> "mock-zero"
+//   4. dep.Fetch(x) >  0    -> "mock-pos"
+//
+// The real dep.Fetch ignores x and always returns 999 (dep.SentinelValue), so
+// under the real dependency Classify can only ever return "sentinel". The
+// fixture's `.shatter/config.yaml` mocks "dep.Fetch" with the bounded Go
+// expression `x % 7` (range [-6, 6]), which the Go frontend loads at execute
+// time (config/loader.go -> protocol/handler.go configMockConfigs), resolves
+// type-aware (protocol/mock_resolve.go), and rewrites into the instrumented
+// overlay call site (instrument/mocksubst.go via build/instrumented_overlay.go).
+// Because `x % 7` can never satisfy the `>= 100` sentinel gate, the sentinel
+// branch is unreachable once the mock is applied.
+//
+// This is the full-pipeline proof that config mock substitution reaches
+// mock-only branches while the real dependency body never runs. It asserts:
+//   - exploration completes,
+//   - the three mock-only outcomes appear in the results, AND
+//   - the real-dependency sentinel outcome NEVER appears (the call site was
+//     rewritten, so the real dep.Fetch body did not execute).
+//
+// The config is discovered by the frontend walking UP from the analyzed file's
+// directory, so it lives in the fixture module root next to classify.go.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_mock_substitution_reaches_mock_only_branches() {
+    let file = repo_examples_go_dir()
+        .join("mock-subst")
+        .join("classify.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    // The config the frontend must discover by walking upward from classify.go.
+    let config_path = repo_examples_go_dir()
+        .join("mock-subst")
+        .join(".shatter")
+        .join("config.yaml");
+    assert!(
+        config_path.exists(),
+        "fixture config missing: {} -- config mock substitution cannot be exercised without it",
+        config_path.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("mock-subst").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Classify").await;
+    assert_eq!(analysis.params.len(), 1, "Classify takes 1 param (x int)");
+    assert!(
+        !analysis.branches.is_empty(),
+        "analyze should detect branches in Classify"
+    );
+
+    instrument_function(&mut frontend, &file_str, "Classify").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+
+    // Seeds covering each mock bucket for `x % 7`:
+    //   x=-3 -> -3 -> "mock-neg", x=0/7 -> 0 -> "mock-zero", x=3 -> 3 -> "mock-pos".
+    // dep.Fetch is opaque to the analyzer, so these branches are concrete-driven;
+    // seeding the buckets keeps the test independent of random mutation while
+    // still exercising the real analyze -> instrument -> execute -> overlay path.
+    let seed_inputs = vec![
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(0)],
+        vec![serde_json::json!(3)],
+        vec![serde_json::json!(7)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "Classify",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+
+    // The mock expression's value drove execution into the mock-only buckets.
+    for expected in ["\"mock-neg\"", "\"mock-zero\"", "\"mock-pos\""] {
+        assert!(
+            return_values.contains(expected),
+            "config mock substitution should reach mock-only branch returning {expected}; \
+             found: {return_values:?}"
+        );
+    }
+
+    // The real dep.Fetch always returns 999 -> "sentinel". Its presence would
+    // mean the real dependency body ran (the call site was NOT rewritten). It
+    // must never appear once the mock is substituted.
+    assert!(
+        !return_values.contains("\"sentinel\""),
+        "str-c8djq regression: real dependency sentinel branch appeared -> the \
+         dep.Fetch call site was NOT rewritten to the mock expression (real body ran); \
+         found: {return_values:?}"
+    );
+
+    assert!(
+        result.unique_paths >= 3,
+        "should have at least 3 unique (mock-only) paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

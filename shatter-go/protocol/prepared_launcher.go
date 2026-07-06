@@ -235,7 +235,7 @@ func (h *Handler) prepareDirectExecution(
 		return nil, fmt.Errorf("analyzing function: %w", err)
 	}
 
-	req, targetID, err := buildDirectExecutionRequest(pkg, absoluteFilePath, function, mocks)
+	req, targetID, err := buildDirectExecutionRequest(pkg, absoluteFilePath, function, mocks, h.log.Warn)
 	finishAnalyze()
 	if err != nil {
 		return nil, fmt.Errorf("analyzing function: %w", err)
@@ -328,6 +328,7 @@ func buildDirectExecutionRequest(
 	absoluteFilePath string,
 	function string,
 	mocks []instrument.MockConfig,
+	logf func(msg string, args ...any),
 ) (build.BuildRequest, string, error) {
 	targets := wrapper.BuildWrapperTargets(pkg)
 	target, err := selectDirectWrapperTarget(targets, function)
@@ -348,6 +349,11 @@ func buildDirectExecutionRequest(
 	constructorInterfaceImpls := discoverConstructorInterfaceImplCandidates(pkg, constructors)
 	constructorRuntimeValues := discoverConstructorRuntimeValues(pkg, constructors)
 
+	// Resolve expression mock substitutions (str-c8djq) against the loaded
+	// package's TypesInfo so the overlay build rewrites only genuine
+	// package-qualified call sites (not method calls on same-named locals).
+	mockSubs := resolveMockSubstitutionScopes(pkg, instrument.MockSubstitutionsFromConfigs(mocks), logf)
+
 	return build.BuildRequest{
 		Targets:                targets,
 		Constructors:           toWrapperConstructorsWithBindings(constructors, constructorInterfaceImpls, constructorRuntimeValues),
@@ -358,6 +364,7 @@ func buildDirectExecutionRequest(
 		TargetPackageDir:       packageDir,
 		InstrumentedSourceFile: packageFileForBuild(pkg, absoluteFilePath),
 		Mocks:                  mocks,
+		MockSubstitutions:      mockSubs,
 	}, target.ID, nil
 }
 

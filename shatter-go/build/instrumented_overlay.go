@@ -17,6 +17,21 @@ import (
 
 const packageMain = "main"
 
+// wireShimMocks returns the subset of mocks that require a generated
+// ShatterMock shim: wire mocks whose behavior is driven by ReturnValues.
+// Expression-only mocks (str-c8djq call-site substitution) are excluded — a
+// shim for them is never called (review fix 8).
+func wireShimMocks(mocks []instrument.MockConfig) []instrument.MockConfig {
+	var out []instrument.MockConfig
+	for _, m := range mocks {
+		if strings.TrimSpace(m.Expression) != "" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func normalizedPackageName(name string) string {
 	if name == packageMain {
 		return "shattertarget"
@@ -50,6 +65,38 @@ func (b *Builder) writeOverlayManifest(
 				}
 			}
 		}
+
+		// Execute-time mock substitution (str-c8djq): replace call sites of
+		// configured mock symbols with their Go-source expressions in the
+		// already-instrumented target sources, so `go build -overlay`
+		// compiles the substituted bodies. Applies to expression-bearing
+		// mocks only (hint_config_v1 `.shatter/config.yaml` `mocks`); wire
+		// mocks carrying only return_values are untouched here.
+		//
+		// Prefer the pre-resolved MockSubstitutions (type-checked against the
+		// loaded package so only genuine package-qualified call sites match);
+		// fall back to syntactic substitutions derived from Mocks for callers
+		// (e.g. tests) that don't pre-resolve.
+		//
+		// INVARIANT: len(subs) == 0 here means "the caller never resolved",
+		// NOT "resolution proved nothing matches" — resolveMockSubstitutionScopes
+		// deliberately returns resolved entries with empty allow-lists rather
+		// than filtering them out. Do not "optimize" that away upstream: a
+		// filtered-empty resolved set would fall back to syntactic matching
+		// for exactly the symbols type resolution proved must not be
+		// rewritten.
+		subs := req.MockSubstitutions
+		if len(subs) == 0 {
+			subs = instrument.MockSubstitutionsFromConfigs(req.Mocks)
+		}
+		if len(subs) > 0 {
+			for _, file := range instrumentedFiles {
+				if _, err := instrument.RewriteMockCallSitesInFile(file.InstrumentedPath, subs); err != nil {
+					return "", "", fmt.Errorf("build: mock substitution %q: %w", file.InstrumentedPath, err)
+				}
+			}
+		}
+
 		if err := instrument.RegisterInstrumentedOverlay(builder, instrumentedFiles); err != nil {
 			return "", "", fmt.Errorf("build: register instrumented overlay: %w", err)
 		}
@@ -87,16 +134,21 @@ func (b *Builder) writeOverlayManifest(
 		if err != nil {
 			return "", "", fmt.Errorf("build: analyze globals: %w", err)
 		}
+		// Only wire mocks (ReturnValues-backed, empty Expression) need the
+		// generated ShatterMock shim file; expression-only mocks (str-c8djq)
+		// are substituted directly at the call site, so emitting shims for them
+		// is dead code in every harness (review fix 8).
+		shimMocks := wireShimMocks(req.Mocks)
 		runtimePath := filepath.Join(generatedDir, "runtime-support", "shatter_runtime_"+hash+".go")
-		if err := writeGeneratedSource(runtimePath, generateRuntimeHelper(packageName, globalVars, len(req.Mocks) > 0)); err != nil {
+		if err := writeGeneratedSource(runtimePath, generateRuntimeHelper(packageName, globalVars, len(shimMocks) > 0)); err != nil {
 			return "", "", fmt.Errorf("build: write runtime helper: %w", err)
 		}
 		if err := builder.Add(filepath.Join(req.TargetPackageDir, "shatter_runtime_"+hash+".go"), runtimePath); err != nil {
 			return "", "", fmt.Errorf("build: overlay runtime helper: %w", err)
 		}
 
-		if len(req.Mocks) > 0 {
-			mockSource := instrument.GenerateLoopMockFile(req.Mocks)
+		if len(shimMocks) > 0 {
+			mockSource := instrument.GenerateLoopMockFile(shimMocks)
 			mockSource = strings.Replace(mockSource, "package main", "package "+packageName, 1)
 			mockPath := filepath.Join(generatedDir, "runtime-support", "shatter_mocks_"+hash+".go")
 			if err := writeGeneratedSource(mockPath, mockSource); err != nil {

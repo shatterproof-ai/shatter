@@ -191,3 +191,34 @@ func FuzzExecuteResultDeserialization(f *testing.F) {
 		json.Unmarshal(remarshaled, &result2) //nolint:errcheck
 	})
 }
+
+// FuzzNormalizeMockSymbol: the normalizer must never panic and its output is
+// either empty or a "qualifier.Func" pair with a non-empty, slash-free
+// qualifier and non-empty function — the shape the call-site rewriter matches
+// against (str-c8djq).
+func FuzzNormalizeMockSymbol(f *testing.F) {
+	for _, seed := range []string{
+		"", "auth.GetAccount", "example.com/pkg:NewThing", "example.com/pkg.NewThing",
+		"pkg", ".", ":", "a.b.c.d", "a/b/c", "a/b/c:D", " spaced.Func ",
+		"módulo.Función", "a..b", "a::b", "/leading.Slash", "trailing./dot",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, symbol string) {
+		got := normalizeMockSymbol(symbol)
+		if got == "" {
+			return
+		}
+		qualifier, fn, found := strings.Cut(got, ".")
+		if !found || qualifier == "" || fn == "" {
+			t.Fatalf("normalizeMockSymbol(%q) = %q; want empty or qualifier.Func", symbol, got)
+		}
+		if strings.Contains(qualifier, "/") {
+			t.Fatalf("normalizeMockSymbol(%q) = %q; qualifier contains a slash", symbol, got)
+		}
+		// Idempotence: normalizing an already-normal symbol is a no-op.
+		if again := normalizeMockSymbol(got); again != got {
+			t.Fatalf("normalizeMockSymbol not idempotent: %q -> %q -> %q", symbol, got, again)
+		}
+	})
+}
