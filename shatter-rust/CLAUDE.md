@@ -24,6 +24,39 @@ Captured: `console_output` (fd redirection via libc dup/dup2 in standalone/dispa
 
 Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-side-effects-not-captured` (status: resolved).
 
+## Crate-Bridge Dispatch Contract (str-303gg)
+
+`execute_function_crate_bridge` (`executor.rs`) builds **one dispatch harness per
+file that registers every statically-compatible function**, not just the
+requested one — mirroring the crate-backed filter in
+`execute_function_crate_backed`. A function is registered when it is non-generic
+and `crate_bridge_unsupported_reason()` returns `None` (no trait-object,
+raw-pointer, or unconstructible-extractor parameters). Requesting any registered
+sibling is then served by the running harness (real coverage) instead of hitting
+the wrapper's "unknown" arm, which emits a `not_supported` thrown_error
+("function not in crate_bridge dispatch table: …") that the engine previously
+recorded as **completed/0%**.
+
+**No-poisoning guarantee.** The registration predicate is *static*; a sibling can
+still fail to *compile* (e.g. a parameter type that does not implement
+`DeserializeOwned`). The whole-file harness is the first build candidate; on
+`CompilationFailed` it degrades to a single-function fallback harness for just
+the requested target, so one bad sibling never breaks the others. Only a
+compile failure of the requested function *on its own* is reported as a genuine
+incompatibility (`NonExecutable` / "not JSON-harness compatible"). Locked by
+`crate_bridge_unsupported_sibling_does_not_poison_requested_function` and
+`crate_bridge_executes_private_function` in `executor.rs`.
+
+**Engine-side defense-in-depth.** `shatter-core` reclassifies a `not_supported`
+thrown_error nested in an Ok execute result to `Unsupported`
+(`observe::thrown_not_supported_reason`, applied in `observe.rs`, `explorer.rs`,
+and `orchestrator.rs`; the concolic `ExploreError` gained an `Unsupported`
+variant surfaced in `scan_orchestrator.rs`), so such a placeholder is never
+scored as completed/0%.
+
+`HARNESS_CACHE_VERSION` was bumped to invalidate stale single-function bridge
+harness binaries cached before this change.
+
 ## Loop Snapshot Parity Contract
 
 Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map because the runtime hook observes loop entry without a source-level symbolic environment or local flow map.
