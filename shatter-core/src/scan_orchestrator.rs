@@ -2780,6 +2780,9 @@ async fn run_layer_batched(
             PhasedOutcome::Failed(e) => {
                 let unsupported_reason = match &e {
                     ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
+                    ScanError::Concolic(crate::orchestrator::ExploreError::Unsupported(msg)) => {
+                        Some(msg.clone())
+                    }
                     _ => None,
                 };
                 let reason = match &unsupported_reason {
@@ -3332,6 +3335,9 @@ async fn run_layer_function_mode(
                 PhasedOutcome::Failed(e) => {
                     let unsupported_reason = match &e {
                         ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
+                        ScanError::Concolic(crate::orchestrator::ExploreError::Unsupported(
+                            msg,
+                        )) => Some(msg.clone()),
                         _ => None,
                     };
                     let reason = match &unsupported_reason {

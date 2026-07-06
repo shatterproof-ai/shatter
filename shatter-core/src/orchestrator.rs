@@ -735,6 +735,13 @@ pub enum ExploreError {
     Planner(#[from] crate::planner_consumer::PlannerConsumerError),
     #[error("solver feedback error: {0}")]
     SolverFeedback(String),
+    /// Frontend reported the target as `not_supported` during execute — either a
+    /// response-level `ErrorCode::NotSupported` or a `not_supported` thrown_error
+    /// nested in an Ok execute result. The scan layer maps this to
+    /// `SkipCategory::Unsupported` with a clean reason instead of
+    /// `SkipCategory::Error`, mirroring the random explorer path (str-303gg).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 /// A single execution observation: the inputs used, the result, and path classification.
@@ -1336,6 +1343,13 @@ async fn observe_one(
         }
         _ => return Ok(ObserveOneResult::FrontendSkipped),
     };
+
+    // Defense-in-depth (str-303gg): a `not_supported` thrown_error nested in an
+    // Ok execute result must classify the function as unsupported, never be
+    // observed as a completed/0%-coverage path.
+    if let Some(reason) = crate::observe::thrown_not_supported_reason(&exec_result) {
+        return Err(ExploreError::Unsupported(reason));
+    }
 
     let path_id = hash_branch_path(&exec_result.branch_path);
 
