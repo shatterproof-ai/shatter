@@ -285,13 +285,11 @@ pub fn collect_file_context(file: &syn::File) -> FileContext {
             syn::Item::Use(item_use) => {
                 collect_use_paths(&item_use.tree, String::new(), &mut use_paths);
             }
-            syn::Item::Fn(item_fn) => {
-                if !has_tokio_macro {
-                    for attr in &item_fn.attrs {
-                        if is_tokio_macro_attr(attr) {
-                            has_tokio_macro = true;
-                            break;
-                        }
+            syn::Item::Fn(item_fn) if !has_tokio_macro => {
+                for attr in &item_fn.attrs {
+                    if is_tokio_macro_attr(attr) {
+                        has_tokio_macro = true;
+                        break;
                     }
                 }
             }
@@ -2326,7 +2324,10 @@ mod tests {
 
     #[test]
     fn maps_i8_isize_usize_widths() {
-        assert_eq!(analyze_fn("fn f(x: i8) {}", "f").params[0].typ, int_ty(8, true));
+        assert_eq!(
+            analyze_fn("fn f(x: i8) {}", "f").params[0].typ,
+            int_ty(8, true)
+        );
         assert_eq!(
             analyze_fn("fn f(x: usize) {}", "f").params[0].typ,
             int_ty(64, false)
@@ -2464,7 +2465,10 @@ mod tests {
     fn serde_json_value_synthesizes_as_unknown() {
         // serde_json::Value (bare or qualified) is dynamic JSON — synthesizable,
         // never opaque (str-orku).
-        assert_eq!(analyze_fn("fn f(x: Value) {}", "f").params[0].typ, TypeInfo::Unknown);
+        assert_eq!(
+            analyze_fn("fn f(x: Value) {}", "f").params[0].typ,
+            TypeInfo::Unknown
+        );
         assert_eq!(
             analyze_fn("fn f(x: serde_json::Value) {}", "f").params[0].typ,
             TypeInfo::Unknown
@@ -2484,13 +2488,22 @@ mod tests {
     #[test]
     fn apply_rename_all_conventions() {
         assert_eq!(apply_rename_all("workspace_id", "camelCase"), "workspaceId");
-        assert_eq!(apply_rename_all("workspace_id", "PascalCase"), "WorkspaceId");
-        assert_eq!(apply_rename_all("workspace_id", "snake_case"), "workspace_id");
+        assert_eq!(
+            apply_rename_all("workspace_id", "PascalCase"),
+            "WorkspaceId"
+        );
+        assert_eq!(
+            apply_rename_all("workspace_id", "snake_case"),
+            "workspace_id"
+        );
         assert_eq!(
             apply_rename_all("workspace_id", "SCREAMING_SNAKE_CASE"),
             "WORKSPACE_ID"
         );
-        assert_eq!(apply_rename_all("workspace_id", "kebab-case"), "workspace-id");
+        assert_eq!(
+            apply_rename_all("workspace_id", "kebab-case"),
+            "workspace-id"
+        );
         assert_eq!(apply_rename_all("workspace_id", "lowercase"), "workspaceid");
         assert_eq!(apply_rename_all("id", "camelCase"), "id");
     }
@@ -3623,9 +3636,7 @@ mod tests {
 
     #[test]
     fn file_context_detects_tokio_main_with_args() {
-        let ctx = parse_context(
-            "#[tokio::main(flavor = \"multi_thread\")]\nasync fn main() {}\n",
-        );
+        let ctx = parse_context("#[tokio::main(flavor = \"multi_thread\")]\nasync fn main() {}\n");
         assert!(ctx.has_tokio_macro);
     }
 
@@ -3638,8 +3649,7 @@ mod tests {
     #[test]
     fn analyze_source_with_context_returns_both() {
         let code = "use tokio::spawn;\npub async fn foo(x: i32) -> i32 { x }\n";
-        let (fns, ctx) = analyze_source_with_context(code, None)
-            .expect("should succeed");
+        let (fns, ctx) = analyze_source_with_context(code, None).expect("should succeed");
         assert_eq!(fns.len(), 1);
         assert!(fns[0].is_async);
         assert!(ctx.use_paths.contains(&"tokio::spawn".to_string()));
