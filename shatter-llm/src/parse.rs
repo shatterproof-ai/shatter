@@ -115,7 +115,12 @@ fn type_matches(t: &TypeInfo, v: &Value) -> bool {
                 .all(|(n, ft)| map.get(n).is_some_and(|fv| type_matches(ft, fv))),
             _ => false,
         },
-        TypeInfo::Union { variants, .. } => variants.iter().any(|vt| type_matches(vt, v)),
+        // Domain members are valid regardless of variant shapes; a pure-domain
+        // union (variants: []) must accept exactly its members (str-pjlc1).
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => enum_values.contains(v) || variants.iter().any(|vt| type_matches(vt, v)),
         TypeInfo::Nullable { inner } => v.is_null() || type_matches(inner, v),
         TypeInfo::Complex { inner, .. } => match inner {
             Some(inner) => type_matches(inner, v),

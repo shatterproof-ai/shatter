@@ -1161,6 +1161,34 @@ func TestAnalyzeEnumValueDomain(t *testing.T) {
 		}
 	})
 
+	t.Run("unsigned enum keeps > MaxInt64 members and go_uint base", func(t *testing.T) {
+		results, err := AnalyzeFile(testdataPath("enum.go"), "ClassifyFlag")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		p := results[0].Params[0]
+		if p.Type.Kind != "union" {
+			t.Fatalf("kind = %q, want union", p.Type.Kind)
+		}
+		if len(p.Type.Variants) != 1 || p.Type.Variants[0].Kind != "complex" ||
+			p.Type.Variants[0].ComplexKind != "go_uint" {
+			t.Errorf("variants = %+v, want single go_uint complex base (unsigned probes must decode)", p.Type.Variants)
+		}
+		got := map[uint64]bool{}
+		for _, v := range p.Type.EnumValues {
+			n, ok := v.(uint64)
+			if !ok {
+				t.Fatalf("enum value %v is %T, want uint64", v, v)
+			}
+			got[n] = true
+		}
+		for _, want := range []uint64{0, 2, 1 << 63} {
+			if !got[want] {
+				t.Errorf("enum values %v missing %d (Uint64Val must not drop > MaxInt64 members)", p.Type.EnumValues, want)
+			}
+		}
+	})
+
 	t.Run("constant-free named string stays plain string", func(t *testing.T) {
 		results, err := AnalyzeFile(testdataPath("enum.go"), "AcceptBare")
 		if err != nil {

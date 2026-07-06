@@ -92,7 +92,16 @@ fn type_to_schema(t: &TypeInfo) -> Value {
                 "additionalProperties": false,
             })
         }
-        TypeInfo::Union { variants, .. } => {
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
+            // A concrete value domain (str-pjlc1) is exactly JSON Schema's
+            // `enum`; presenting it as an arbitrary base type invites the LLM
+            // to produce decoder-rejected values.
+            if !enum_values.is_empty() {
+                return json!({ "enum": enum_values.clone() });
+            }
             let any_of: Vec<Value> = variants.iter().map(type_to_schema).collect();
             json!({ "anyOf": any_of })
         }

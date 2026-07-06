@@ -386,10 +386,19 @@ fn default_for_type(typ: &TypeInfo) -> Value {
             Value::Object(obj)
         }
         TypeInfo::Nullable { .. } => Value::Null,
-        TypeInfo::Union { variants, .. } => variants
-            .first()
-            .map(default_for_type)
-            .unwrap_or(Value::Null),
+        // A union carrying a value domain (str-pjlc1) must default to a VALID
+        // member: the base-variant default ("" / 0) is off-domain, and a
+        // validating decoder rejects the whole input row — pinning multi-param
+        // functions to rejection paths.
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => enum_values.first().cloned().unwrap_or_else(|| {
+            variants
+                .first()
+                .map(default_for_type)
+                .unwrap_or(Value::Null)
+        }),
         TypeInfo::Complex { kind, .. } => match kind {
             ComplexKind::Uuid => {
                 json!({"__complex_type": "uuid", "value": "00000000-0000-0000-0000-000000000000"})
@@ -4128,6 +4137,25 @@ mod tests {
             }
         }
         assert!(saw_int && saw_str, "expected both int and string variants");
+    }
+
+    /// str-pjlc1 cross-review: the DEFAULT row for a domain-carrying union
+    /// must be a valid member, not the base variant's default ("" / 0) — an
+    /// off-domain default pins multi-param functions to rejection paths.
+    #[test]
+    fn default_for_enum_union_is_a_domain_member() {
+        let typ = TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: vec![json!("RED"), json!("GREEN")],
+        };
+        assert_eq!(default_for_type(&typ), json!("RED"));
+
+        // Without a domain the old behavior stands.
+        let plain = TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: Vec::new(),
+        };
+        assert_eq!(default_for_type(&plain), json!(""));
     }
 
     /// str-pjlc1: a union with a concrete `enum_values` domain generates

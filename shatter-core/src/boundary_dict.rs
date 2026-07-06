@@ -68,8 +68,22 @@ pub fn get_boundary_values(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
             entries.extend(get_boundary_values(inner));
             entries
         }
-        TypeInfo::Union { variants, .. } => {
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
             let mut entries = Vec::new();
+            // A concrete value domain (str-pjlc1) IS the boundary set: every
+            // member is a distinct decoder-accepted branch driver, which is
+            // exactly what boundary rows are for. Variant boundaries still
+            // follow as off-domain probes for the rejection paths.
+            for member in enum_values {
+                entries.push(BoundaryEntry::new(
+                    member.clone(),
+                    BoundaryCategory::Boundary,
+                    "enum domain member",
+                ));
+            }
             for variant in variants {
                 entries.extend(get_boundary_values(variant));
             }
@@ -645,6 +659,29 @@ mod tests {
     fn generate_boundary_inputs_empty_params() {
         let inputs = generate_boundary_inputs(&[]);
         assert!(inputs.is_empty());
+    }
+
+    /// str-pjlc1 cross-review: a domain-carrying union's boundary set leads
+    /// with every domain member (each is a distinct decoder-accepted branch
+    /// driver), followed by base-variant boundaries as off-domain probes.
+    #[test]
+    fn enum_union_boundaries_enumerate_domain_members() {
+        let entries = get_boundary_values(&TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: vec![json!("RED"), json!("GREEN"), json!("BLUE")],
+        });
+        let values: Vec<_> = entries.iter().map(|e| &e.value).collect();
+        for member in [json!("RED"), json!("GREEN"), json!("BLUE")] {
+            assert!(
+                values.contains(&&member),
+                "boundary set missing domain member {member}; got {values:?}"
+            );
+        }
+        // Base-variant probes still present (e.g. empty string boundary).
+        assert!(
+            values.contains(&&json!("")),
+            "off-domain base-variant boundaries should still be emitted"
+        );
     }
 
     #[test]

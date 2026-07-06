@@ -1424,6 +1424,7 @@ func enumValuesFromNamed(named *types.Named) (values []interface{}, base TypeInf
 	info := basic.Info()
 	isString := info&types.IsString != 0
 	isInteger := info&types.IsInteger != 0
+	isUnsigned := info&types.IsUnsigned != 0
 	if !isString && !isInteger {
 		return nil, TypeInfo{}, false
 	}
@@ -1437,6 +1438,13 @@ func enumValuesFromNamed(named *types.Named) (values []interface{}, base TypeInf
 		switch {
 		case isString:
 			values = append(values, constant.StringVal(c.Val()))
+		case isUnsigned:
+			// Uint64Val, not Int64Val: unsigned enum constants above
+			// math.MaxInt64 (bitmask-style domains) would otherwise be
+			// silently dropped from the domain (cross-review, str-pjlc1).
+			if uv, exact := constant.Uint64Val(c.Val()); exact {
+				values = append(values, uv)
+			}
 		case isInteger:
 			if iv, exact := constant.Int64Val(c.Val()); exact {
 				values = append(values, iv)
@@ -1453,10 +1461,13 @@ func enumValuesFromNamed(named *types.Named) (values []interface{}, base TypeInf
 		values = values[:maxEnumValues]
 	}
 
+	// The base variant drives off-domain probe generation; reuse the standard
+	// basic-kind mapping so unsigned enums probe via go_uint (non-negative,
+	// decodes into uint params) instead of a signed int that fails unmarshal.
 	if isString {
 		base = TypeInfo{Kind: "str"}
 	} else {
-		base = TypeInfo{Kind: "int"}
+		base = basicTypeInfo(basic)
 	}
 	return values, base, true
 }
