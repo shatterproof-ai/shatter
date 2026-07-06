@@ -186,6 +186,24 @@ tasks:
     cmds:
       - python3 protocol/conformance/run_golden_tests.py
 
+  docs-smoke:
+    desc: "Validate docs examples against the built CLI (stale flags, removed commands, invalid JSON/YAML)"
+    deps: [cli:build]
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - scripts/docs-smoke.py
+      - scripts/docs-smoke.yaml
+      - README.md
+      - QUICKSTART.md
+      - SPEC.md
+      - docs/INDEX.md
+    cmds:
+      - python3 scripts/docs-smoke.py
+
   docs:
     desc: Run documentation quality checks
     sources:
@@ -272,6 +290,7 @@ tasks:
       - schemas
       - parity
       - docs
+      - docs-smoke
       - meta
     cmds:
       - task: conformance
