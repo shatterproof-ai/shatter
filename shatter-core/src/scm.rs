@@ -68,7 +68,13 @@ impl ScmProvider for GitProvider {
         }
 
         if include_untracked {
-            let untracked_output = run_git(root, &["ls-files", "--others", "--exclude-standard"])?;
+            // --full-name: ls-files prints cwd-relative paths by default,
+            // unlike `git diff --name-only` which is repo-root-relative. The
+            // scan root may be a repo subdirectory (str-g9i4v).
+            let untracked_output = run_git(
+                root,
+                &["ls-files", "--others", "--exclude-standard", "--full-name"],
+            )?;
             let untracked = parse_file_list(&untracked_output, &repo_root);
             for f in untracked {
                 if !files.contains(&f) {
@@ -335,6 +341,52 @@ mod tests {
         assert!(
             !status.success(),
             "git rev-parse should fail in a non-repo dir"
+        );
+    }
+
+    #[test]
+    fn test_changed_files_untracked_from_subdir_root() {
+        // str-g9i4v: `git ls-files --others` prints cwd-relative paths while
+        // `git diff --name-only` prints repo-root-relative paths. When the
+        // scan root is a repo subdirectory, untracked files must still resolve
+        // to their true absolute paths.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        git_ok(repo, &["init", "-q"]);
+        git_ok(repo, &["config", "user.email", "t@example.com"]);
+        git_ok(repo, &["config", "user.name", "t"]);
+        git_ok(repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+
+        let subdir = repo.join("src");
+        fs::create_dir(&subdir).expect("create subdir");
+        let tracked = subdir.join("tracked.ts");
+        fs::write(&tracked, "export const a = 1;\n").expect("write tracked");
+        git_ok(repo, &["add", "src/tracked.ts"]);
+        git_ok(repo, &["commit", "-q", "-m", "add tracked"]);
+        fs::write(&tracked, "export const a = 2;\n").expect("modify tracked");
+
+        let untracked = subdir.join("untracked.ts");
+        fs::write(&untracked, "export const b = 1;\n").expect("write untracked");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(&subdir, true)
+            .expect("changed_files should succeed");
+
+        // Canonicalize to tolerate symlinked temp dirs.
+        let canon: Vec<PathBuf> = files
+            .iter()
+            .filter_map(|f| f.canonicalize().ok())
+            .collect();
+        let tracked_canon = tracked.canonicalize().expect("canonicalize tracked");
+        let untracked_canon = untracked.canonicalize().expect("canonicalize untracked");
+        assert!(
+            canon.contains(&tracked_canon),
+            "tracked modified file missing: {files:?}"
+        );
+        assert!(
+            canon.contains(&untracked_canon),
+            "untracked file missing or mis-resolved: {files:?}"
         );
     }
 
