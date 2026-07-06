@@ -22,6 +22,20 @@ use crate::source_bucket::{SourceBucket, classify_path};
 /// report. Functions with more clusters show a "... and N more" summary line.
 const MAX_DISPLAY_CLUSTERS: usize = 5;
 
+/// Percentage at or below which a completed function is treated as
+/// low-coverage for the report's actionable buckets (str-3f27b). Chosen to
+/// match the field-evidence cut (`coverage_pct <= 10`) from the Kapow scan
+/// that motivated the section.
+const LOW_COVERAGE_THRESHOLD_PCT: f64 = 10.0;
+
+/// Maximum number of branch-heavy low-coverage functions listed in the
+/// report's ranking (str-3f27b).
+const MAX_TOP_BRANCH_HEAVY: usize = 10;
+
+/// Maximum number of low-coverage areas rendered in the Markdown report
+/// before the remainder is summarised as "... and N more" (str-3f27b).
+const MAX_LOW_COVERAGE_AREAS: usize = 10;
+
 /// JSON schema version emitted in [`ScanReport::version`].
 ///
 /// v4 added `qualified_id` to per-function records. v5 adds explicit
@@ -46,7 +60,14 @@ const MAX_DISPLAY_CLUSTERS: usize = 5;
 ///
 /// str-smcx adds `"interrupted"` skipped entries for functions not attempted
 /// because the run-level scan budget expired. Schema bumps to v7.
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 7;
+///
+/// str-3f27b adds `codebase.low_coverage`, an actionable classification of
+/// shallow-coverage functions into buckets (failed, unsupported,
+/// zero-coverage-with-branches, zero-coverage-no-branches, positive-low)
+/// plus a branch-heavy ranking and per-area rollups. The field is
+/// `#[serde(default)]`, so pre-fix reports decode to an all-zero
+/// [`LowCoverageBuckets`]; the change is additive. Schema bumps to v8.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 8;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
@@ -501,6 +522,106 @@ pub struct DependencyEdge {
     pub callee_qualified_id: String,
 }
 
+/// A single low-coverage completed function carried in the report's
+/// branch-heavy ranking (str-3f27b). Fields mirror [`FunctionReport`] so a
+/// consumer can render the row without cross-referencing the full function
+/// list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LowCoverageFunction {
+    /// Bare display name (str-tzbr contract).
+    pub function_name: String,
+    /// Explicit human-facing display name.
+    #[serde(default)]
+    pub display_name: String,
+    /// Stable qualified identifier (see [`FunctionReport::qualified_id`]).
+    #[serde(default)]
+    pub qualified_id: String,
+    /// Source file path. Empty when the orchestrator's file_map had no entry.
+    #[serde(default)]
+    pub file_path: String,
+    /// Coverage percentage (0.0-100.0).
+    pub coverage_pct: f64,
+    /// Branches covered.
+    pub branches_covered: usize,
+    /// Total branch points in the function.
+    pub branch_count: usize,
+    /// Source lines covered.
+    pub lines_covered: usize,
+    /// Total source lines in the function.
+    pub total_lines: u32,
+}
+
+/// Per-area rollup of low-coverage functions grouped by a file-path prefix
+/// (str-3f27b). The area key is the parent directory of each function's
+/// `file_path` — derived from the scan's own paths, never a hard-coded
+/// project name — so the grouping adapts to any repository layout.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LowCoverageArea {
+    /// Directory-prefix area label. `(root)` for files at the repository
+    /// root and `(unknown)` when the file path is empty.
+    pub area: String,
+    /// Count of low-coverage completed functions in this area.
+    pub low_coverage_functions: usize,
+    /// Subset with zero coverage and at least one branch — the
+    /// setup/mock-starved logic in this area.
+    pub zero_coverage_with_branches: usize,
+    /// Sum of uncovered branches (`branch_count - branches_covered`) across
+    /// this area's low-coverage functions.
+    pub uncovered_branches: usize,
+}
+
+/// Actionable classification of shallow-coverage functions (str-3f27b).
+///
+/// A scan can be "successful" by completion rate while raw coverage stays
+/// shallow. These buckets separate the *causes* of low coverage so a
+/// reader does not have to hand-query `scan-report.json`:
+///
+/// - [`Self::failed`] / [`Self::unsupported`] mirror the codebase-level
+///   counts so the low-coverage story is self-contained.
+/// - The three completed-function buckets
+///   ([`Self::zero_coverage_with_branches`],
+///   [`Self::zero_coverage_no_branches`], [`Self::positive_low_coverage`])
+///   are mutually exclusive and together count every completed function
+///   whose `coverage_pct` is at or below
+///   [`Self::low_coverage_threshold_pct`].
+///
+/// Zero-branch accessors (getters/straight-line code) land in
+/// [`Self::zero_coverage_no_branches`] and are deliberately kept out of
+/// [`Self::top_branch_heavy`], so trivial functions never crowd out the
+/// branch-heavy logic that actually needs better setup or mocks.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LowCoverageBuckets {
+    /// Coverage-percentage cutoff used to classify the completed-function
+    /// buckets below (functions at or under this value are "low coverage").
+    pub low_coverage_threshold_pct: f64,
+    /// Functions the scan attempted but that failed to complete. Mirrors
+    /// [`CodebaseReport::failed_functions`].
+    pub failed: usize,
+    /// Functions skipped as unsupported (target shape not representable).
+    /// Mirrors [`CodebaseReport::unsupported_functions`].
+    pub unsupported: usize,
+    /// Completed functions with zero coverage that DO have branches —
+    /// branch-heavy logic Shatter reached but could not drive into
+    /// (typically needs setup/mocks).
+    pub zero_coverage_with_branches: usize,
+    /// Completed functions with zero coverage and NO branches —
+    /// straight-line accessors/getters where zero coverage is expected and
+    /// not actionable via better setup or mocks.
+    pub zero_coverage_no_branches: usize,
+    /// Completed functions with positive but low coverage
+    /// (`0 < coverage_pct <= threshold`).
+    pub positive_low_coverage: usize,
+    /// Branch-heavy low-coverage functions ranked by total branch count
+    /// (descending). Zero-branch functions are excluded. Capped at
+    /// [`MAX_TOP_BRANCH_HEAVY`].
+    #[serde(default)]
+    pub top_branch_heavy: Vec<LowCoverageFunction>,
+    /// Per-area rollups grouped by file-path parent directory, ordered by
+    /// low-coverage function count (descending).
+    #[serde(default)]
+    pub by_area: Vec<LowCoverageArea>,
+}
+
 /// Codebase-level aggregate statistics.
 ///
 /// The count fields disambiguate scan outcomes that previously collapsed
@@ -605,6 +726,13 @@ pub struct CodebaseReport {
     /// variant; absent buckets read as zero.
     #[serde(default)]
     pub source_set: SourceSetSummary,
+    /// Actionable low-coverage classification (str-3f27b). Groups completed
+    /// functions with shallow coverage into buckets, ranks the top
+    /// branch-heavy low-coverage functions, and rolls up counts per
+    /// file-path area. `#[serde(default)]` keeps pre-v8 reports readable
+    /// (they decode to an all-zero [`LowCoverageBuckets`]).
+    #[serde(default)]
+    pub low_coverage: LowCoverageBuckets,
     /// Structured records for each function the scan attempted but failed
     /// to explore. Replaces the prior pattern of stuffing build/runtime
     /// failures into `skipped_functions` as opaque error strings
@@ -756,6 +884,130 @@ fn build_source_set_summary_from_snapshot(
             .saturating_add(u64::from(sf.line_count.unwrap_or(0)));
     }
     summary
+}
+
+/// A completed function counts as "zero coverage" when its `coverage_pct`
+/// is effectively zero (str-3f27b). Uses a strict `< f64::EPSILON` test
+/// rather than `== 0.0` to avoid a clippy float-equality lint; because
+/// `coverage_pct` is `lines_covered / total_lines * 100`, the only way it
+/// falls below epsilon is `lines_covered == 0`.
+fn is_zero_coverage(coverage_pct: f64) -> bool {
+    coverage_pct < f64::EPSILON
+}
+
+/// Derive an "area" label from a file path for low-coverage grouping
+/// (str-3f27b). The area is the file's parent directory — computed from
+/// the path itself, with no project-specific names baked in. Files at the
+/// repository root group under `(root)`; an empty path groups under
+/// `(unknown)`.
+fn area_for_path(file_path: &str) -> String {
+    if file_path.is_empty() {
+        return "(unknown)".to_string();
+    }
+    match file_path.rsplit_once('/') {
+        Some((dir, _file)) if !dir.is_empty() => dir.to_string(),
+        _ => "(root)".to_string(),
+    }
+}
+
+/// Classify completed functions with shallow coverage into the actionable
+/// [`LowCoverageBuckets`] (str-3f27b). `failed_functions` and
+/// `unsupported_functions` are the codebase-level counts, mirrored into
+/// the buckets so the low-coverage story is self-contained.
+///
+/// The three completed-function buckets are mutually exclusive and count
+/// every completed function whose `coverage_pct <= LOW_COVERAGE_THRESHOLD_PCT`.
+/// Zero-branch functions are excluded from the branch-heavy ranking so
+/// trivial accessors never displace branch-heavy uncovered logic.
+fn build_low_coverage_buckets(
+    functions: &[FunctionReport],
+    failed_functions: usize,
+    unsupported_functions: usize,
+) -> LowCoverageBuckets {
+    let mut zero_with_branches = 0usize;
+    let mut zero_no_branches = 0usize;
+    let mut positive_low = 0usize;
+    let mut branch_heavy: Vec<&FunctionReport> = Vec::new();
+    let mut area_map: std::collections::BTreeMap<String, LowCoverageArea> =
+        std::collections::BTreeMap::new();
+
+    for func in functions {
+        if func.coverage_pct > LOW_COVERAGE_THRESHOLD_PCT {
+            continue;
+        }
+        let zero = is_zero_coverage(func.coverage_pct);
+        let has_branches = func.branch_count > 0;
+        if zero && has_branches {
+            zero_with_branches += 1;
+        } else if zero {
+            zero_no_branches += 1;
+        } else {
+            positive_low += 1;
+        }
+        if has_branches {
+            branch_heavy.push(func);
+        }
+
+        let area_key = area_for_path(&func.file_path);
+        let entry = area_map
+            .entry(area_key.clone())
+            .or_insert_with(|| LowCoverageArea {
+                area: area_key,
+                ..Default::default()
+            });
+        entry.low_coverage_functions += 1;
+        if zero && has_branches {
+            entry.zero_coverage_with_branches += 1;
+        }
+        entry.uncovered_branches += func.branch_count.saturating_sub(func.branches_covered);
+    }
+
+    // Rank branch-heavy functions by total branch count (desc), then by
+    // uncovered branches (desc), then by qualified_id for a deterministic
+    // tiebreak.
+    branch_heavy.sort_by(|a, b| {
+        b.branch_count
+            .cmp(&a.branch_count)
+            .then_with(|| {
+                let ua = a.branch_count.saturating_sub(a.branches_covered);
+                let ub = b.branch_count.saturating_sub(b.branches_covered);
+                ub.cmp(&ua)
+            })
+            .then_with(|| a.qualified_id.cmp(&b.qualified_id))
+    });
+    let top_branch_heavy = branch_heavy
+        .into_iter()
+        .take(MAX_TOP_BRANCH_HEAVY)
+        .map(|f| LowCoverageFunction {
+            function_name: f.function_name.clone(),
+            display_name: f.display_name.clone(),
+            qualified_id: f.qualified_id.clone(),
+            file_path: f.file_path.clone(),
+            coverage_pct: f.coverage_pct,
+            branches_covered: f.branches_covered,
+            branch_count: f.branch_count,
+            lines_covered: f.lines_covered,
+            total_lines: f.total_lines,
+        })
+        .collect();
+
+    let mut by_area: Vec<LowCoverageArea> = area_map.into_values().collect();
+    by_area.sort_by(|a, b| {
+        b.low_coverage_functions
+            .cmp(&a.low_coverage_functions)
+            .then_with(|| a.area.cmp(&b.area))
+    });
+
+    LowCoverageBuckets {
+        low_coverage_threshold_pct: LOW_COVERAGE_THRESHOLD_PCT,
+        failed: failed_functions,
+        unsupported: unsupported_functions,
+        zero_coverage_with_branches: zero_with_branches,
+        zero_coverage_no_branches: zero_no_branches,
+        positive_low_coverage: positive_low,
+        top_branch_heavy,
+        by_area,
+    }
 }
 
 /// A function the scan attempted to explore but did not complete.
@@ -1331,6 +1583,9 @@ pub fn generate_report(
         completed_skipped_by_policy,
     ) = split_completion_outcomes(&functions);
 
+    let low_coverage =
+        build_low_coverage_buckets(&functions, counts.failed, counts.unsupported);
+
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
         functions,
@@ -1351,6 +1606,7 @@ pub fn generate_report(
             overall_coverage,
             productionish_source_lines,
             source_set,
+            low_coverage,
             failed,
             skipped_functions,
             dependency_graph,
@@ -1409,6 +1665,9 @@ pub fn generate_report_from_scan(
         completed_skipped_by_policy,
     ) = split_completion_outcomes(&functions);
 
+    let low_coverage =
+        build_low_coverage_buckets(&functions, counts.failed, counts.unsupported);
+
     ScanReport {
         version: SCAN_REPORT_SCHEMA_VERSION,
         functions,
@@ -1429,6 +1688,7 @@ pub fn generate_report_from_scan(
             overall_coverage,
             productionish_source_lines,
             source_set,
+            low_coverage,
             failed,
             skipped_functions,
             dependency_graph,
@@ -1575,6 +1835,7 @@ pub fn format_markdown_report(report: &ScanReport) -> String {
     write_md_cumulative(&mut out, &report.cumulative);
     write_md_source_set_summary(&mut out, &report.codebase);
     write_md_coverage(&mut out, report);
+    write_md_low_coverage_buckets(&mut out, &report.codebase);
     write_md_summary_table(&mut out, report);
     write_md_function_details(&mut out, &report.functions);
     write_md_uncovered_branches(&mut out, &report.functions);
@@ -1755,6 +2016,123 @@ fn write_md_coverage(out: &mut String, report: &ScanReport) {
     );
 
     out.push('\n');
+}
+
+/// Emit the low-coverage buckets section (str-3f27b): a breakdown that
+/// classifies *why* coverage is shallow so a reader does not have to
+/// hand-query `scan-report.json`. The opening note distinguishes
+/// "completed with behavior" (the scan ran the function) from "high
+/// source/branch coverage" (the scan drove into its logic) — a function
+/// can be the former without the latter.
+fn write_md_low_coverage_buckets(out: &mut String, codebase: &CodebaseReport) {
+    let lc = &codebase.low_coverage;
+    let completed_low = lc.zero_coverage_with_branches
+        + lc.zero_coverage_no_branches
+        + lc.positive_low_coverage;
+    // Nothing shallow and nothing failed/unsupported: skip the section.
+    if completed_low == 0 && lc.failed == 0 && lc.unsupported == 0 {
+        return;
+    }
+
+    let _ = writeln!(out, "## Low-Coverage Buckets\n");
+    let _ = writeln!(
+        out,
+        "*Completing a function (running it without a crash) is not the same as \
+         achieving high source or branch coverage. These buckets classify why \
+         coverage stays shallow so the low numbers can be acted on directly.*\n"
+    );
+    let _ = writeln!(
+        out,
+        "Low-coverage cutoff: completed functions with coverage \u{2264} {:.0}%.\n",
+        lc.low_coverage_threshold_pct,
+    );
+    let _ = writeln!(out, "| Bucket | Count |");
+    let _ = writeln!(out, "|--------|-------|");
+    let _ = writeln!(
+        out,
+        "| Failed (attempted, did not complete) | {} |",
+        lc.failed,
+    );
+    let _ = writeln!(out, "| Skipped / unsupported | {} |", lc.unsupported);
+    let _ = writeln!(
+        out,
+        "| Zero coverage with branches (needs setup/mocks) | {} |",
+        lc.zero_coverage_with_branches,
+    );
+    let _ = writeln!(
+        out,
+        "| Zero coverage, no branches (accessors/getters) | {} |",
+        lc.zero_coverage_no_branches,
+    );
+    let _ = writeln!(
+        out,
+        "| Positive but low coverage | {} |",
+        lc.positive_low_coverage,
+    );
+    out.push('\n');
+
+    if !lc.top_branch_heavy.is_empty() {
+        let _ = writeln!(out, "### Top branch-heavy low-coverage functions\n");
+        let _ = writeln!(
+            out,
+            "These have the most branch logic left unexplored \u{2014} the \
+             highest-value targets for better setup or mocks.\n"
+        );
+        let _ = writeln!(out, "| Function | File | Coverage | Branches | Lines |");
+        let _ = writeln!(out, "|----------|------|----------|----------|-------|");
+        for f in &lc.top_branch_heavy {
+            let _ = writeln!(
+                out,
+                "| `{name}` | {file} | {cov:.1}% | {bcov}/{bcnt} | {lcov}/{ltot} |",
+                name = f.function_name,
+                file = if f.file_path.is_empty() {
+                    "-"
+                } else {
+                    &f.file_path
+                },
+                cov = f.coverage_pct,
+                bcov = f.branches_covered,
+                bcnt = f.branch_count,
+                lcov = f.lines_covered,
+                ltot = f.total_lines,
+            );
+        }
+        out.push('\n');
+    }
+
+    if !lc.by_area.is_empty() {
+        let _ = writeln!(out, "### Low coverage by area\n");
+        let _ = writeln!(
+            out,
+            "Grouped by file-path directory (derived from the scan's own paths).\n"
+        );
+        let _ = writeln!(
+            out,
+            "| Area | Low-coverage functions | Zero-cov w/ branches | Uncovered branches |"
+        );
+        let _ = writeln!(
+            out,
+            "|------|------------------------|----------------------|--------------------|"
+        );
+        for area in lc.by_area.iter().take(MAX_LOW_COVERAGE_AREAS) {
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {} | {} |",
+                area.area,
+                area.low_coverage_functions,
+                area.zero_coverage_with_branches,
+                area.uncovered_branches,
+            );
+        }
+        if lc.by_area.len() > MAX_LOW_COVERAGE_AREAS {
+            let _ = writeln!(
+                out,
+                "\n- ... and {} more area(s)",
+                lc.by_area.len() - MAX_LOW_COVERAGE_AREAS,
+            );
+        }
+        out.push('\n');
+    }
 }
 
 /// Emit a Markdown table summarising file and line counts per
@@ -5574,5 +5952,282 @@ mod proptests {
         assert_eq!(super::language_from_path("src/lib.rs"), Some("rust".into()));
         assert_eq!(super::language_from_path("Makefile"), None);
         assert_eq!(super::language_from_path(""), None);
+    }
+}
+
+/// str-3f27b: low-coverage bucket classification, ranking, and rendering.
+#[cfg(test)]
+mod low_coverage_bucket_tests {
+    use super::*;
+
+    /// Build a completed `FunctionReport` with the coverage-shape fields
+    /// that drive bucket classification; everything else is inert.
+    fn lc_func(
+        name: &str,
+        file: &str,
+        branch_count: usize,
+        branches_covered: usize,
+        lines_covered: usize,
+        total_lines: u32,
+    ) -> FunctionReport {
+        let coverage_pct = if total_lines > 0 {
+            (lines_covered as f64 / f64::from(total_lines) * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+        FunctionReport {
+            function_name: name.to_string(),
+            display_name: name.to_string(),
+            qualified_id: format!("{file}::{name}"),
+            file_path: file.to_string(),
+            source_bucket: crate::source_bucket::classify_path(file),
+            branch_count,
+            branches_covered,
+            coverage_pct,
+            discovered_inputs: vec![],
+            behavior_clusters: vec![],
+            constraint_stats: ConstraintStats {
+                total_constraints: 0,
+                solver_guided_inputs: 0,
+            },
+            iterations: 1,
+            lines_covered,
+            total_lines,
+            mocks_used: vec![],
+            refactoring_recommendations: vec![],
+            completion_outcome: CompletionOutcome::Behavioral,
+            completion_reason: None,
+        }
+    }
+
+    /// A representative mix: a zero-branch accessor, a zero-coverage
+    /// branch-heavy function, a positive-but-low function, and a
+    /// well-covered function that must be excluded from every bucket.
+    fn mixed_functions() -> Vec<FunctionReport> {
+        vec![
+            // Zero coverage, no branches → accessor bucket.
+            lc_func("getName", "src/model/user.ts", 0, 0, 0, 3),
+            // Zero coverage, with branches → needs-setup bucket + branch-heavy.
+            lc_func("processOrder", "src/order/process.ts", 12, 0, 0, 80),
+            // Zero coverage, with branches, fewer branches → branch-heavy #2.
+            lc_func("validate", "src/order/validate.ts", 4, 0, 0, 20),
+            // Positive but low coverage (5%) → positive-low bucket.
+            lc_func("route", "src/http/router.ts", 8, 1, 2, 40),
+            // Well covered → excluded from all low-coverage buckets.
+            lc_func("add", "src/math/add.ts", 2, 2, 10, 10),
+        ]
+    }
+
+    #[test]
+    fn buckets_partition_completed_low_coverage_functions() {
+        let functions = mixed_functions();
+        let buckets = build_low_coverage_buckets(&functions, 7, 3);
+
+        // Failed/unsupported mirror the codebase counts.
+        assert_eq!(buckets.failed, 7);
+        assert_eq!(buckets.unsupported, 3);
+        assert!((buckets.low_coverage_threshold_pct - LOW_COVERAGE_THRESHOLD_PCT).abs() < f64::EPSILON);
+
+        assert_eq!(buckets.zero_coverage_no_branches, 1);
+        assert_eq!(buckets.zero_coverage_with_branches, 2);
+        assert_eq!(buckets.positive_low_coverage, 1);
+
+        // The three completed buckets must partition exactly the completed
+        // functions at or below the threshold (4 of 5; `add` is excluded).
+        let completed_low = buckets.zero_coverage_no_branches
+            + buckets.zero_coverage_with_branches
+            + buckets.positive_low_coverage;
+        assert_eq!(completed_low, 4);
+    }
+
+    #[test]
+    fn zero_branch_accessors_are_not_mixed_with_branch_heavy_logic() {
+        // Acceptance fixture: a zero-branch accessor must never appear in
+        // the branch-heavy ranking, which is reserved for uncovered logic
+        // that actually has branches.
+        let functions = mixed_functions();
+        let buckets = build_low_coverage_buckets(&functions, 0, 0);
+
+        // The three branch-bearing low-coverage functions rank
+        // (processOrder, route, validate); the zero-branch accessor does not.
+        assert_eq!(buckets.top_branch_heavy.len(), 3);
+        let ranked_names: Vec<&str> = buckets
+            .top_branch_heavy
+            .iter()
+            .map(|f| f.function_name.as_str())
+            .collect();
+        assert!(
+            !ranked_names.contains(&"getName"),
+            "zero-branch accessor must not appear in the branch-heavy ranking"
+        );
+        // Ranked by total branch count desc: 12 > 8 > 4.
+        assert_eq!(buckets.top_branch_heavy[0].function_name, "processOrder");
+        assert_eq!(buckets.top_branch_heavy[0].branch_count, 12);
+        assert_eq!(buckets.top_branch_heavy[1].function_name, "route");
+        assert_eq!(buckets.top_branch_heavy[2].function_name, "validate");
+
+        // The accessor is still accounted for — in the no-branches bucket.
+        assert_eq!(buckets.zero_coverage_no_branches, 1);
+    }
+
+    #[test]
+    fn top_branch_heavy_carries_full_coverage_metrics() {
+        let functions = mixed_functions();
+        let buckets = build_low_coverage_buckets(&functions, 0, 0);
+        let top = &buckets.top_branch_heavy[0];
+        assert_eq!(top.branches_covered, 0);
+        assert_eq!(top.branch_count, 12);
+        assert_eq!(top.lines_covered, 0);
+        assert_eq!(top.total_lines, 80);
+        assert!(top.coverage_pct < f64::EPSILON);
+    }
+
+    #[test]
+    fn branch_heavy_ranking_is_capped() {
+        // 15 branch-heavy zero-coverage functions; ranking caps at
+        // MAX_TOP_BRANCH_HEAVY.
+        let functions: Vec<FunctionReport> = (0..15)
+            .map(|i| {
+                lc_func(
+                    &format!("f{i}"),
+                    &format!("src/pkg/f{i}.ts"),
+                    i + 1,
+                    0,
+                    0,
+                    50,
+                )
+            })
+            .collect();
+        let buckets = build_low_coverage_buckets(&functions, 0, 0);
+        assert_eq!(buckets.top_branch_heavy.len(), MAX_TOP_BRANCH_HEAVY);
+        // Highest branch count (15) ranks first.
+        assert_eq!(buckets.top_branch_heavy[0].branch_count, 15);
+    }
+
+    #[test]
+    fn by_area_groups_on_directory_without_hardcoded_names() {
+        let functions = mixed_functions();
+        let buckets = build_low_coverage_buckets(&functions, 0, 0);
+
+        // Areas are the parent directories of the low-coverage functions.
+        // `src/order` has two (processOrder, validate); the others have one.
+        let order = buckets
+            .by_area
+            .iter()
+            .find(|a| a.area == "src/order")
+            .expect("src/order area present");
+        assert_eq!(order.low_coverage_functions, 2);
+        assert_eq!(order.zero_coverage_with_branches, 2);
+        assert_eq!(order.uncovered_branches, 16); // 12 + 4
+
+        // The well-covered function's area (src/math) must not appear.
+        assert!(buckets.by_area.iter().all(|a| a.area != "src/math"));
+        // Ordered by low-coverage count desc → src/order first.
+        assert_eq!(buckets.by_area[0].area, "src/order");
+    }
+
+    #[test]
+    fn area_for_path_handles_root_and_unknown() {
+        assert_eq!(area_for_path("src/a/b.ts"), "src/a");
+        assert_eq!(area_for_path("main.rs"), "(root)");
+        assert_eq!(area_for_path(""), "(unknown)");
+    }
+
+    #[test]
+    fn positive_low_coverage_boundary_is_inclusive() {
+        // Exactly at the threshold (10%) counts as low; just above does not.
+        let at = lc_func("at", "src/a.ts", 4, 0, 1, 10); // 10.0%
+        let above = lc_func("above", "src/a.ts", 4, 0, 11, 100); // 11.0%
+        let buckets = build_low_coverage_buckets(&[at, above], 0, 0);
+        assert_eq!(buckets.positive_low_coverage, 1);
+        // `above` is excluded entirely.
+        let completed_low = buckets.zero_coverage_no_branches
+            + buckets.zero_coverage_with_branches
+            + buckets.positive_low_coverage;
+        assert_eq!(completed_low, 1);
+    }
+
+    #[test]
+    fn markdown_section_names_top_functions_with_metrics() {
+        let report = ScanReport {
+            version: SCAN_REPORT_SCHEMA_VERSION,
+            functions: mixed_functions(),
+            codebase: CodebaseReport {
+                completed_functions: 5,
+                failed_functions: 2,
+                unsupported_functions: 1,
+                low_coverage: build_low_coverage_buckets(&mixed_functions(), 2, 1),
+                ..Default::default()
+            },
+            test_order: vec![],
+            test_order_display_names: vec![],
+            cumulative: None,
+        };
+        let md = format_markdown_report(&report);
+
+        assert!(md.contains("## Low-Coverage Buckets"));
+        // Wording distinguishes completion from coverage.
+        assert!(md.contains("is not the same as"));
+        // Bucket rows present.
+        assert!(md.contains("Zero coverage with branches"));
+        assert!(md.contains("Zero coverage, no branches"));
+        // Branch-heavy table names the function and its metrics.
+        assert!(md.contains("### Top branch-heavy low-coverage functions"));
+        assert!(md.contains("processOrder"));
+        assert!(md.contains("0/12")); // branches_covered/branch_count
+        assert!(md.contains("0/80")); // lines_covered/total_lines
+        // Per-area grouping present.
+        assert!(md.contains("### Low coverage by area"));
+        assert!(md.contains("src/order"));
+    }
+
+    #[test]
+    fn markdown_section_absent_when_no_low_coverage() {
+        // A single well-covered function, no failures/unsupported.
+        let report = ScanReport {
+            version: SCAN_REPORT_SCHEMA_VERSION,
+            functions: vec![lc_func("add", "src/math/add.ts", 2, 2, 10, 10)],
+            codebase: CodebaseReport {
+                completed_functions: 1,
+                low_coverage: build_low_coverage_buckets(
+                    &[lc_func("add", "src/math/add.ts", 2, 2, 10, 10)],
+                    0,
+                    0,
+                ),
+                ..Default::default()
+            },
+            test_order: vec![],
+            test_order_display_names: vec![],
+            cumulative: None,
+        };
+        let md = format_markdown_report(&report);
+        assert!(!md.contains("## Low-Coverage Buckets"));
+    }
+
+    #[test]
+    fn buckets_survive_json_round_trip() {
+        let buckets = build_low_coverage_buckets(&mixed_functions(), 2, 1);
+        let json = serde_json::to_string(&buckets).expect("serialize");
+        let back: LowCoverageBuckets = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(buckets, back);
+    }
+
+    #[test]
+    fn missing_low_coverage_field_decodes_to_default() {
+        // Pre-v8 codebase JSON without `low_coverage` must decode.
+        let json = r#"{
+            "attempted_functions": 1,
+            "completed_functions": 1,
+            "failed_functions": 0,
+            "skipped_functions_count": 0,
+            "unsupported_functions": 0,
+            "total_discovered_functions": 1,
+            "total_branches": 0,
+            "overall_coverage": 0.0,
+            "skipped_functions": [],
+            "dependency_graph": []
+        }"#;
+        let cb: CodebaseReport = serde_json::from_str(json).expect("decode pre-v8");
+        assert_eq!(cb.low_coverage, LowCoverageBuckets::default());
     }
 }
