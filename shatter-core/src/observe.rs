@@ -230,6 +230,24 @@ pub struct SingleObservation {
     pub execution_summary: Option<ExecutionSummary>,
 }
 
+/// Reclassify a `not_supported` thrown error nested inside an otherwise-`Ok`
+/// execute result (str-303gg).
+///
+/// Some frontends report a function that is absent from their execute dispatch
+/// table as a `thrown_error { error_type: "not_supported" }` carried inside an
+/// `Ok(ExecuteResult)` rather than a response-level `ErrorCode::NotSupported`
+/// (e.g. the Rust `crate_bridge` harness's "function not in crate_bridge
+/// dispatch table" arm). Without this defense-in-depth check the engine treats
+/// the result as a normal observation and records the function as completed with
+/// 0% coverage instead of unsupported. Returns the error message when the result
+/// is such a not_supported placeholder.
+pub(crate) fn thrown_not_supported_reason(
+    result: &crate::protocol::ExecuteResult,
+) -> Option<String> {
+    let err = result.thrown_error.as_ref()?;
+    (err.error_type == "not_supported").then(|| err.message.clone())
+}
+
 /// Execute a single input and classify the result against caller-owned tracking
 /// state.
 ///
@@ -283,6 +301,13 @@ pub async fn observe_single(
             )));
         }
     };
+
+    // Defense-in-depth (str-303gg): a `not_supported` thrown_error nested in an
+    // Ok result must reclassify to Unsupported, never be recorded as a
+    // completed/0% observation.
+    if let Some(reason) = thrown_not_supported_reason(&exec_result) {
+        return Err(ObserveError::Unsupported(reason));
+    }
 
     for &line in &exec_result.lines_executed {
         state.all_lines.insert(line);
@@ -992,6 +1017,45 @@ for line in sys.stdin:
             }
             other => panic!("expected ObserveError::Unsupported, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn thrown_not_supported_reason_detects_dispatch_table_placeholder() {
+        // str-303gg: a Rust crate_bridge harness reports a function absent from
+        // its dispatch table as a `not_supported` thrown_error nested in an Ok
+        // execute result. The engine must recognise this so the function is
+        // classified unsupported instead of completed/0%.
+        let mut result = make_exec_result(&[], &[]);
+        result.return_value = None;
+        result.thrown_error = Some(crate::execution_record::ErrorInfo {
+            error_type: "not_supported".into(),
+            message: "function not in crate_bridge dispatch table: score_item".into(),
+            stack: None,
+            error_category: None,
+        });
+        let reason = thrown_not_supported_reason(&result)
+            .expect("not_supported thrown_error must be recognised");
+        assert!(
+            reason.contains("crate_bridge dispatch table"),
+            "reason should carry the frontend message, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn thrown_not_supported_reason_ignores_ordinary_results() {
+        // No thrown_error → not unsupported.
+        let ok = make_exec_result(&[(1, true)], &[10]);
+        assert!(thrown_not_supported_reason(&ok).is_none());
+
+        // A genuine runtime error is NOT an unsupported classification.
+        let mut runtime_err = make_exec_result(&[], &[]);
+        runtime_err.thrown_error = Some(crate::execution_record::ErrorInfo {
+            error_type: "runtime_error".into(),
+            message: "index out of bounds".into(),
+            stack: None,
+            error_category: None,
+        });
+        assert!(thrown_not_supported_reason(&runtime_err).is_none());
     }
 
     #[test]

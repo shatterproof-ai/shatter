@@ -2615,6 +2615,13 @@ async fn run_observer_worker_inner(
             }
         };
 
+        // Defense-in-depth (str-303gg): reclassify a `not_supported` thrown_error
+        // nested in an Ok execute result as Unsupported so the function is never
+        // recorded as completed/0%.
+        if let Some(reason) = crate::observe::thrown_not_supported_reason(&exec_result) {
+            return Err(ExploreError::Unsupported(reason));
+        }
+
         if options.per_execution_setup
             && !options.skip_setup
             && frontend_supports(&config.capabilities, "teardown")
