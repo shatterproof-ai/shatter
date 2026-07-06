@@ -330,10 +330,13 @@ pub(crate) async fn run_run(
 
     // Step 3: Batch analyze
     log::debug!("Analyzing {} file(s)...", analyzable_files.len());
+    // `run` does not use the analysis cache, so analyzer versions are
+    // irrelevant here — pass an empty map (str-2cihu).
     let registry = batch_analyze::batch_analyze(
         &mut frontends,
         &analyzable_files,
         None,
+        &std::collections::HashMap::new(),
         project_root_str.as_deref(),
     )
     .await

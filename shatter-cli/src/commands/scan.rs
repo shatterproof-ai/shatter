@@ -28,6 +28,29 @@ fn dry_run_deadline_remaining(deadline: Option<Instant>) -> Option<Duration> {
     deadline.map(|d| d.saturating_duration_since(Instant::now()))
 }
 
+/// Per-language frontend analyzer versions, folded into the analysis cache key
+/// (str-2cihu). Each value is the build-time hash of that frontend's source or
+/// bundle — the same self-describing hash `shatter --version` prints. When a
+/// frontend's analyze behavior changes for unchanged source (a rebuilt binary
+/// with no protocol bump), the hash changes and prior cached analysis entries
+/// are invalidated instead of serving stale `ParamInfo`.
+///
+/// Languages without an embedded source hash (currently Rust, an externally
+/// installed frontend) are omitted; `batch_analyze` treats a missing entry as
+/// an empty version, preserving the pre-str-2cihu keying for them.
+fn frontend_analyzer_versions() -> HashMap<DiscoveryLanguage, String> {
+    let mut versions = HashMap::new();
+    versions.insert(
+        DiscoveryLanguage::Go,
+        env!("GO_FRONTEND_SOURCE_HASH").to_string(),
+    );
+    versions.insert(
+        DiscoveryLanguage::TypeScript,
+        env!("FRONTEND_BUNDLE_HASH").to_string(),
+    );
+    versions
+}
+
 fn scan_run_deadline(run_started: Instant, timeout_total: u64) -> Option<Instant> {
     if timeout_total > 0 {
         Some(run_started + Duration::from_secs(timeout_total))
@@ -570,10 +593,12 @@ pub(crate) async fn run_scan(
     // deadline so discovery/analysis time is charged before the remaining
     // budget is handed to the scan orchestrator.
     let registry = {
+        let analyzer_versions = frontend_analyzer_versions();
         let fut = batch_analyze::batch_analyze(
             &mut frontends,
             &analyzable_files,
             analysis_cache.as_ref(),
+            &analyzer_versions,
             project_root_str.as_deref(),
         );
         if let Some(remaining) = dry_run_deadline_remaining(run_deadline) {
