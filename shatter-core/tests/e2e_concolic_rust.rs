@@ -1218,3 +1218,208 @@ pub async fn h(
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// Write a multi-file crate whose target function (`src/logic.rs::classify_trip`)
+/// consumes a struct (`Trip`) defined in a SIBLING module (`src/domain.rs`) that
+/// has a plain-int field AND a `chrono::NaiveDate` field. Returns the path to
+/// `src/logic.rs`. The crate depends on `serde` + `chrono` (with the `serde`
+/// feature) so the crate_bridge harness compiles against real chrono types.
+///
+/// The struct lives in a sibling file (not the analyzed file) for two reasons:
+/// it mirrors the real pickpackit shape (domain types split from consumers,
+/// str-do53), and — because a same-file struct param is currently routed to the
+/// crate-backed *dispatch* harness, which does not run the materialization shim
+/// — a cross-file struct param routes to the crate_bridge harness where
+/// `materialize_complex` lives. That is the mode str-8euf targets.
+fn write_temp_chrono_crate(dir: &Path) -> PathBuf {
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"shatter_8euf_fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+         [lib]\npath = \"src/lib.rs\"\n\n\
+         [dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n\
+         chrono = { version = \"0.4\", features = [\"serde\"] }\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(src_dir.join("lib.rs"), "pub mod domain;\npub mod logic;\n")
+        .expect("write lib.rs");
+    std::fs::write(
+        src_dir.join("domain.rs"),
+        "use serde::Deserialize;\nuse chrono::NaiveDate;\n\n\
+         #[derive(Deserialize)]\npub struct Trip {\n    pub duration_days: i64,\n    pub starts_on: NaiveDate,\n}\n",
+    )
+    .expect("write domain.rs");
+    let logic = src_dir.join("logic.rs");
+    std::fs::write(
+        &logic,
+        "use crate::domain::Trip;\n\n\
+         /// The function branches only on the plain-int field, but `Trip` cannot\n\
+         /// be constructed at all unless the synthesized `starts_on` value (which\n\
+         /// the input generator emits as a `{\"__complex_type\":\"date\",\"value\":\n\
+         /// <epoch_ms>}` envelope) is materialized into the ISO string chrono's\n\
+         /// `NaiveDate` deserializes from. So reaching ANY real branch return\n\
+         /// proves the crate_bridge materialization shim (str-8euf) ran.\n\
+         pub fn classify_trip(t: Trip) -> &'static str {\n\
+         \x20   if t.duration_days < 0 {\n        \"invalid\"\n\
+         \x20   } else if t.duration_days <= 7 {\n        \"short\"\n\
+         \x20   } else {\n        \"long\"\n    }\n}\n",
+    )
+    .expect("write logic.rs");
+    logic
+}
+
+/// str-8euf regression gate: a struct with a `chrono::NaiveDate` field must
+/// synthesize AND execute through the crate_bridge harness end-to-end.
+///
+/// ## What this locks
+///
+/// The analyzer classifies `NaiveDate` as `Complex { kind: Date }` and the
+/// input generator emits a `{"__complex_type":"date","value":<epoch_ms>}`
+/// envelope for it. `chrono::NaiveDate`'s `Deserialize` impl expects a
+/// `"%Y-%m-%d"` string, NOT that envelope, so `serde_json::from_value::<Trip>`
+/// would fail on the `starts_on` field ("input contains invalid characters" /
+/// "premature end of input") and every execution would be error-only. The
+/// crate_bridge dispatch harness therefore runs
+/// `shatter_rust_runtime::materialize_complex` on every input first, rewriting
+/// each `__complex_type` envelope (recursively, including struct fields) into
+/// the ISO string chrono accepts. This test drives the REAL frontend +
+/// orchestrator so the materialization is exercised on both the seed (an
+/// explicit date envelope) and generator-produced inputs.
+///
+/// ## Why this lives in e2e
+///
+/// The runtime `materialize_complex` unit tests and the analyzer classification
+/// tests each cover one slice, but nothing exercised
+/// analyze → instrument → execute → materialize → deserialize → run against a
+/// real chrono-dependent crate. Materialization can silently disconnect from
+/// the crate_bridge path (e.g. applied only in the standalone harness) while
+/// unit tests stay green — exactly the parallel-path failure mode this suite
+/// exists to catch.
+///
+/// NOTE: the branches are over the plain-int field and are reachable by
+/// boundary-biased random generation (this branch predates the str-do53
+/// instrumentor field-path lowering, so struct-field constraints are not
+/// Z3-solved here). The point of THIS test is materialization, not Z3 on a
+/// field, so it asserts real (non-error) branch coverage rather than a Z3 count.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_chrono_naive_date_field_materializes_and_executes() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let lib = write_temp_chrono_crate(tmp.path());
+    let file_str = lib.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_trip").await;
+    assert_eq!(analysis.params.len(), 1, "classify_trip takes 1 param");
+    // Trip must synthesize to an Object whose `starts_on` field is classified as
+    // a chrono Date complex kind (not Opaque, not a bare string).
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert!(
+                matches!(
+                    fields.iter().find(|(n, _)| n == "duration_days"),
+                    Some((_, shatter_core::types::TypeInfo::Int { .. }))
+                ),
+                "Trip.duration_days must resolve to Int; got {fields:?}"
+            );
+            assert!(
+                matches!(
+                    fields.iter().find(|(n, _)| n == "starts_on"),
+                    Some((
+                        _,
+                        shatter_core::types::TypeInfo::Complex {
+                            kind: shatter_core::types::ComplexKind::Date,
+                            ..
+                        }
+                    ))
+                ),
+                "Trip.starts_on must classify as a chrono Date complex kind; got {fields:?}"
+            );
+        }
+        other => panic!("Trip param must synthesize to Object, got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classify_trip").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(30),
+        max_executions: Some(80),
+        plateau_threshold: 20,
+        ..Default::default()
+    };
+
+    // The seed carries `starts_on` as the exact `__complex_type` date envelope
+    // the input generator produces (epoch 1_704_067_200_000 ms == 2024-01-01),
+    // so the very first execution exercises the materialization shim. If the
+    // shim regressed, this seed alone would deserialize-fail on `starts_on`.
+    let seed_inputs = vec![
+        vec![serde_json::json!({
+            "duration_days": 3,
+            "starts_on": {"__complex_type": "date", "value": 1_704_067_200_000_i64}
+        })],
+        vec![serde_json::json!({
+            "duration_days": -1,
+            "starts_on": {"__complex_type": "date", "value": 0}
+        })],
+    ];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_trip",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_chrono_naive_date_field: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    // The crate_bridge harness must have materialized the date envelope so
+    // `Trip` (with its `NaiveDate` field) deserialized: real, non-error branch
+    // returns must appear. An error-only outcome would mean `from_value::<Trip>`
+    // rejected the `starts_on` envelope — i.e. the materialization shim did not
+    // run in the crate_bridge path.
+    let return_values = return_value_set(&result);
+    let real_returns: Vec<&String> = return_values
+        .iter()
+        .filter(|v| !v.starts_with("ERROR:"))
+        .collect();
+    assert!(
+        !real_returns.is_empty(),
+        "chrono-date-field fn must produce non-error returns (materialization + \
+         deserialize succeeded); got only: {return_values:?}"
+    );
+    // Both the seeded `invalid` (duration_days < 0) and `short` (0..=7) arms are
+    // reachable from the two seeds directly, and boundary-biased generation
+    // reaches `long`. Require at least the two seeded arms to confirm real
+    // execution across distinct inputs (not a single lucky path).
+    assert!(
+        return_values.contains("\"invalid\""),
+        "should reach the duration_days<0 branch; found: {return_values:?}"
+    );
+    assert!(
+        return_values.contains("\"short\""),
+        "should reach the duration_days<=7 branch; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
