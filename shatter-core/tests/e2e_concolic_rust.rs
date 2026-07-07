@@ -675,6 +675,19 @@ fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
          \x20   if w.size < 0 {\n        \"negative\"\n\
          \x20   } else if w.size == 4242 {\n        \"answer\"\n\
          \x20   } else if w.size <= 100 {\n        \"small\"\n\
+         \x20   } else {\n        \"large\"\n    }\n}\n\n\
+         /// Identical branch structure to `classify_widget`, but the cross-file\n\
+         /// struct arrives BY REFERENCE (`&Widget`). This exercises the\n\
+         /// crate_bridge owned-then-borrow shim (`owned_type_for_ref` in\n\
+         /// shatter-rust `executor.rs`, str-osr7): the wrapper deserializes an\n\
+         /// owned `Widget` and passes `&owned` at the call site, since\n\
+         /// `serde_json::from_value::<&Widget>` is impossible (`&T` is never\n\
+         /// `DeserializeOwned`). Combined with the field-path lowering in the\n\
+         /// instrumentor, the `w.size == 4242` arm is still a Z3-only target.\n\
+         pub fn classify_widget_ref(w: &Widget) -> &'static str {\n\
+         \x20   if w.size < 0 {\n        \"negative\"\n\
+         \x20   } else if w.size == 4242 {\n        \"answer\"\n\
+         \x20   } else if w.size <= 100 {\n        \"small\"\n\
          \x20   } else {\n        \"large\"\n    }\n}\n",
     )
     .expect("write logic.rs");
@@ -802,6 +815,118 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
         result.z3_generated > 0,
         "Z3 should have generated at least one input to hit the size==4242 branch on the \
          cross-file struct; got z3_generated={}",
+        result.z3_generated
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// str-osr7 / str-do53 regression gate: the SAME cross-file struct passed BY
+/// REFERENCE (`fn classify_widget_ref(w: &Widget)`) must also be executable
+/// end-to-end and reach Z3-solved branch coverage.
+///
+/// This locks str-osr7 (the crate_bridge owned-then-borrow shim) into the E2E
+/// gate. `serde_json::from_value::<&Widget>` is impossible because `&T` is
+/// never `DeserializeOwned`; the wrapper (`owned_type_for_ref` +
+/// `generate_crate_bridge_wrapper` in shatter-rust `executor.rs`) instead
+/// deserializes an owned `Widget` and passes `&owned` at the call site. Before
+/// str-osr7 every by-reference function (including every pickpackit pure domain
+/// fn such as `supply_applies_to_trip(&Trip, ..)`) failed at execute with
+/// "parameters are not JSON-harness compatible and may not implement
+/// DeserializeOwned", so nothing exercised the borrow shim through the real
+/// analyze → instrument → execute → solve pipeline. str-osr7 shipped only
+/// unit/codegen tests; this is the missing end-to-end lock.
+///
+/// It also re-covers the instrumentor field-path lowering (a `&Widget` receiver
+/// still yields a `w.size` field branch), so the non-boundary `w.size == 4242`
+/// arm remains a genuine Z3-only target.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let logic = write_temp_cross_file_crate(tmp.path());
+    let file_str = logic.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_widget_ref").await;
+    assert_eq!(analysis.params.len(), 1, "classify_widget_ref takes 1 param");
+    // A by-reference cross-file struct param must synthesize to an `Object`
+    // (the analyzer strips the leading `&`), exactly like the by-value case —
+    // otherwise the function would be skipped as unexecutable.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert!(
+                fields.iter().any(|(n, _)| n == "size"),
+                "&Widget param must synthesize to an Object exposing `size`; got {fields:?}"
+            );
+        }
+        other => panic!("&Widget param must synthesize to Object, got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classify_widget_ref").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!({"size": 7, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": -3, "dims": {"length": 1, "height": 2}})],
+    ];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_widget_ref",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_cross_file_struct_by_ref: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    // The by-reference function must EXECUTE (not fall back to a
+    // not_supported/DeserializeOwned error). If the borrow shim regressed, the
+    // owned deserialize + `&owned` call would fail to compile and no real branch
+    // return values would appear.
+    let return_values = return_value_set(&result);
+    for expected in ["\"negative\"", "\"answer\"", "\"small\"", "\"large\""] {
+        assert!(
+            return_values.contains(expected),
+            "by-reference cross-file-struct fn should discover branch returning {expected}; \
+             found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 4,
+        "should have at least 4 unique paths; got {}",
+        result.unique_paths
+    );
+    assert!(
+        result.z3_generated > 0,
+        "Z3 should have generated at least one input to hit the size==4242 branch through the \
+         by-reference borrow shim; got z3_generated={}",
         result.z3_generated
     );
 
