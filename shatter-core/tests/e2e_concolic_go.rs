@@ -3,7 +3,7 @@
 //! Counterpart of `e2e_concolic.rs` (TypeScript) and `e2e_concolic_rust.rs`
 //! (Rust). Drives the real `shatter-go` subprocess through the full
 //! analyze -> instrument -> orchestrator-driven explore -> Z3 solve pipeline
-//! against three known-answer Go target programs covering distinct shapes:
+//! against known-answer Go target programs covering distinct shapes:
 //!
 //! - **Free function with branches** -
 //!   `<examples>/standalone/go/01-arithmetic.go::ClassifyNumber` (4 branches,
@@ -11,6 +11,9 @@
 //! - **Method with same-package constructor** -
 //!   `examples/go/service-method/svc.go::(*Service).Compute` (2 branches,
 //!   exercises receiver-aware planning + plan-attached Execute).
+//! - **Method with configured receiver recipe** -
+//!   `examples/go/configured-receiver/service.go::(*Service).Classify`
+//!   (exercises config-backed `configured:<label>` receiver dispatch).
 //! - **Variadic helper** -
 //!   `examples/go/variadic-sum/sum.go::SumThreshold` (2 branches,
 //!   exercises the variadic-wrapper code path str-jeen.48 fixed).
@@ -374,6 +377,108 @@ async fn e2e_go_service_compute_discovers_branches() {
         result.unique_paths >= 2,
         "should have at least 2 unique paths; got {}",
         result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test: configured receiver recipe.
+//
+// (*Service).Classify(n int) string -- the same package exposes NewService(),
+// but .shatter/config.yaml supplies a receiver whose backend returns distinct
+// labels. The planner must keep `configured:seeded_backend` as the top receiver
+// plan and the generated wrapper must emit a matching switch case.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_configured_receiver_recipe_executes_seeded_backend() {
+    let file = repo_examples_go_dir()
+        .join("configured-receiver")
+        .join("service.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("configured-receiver").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Classify").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "(*Service).Classify takes 1 param"
+    );
+
+    instrument_function(&mut frontend, &file_str, "Classify").await;
+
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    assert_eq!(
+        bundle.plans.first().map(|plan| plan.receiver_kind.as_str()),
+        Some("configured:seeded_backend"),
+        "configured receiver recipe must be the top receiver plan; plans={:?}",
+        bundle.plans
+    );
+    let execute_plan = bundle
+        .plans
+        .iter()
+        .find(|p| {
+            p.receiver_kind == "configured:seeded_backend"
+                && p.argument_plans.len() == analysis.params.len()
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "PLANNER GAP: planner returned no configured receiver plan for {target_id}; \
+                 unsatisfied={:?}",
+                bundle.unsatisfied
+            )
+        });
+
+    let config = ExploreConfig {
+        max_iterations: Some(12),
+        max_executions: Some(40),
+        plateau_threshold: 8,
+        default_execute_plan: Some(execute_plan),
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![vec![serde_json::json!(1)], vec![serde_json::json!(-1)]];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        &analysis.name,
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    assert_no_unknown_receiver_kind(&result, "(*Service).Classify");
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"configured-positive\"", "\"configured-nonpositive\""] {
+        assert!(
+            return_values.contains(expected),
+            "should execute configured receiver path returning {expected}; found: {return_values:?}"
+        );
+    }
+    assert!(
+        !return_values.contains("\"wrong-receiver\""),
+        "configured receiver should bypass constructor backend; found: {return_values:?}"
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");

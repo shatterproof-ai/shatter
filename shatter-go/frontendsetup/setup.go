@@ -9,6 +9,7 @@ package frontendsetup
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/planner"
@@ -65,7 +66,8 @@ func hintConfigResolver(lookup func(string) *protocol.TargetContext) func(string
 
 // translateHintConfig converts a config.FunctionConfig into the planner's
 // PerTargetHints (Defaults → ParamValueHint, Generators → type spelling,
-// Mocks → Go expression). Empty maps yield a zero PerTargetHints.
+// Mocks → Go expression, Receiver → configured receiver hint). Empty maps
+// yield a zero PerTargetHints.
 func translateHintConfig(entry config.FunctionConfig) planner.PerTargetHints {
 	hints := planner.PerTargetHints{}
 	if len(entry.Defaults) > 0 {
@@ -91,6 +93,10 @@ func translateHintConfig(entry config.FunctionConfig) planner.PerTargetHints {
 		for qualified, expression := range entry.Mocks {
 			hints.Mocks[qualified] = expression
 		}
+	}
+	if entry.Receiver != nil && strings.TrimSpace(entry.Receiver.Expression) != "" {
+		receiver := *entry.Receiver
+		hints.Receiver = &receiver
 	}
 	return hints
 }

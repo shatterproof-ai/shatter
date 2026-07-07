@@ -37,15 +37,16 @@ When adding a protocol message type or parsing function, add both. Seed corpus f
 
 ## E2E Pipeline Gate (str-3op0)
 
-`shatter-core/tests/e2e_concolic_go.rs` is the Go frontend's full-pipeline gate. It drives the real `shatter-go` subprocess through analyze → instrument → orchestrator-driven explore → Z3 solve against three known-answer Go targets covering distinct shapes:
+`shatter-core/tests/e2e_concolic_go.rs` is the Go frontend's full-pipeline gate. It drives the real `shatter-go` subprocess through analyze → instrument → orchestrator-driven explore → Z3 solve against known-answer Go targets covering distinct shapes:
 
 - **Free function with branches** — `<examples>/standalone/go/01-arithmetic.go::ClassifyNumber` (4 branches).
 - **Method with same-package constructor** — `examples/go/service-method/svc.go::(*Service).Compute` (planner-emitted plan attached via `ExploreConfig::default_execute_plan`).
+- **Method with configured receiver recipe** — `examples/go/configured-receiver/service.go::(*Service).Classify` (config-backed `configured:<label>` receiver dispatch beats an auto-discovered constructor).
 - **Variadic helper** — `examples/go/variadic-sum/sum.go::SumThreshold` (exercises the launcher's variadic-wrapper path that str-jeen.48 fixed).
 
 Each case asserts both expected branches discovered AND at least one triggering input per branch (modeled on the TS counterpart `shatter-core/tests/e2e_concolic.rs`). The tests are `#[ignore]`d so plain `cargo test` stays fast; `task check` (Full tier) runs them via `cargo test -p shatter-core -- --include-ignored`.
 
-Run after any change to: the Go analyzer, instrumentor, launcher, wrapper generator, planner, prepared-launcher path, or any execute-response field the orchestrator consumes. Adding a new launcher / wrapper code path that the existing three shapes don't cover requires adding a fourth test case here before closing.
+Run after any change to: the Go analyzer, instrumentor, launcher, wrapper generator, planner, prepared-launcher path, or any execute-response field the orchestrator consumes. Adding a new launcher / wrapper code path that the existing shapes don't cover requires adding a test case here before closing.
 
 ## Ite SymExpr Parity Contract
 
@@ -234,12 +235,13 @@ The sandbox runner contains local filesystem writes, but it does not yet emit `f
 
 ## Hint Config v1 Contract (str-hy9b.G3)
 
-`shatter-go/config/loader.go` parses `policy`, `defaults`, `mocks`, and `generators` sections of each `functions.<glob>` entry in `.shatter/config.yaml`. Unknown top-level and per-function keys are surfaced via `File.Warnings` rather than failing the parse; most-specific-match-wins (handled by `MatchTarget`) extends to the new sections unchanged.
+`shatter-go/config/loader.go` parses `policy`, `defaults`, `mocks`, `generators`, and `receiver` sections of each `functions.<glob>` entry in `.shatter/config.yaml`. Unknown top-level and per-function keys are surfaced via `File.Warnings` rather than failing the parse; most-specific-match-wins (handled by `MatchTarget`) extends to the new sections unchanged.
 
 Wired end-to-end today:
 - `defaults`: per-parameter literal overrides flow into `planner.ParamPlanOptions.HintsByName` and become top-priority `ValuePlan`s, taking precedence over `classifyParamFamily` defaults.
 - `generators`: per-parameter runtime-value registry name flows into `planner.ParamPlanOptions.GeneratorsByName`; `PlanParam` consults the named registry entry before falling back to primitive families. An unknown generator name yields `UnsatisfiedRequirementKindComplexType` so config typos surface.
 - `policy.allow`: unchanged from the G4 contract above.
+- `receiver`: per-method receiver recipes flow into `planner.PerTargetHints.Receiver`; `PlanReceivers` emits a top-priority configured receiver plan with `receiver_kind` `configured:<label>` (or `configured` when the label is empty), ahead of auto-discovered receiver strategies so it is not capped out by `MaxReceiverPlans`. `shatter-go/wrapper` reads the same config from the source file to emit a matching receiver-kind switch case using the configured Go expression and imports. Missing or whitespace-only receiver expressions are warned by the config loader and ignored by planner/wrapper wiring.
 
 Mocks are wired end-to-end via execute-time call-site substitution (str-c8djq):
 - The loader parses the `mocks` map (`config.FunctionConfig.Mocks`, `map[qualifiedFunc]goExpression`) and the planner still emits sorted, target-scoped `planner.MockSpec` entries via `planner.ResolveMockSpecs` for planning/reporting.

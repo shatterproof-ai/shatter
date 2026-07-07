@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/planner"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 	"pgregory.net/rapid"
@@ -192,6 +193,52 @@ func TestPlanRequirements_PerTargetHints_GeneratorApplied(t *testing.T) {
 	}
 	if arg.TypeHint != "context.Context" {
 		t.Errorf("arg.TypeHint = %q, want context.Context", arg.TypeHint)
+	}
+}
+
+func TestPlanRequirements_PerTargetHints_ConfiguredReceiverApplied(t *testing.T) {
+	t.Parallel()
+	analysis := &protocol.FunctionAnalysis{
+		Name:       "(*Service).Run",
+		SourceFile: "service.go",
+	}
+	target := &protocol.DiscoveredTarget{
+		ID:   "pkg:(*Service).Run",
+		Kind: protocol.TargetKindMethod,
+		Receiver: &protocol.ReceiverShape{
+			TypeName:  "Service",
+			IsPointer: true,
+		},
+	}
+	lookup := func(string) *protocol.TargetContext {
+		return &protocol.TargetContext{
+			Analysis:                     analysis,
+			Target:                       target,
+			ReceiverRequiresConstruction: true,
+		}
+	}
+	hints := planner.PerTargetHints{
+		Receiver: &config.ReceiverConfig{
+			Label:      "seeded_service",
+			Expression: "&Service{backend: fakeBackend{}}",
+		},
+	}
+	opts := planner.PlanRequirementsOptions{
+		PerTargetHints: func(string) planner.PerTargetHints { return hints },
+	}
+	plans, unsat := planner.PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: "pkg:(*Service).Run"}},
+		lookup,
+		opts,
+	)
+	if len(unsat) != 0 {
+		t.Fatalf("unexpected unsatisfied: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one configured receiver plan")
+	}
+	if plans[0].ReceiverKind != "configured:seeded_service" {
+		t.Fatalf("plans[0].ReceiverKind = %q, want configured:seeded_service; plans=%+v", plans[0].ReceiverKind, plans)
 	}
 }
 

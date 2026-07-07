@@ -196,6 +196,291 @@ func TestGenerateWrapper_InitializedMapsReceiverKind(t *testing.T) {
 	}
 }
 
+func TestGenerateWrapper_ConfiguredReceiverKind(t *testing.T) {
+	target := WrapperTarget{
+		ID:            "example.com/fixture:(*Service).Run",
+		SymbolName:    "Run",
+		Kind:          TargetKindMethod,
+		ReceiverType:  "Service",
+		IsPointerRecv: true,
+		ConfiguredReceivers: []ConfiguredReceiver{{
+			ReceiverKind: "configured:seeded_service",
+			Expression:   "&Service{backend: fakeBackend{}}",
+			Imports:      []string{"example.com/fixture/fakes"},
+		}},
+		HasResult:     true,
+		ResultGoType:  "int",
+		ResultGoTypes: []string{"int"},
+		ResultCount:   1,
+		Imports:       []string{"example.com/fixture/fakes"},
+	}
+	out := GenerateWrapper("fixture", []WrapperTarget{target}, nil)
+
+	if !strings.Contains(out, `"example.com/fixture/fakes"`) {
+		t.Fatalf("generated wrapper missing configured receiver import; source:\n%s", out)
+	}
+	if !strings.Contains(out, `case "configured:seeded_service":`) {
+		t.Fatalf("generated wrapper missing configured receiver case; source:\n%s", out)
+	}
+	if !strings.Contains(out, `_recv := &Service{backend: fakeBackend{}}`) {
+		t.Fatalf("generated wrapper missing configured receiver expression; source:\n%s", out)
+	}
+}
+
+func TestBuildWrapperTargets_ConfiguredReceiverFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".shatter"), 0o755); err != nil {
+		t.Fatalf("mkdir .shatter: %v", err)
+	}
+	configPath := filepath.Join(dir, ".shatter", "config.yaml")
+	configText := `functions:
+  "service.go:(*Service).Run":
+    receiver:
+      label: seeded_service
+      expression: |
+        &Service{backend: 7}
+      imports:
+        - example.com/fixture/fakes
+`
+	if err := os.WriteFile(configPath, []byte(configText), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "service.go")
+	src := `package fixture
+
+type Service struct {
+	backend int
+}
+
+func (s *Service) Run() int {
+	return s.backend
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, sourcePath, src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("fixture", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "fixture",
+		PkgPath:   "example.com/fixture",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+		Fset:      fset,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	got := targets[0]
+	if len(got.ConfiguredReceivers) != 1 {
+		t.Fatalf("configured receivers = %+v, want one", got.ConfiguredReceivers)
+	}
+	receiver := got.ConfiguredReceivers[0]
+	if receiver.ReceiverKind != "configured:seeded_service" {
+		t.Fatalf("receiver kind = %q, want configured:seeded_service", receiver.ReceiverKind)
+	}
+	if strings.TrimSpace(receiver.Expression) != "&Service{backend: 7}" {
+		t.Fatalf("receiver expression = %q", receiver.Expression)
+	}
+	if !slices.Contains(got.Imports, "example.com/fixture/fakes") {
+		t.Fatalf("target imports = %v, want configured receiver import", got.Imports)
+	}
+
+	out := GenerateWrapper("fixture", targets, nil)
+	if !strings.Contains(out, `"example.com/fixture/fakes"`) {
+		t.Fatalf("generated wrapper missing configured receiver import; source:\n%s", out)
+	}
+	if !strings.Contains(out, `case "configured:seeded_service":`) {
+		t.Fatalf("generated wrapper missing configured receiver case; source:\n%s", out)
+	}
+	if !strings.Contains(out, `_recv := &Service{backend: 7}`) {
+		t.Fatalf("generated wrapper missing configured receiver expression; source:\n%s", out)
+	}
+}
+
+func TestBuildWrapperTargets_ConfiguredReceiverUsesOriginalSourceForMaterializedFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".shatter"), 0o755); err != nil {
+		t.Fatalf("mkdir .shatter: %v", err)
+	}
+	configText := `functions:
+  "service.go:(*Service).Run":
+    receiver:
+      label: seeded_service
+      expression: |
+        &Service{backend: 7}
+      imports:
+        - example.com/fixture/fakes
+`
+	if err := os.WriteFile(filepath.Join(dir, ".shatter", "config.yaml"), []byte(configText), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	originalSource := filepath.Join(dir, "service.go")
+	src := `package fixture
+
+type Service struct {
+	backend int
+}
+
+func (s *Service) Run() int {
+	return s.backend
+}
+`
+	if err := os.WriteFile(originalSource, []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	materializedDir := filepath.Join(t.TempDir(), "loader", "materialized", "abc123")
+	if err := os.MkdirAll(materializedDir, 0o755); err != nil {
+		t.Fatalf("mkdir materialized: %v", err)
+	}
+	materializedSource := filepath.Join(materializedDir, "service.go")
+	if err := os.WriteFile(materializedSource, []byte(src), 0o644); err != nil {
+		t.Fatalf("write materialized source: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, materializedSource, src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("fixture", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "fixture",
+		PkgPath:   "example.com/fixture",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+		Fset:      fset,
+	}
+
+	withoutOverride := BuildWrapperTargets(pkg)
+	if len(withoutOverride) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(withoutOverride))
+	}
+	if len(withoutOverride[0].ConfiguredReceivers) != 0 {
+		t.Fatalf("configured receivers without source override = %+v, want none", withoutOverride[0].ConfiguredReceivers)
+	}
+
+	targets := BuildWrapperTargetsForSource(pkg, originalSource)
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargetsForSource produced %d targets, want 1", len(targets))
+	}
+	got := targets[0]
+	if len(got.ConfiguredReceivers) != 1 {
+		t.Fatalf("configured receivers = %+v, want one", got.ConfiguredReceivers)
+	}
+	receiver := got.ConfiguredReceivers[0]
+	if receiver.ReceiverKind != "configured:seeded_service" {
+		t.Fatalf("receiver kind = %q, want configured:seeded_service", receiver.ReceiverKind)
+	}
+	if strings.TrimSpace(receiver.Expression) != "&Service{backend: 7}" {
+		t.Fatalf("receiver expression = %q", receiver.Expression)
+	}
+	if !slices.Contains(got.Imports, "example.com/fixture/fakes") {
+		t.Fatalf("target imports = %v, want configured receiver import", got.Imports)
+	}
+}
+
+func TestBuildWrapperTargets_FreeFunctionIgnoresReceiverConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".shatter"), 0o755); err != nil {
+		t.Fatalf("mkdir .shatter: %v", err)
+	}
+	configText := `functions:
+  "service.go:Run":
+    receiver:
+      label: seeded_service
+      expression: |
+        &Service{}
+      imports:
+        - example.com/fixture/fakes
+`
+	if err := os.WriteFile(filepath.Join(dir, ".shatter", "config.yaml"), []byte(configText), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	sourcePath := filepath.Join(dir, "service.go")
+	src := `package fixture
+
+func Run() int {
+	return 1
+}
+`
+	if err := os.WriteFile(sourcePath, []byte(src), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, sourcePath, src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	info := &types.Info{
+		Defs:  map[*ast.Ident]types.Object{},
+		Uses:  map[*ast.Ident]types.Object{},
+		Types: map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.Default()}
+	tpkg, err := conf.Check("fixture", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	pkg := &packages.Package{
+		Name:      "fixture",
+		PkgPath:   "example.com/fixture",
+		Syntax:    []*ast.File{file},
+		Types:     tpkg,
+		TypesInfo: info,
+		Fset:      fset,
+	}
+
+	targets := BuildWrapperTargets(pkg)
+	if len(targets) != 1 {
+		t.Fatalf("BuildWrapperTargets produced %d targets, want 1", len(targets))
+	}
+	got := targets[0]
+	if len(got.ConfiguredReceivers) != 0 {
+		t.Fatalf("configured receivers = %+v, want none for free function", got.ConfiguredReceivers)
+	}
+	if slices.Contains(got.Imports, "example.com/fixture/fakes") {
+		t.Fatalf("target imports = %v, should not include receiver-only import for free function", got.Imports)
+	}
+
+	out := GenerateWrapper("fixture", targets, nil)
+	if strings.Contains(out, "example.com/fixture/fakes") {
+		t.Fatalf("generated wrapper should not import free-function receiver dependency; source:\n%s", out)
+	}
+	if strings.Contains(out, "configured:seeded_service") {
+		t.Fatalf("generated wrapper should not emit receiver case for free function; source:\n%s", out)
+	}
+}
+
 func TestBuildWrapperTargets_InitializedMapsSkipsNonMapHiddenState(t *testing.T) {
 	const src = `package fixture
 
