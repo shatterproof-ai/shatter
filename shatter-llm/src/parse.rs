@@ -168,6 +168,31 @@ mod tests {
         assert_eq!(got[0], vec![json!(7), json!("b")]);
     }
 
+    /// str-pjlc1: domain members pass the type gate even for a pure-domain
+    /// union (variants: []); non-members without a matching variant are
+    /// dropped.
+    #[test]
+    fn accepts_enum_domain_members_and_drops_nonmembers() {
+        let enum_typ = || TypeInfo::Union {
+            variants: vec![],
+            enum_values: vec![json!("RED"), json!("GREEN")],
+        };
+        let raw = r#"[{"c": "RED"}, {"c": "zzz"}, {"c": "GREEN"}]"#;
+        let got = parse_response(raw, &[pi("c", enum_typ())], &[]);
+        assert_eq!(got.len(), 2, "non-member should be dropped; got {got:?}");
+        assert_eq!(got[0], vec![json!("RED")]);
+        assert_eq!(got[1], vec![json!("GREEN")]);
+
+        // With a base variant, off-domain values of the base type still pass
+        // (the decode-rejection probe path stays available to the oracle).
+        let with_base = TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: vec![json!("RED")],
+        };
+        let got = parse_response(r#"[{"c": "zzz"}]"#, &[pi("c", with_base)], &[]);
+        assert_eq!(got.len(), 1);
+    }
+
     #[test]
     fn drops_duplicates_of_attempted() {
         let raw = r#"[{"x": 1}, {"x": 2}, {"x": 3}]"#;

@@ -1489,7 +1489,7 @@ func basicTypeInfo(b *types.Basic) TypeInfo {
 	// str-cfsa: unsigned integer types (excluding uint8/byte, handled above
 	// as GoByte) map to the go_uint complex kind so generated values stay
 	// non-negative and json.Unmarshal into uint/uint16/uint32/uint64 succeeds.
-	if k := b.Kind(); k == types.Uint || k == types.Uint16 || k == types.Uint32 || k == types.Uint64 {
+	if k := b.Kind(); k == types.Uint || k == types.Uint16 || k == types.Uint32 || k == types.Uint64 || k == types.Uintptr {
 		return TypeInfo{Kind: "complex", ComplexKind: "go_uint"}
 	}
 	switch {

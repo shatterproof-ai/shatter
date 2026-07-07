@@ -426,6 +426,27 @@ mod tests {
         });
     }
 
+    /// str-pjlc1 cross-review: an unsigned Go enum member above i64::MAX must
+    /// survive the wire byte-exact. This parses the JSON exactly as the Go
+    /// frontend emits it (encoding/json writes uint64 as a plain decimal) and
+    /// asserts serde_json keeps it as a u64, not a lossy f64.
+    #[test]
+    fn union_enum_values_preserve_u64_above_i64_max() {
+        let wire = r#"{"kind":"union","variants":[{"kind":"complex","complex_kind":"go_uint"}],"enum_values":[0,2,9223372036854775808]}"#;
+        let parsed: TypeInfo = serde_json::from_str(wire).expect("deserialize");
+        let TypeInfo::Union { enum_values, .. } = &parsed else {
+            panic!("expected union, got {parsed:?}");
+        };
+        assert_eq!(enum_values[2].as_u64(), Some(9_223_372_036_854_775_808));
+        assert!(
+            enum_values[2].as_f64() != Some(9_223_372_036_854_775_807.0) || enum_values[2].is_u64(),
+            "must not degrade to f64"
+        );
+        // And it re-serializes byte-exact.
+        let out = serde_json::to_string(&enum_values[2]).expect("serialize");
+        assert_eq!(out, "9223372036854775808");
+    }
+
     #[test]
     fn sized_int_round_trips() {
         round_trip(&TypeInfo::Int {
