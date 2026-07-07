@@ -234,12 +234,13 @@ The sandbox runner contains local filesystem writes, but it does not yet emit `f
 
 ## Hint Config v1 Contract (str-hy9b.G3)
 
-`shatter-go/config/loader.go` parses `policy`, `defaults`, `mocks`, and `generators` sections of each `functions.<glob>` entry in `.shatter/config.yaml`. Unknown top-level and per-function keys are surfaced via `File.Warnings` rather than failing the parse; most-specific-match-wins (handled by `MatchTarget`) extends to the new sections unchanged.
+`shatter-go/config/loader.go` parses `policy`, `defaults`, `mocks`, `generators`, and `receiver` sections of each `functions.<glob>` entry in `.shatter/config.yaml`. Unknown top-level and per-function keys are surfaced via `File.Warnings` rather than failing the parse; most-specific-match-wins (handled by `MatchTarget`) extends to the new sections unchanged.
 
 Wired end-to-end today:
 - `defaults`: per-parameter literal overrides flow into `planner.ParamPlanOptions.HintsByName` and become top-priority `ValuePlan`s, taking precedence over `classifyParamFamily` defaults.
 - `generators`: per-parameter runtime-value registry name flows into `planner.ParamPlanOptions.GeneratorsByName`; `PlanParam` consults the named registry entry before falling back to primitive families. An unknown generator name yields `UnsatisfiedRequirementKindComplexType` so config typos surface.
 - `policy.allow`: unchanged from the G4 contract above.
+- `receiver`: per-method receiver recipes flow into `planner.PerTargetHints.Receiver`; `PlanReceivers` emits a configured receiver plan with `receiver_kind` `configured:<label>` (or `configured` when the label is empty), and `shatter-go/wrapper` reads the same config from the source file to emit a matching receiver-kind switch case using the configured Go expression and imports.
 
 Mocks are wired end-to-end via execute-time call-site substitution (str-c8djq):
 - The loader parses the `mocks` map (`config.FunctionConfig.Mocks`, `map[qualifiedFunc]goExpression`) and the planner still emits sorted, target-scoped `planner.MockSpec` entries via `planner.ResolveMockSpecs` for planning/reporting.

@@ -60,18 +60,19 @@ type TypeParamInfo struct {
 // WrapperTarget is an enriched description of a discovered invocation target
 // with Go-level type information for code generation.
 type WrapperTarget struct {
-	ID                string // stable target ID, e.g. "example.com/pkg:Add"
-	SymbolName        string // bare function or method name
-	Kind              TargetKind
-	ReceiverType      string // bare type name (without *) for method targets
-	IsPointerRecv     bool   // true for (*T).Method receivers
-	ReceiverMapFields []ReceiverMapField
-	Parameters        []WrapperParam
-	TypeParams        []TypeParamInfo
-	HasResult         bool
-	ResultGoType      string // Go type string for the first return value
-	ResultGoTypes     []string
-	ResultCount       int // total number of return values (0 when HasResult is false)
+	ID                  string // stable target ID, e.g. "example.com/pkg:Add"
+	SymbolName          string // bare function or method name
+	Kind                TargetKind
+	ReceiverType        string // bare type name (without *) for method targets
+	IsPointerRecv       bool   // true for (*T).Method receivers
+	ReceiverMapFields   []ReceiverMapField
+	ConfiguredReceivers []ConfiguredReceiver
+	Parameters          []WrapperParam
+	TypeParams          []TypeParamInfo
+	HasResult           bool
+	ResultGoType        string // Go type string for the first return value
+	ResultGoTypes       []string
+	ResultCount         int // total number of return values (0 when HasResult is false)
 	// Imports lists the import paths required by qualified type names that the
 	// generated wrapper source actually references. Today that means parameter
 	// types such as `context.Context`, `*pgx.Conn`, or `gqlerror.Error`; result
@@ -88,6 +89,13 @@ type WrapperTarget struct {
 type ReceiverMapField struct {
 	Name   string
 	GoType string
+}
+
+// ConfiguredReceiver describes a config-backed receiver construction case.
+type ConfiguredReceiver struct {
+	ReceiverKind string
+	Expression   string
+	Imports      []string
 }
 
 const (
@@ -164,6 +172,17 @@ func targetSignature(t WrapperTarget) string {
 		b.WriteString(f.Name)
 		b.WriteByte('/')
 		b.WriteString(f.GoType)
+	}
+	b.WriteByte(':')
+	for i, r := range t.ConfiguredReceivers {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(r.ReceiverKind)
+		b.WriteByte('/')
+		b.WriteString(r.Expression)
+		b.WriteByte('/')
+		b.WriteString(strings.Join(sortedStrings(r.Imports), ","))
 	}
 	b.WriteByte(':')
 	// Parameter signatures: type, variadic flag, and runtime-value expression.
@@ -429,6 +448,16 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			writeReceiverMapFieldInitializers(b, t.ReceiverMapFields, "\t\t\t\t")
 			b.WriteString("\t\t\t}\n")
 		}
+		writeParamDeserialization(b, t.Parameters, "\t\t\t")
+		writeCall(b, t, "_recv", nil, "\t\t\t")
+	}
+
+	for _, receiver := range t.ConfiguredReceivers {
+		if strings.TrimSpace(receiver.ReceiverKind) == "" || strings.TrimSpace(receiver.Expression) == "" {
+			continue
+		}
+		fmt.Fprintf(b, "\t\tcase %q:\n", receiver.ReceiverKind)
+		fmt.Fprintf(b, "\t\t\t_recv := %s\n", strings.TrimSpace(receiver.Expression))
 		writeParamDeserialization(b, t.Parameters, "\t\t\t")
 		writeCall(b, t, "_recv", nil, "\t\t\t")
 	}
@@ -1594,6 +1623,14 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		pkgTypesPath = pkg.Types.Path()
 	}
 	receiverMapFields := collectReceiverMapFields(pkg, recvType, pkgTypesPath, importSet)
+	configuredReceivers := configuredReceiversForFunc(fn, pkg)
+	for _, receiver := range configuredReceivers {
+		for _, importPath := range receiver.Imports {
+			if trimmed := strings.TrimSpace(importPath); trimmed != "" {
+				importSet[trimmed] = struct{}{}
+			}
+		}
+	}
 	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, pkgTypesPath, importSet)
 	// str-gxjs.1: bind runtime-value expressions for parameter types the
 	// planner's registry can satisfy (context.Context → context.Background(),
@@ -1635,19 +1672,20 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	sort.Strings(imports)
 
 	return &WrapperTarget{
-		ID:                id,
-		SymbolName:        fn.Name.Name,
-		Kind:              kind,
-		ReceiverType:      recvType,
-		IsPointerRecv:     isPtr,
-		ReceiverMapFields: receiverMapFields,
-		Parameters:        params,
-		TypeParams:        typeParams,
-		HasResult:         hasResult,
-		ResultGoType:      resultGoType,
-		ResultGoTypes:     resultGoTypes,
-		ResultCount:       resultCount,
-		Imports:           imports,
+		ID:                  id,
+		SymbolName:          fn.Name.Name,
+		Kind:                kind,
+		ReceiverType:        recvType,
+		IsPointerRecv:       isPtr,
+		ReceiverMapFields:   receiverMapFields,
+		ConfiguredReceivers: configuredReceivers,
+		Parameters:          params,
+		TypeParams:          typeParams,
+		HasResult:           hasResult,
+		ResultGoType:        resultGoType,
+		ResultGoTypes:       resultGoTypes,
+		ResultCount:         resultCount,
+		Imports:             imports,
 	}
 }
 
@@ -2161,6 +2199,29 @@ func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map
 	return file.GoRuntimeValues
 }
 
+func configuredReceiversForFunc(fn *ast.FuncDecl, pkg *packages.Package) []ConfiguredReceiver {
+	if fn == nil || pkg == nil || pkg.Fset == nil {
+		return nil
+	}
+	sourceFile := pkg.Fset.Position(fn.Pos()).Filename
+	if sourceFile == "" {
+		return nil
+	}
+	file, err := config.Load(sourceFile)
+	if err != nil {
+		return nil
+	}
+	entry := file.MatchTarget(config.TargetRelpath(sourceFile), wrapperQualifiedName(fn))
+	if entry.Receiver == nil || strings.TrimSpace(entry.Receiver.Expression) == "" {
+		return nil
+	}
+	return []ConfiguredReceiver{{
+		ReceiverKind: entry.Receiver.ReceiverKind(),
+		Expression:   entry.Receiver.Expression,
+		Imports:      append([]string(nil), entry.Receiver.Imports...),
+	}}
+}
+
 func configuredRuntimeValue(typeName string, configured map[string]config.GoRuntimeValueConfig, pkgName string) (config.GoRuntimeValueConfig, bool) {
 	if len(configured) == 0 {
 		return config.GoRuntimeValueConfig{}, false
@@ -2629,6 +2690,19 @@ func collectExtraImports(targets []WrapperTarget, constructors []ConstructorCand
 				continue
 			}
 			seen[trimmed] = struct{}{}
+		}
+		for _, receiver := range t.ConfiguredReceivers {
+			for _, importPath := range receiver.Imports {
+				trimmed := strings.TrimSpace(importPath)
+				if trimmed == "" {
+					continue
+				}
+				switch trimmed {
+				case coreImportJSON, coreImportFmt:
+					continue
+				}
+				seen[trimmed] = struct{}{}
+			}
 		}
 	}
 	for _, c := range constructors {

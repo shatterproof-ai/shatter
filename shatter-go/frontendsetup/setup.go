@@ -92,5 +92,9 @@ func translateHintConfig(entry config.FunctionConfig) planner.PerTargetHints {
 			hints.Mocks[qualified] = expression
 		}
 	}
+	if entry.Receiver != nil && entry.Receiver.Expression != "" {
+		receiver := *entry.Receiver
+		hints.Receiver = &receiver
+	}
 	return hints
 }

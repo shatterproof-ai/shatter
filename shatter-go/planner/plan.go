@@ -73,6 +73,8 @@ type PerTargetHints struct {
 	// ConfiguredRuntimeValues supplies exact type-spelling runtime values from
 	// the project-level go_runtime_values config section.
 	ConfiguredRuntimeValues map[string]config.GoRuntimeValueConfig
+	// Receiver supplies a configured method receiver recipe.
+	Receiver *config.ReceiverConfig
 }
 
 // MockSpec is the planner's representation of a single hint_config_v1 mock
@@ -223,9 +225,11 @@ func planMethod(
 	if len(constructorInterfaceImpls) == 0 {
 		constructorInterfaceImpls = ctx.InterfaceImplsByParam
 	}
+	hints := hintsForRequirement(req.TargetID, opts)
 	receiverPlans, receiverUnsat := PlanReceivers(*target, PlanOptions{
 		SamePackageConstructors:         ctx.Constructors,
 		ReceiverIsCompositeLiteralSafe:  false,
+		Hint:                            receiverHintFromConfig(hints.Receiver),
 		ReceiverRequiresConstruction:    ctx.ReceiverRequiresConstruction,
 		ReceiverSupportsInitializedMaps: ctx.ReceiverSupportsInitializedMaps,
 		MaxPlans:                        opts.MaxReceiverPlans,
@@ -236,7 +240,7 @@ func planMethod(
 		return nil, []protocol.UnsatisfiedRequirement{*receiverUnsat}
 	}
 
-	paramOpts := paramOptionsForRequirement(req.TargetID, opts)
+	paramOpts := paramOptionsFromHints(hints, opts)
 	// str-4v9h: propagate interface impl candidates for method targets too.
 	if len(ctx.InterfaceImplsByParam) > 0 {
 		paramOpts.InterfaceImplsByParam = ctx.InterfaceImplsByParam
@@ -251,20 +255,38 @@ func planMethod(
 }
 
 func paramOptionsForRequirement(targetID string, opts PlanRequirementsOptions) ParamPlanOptions {
+	return paramOptionsFromHints(hintsForRequirement(targetID, opts), opts)
+}
+
+func hintsForRequirement(targetID string, opts PlanRequirementsOptions) PerTargetHints {
+	if opts.PerTargetHints == nil {
+		return PerTargetHints{}
+	}
+	return opts.PerTargetHints(targetID)
+}
+
+func paramOptionsFromHints(hints PerTargetHints, opts PlanRequirementsOptions) ParamPlanOptions {
 	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
-	if opts.PerTargetHints != nil {
-		hints := opts.PerTargetHints(targetID)
-		if len(hints.Defaults) > 0 {
-			paramOpts.HintsByName = hints.Defaults
-		}
-		if len(hints.Generators) > 0 {
-			paramOpts.GeneratorsByName = hints.Generators
-		}
-		if len(hints.ConfiguredRuntimeValues) > 0 {
-			paramOpts.ConfiguredRuntimeValues = hints.ConfiguredRuntimeValues
-		}
+	if len(hints.Defaults) > 0 {
+		paramOpts.HintsByName = hints.Defaults
+	}
+	if len(hints.Generators) > 0 {
+		paramOpts.GeneratorsByName = hints.Generators
+	}
+	if len(hints.ConfiguredRuntimeValues) > 0 {
+		paramOpts.ConfiguredRuntimeValues = hints.ConfiguredRuntimeValues
 	}
 	return paramOpts
+}
+
+func receiverHintFromConfig(receiver *config.ReceiverConfig) *ReceiverHint {
+	if receiver == nil || receiver.Expression == "" {
+		return nil
+	}
+	return &ReceiverHint{
+		ReceiverKind: receiver.ReceiverKind(),
+		Label:        receiver.Label,
+	}
 }
 
 func planWithGenericArgs(

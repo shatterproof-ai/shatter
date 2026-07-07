@@ -42,6 +42,24 @@ type GoRuntimeValueConfig struct {
 	Imports    []string `yaml:"imports,omitempty"`
 }
 
+// ReceiverConfig is a user-supplied method receiver recipe. Expression is
+// pasted into the generated same-package wrapper as the receiver value, and
+// Imports lists any unaliased import paths the expression needs.
+type ReceiverConfig struct {
+	Label      string   `yaml:"label,omitempty"`
+	Expression string   `yaml:"expression"`
+	Imports    []string `yaml:"imports,omitempty"`
+}
+
+// ReceiverKind returns the wrapper-facing receiver token for this recipe.
+func (r ReceiverConfig) ReceiverKind() string {
+	label := strings.TrimSpace(r.Label)
+	if label == "" {
+		return "configured"
+	}
+	return "configured:" + label
+}
+
 // FunctionConfig is the per-target entry. Only known sections are decoded;
 // unrecognized keys are reported via File.Warnings for forward compatibility.
 type FunctionConfig struct {
@@ -65,6 +83,10 @@ type FunctionConfig struct {
 	// Go-source type spelling registered with the planner's runtime-value
 	// registry (e.g. "context.Context", "*bytes.Buffer").
 	Generators map[string]string `yaml:"generators,omitempty"`
+
+	// Receiver supplies a method receiver construction recipe for targets
+	// whose useful behavior requires initialized receiver fields.
+	Receiver *ReceiverConfig `yaml:"receiver,omitempty"`
 }
 
 // PolicyConfig carries the user-facing safety policy overrides.
@@ -296,6 +318,7 @@ var (
 		"defaults":   {},
 		"mocks":      {},
 		"generators": {},
+		"receiver":   {},
 	}
 )
 
