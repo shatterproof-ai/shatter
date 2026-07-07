@@ -232,7 +232,7 @@ fn json_matches_type(value: &Value, ty: &TypeInfo) -> bool {
                     .is_some_and(|v| json_matches_type(v, field_ty))
             })
         }
-        (_, TypeInfo::Union { variants }) => variants.iter().any(|v| json_matches_type(value, v)),
+        (_, TypeInfo::Union { variants, .. }) => variants.iter().any(|v| json_matches_type(value, v)),
         // Unknown/Complex/Opaque — can't validate statically, accept anything.
         (_, TypeInfo::Unknown | TypeInfo::Complex { .. } | TypeInfo::Opaque { .. }) => true,
         _ => false,
@@ -738,6 +738,7 @@ mod tests {
                 vec![json!(42), json!("hello")],
                 TypeInfo::Union {
                     variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
+                    enum_values: Vec::new(),
                 },
             )],
             vec![],

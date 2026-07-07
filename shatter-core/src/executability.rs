@@ -478,7 +478,7 @@ fn find_blocking_opaque_node(
             }
             None
         }
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union { variants, .. } => {
             for variant in variants {
                 path.push(PathSegment::UnionVariant);
                 if let Some(result) = find_blocking_opaque_node(variant, path) {
@@ -906,6 +906,7 @@ mod tests {
                         medium_opacity: None,
                     },
                 ],
+                enum_values: Vec::new(),
             },
         )];
         let reasons = check_executability(&params, &[]);

@@ -383,7 +383,10 @@ pub fn arb_type_info(depth: u32) -> BoxedStrategy<TypeInfo> {
                 )
                 .prop_map(|fields| TypeInfo::Object { fields }),
             1 => prop::collection::vec(arb_type_info(depth - 1), 2..=4)
-                .prop_map(|variants| TypeInfo::Union { variants }),
+                .prop_map(|variants| TypeInfo::Union {
+                    variants,
+                    enum_values: Vec::new(),
+                }),
             1 => arb_type_info(depth - 1)
                 .prop_map(|inner| TypeInfo::Nullable { inner: Box::new(inner) }),
         ]

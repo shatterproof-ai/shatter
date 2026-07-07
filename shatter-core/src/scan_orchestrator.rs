@@ -6100,7 +6100,7 @@ fn format_type(ty: &TypeInfo) -> String {
                 format!("{{{}}}", field_strs.join(", "))
             }
         }
-        TypeInfo::Union { variants } => variants
+        TypeInfo::Union { variants, .. } => variants
             .iter()
             .map(format_type)
             .collect::<Vec<_>>()

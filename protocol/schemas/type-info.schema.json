@@ -73,6 +73,11 @@
           "type": "array",
           "items": { "$ref": "#" },
           "description": "Possible type variants."
+        },
+        "enum_values": {
+          "type": "array",
+          "items": { "type": ["string", "number", "boolean"] },
+          "description": "Optional concrete value domain for named enum-like types (Go const sets, TS string-literal unions, Rust fieldless enums). When present the input generator draws valid members directly, mixing in off-domain probes from `variants` so decoder-rejection paths stay covered (str-pjlc1)."
         }
       },
       "required": ["kind", "variants"]
