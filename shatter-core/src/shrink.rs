@@ -369,7 +369,7 @@ pub fn shrink_candidates(value: &Value, type_info: &TypeInfo) -> Vec<Value> {
         TypeInfo::Array { element } => shrink_array(value, element),
         TypeInfo::Object { fields } => shrink_object(value, fields),
         TypeInfo::Nullable { inner } => shrink_nullable(value, inner),
-        TypeInfo::Union { variants } => shrink_union(value, variants),
+        TypeInfo::Union { variants, .. } => shrink_union(value, variants),
         TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => Vec::new(),
     };
 
@@ -831,6 +831,7 @@ mod tests {
     fn shrink_union_collects_from_variants() {
         let typ = TypeInfo::Union {
             variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
+            enum_values: Vec::new(),
         };
         let candidates = shrink_candidates(&json!(10), &typ);
         // Int shrinks.

@@ -84,7 +84,7 @@ fn probe_values(typ: &TypeInfo) -> Vec<Value> {
             }
             vec![Value::Object(obj)]
         }
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union { variants, .. } => {
             // Probe values from each variant
             variants.iter().flat_map(probe_values).collect()
         }

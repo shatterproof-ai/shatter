@@ -179,6 +179,53 @@ func TestTypeInfoRoundTripNullable(t *testing.T) {
 	}
 }
 
+// str-pjlc1: a union carrying a concrete enum value domain must survive
+// marshal→unmarshal with the enum_values field intact and correctly typed
+// (string members here), so the Rust core receives the domain over the wire.
+func TestTypeInfoRoundTripUnionEnumValues(t *testing.T) {
+	ti := TypeInfo{
+		Kind:       "union",
+		Variants:   []TypeInfo{{Kind: "str"}},
+		EnumValues: []interface{}{"RED", "GREEN", "BLUE"},
+	}
+	data, err := json.Marshal(ti)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	want := `{"kind":"union","variants":[{"kind":"str"}],"enum_values":["RED","GREEN","BLUE"]}`
+	if string(data) != want {
+		t.Errorf("got %s, want %s", data, want)
+	}
+
+	var decoded TypeInfo
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.EnumValues) != 3 {
+		t.Fatalf("enum values len = %d, want 3", len(decoded.EnumValues))
+	}
+	if decoded.EnumValues[0] != "RED" {
+		t.Errorf("enum values[0] = %v, want RED", decoded.EnumValues[0])
+	}
+}
+
+// str-pjlc1: a plain type union (no value domain) must omit enum_values
+// entirely so existing consumers see byte-identical output.
+func TestTypeInfoRoundTripUnionOmitsEmptyEnumValues(t *testing.T) {
+	ti := TypeInfo{
+		Kind:     "union",
+		Variants: []TypeInfo{{Kind: "str"}, {Kind: "int"}},
+	}
+	data, err := json.Marshal(ti)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "enum_values") {
+		t.Errorf("plain union should omit enum_values, got %s", data)
+	}
+}
+
 func TestRequestDeserializeHandshake(t *testing.T) {
 	input := `{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["analyze","execute"]}`
 	var req Request

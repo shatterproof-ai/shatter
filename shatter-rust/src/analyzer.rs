@@ -968,7 +968,10 @@ fn convert_type_path(
         // Result<T, E> → Union
         "Result" => {
             let variants = extract_generic_args(seg, structs, enums, generic_params, converting);
-            TypeInfo::Union { variants }
+            TypeInfo::Union {
+                variants,
+                enum_values: Vec::new(),
+            }
         }
 
         // Smart pointers / wrappers → unwrap to inner
@@ -1081,8 +1084,11 @@ fn convert_type_path(
                     })
                     .collect();
                 converting.remove(&name);
+                // str-pjlc1: fieldless-enum value-domain extraction (populating
+                // enum_values here) is a tracked follow-up; plain type union for now.
                 TypeInfo::Union {
                     variants: variant_types,
+                    enum_values: Vec::new(),
                 }
             } else if name == "Value" {
                 // serde_json::Value (and other dynamic-JSON value types): ANY
@@ -2387,7 +2393,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Union {
-                variants: vec![int_ty(32, true), TypeInfo::Str]
+                variants: vec![int_ty(32, true), TypeInfo::Str],
+                enum_values: Vec::new(),
             }
         );
     }
@@ -3162,7 +3169,8 @@ mod tests {
                     TypeInfo::Unknown,
                     TypeInfo::Unknown,
                     TypeInfo::Unknown,
-                ]
+                ],
+                enum_values: Vec::new(),
             }
         );
     }
@@ -3190,7 +3198,8 @@ mod tests {
                         ]
                     },
                     TypeInfo::Unknown,
-                ]
+                ],
+                enum_values: Vec::new(),
             }
         );
     }
@@ -3210,7 +3219,8 @@ mod tests {
                         ("0".to_string(), int_ty(32, true)),
                         ("1".to_string(), TypeInfo::Str),
                     ]
-                }]
+                }],
+                enum_values: Vec::new(),
             }
         );
     }

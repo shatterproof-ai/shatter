@@ -275,6 +275,26 @@ While a `resolved` entry sits inside its 30-day grace window the validator only 
 
 ---
 
+### `enum-value-domain-partial`
+
+**Description:** The optional `enum_values` field on the TypeInfo `union` variant (str-pjlc1) carries a concrete value domain for named enum-like types. Go implements extraction — for a param whose type is a named string or integer type, the analyzer enumerates the constants of that exact type from the defining package's type-checked scope and emits them (capped at 64, warn-on-truncate). TypeScript and Rust accept and round-trip the field on the wire but do not yet emit it: TS string-literal-union/enum declarations and Rust fieldless enums still produce plain unions with no value domain. This is a value-coverage divergence (Go reaches the bodies of enum-guarded functions; TS/Rust rely on generic candidates), not a wire-shape divergence.
+
+**Affected frontends:** typescript, rust
+
+**Affected commands:** analyze
+
+**Status:** tracked
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-knf0v (TypeScript), str-2nfoe (Rust)
+
+**Resolution condition:** The TypeScript analyzer emits `enum_values` for enum declarations and string/numeric literal-union aliases, and the Rust analyzer emits `enum_values` for fieldless enums, matching Go's named-type → value-domain contract.
+
+**Resolution:** Extend each frontend's analyzer to populate `enum_values` from its native enum/literal-union representation, reusing the same union+enum_values wire shape Go already emits. Deferred to per-frontend follow-ups str-knf0v and str-2nfoe.
+
+---
+
 ## Adding a New Divergence
 
 When a new cross-frontend mismatch is discovered:

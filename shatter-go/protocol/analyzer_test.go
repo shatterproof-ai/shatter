@@ -1099,6 +1099,111 @@ func TestAnalyzeOpaqueTypes(t *testing.T) {
 	}
 }
 
+// str-pjlc1: named string/int types with a constant set (Go "enums") are
+// emitted as a union carrying the concrete value domain in EnumValues, so the
+// core can generate valid members that pass validating decoders. A named type
+// with no constants stays a plain scalar.
+func TestAnalyzeEnumValueDomain(t *testing.T) {
+	t.Run("string enum emits union with value domain", func(t *testing.T) {
+		results, err := AnalyzeFile(testdataPath("enum.go"), "ClassifyColor")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		p := results[0].Params[0]
+		if p.Type.Kind != "union" {
+			t.Fatalf("kind = %q, want union", p.Type.Kind)
+		}
+		if len(p.Type.Variants) != 1 || p.Type.Variants[0].Kind != "str" {
+			t.Errorf("variants = %+v, want single str base", p.Type.Variants)
+		}
+		got := map[string]bool{}
+		for _, v := range p.Type.EnumValues {
+			s, ok := v.(string)
+			if !ok {
+				t.Fatalf("enum value %v is %T, want string", v, v)
+			}
+			got[s] = true
+		}
+		for _, want := range []string{"RED", "GREEN", "BLUE"} {
+			if !got[want] {
+				t.Errorf("enum values %v missing %q", p.Type.EnumValues, want)
+			}
+		}
+		if len(p.Type.EnumValues) != 3 {
+			t.Errorf("enum values len = %d, want 3", len(p.Type.EnumValues))
+		}
+	})
+
+	t.Run("int iota enum emits integer value domain", func(t *testing.T) {
+		results, err := AnalyzeFile(testdataPath("enum.go"), "ClassifyPriority")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		p := results[0].Params[0]
+		if p.Type.Kind != "union" {
+			t.Fatalf("kind = %q, want union", p.Type.Kind)
+		}
+		if len(p.Type.Variants) != 1 || p.Type.Variants[0].Kind != "int" {
+			t.Errorf("variants = %+v, want single int base", p.Type.Variants)
+		}
+		got := map[int64]bool{}
+		for _, v := range p.Type.EnumValues {
+			n, ok := v.(int64)
+			if !ok {
+				t.Fatalf("enum value %v is %T, want int64", v, v)
+			}
+			got[n] = true
+		}
+		for _, want := range []int64{0, 1, 2} {
+			if !got[want] {
+				t.Errorf("enum values %v missing %d", p.Type.EnumValues, want)
+			}
+		}
+	})
+
+	t.Run("unsigned enum keeps > MaxInt64 members and go_uint base", func(t *testing.T) {
+		results, err := AnalyzeFile(testdataPath("enum.go"), "ClassifyFlag")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		p := results[0].Params[0]
+		if p.Type.Kind != "union" {
+			t.Fatalf("kind = %q, want union", p.Type.Kind)
+		}
+		if len(p.Type.Variants) != 1 || p.Type.Variants[0].Kind != "complex" ||
+			p.Type.Variants[0].ComplexKind != "go_uint" {
+			t.Errorf("variants = %+v, want single go_uint complex base (unsigned probes must decode)", p.Type.Variants)
+		}
+		got := map[uint64]bool{}
+		for _, v := range p.Type.EnumValues {
+			n, ok := v.(uint64)
+			if !ok {
+				t.Fatalf("enum value %v is %T, want uint64", v, v)
+			}
+			got[n] = true
+		}
+		for _, want := range []uint64{0, 2, 1 << 63} {
+			if !got[want] {
+				t.Errorf("enum values %v missing %d (Uint64Val must not drop > MaxInt64 members)", p.Type.EnumValues, want)
+			}
+		}
+	})
+
+	t.Run("constant-free named string stays plain string", func(t *testing.T) {
+		results, err := AnalyzeFile(testdataPath("enum.go"), "AcceptBare")
+		if err != nil {
+			t.Fatalf("AnalyzeFile: %v", err)
+		}
+		p := results[0].Params[0]
+		if p.Type.Kind != "str" {
+			t.Errorf("kind = %q, want str (no const set must not become a union)", p.Type.Kind)
+		}
+		if len(p.Type.EnumValues) != 0 {
+			t.Errorf("enum values = %v, want none", p.Type.EnumValues)
+		}
+	})
+}
+
 // str-gxjs: io.Reader / io.Writer / io.ReadCloser / http.ResponseWriter /
 // *http.Request / context.Context used to be flagged as opaque and the
 // function skipped before any planning attempt. The analyzer emits

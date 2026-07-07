@@ -431,7 +431,7 @@ fn format_type(typ: &TypeInfo) -> String {
                 format!("{{ {} }}", parts.join(", "))
             }
         }
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union { variants, .. } => {
             let parts: Vec<String> = variants.iter().map(format_type).collect();
             parts.join(" | ")
         }
@@ -1208,7 +1208,8 @@ mod tests {
         );
         assert_eq!(
             format_type(&TypeInfo::Union {
-                variants: vec![TypeInfo::Str, TypeInfo::Int { int_width: None, int_signed: None }]
+                variants: vec![TypeInfo::Str, TypeInfo::Int { int_width: None, int_signed: None }],
+                enum_values: Vec::new(),
             }),
             "string | number"
         );
