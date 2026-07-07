@@ -170,9 +170,9 @@ func TestCompose_MethodTargetWithNoReceiverPlans_Unsatisfied(t *testing.T) {
 	}
 }
 
-func TestCompose_HintReceiverRankedAfterNonHint(t *testing.T) {
+func TestCompose_HintReceiverRankedBeforeNonHint(t *testing.T) {
 	recvs := []planner.ReceiverPlan{
-		{Kind: planner.ReceiverPlanKindHint, ReceiverKind: "zero_value", Label: "operator_hint", Priority: 0},
+		{Kind: planner.ReceiverPlanKindHint, ReceiverKind: "configured:seeded_service", Label: "seeded_service", Priority: 0},
 		{Kind: planner.ReceiverPlanKindSamePackageConstructor, ReceiverKind: "constructor:New", Label: "new_service", Priority: 1},
 	}
 	matrix := [][]protocol.ValuePlan{
@@ -182,10 +182,11 @@ func TestCompose_HintReceiverRankedAfterNonHint(t *testing.T) {
 	if len(plans) < 2 {
 		t.Fatalf("expected >=2 plans, got %d", len(plans))
 	}
-	// Non-hint receiver (new_service) must rank ahead of hint receiver despite
-	// hint having lower Priority in the input.
-	if plans[0].Label == "hint_operator_hint" || plans[0].ReceiverKind != "constructor:New" {
-		t.Errorf("plans[0]=%+v; expected top plan to come from non-hint receiver 'constructor:New'", plans[0])
+	if plans[0].ReceiverKind != "configured:seeded_service" {
+		t.Errorf("plans[0]=%+v; expected top plan to use configured receiver", plans[0])
+	}
+	if plans[0].Label != "seeded_service" {
+		t.Errorf("plans[0].Label=%q, want seeded_service", plans[0].Label)
 	}
 }
 

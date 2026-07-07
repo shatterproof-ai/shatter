@@ -358,14 +358,29 @@ func collectFunctionWarnings(path string, functions *yaml.Node) []string {
 		if entry == nil || entry.Kind != yaml.MappingNode {
 			continue
 		}
-		for k := range mappingPairs(entry) {
+		pairs := mappingPairs(entry)
+		for k := range pairs {
 			if _, ok := knownFunctionKeys[k]; ok {
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf("config %s: function %q: ignoring unknown key %q", path, pattern, k))
 		}
+		if receiver, ok := pairs["receiver"]; ok && missingReceiverExpression(receiver) {
+			warnings = append(warnings, fmt.Sprintf("config %s: function %q: receiver expression is empty; ignoring receiver recipe", path, pattern))
+		}
 	}
 	return warnings
+}
+
+func missingReceiverExpression(receiver *yaml.Node) bool {
+	if receiver == nil || receiver.Kind != yaml.MappingNode {
+		return true
+	}
+	expression := mappingPairs(receiver)["expression"]
+	if expression == nil || expression.Kind != yaml.ScalarNode {
+		return true
+	}
+	return strings.TrimSpace(expression.Value) == ""
 }
 
 // documentMapping returns the top-level mapping node of a parsed YAML

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 )
 
@@ -48,5 +49,17 @@ functions:
 	}
 	if _, ok := hints.Defaults["dir"]; !ok {
 		t.Fatalf("expected a 'dir' default, got %+v", hints.Defaults)
+	}
+}
+
+func TestTranslateHintConfig_WhitespaceReceiverExpressionIgnored(t *testing.T) {
+	hints := translateHintConfig(config.FunctionConfig{
+		Receiver: &config.ReceiverConfig{
+			Label:      "seeded_service",
+			Expression: "   ",
+		},
+	})
+	if hints.Receiver != nil {
+		t.Fatalf("receiver hint = %+v, want nil for whitespace-only expression", hints.Receiver)
 	}
 }

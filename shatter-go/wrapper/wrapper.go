@@ -2691,19 +2691,6 @@ func collectExtraImports(targets []WrapperTarget, constructors []ConstructorCand
 			}
 			seen[trimmed] = struct{}{}
 		}
-		for _, receiver := range t.ConfiguredReceivers {
-			for _, importPath := range receiver.Imports {
-				trimmed := strings.TrimSpace(importPath)
-				if trimmed == "" {
-					continue
-				}
-				switch trimmed {
-				case coreImportJSON, coreImportFmt:
-					continue
-				}
-				seen[trimmed] = struct{}{}
-			}
-		}
 	}
 	for _, c := range constructors {
 		for _, p := range c.Parameters {

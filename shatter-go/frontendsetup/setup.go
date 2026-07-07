@@ -9,6 +9,7 @@ package frontendsetup
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/planner"
@@ -92,7 +93,7 @@ func translateHintConfig(entry config.FunctionConfig) planner.PerTargetHints {
 			hints.Mocks[qualified] = expression
 		}
 	}
-	if entry.Receiver != nil && entry.Receiver.Expression != "" {
+	if entry.Receiver != nil && strings.TrimSpace(entry.Receiver.Expression) != "" {
 		receiver := *entry.Receiver
 		hints.Receiver = &receiver
 	}

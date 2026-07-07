@@ -280,7 +280,7 @@ func paramOptionsFromHints(hints PerTargetHints, opts PlanRequirementsOptions) P
 }
 
 func receiverHintFromConfig(receiver *config.ReceiverConfig) *ReceiverHint {
-	if receiver == nil || receiver.Expression == "" {
+	if receiver == nil || strings.TrimSpace(receiver.Expression) == "" {
 		return nil
 	}
 	return &ReceiverHint{

@@ -180,12 +180,12 @@ func TestPlanReceivers_StrategyOrder(t *testing.T) {
 		t.Fatalf("unexpected unsatisfied: %+v", unsat)
 	}
 	want := []planner.ReceiverPlanKind{
+		planner.ReceiverPlanKindHint,
 		planner.ReceiverPlanKindAdapter,
 		planner.ReceiverPlanKindSamePackageConstructor,
 		planner.ReceiverPlanKindNearbyPackageConstructor,
 		planner.ReceiverPlanKindCompositeLiteral,
 		planner.ReceiverPlanKindUsefulZeroValue,
-		planner.ReceiverPlanKindHint,
 	}
 	if len(plans) != len(want) {
 		t.Fatalf("len(plans) = %d, want %d; plans=%+v", len(plans), len(want), plans)
@@ -203,6 +203,7 @@ func TestPlanReceivers_StrategyOrder(t *testing.T) {
 func TestPlanReceivers_CapMaxPlans(t *testing.T) {
 	target := methodTarget("Service", true)
 	opts := planner.PlanOptions{
+		Hint: &planner.ReceiverHint{ReceiverKind: "configured:seeded_service", Label: "seeded_service"},
 		SamePackageConstructors: []protocol.ConstructorCandidate{
 			ctor("New", "Service"),
 			ctor("NewWithConfig", "Service"),
@@ -214,6 +215,9 @@ func TestPlanReceivers_CapMaxPlans(t *testing.T) {
 	plans, _ := planner.PlanReceivers(target, opts)
 	if len(plans) != planner.DefaultMaxReceiverPlans {
 		t.Fatalf("len(plans) = %d, want %d", len(plans), planner.DefaultMaxReceiverPlans)
+	}
+	if plans[0].Kind != planner.ReceiverPlanKindHint {
+		t.Fatalf("plans[0].Kind = %v, want configured hint before capped constructor plans", plans[0].Kind)
 	}
 }
 
@@ -230,6 +234,26 @@ func TestPlanReceivers_ExplicitMaxPlans(t *testing.T) {
 	}
 	if plans[0].Kind != planner.ReceiverPlanKindAdapter {
 		t.Errorf("plans[0].Kind = %v, want adapter", plans[0].Kind)
+	}
+}
+
+func TestPlanReceivers_ExplicitMaxPlansKeepsHint(t *testing.T) {
+	target := methodTarget("Service", true)
+	opts := planner.PlanOptions{
+		Hint:                    &planner.ReceiverHint{ReceiverKind: "configured:seeded_service", Label: "seeded_service"},
+		Adapter:                 &planner.ReceiverHint{ReceiverKind: "adapter:x"},
+		SamePackageConstructors: []protocol.ConstructorCandidate{ctor("New", "Service")},
+		MaxPlans:                1,
+	}
+	plans, _ := planner.PlanReceivers(target, opts)
+	if len(plans) != 1 {
+		t.Fatalf("len(plans) = %d, want 1", len(plans))
+	}
+	if plans[0].Kind != planner.ReceiverPlanKindHint {
+		t.Errorf("plans[0].Kind = %v, want hint", plans[0].Kind)
+	}
+	if plans[0].ReceiverKind != "configured:seeded_service" {
+		t.Errorf("plans[0].ReceiverKind = %q, want configured:seeded_service", plans[0].ReceiverKind)
 	}
 }
 

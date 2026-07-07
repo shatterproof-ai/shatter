@@ -33,7 +33,7 @@ type ComposeOptions struct {
 // Compose produces ranked InvocationPlans by combining receiver plans with
 // per-parameter ValuePlans. It performs a deterministic beam search over the
 // parameter axis and returns the Top-K plans by the ranking tuple
-// (hintDepCount asc, receiverPriority asc, enumerationIndex asc).
+// (receiverPriority asc, enumerationIndex asc).
 //
 // When paramUnsatisfied is non-empty or paramMatrix contains a nil slot,
 // Compose returns no plans and propagates the aggregated unsatisfied
@@ -113,15 +113,11 @@ func Compose(
 // composeCandidate carries the ranking-relevant metadata for one beam entry.
 type composeCandidate struct {
 	plan             protocol.InvocationPlan
-	hintDepCount     int
 	receiverPriority int
 	enumerationIndex int
 }
 
 func (c composeCandidate) less(other composeCandidate) bool {
-	if c.hintDepCount != other.hintDepCount {
-		return c.hintDepCount < other.hintDepCount
-	}
 	if c.receiverPriority != other.receiverPriority {
 		return c.receiverPriority < other.receiverPriority
 	}
@@ -150,7 +146,6 @@ func enumerateCandidates(
 				ConstructorArgPlans: constructorArgPlansForReceiver(recv),
 				Label:               labelForReceiver(recv, freeFunction),
 			},
-			hintDepCount:     receiverHintDep(recv),
 			receiverPriority: recv.Priority,
 			enumerationIndex: enumeration,
 		}}
@@ -178,13 +173,6 @@ func enumerateCandidates(
 		candidates = append(candidates, partials...)
 	}
 	return candidates
-}
-
-func receiverHintDep(r ReceiverPlan) int {
-	if r.Kind == ReceiverPlanKindHint {
-		return 1
-	}
-	return 0
 }
 
 func labelForReceiver(r ReceiverPlan, freeFunction bool) string {

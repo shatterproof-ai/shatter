@@ -212,6 +212,7 @@ func TestGenerateWrapper_ConfiguredReceiverKind(t *testing.T) {
 		ResultGoType:  "int",
 		ResultGoTypes: []string{"int"},
 		ResultCount:   1,
+		Imports:       []string{"example.com/fixture/fakes"},
 	}
 	out := GenerateWrapper("fixture", []WrapperTarget{target}, nil)
 

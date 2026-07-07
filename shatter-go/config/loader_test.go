@@ -168,6 +168,32 @@ functions:
 	}
 }
 
+func TestLoad_ReceiverSectionMissingExpressionWarns(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "target.go:(*Service).Run":
+    receiver:
+      label: seeded_service
+  "target.go:(*Service).Stop":
+    receiver:
+      expression: "   "
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	joined := strings.Join(file.Warnings, "\n")
+	for _, pattern := range []string{
+		`function "target.go:(*Service).Run": receiver expression is empty`,
+		`function "target.go:(*Service).Stop": receiver expression is empty`,
+	} {
+		if !strings.Contains(joined, pattern) {
+			t.Errorf("missing receiver warning %q, got:\n%s", pattern, joined)
+		}
+	}
+}
+
 func TestLoad_GoRuntimeValuesSection(t *testing.T) {
 	t.Parallel()
 	target := writeConfig(t, `
