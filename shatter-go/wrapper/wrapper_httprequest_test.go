@@ -3,14 +3,68 @@ package wrapper_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
+
+// TestWrapper_SymbolicParamsDeriveFromRegistry is the str-ijtww single-source
+// regression: for every symbolic type the runtimeval registry declares, the
+// wrapper must (a) consume exactly one symbolic input slot for the param
+// (leaving it unbound to any fixed runtime value), (b) emit the registry's
+// construction statements verbatim, and (c) reference the registry's declared
+// imports. This ties the wrapper's slot consumption to the same source the
+// analyzer's slot allocation keys off, so a type added to the registry can
+// never be handled by only one layer (which would shift every later param's
+// input index).
+func TestWrapper_SymbolicParamsDeriveFromRegistry(t *testing.T) {
+	symbolicTypes := runtimeval.SymbolicTypes()
+	if len(symbolicTypes) == 0 {
+		t.Fatal("no symbolic types registered; registry regressed")
+	}
+	for _, goType := range symbolicTypes {
+		t.Run(goType, func(t *testing.T) {
+			cand, ok := runtimeval.LookupSymbolic(goType)
+			if !ok {
+				t.Fatalf("LookupSymbolic(%q) not found", goType)
+			}
+			targets := []wrapper.WrapperTarget{{
+				ID:         "example.com/pkg:Handle",
+				SymbolName: "Handle",
+				Kind:       wrapper.TargetKindFunction,
+				Parameters: []wrapper.WrapperParam{{Name: "r", GoType: goType}},
+				HasResult:  false,
+				Imports:    cand.Imports,
+			}}
+			src := wrapper.GenerateWrapper("pkg", targets, nil)
+
+			// (a) the symbolic body is decoded from the param's single input slot.
+			if !strings.Contains(src, "json.Unmarshal(_shatterInputs[0]") {
+				t.Errorf("wrapper does not decode symbolic body from _shatterInputs[0]; slot not consumed\nsource:\n%s", src)
+			}
+			// (b) each registry construction statement appears verbatim, rendered
+			// with the param name and the body slot variable.
+			for _, stmt := range cand.Construction {
+				want := fmt.Sprintf(stmt, "r", "_shatterReqBody0")
+				if !strings.Contains(src, want) {
+					t.Errorf("wrapper missing registry construction line %q\nsource:\n%s", want, src)
+				}
+			}
+			// (c) the registry's imports are present.
+			for _, imp := range cand.Imports {
+				if !strings.Contains(src, imp) {
+					t.Errorf("wrapper missing registry-declared import %q\nsource:\n%s", imp, src)
+				}
+			}
+		})
+	}
+}
 
 // TestWrapper_SymbolicHTTPRequestParam is the str-e41w compile-and-run
 // regression. A direct *http.Request parameter must (a) generate the

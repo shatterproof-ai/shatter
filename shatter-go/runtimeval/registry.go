@@ -56,6 +56,34 @@ type Candidate struct {
 	SideEffectClass string
 }
 
+// SymbolicCandidate registers a parameter type that is constructed at the
+// wrapper's param-init site from a *symbolic* input slot rather than bound to
+// a fixed runtime-value Expression. It is the type-keyed single source the
+// analyzer, planner, and wrapper all consult so the symbolic-slot decision
+// cannot drift between layers (str-ijtww). Drift is corrupting rather than
+// merely wrong: a type added to only some layers shifts every subsequent
+// param's input index.
+//
+// The canonical example is Go's `*http.Request` (str-e41w), whose body is
+// driven symbolically so the solver can push request payloads past a handler's
+// decode/validation guards. Registering the next framework type (e.g.
+// `*gin.Context`, or a TS/Rust request type in those frontends) is a one-line
+// addition here consumed consistently by all three layers.
+//
+// TypeHint is the Go-source type spelling (the registry key, e.g.
+// "*http.Request"). Imports is the set of package paths Construction
+// references. Construction lists the Go statements the wrapper emits to build
+// the value: each entry is a fmt-style format string with two indexed verbs —
+// %[1]s is the parameter variable name and %[2]s is the body-input variable
+// holding the decoded symbolic string. The first statement must declare and
+// assign the parameter variable; later statements (e.g. header stubs) may use
+// only %[1]s.
+type SymbolicCandidate struct {
+	TypeHint     string
+	Imports      []string
+	Construction []string
+}
+
 // registry is the default set of Go parameter types the planner /
 // wrapper can satisfy without user hints. Keyed by the Go-source
 // spelling of the parameter type, including any leading `*` for
@@ -200,6 +228,74 @@ var registry = map[string][]Candidate{
 			Imports:    []string{"context", "github.com/tetratelabs/wazero"},
 		},
 	},
+}
+
+// symbolicRegistry is the single source of the parameter types that are
+// constructed from a symbolic input slot at the wrapper's param-init site,
+// keyed by Go-source type spelling. All three layers (analyzer slot
+// allocation, planner body-seed / hint handling, wrapper slot consumption)
+// consult it so the decision stays single-sourced (str-ijtww).
+//
+// Adding the next framework type is a one-line registration here.
+var symbolicRegistry = map[string]SymbolicCandidate{
+	// str-e41w: a direct *http.Request param is built from a symbolic body
+	// (a string input) via httptest.NewRequest rather than the fixed
+	// empty-body runtime value. The method, path, and auth headers are fixed
+	// so httptest.NewRequest cannot panic on an invalid verb and handlers do
+	// not return before reading the body; the three common API auth
+	// conventions (`x-api-key`, `Authorization: Bearer`, Google-style
+	// `x-goog-api-key`) are stubbed so a presence-check on any passes. Only
+	// the body is symbolic — that is what handler bodies read and branch on.
+	"*http.Request": {
+		TypeHint: "*http.Request",
+		Imports:  []string{"net/http", "net/http/httptest", "strings"},
+		Construction: []string{
+			`var %[1]s *http.Request = httptest.NewRequest("POST", "/", strings.NewReader(%[2]s))`,
+			`%[1]s.Header.Set("x-api-key", "shatter")`,
+			`%[1]s.Header.Set("Authorization", "Bearer shatter")`,
+			`%[1]s.Header.Set("x-goog-api-key", "shatter")`,
+			`%[1]s.Header.Set("Content-Type", "application/json")`,
+		},
+	},
+}
+
+// LookupSymbolic returns the symbolic-construction candidate registered for
+// the given Go-source type spelling and true, or a zero value and false when
+// the type is not symbolic. The returned candidate is a fresh copy with
+// imports normalised so callers may mutate it freely.
+//
+// The lookup is case-sensitive and matches the exact spelling.
+func LookupSymbolic(typeName string) (SymbolicCandidate, bool) {
+	entry, ok := symbolicRegistry[typeName]
+	if !ok {
+		return SymbolicCandidate{}, false
+	}
+	out := SymbolicCandidate{
+		TypeHint:     entry.TypeHint,
+		Imports:      sortedUniqueImports(entry.Imports),
+		Construction: append([]string(nil), entry.Construction...),
+	}
+	return out, true
+}
+
+// IsSymbolic reports whether the given Go-source type spelling is constructed
+// from a symbolic input slot (i.e. has a symbolicRegistry entry). Analyzer,
+// planner, and wrapper all gate on this so the symbolic-slot decision is
+// single-sourced.
+func IsSymbolic(typeName string) bool {
+	_, ok := symbolicRegistry[typeName]
+	return ok
+}
+
+// SymbolicTypes returns the sorted list of type spellings registered as
+// symbolic-construction candidates. Intended for diagnostics and tests.
+func SymbolicTypes() []string {
+	out := make([]string, 0, len(symbolicRegistry))
+	for k := range symbolicRegistry {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Lookup returns the ordered runtime-value candidates registered for

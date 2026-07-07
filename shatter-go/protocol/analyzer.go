@@ -15,6 +15,7 @@ import (
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
+	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 	frontendtiming "github.com/shatter-dev/shatter/shatter-go/timing"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
 	"golang.org/x/tools/go/packages"
@@ -773,22 +774,26 @@ func stringBasicLiteral(expr ast.Expr) (string, bool) {
 
 // --- Parameter and Return Type Extraction ---
 
-// isASTHTTPRequestPointer reports whether expr is spelled `*http.Request` in
-// source, without consulting the type checker. It mirrors the wrapper's
-// AST-derived GoType fallback so the analyzer's symbolic-body decision
-// (str-e41w) and the wrapper's slot consumption cannot diverge when the type
-// checker has no entry for the expression.
-func isASTHTTPRequestPointer(expr ast.Expr) bool {
+// astPointerTypeSpelling returns the Go-source spelling of a `*pkg.Type`
+// pointer expression (e.g. "*http.Request") without consulting the type
+// checker, or "" when expr is not that shape. It mirrors the wrapper's
+// AST-derived GoType fallback so the analyzer's symbolic-slot decision
+// (str-ijtww) and the wrapper's slot consumption resolve to the same registry
+// key when the type checker has no entry for the expression.
+func astPointerTypeSpelling(expr ast.Expr) string {
 	star, ok := expr.(*ast.StarExpr)
 	if !ok {
-		return false
+		return ""
 	}
 	sel, ok := star.X.(*ast.SelectorExpr)
 	if !ok {
-		return false
+		return ""
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "http" && sel.Sel.Name == "Request"
+	if !ok {
+		return ""
+	}
+	return "*" + pkg.Name + "." + sel.Sel.Name
 }
 
 func extractParams(fn *ast.FuncDecl, info *types.Info) []ParamInfo {
@@ -818,24 +823,28 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 				}
 			}
 		}
-		// str-e41w: a direct *http.Request param is synthesized from a symbolic
-		// request body (a string input) rather than the fixed empty-body runtime
-		// value httptest.NewRequest("GET","/",nil). Report it as a string so the
-		// explorer/solver generate body payloads that drive handlers past their
-		// decode/validation guards; the wrapper recognizes the *http.Request
-		// TypeName (carried below) and wraps the symbolic string via
-		// httptest.NewRequest. Nested *http.Request (struct fields, slice
-		// elements) keep the runtime-value path in goTypeToTypeInfoRec.
+		// str-e41w / str-ijtww: a symbolic-construction param (e.g. a direct
+		// *http.Request) is synthesized from a symbolic input slot (a string
+		// input) rather than the fixed empty-body runtime value. Report it as a
+		// string so the explorer/solver generate payloads that drive handlers
+		// past their decode/validation guards; the wrapper recognizes the same
+		// registry-keyed TypeName (carried below) and builds the value from the
+		// symbolic string. Nested occurrences (struct fields, slice elements)
+		// keep the runtime-value path in goTypeToTypeInfoRec.
 		//
-		// The AST-spelling fallback mirrors the wrapper's AST-derived GoType
-		// (used when the type checker has no entry for the expression):
-		// analyzer and wrapper MUST agree on whether this param consumes a
-		// symbolic input slot, or every subsequent param's input index shifts.
-		if synthSpelling == "" && isASTHTTPRequestPointer(field.Type) {
-			synthSpelling = "*http.Request"
+		// The symbolic type list is single-sourced in the runtimeval registry
+		// (runtimeval.IsSymbolic). The AST-spelling fallback mirrors the
+		// wrapper's AST-derived GoType (used when the type checker has no entry
+		// for the expression): analyzer and wrapper MUST agree on whether this
+		// param consumes a symbolic input slot, or every subsequent param's
+		// input index shifts.
+		if synthSpelling == "" {
+			if astSpelling := astPointerTypeSpelling(field.Type); runtimeval.IsSymbolic(astSpelling) {
+				synthSpelling = astSpelling
+			}
 		}
-		if synthSpelling == "*http.Request" {
-			ti = TypeInfo{Kind: "str", Label: "*http.Request"}
+		if runtimeval.IsSymbolic(synthSpelling) {
+			ti = TypeInfo{Kind: "str", Label: synthSpelling}
 		}
 		for _, name := range field.Names {
 			param := ParamInfo{
