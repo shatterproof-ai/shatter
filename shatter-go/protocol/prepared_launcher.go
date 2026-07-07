@@ -330,7 +330,7 @@ func buildDirectExecutionRequest(
 	mocks []instrument.MockConfig,
 	logf func(msg string, args ...any),
 ) (build.BuildRequest, string, error) {
-	targets := wrapper.BuildWrapperTargets(pkg)
+	targets := wrapper.BuildWrapperTargetsForSource(pkg, absoluteFilePath)
 	target, err := selectDirectWrapperTarget(targets, function)
 	if err != nil {
 		return build.BuildRequest{}, "", err

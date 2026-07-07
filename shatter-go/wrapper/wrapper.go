@@ -17,6 +17,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -1485,6 +1486,16 @@ func wrapperTargetResultTypes(t WrapperTarget) []string {
 // `init()` call sites and collide on a single switch case for
 // "<pkg>:init", making the wrapper file uncompilable.
 func BuildWrapperTargets(pkg *packages.Package) []WrapperTarget {
+	return buildWrapperTargets(pkg, "")
+}
+
+// BuildWrapperTargetsForSource extracts wrapper targets while preserving the
+// original source path for loaders that materialize synthetic package copies.
+func BuildWrapperTargetsForSource(pkg *packages.Package, originalSourceFile string) []WrapperTarget {
+	return buildWrapperTargets(pkg, originalSourceFile)
+}
+
+func buildWrapperTargets(pkg *packages.Package, originalSourceFile string) []WrapperTarget {
 	if pkg == nil || pkg.TypesInfo == nil {
 		return nil
 	}
@@ -1501,7 +1512,7 @@ func BuildWrapperTargets(pkg *packages.Package) []WrapperTarget {
 			if isSyntheticPackageInit(fn) {
 				continue
 			}
-			if t := buildWrapperTarget(fn, pkg); t != nil {
+			if t := buildWrapperTarget(fn, pkg, originalSourceFile); t != nil {
 				targets = append(targets, *t)
 			}
 		}
@@ -1585,7 +1596,7 @@ func isSyntheticPackageInit(fn *ast.FuncDecl) bool {
 	return fn.Name.Name == "init"
 }
 
-func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget {
+func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) *WrapperTarget {
 	qualName := wrapperQualifiedName(fn)
 	id := pkg.PkgPath + ":" + qualName
 
@@ -1623,7 +1634,10 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		pkgTypesPath = pkg.Types.Path()
 	}
 	receiverMapFields := collectReceiverMapFields(pkg, recvType, pkgTypesPath, importSet)
-	configuredReceivers := configuredReceiversForFunc(fn, pkg)
+	var configuredReceivers []ConfiguredReceiver
+	if kind == TargetKindMethod {
+		configuredReceivers = configuredReceiversForFunc(fn, pkg, originalSourceFile)
+	}
 	for _, receiver := range configuredReceivers {
 		for _, importPath := range receiver.Imports {
 			if trimmed := strings.TrimSpace(importPath); trimmed != "" {
@@ -1640,7 +1654,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	// json.Unmarshal block. Without this, a target taking context.Context
 	// would compile and link but the param would be the zero interface
 	// value (`nil`), panicking on first use.
-	applyRuntimeValueBindingsForPackage(params, importSet, configuredRuntimeValuesForFunc(fn, pkg), pkg.Name)
+	applyRuntimeValueBindingsForPackage(params, importSet, configuredRuntimeValuesForFunc(fn, pkg, originalSourceFile), pkg.Name)
 	applyImportedConstructorBindingsForPackage(fn, pkg, params, importSet, pkgTypesPath)
 	typeParams := extractWrapperTypeParams(fn)
 
@@ -2184,11 +2198,11 @@ func wrapperIsErrorExpr(expr ast.Expr, info *types.Info) bool {
 	return tv.Type == types.Universe.Lookup("error").Type()
 }
 
-func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map[string]config.GoRuntimeValueConfig {
+func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) map[string]config.GoRuntimeValueConfig {
 	if fn == nil || pkg == nil || pkg.Fset == nil {
 		return nil
 	}
-	sourceFile := pkg.Fset.Position(fn.Pos()).Filename
+	sourceFile := configSourceFileForFunc(fn, pkg, originalSourceFile)
 	if sourceFile == "" {
 		return nil
 	}
@@ -2199,11 +2213,11 @@ func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map
 	return file.GoRuntimeValues
 }
 
-func configuredReceiversForFunc(fn *ast.FuncDecl, pkg *packages.Package) []ConfiguredReceiver {
+func configuredReceiversForFunc(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) []ConfiguredReceiver {
 	if fn == nil || pkg == nil || pkg.Fset == nil {
 		return nil
 	}
-	sourceFile := pkg.Fset.Position(fn.Pos()).Filename
+	sourceFile := configSourceFileForFunc(fn, pkg, originalSourceFile)
 	if sourceFile == "" {
 		return nil
 	}
@@ -2220,6 +2234,17 @@ func configuredReceiversForFunc(fn *ast.FuncDecl, pkg *packages.Package) []Confi
 		Expression:   entry.Receiver.Expression,
 		Imports:      append([]string(nil), entry.Receiver.Imports...),
 	}}
+}
+
+func configSourceFileForFunc(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) string {
+	sourceFile := pkg.Fset.Position(fn.Pos()).Filename
+	if strings.TrimSpace(originalSourceFile) == "" || sourceFile == "" {
+		return sourceFile
+	}
+	if filepath.Base(sourceFile) == filepath.Base(originalSourceFile) {
+		return originalSourceFile
+	}
+	return sourceFile
 }
 
 func configuredRuntimeValue(typeName string, configured map[string]config.GoRuntimeValueConfig, pkgName string) (config.GoRuntimeValueConfig, bool) {

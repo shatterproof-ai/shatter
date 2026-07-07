@@ -1,8 +1,8 @@
 // Package config parses the per-project .shatter/config.yaml hint file.
 // The loader covers the safety-policy section consumed by the policy gate
 // (str-hy9b.G4) plus the wider hint_config_v1 surface (defaults, mocks,
-// generators) consumed by the Go planner (str-hy9b.G3). Unknown keys are
-// reported via File.Warnings rather than returned as errors so the loader
+// generators, receiver) consumed by the Go planner (str-hy9b.G3). Unknown keys
+// are reported via File.Warnings rather than returned as errors so the loader
 // remains forward-compatible with future hint sections.
 package config
 
