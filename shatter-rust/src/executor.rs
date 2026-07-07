@@ -570,6 +570,7 @@ fn acquire_crate_bridge_build_lock(harness_dir: &Path) -> Option<std::fs::File> 
     let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .ok()?;
     file.lock().ok()?;
@@ -11874,19 +11875,25 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
         // call, so they miscompile against siblings. When any replay is present
         // the whole-file dispatch harness must be skipped in favour of the
         // single-function harness — even with many compatible siblings.
+        // black_box defeats const-folding so clippy does not flag these as
+        // constant-valued assertions.
+        use std::hint::black_box;
         assert!(
-            crate_bridge_should_try_whole_file(5, false),
+            crate_bridge_should_try_whole_file(black_box(5), black_box(false)),
             "multiple compatible fns and no native replay → whole-file harness"
         );
         assert!(
-            !crate_bridge_should_try_whole_file(5, true),
+            !crate_bridge_should_try_whole_file(black_box(5), black_box(true)),
             "a native replay must force the single-function harness"
         );
         assert!(
-            !crate_bridge_should_try_whole_file(1, false),
+            !crate_bridge_should_try_whole_file(black_box(1), black_box(false)),
             "a single compatible fn never needs the whole-file harness"
         );
-        assert!(!crate_bridge_should_try_whole_file(1, true));
+        assert!(!crate_bridge_should_try_whole_file(
+            black_box(1),
+            black_box(true)
+        ));
     }
 
     #[test]
