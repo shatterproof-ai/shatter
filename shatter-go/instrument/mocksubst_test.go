@@ -136,15 +136,15 @@ func F() { _ = b.Real() }
 
 func TestNormalizeMockSymbol(t *testing.T) {
 	cases := map[string]string{
-		"auth.GetAccount":            "auth.GetAccount",
-		"module:Export":              "module.Export",
-		"example.com/pkg:NewThing":   "pkg.NewThing",
-		"example.com/pkg.NewThing":   "pkg.NewThing",
-		"nested.pkg.path.Fn":         "path.Fn",
-		"bare":                       "",
-		"":                           "",
-		"trailing.":                  "",
-		".leading":                   "",
+		"auth.GetAccount":          "auth.GetAccount",
+		"module:Export":            "module.Export",
+		"example.com/pkg:NewThing": "pkg.NewThing",
+		"example.com/pkg.NewThing": "pkg.NewThing",
+		"nested.pkg.path.Fn":       "path.Fn",
+		"bare":                     "",
+		"":                         "",
+		"trailing.":                "",
+		".leading":                 "",
 	}
 	for in, want := range cases {
 		if got := normalizeMockSymbol(in); got != want {
@@ -503,3 +503,134 @@ func TestProperty_NormalizeMockSymbol_DotColonEquivalenceAndIdempotent(t *testin
 }
 
 var _ = mustFormat
+
+// TestParseMockSymbol covers the package-identity decomposition (str-djcv2):
+// bare vs path-qualified vs wire-colon spellings.
+func TestParseMockSymbol(t *testing.T) {
+	cases := []struct {
+		in         string
+		ok         bool
+		importPath string
+		base       string
+		fn         string
+	}{
+		{"auth.GetAccount", true, "", "auth", "GetAccount"},
+		{"example.com/auth.GetAccount", true, "example.com/auth", "auth", "GetAccount"},
+		{"example.com/auth:GetAccount", true, "example.com/auth", "auth", "GetAccount"},
+		{"auth:GetAccount", true, "", "auth", "GetAccount"},
+		{"a/util.Do", true, "a/util", "util", "Do"},
+		{"nested.pkg.path.Fn", true, "", "path", "Fn"},
+		{"bare", false, "", "", ""},
+		{"", false, "", "", ""},
+		{"trailing.", false, "", "", ""},
+		{".leading", false, "", "", ""},
+	}
+	for _, c := range cases {
+		got, ok := parseMockSymbol(c.in)
+		if ok != c.ok {
+			t.Errorf("parseMockSymbol(%q) ok = %v, want %v", c.in, ok, c.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if got.ImportPath != c.importPath || got.Base != c.base || got.Func != c.fn {
+			t.Errorf("parseMockSymbol(%q) = %+v, want {ImportPath:%q Base:%q Func:%q}",
+				c.in, got, c.importPath, c.base, c.fn)
+		}
+	}
+}
+
+// TestDedupeMocks_SameBaseNamePackagesDoNotCollide is the str-djcv2 regression
+// for consequence 1: two path-qualified mocks whose packages share a base name
+// ("util") must NOT collapse — keying by source spelling used to drop one.
+func TestDedupeMocks_SameBaseNamePackagesDoNotCollide(t *testing.T) {
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "example.com/a/util.Do", Expression: "fakeA()"},
+		{Symbol: "example.com/b/util.Do", Expression: "fakeB()"},
+	})
+	if len(deduped) != 2 {
+		t.Fatalf("expected both same-base-name mocks preserved, got %d: %+v", len(deduped), deduped)
+	}
+	byExpr := map[string]bool{}
+	for _, m := range deduped {
+		byExpr[m.Expression] = true
+	}
+	if !byExpr["fakeA()"] || !byExpr["fakeB()"] {
+		t.Fatalf("both expressions must survive, got %+v", deduped)
+	}
+}
+
+// TestDedupeMocks_PreservesWireFieldsOnUpgrade is the str-djcv2 regression for
+// consequence 3: merging a wire mock (ReturnValues/ShouldTrackCalls/
+// DefaultBehavior) with a config mock (Expression) must keep BOTH sides'
+// contributions, not replace the wire entry wholesale.
+func TestDedupeMocks_PreservesWireFieldsOnUpgrade(t *testing.T) {
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "auth:GetAccount", ReturnValues: []any{1, 2}, ShouldTrackCalls: true, DefaultBehavior: "repeat_last"},
+		{Symbol: "auth.GetAccount", Expression: "&auth.Account{}"},
+	})
+	if len(deduped) != 1 {
+		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
+	}
+	m := deduped[0]
+	if m.Expression != "&auth.Account{}" {
+		t.Errorf("config Expression lost: %+v", m)
+	}
+	if len(m.ReturnValues) != 2 {
+		t.Errorf("wire ReturnValues discarded: %+v", m)
+	}
+	if !m.ShouldTrackCalls {
+		t.Errorf("wire ShouldTrackCalls discarded: %+v", m)
+	}
+	if m.DefaultBehavior != "repeat_last" {
+		t.Errorf("wire DefaultBehavior discarded: %+v", m)
+	}
+}
+
+// TestDedupeMocks_MergeOrderIndependent verifies the merge preserves both
+// halves regardless of which entry (wire or config) is seen first.
+func TestDedupeMocks_MergeOrderIndependent(t *testing.T) {
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "auth.GetAccount", Expression: "&auth.Account{}"},
+		{Symbol: "auth:GetAccount", ReturnValues: []any{1}, ShouldTrackCalls: true},
+	})
+	if len(deduped) != 1 {
+		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
+	}
+	m := deduped[0]
+	if m.Expression != "&auth.Account{}" || len(m.ReturnValues) != 1 || !m.ShouldTrackCalls {
+		t.Fatalf("merge dropped a field: %+v", m)
+	}
+}
+
+// TestRewriteMockCallSites_MultipleCandidatesPerSpelling exercises the
+// position-blind rewriter's per-function candidate selection (str-djcv2): two
+// substitutions sharing the local spelling "util.Do" but with disjoint
+// AllowedFuncs each rewrite only their own function.
+func TestRewriteMockCallSites_MultipleCandidatesPerSpelling(t *testing.T) {
+	src := "package target\n\n" +
+		"import \"util\"\n\n" +
+		"func A() { _ = util.Do() }\n" +
+		"func B() { _ = util.Do() }\n"
+	subs := []MockSubstitution{
+		{QualifiedFunction: "util.Do", Expression: "\"fromA\"", TypeResolved: true, AllowedFuncs: map[string]bool{"A": true}},
+		{QualifiedFunction: "util.Do", Expression: "\"fromB\"", TypeResolved: true, AllowedFuncs: map[string]bool{"B": true}},
+	}
+	out, n := rewrite(t, src, subs)
+	if n != 2 {
+		t.Fatalf("expected 2 rewrites, got %d\n%s", n, out)
+	}
+	// Both distinct expressions must appear (each candidate applied to its own
+	// function) and no original call site may remain.
+	if !strings.Contains(out, `"fromA"`) || !strings.Contains(out, `"fromB"`) {
+		t.Errorf("expected both fromA and fromB expressions in output:\n%s", out)
+	}
+	if strings.Contains(out, "util.Do") {
+		t.Errorf("original call site not fully rewritten:\n%s", out)
+	}
+	// Association check: fromA precedes fromB (func A declared before func B).
+	if strings.Index(out, `"fromA"`) > strings.Index(out, `"fromB"`) {
+		t.Errorf("candidate selection mismatched function order:\n%s", out)
+	}
+}

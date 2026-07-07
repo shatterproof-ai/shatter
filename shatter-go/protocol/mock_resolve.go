@@ -3,6 +3,7 @@ package protocol
 import (
 	"go/ast"
 	"go/types"
+	"sort"
 
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/packages"
@@ -10,17 +11,29 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
-// resolveMockSubstitutionScopes annotates each substitution with the set of
-// enclosing functions where its QualifiedFunction provably resolves to an
-// imported package call, using the loaded package's TypesInfo (str-c8djq
-// review fix 1). This prevents a config mock for package function
-// `auth.GetAccount` from rewriting a method call on a same-named local
-// (`auth := newClient(); auth.GetAccount(id)`).
+// resolveMockSubstitutionScopes matches each config mock to the call sites
+// where it provably targets an imported package, using the loaded package's
+// TypesInfo, and emits type-resolved substitutions keyed by the actual local
+// call-site spelling (str-c8djq review fix 1, generalized by str-djcv2).
 //
-// When type information is unavailable the substitutions are returned with
-// TypeResolved=false, and the rewriter falls back to scope-aware syntactic
-// matching. A caller-provided logf (may be nil) receives a one-line summary so
-// operators can see when the safer type-resolved path could not run.
+// Matching keys on package identity, not source spelling:
+//
+//   - A path-qualified mock ("example.com/a/util.Do") matches only call sites
+//     whose qualifier resolves to that exact import path — so two packages
+//     sharing a base name no longer collide.
+//   - A bare mock ("auth.GetAccount") matches call sites whose resolved package
+//     base name equals the qualifier, including aliased imports
+//     ("import a2 example.com/auth" → a2.GetAccount). When a bare qualifier
+//     resolves to more than one import path a warning is logged and the mock is
+//     applied to every match (documented ambiguity resolution).
+//
+// This also guards against rewriting a method call on a same-named local
+// (`auth := newClient(); auth.GetAccount(id)`): a local does not resolve to a
+// *types.PkgName, so it never contributes an allow-list entry.
+//
+// When type information is unavailable the substitutions are returned unchanged
+// (TypeResolved=false) and the rewriter falls back to scope-aware syntactic
+// matching. A caller-provided logf (may be nil) receives one-line summaries.
 func resolveMockSubstitutionScopes(
 	pkg *packages.Package,
 	subs []instrument.MockSubstitution,
@@ -37,15 +50,42 @@ func resolveMockSubstitutionScopes(
 		return subs
 	}
 
-	// Index substitutions by qualified function for O(1) lookup, and prepare
-	// per-sub allow-lists.
-	idx := make(map[string]int, len(subs))
-	for i := range subs {
-		subs[i].TypeResolved = true
-		subs[i].AllowedFuncs = make(map[string]bool)
-		subs[i].AllowPackageScope = false
-		idx[subs[i].QualifiedFunction] = i
+	// resolvedSub accumulates one type-resolved substitution, keyed by the
+	// actual local call-site spelling (which differs from the config spelling
+	// for aliased imports) together with the expression, so two same-base mocks
+	// that share a spelling but carry different expressions stay distinct.
+	type resolvedSub struct {
+		spelling string
+		expr     string
+		allowed  map[string]bool
+		allowPkg bool
 	}
+	resolved := map[string]*resolvedSub{}
+	var order []string
+	obtain := func(spelling, expr string) *resolvedSub {
+		key := spelling + "\x00" + expr
+		rs, ok := resolved[key]
+		if !ok {
+			rs = &resolvedSub{spelling: spelling, expr: expr, allowed: map[string]bool{}}
+			resolved[key] = rs
+			order = append(order, key)
+		}
+		return rs
+	}
+
+	// funcName extracts the function half of a "base.Func" QualifiedFunction.
+	// BaseQualifier is a single identifier, so exactly one dot separates them.
+	funcName := func(s instrument.MockSubstitution) string {
+		if len(s.BaseQualifier) < len(s.QualifiedFunction) {
+			return s.QualifiedFunction[len(s.BaseQualifier)+1:]
+		}
+		return ""
+	}
+
+	matched := make([]bool, len(subs))
+	// basePaths records, per bare-mock base qualifier, the distinct import paths
+	// it matched, so an ambiguous base name (two packages, same base) warns.
+	basePaths := map[string]map[string]bool{}
 
 	for _, file := range pkg.Syntax {
 		var funcStack []string
@@ -70,19 +110,39 @@ func resolveMockSubstitutionScopes(
 				if !ok {
 					return true
 				}
-				si, ok := idx[ident.Name+"."+sel.Sel.Name]
-				if !ok {
-					return true
-				}
 				// The qualifier must resolve to an imported package, not a
 				// local variable / field / parameter of the same name.
-				if _, isPkg := pkg.TypesInfo.Uses[ident].(*types.PkgName); !isPkg {
+				pkgName, isPkg := pkg.TypesInfo.Uses[ident].(*types.PkgName)
+				if !isPkg {
 					return true
 				}
-				if enc := current(); enc == "" {
-					subs[si].AllowPackageScope = true
-				} else {
-					subs[si].AllowedFuncs[enc] = true
+				resolvedPath := pkgName.Imported().Path()
+				resolvedBase := pkgName.Imported().Name()
+				fn := sel.Sel.Name
+				for i := range subs {
+					if funcName(subs[i]) != fn {
+						continue
+					}
+					if subs[i].ImportPath != "" {
+						if resolvedPath != subs[i].ImportPath {
+							continue
+						}
+					} else if resolvedBase != subs[i].BaseQualifier {
+						continue
+					}
+					matched[i] = true
+					rs := obtain(ident.Name+"."+fn, subs[i].Expression)
+					if enc := current(); enc == "" {
+						rs.allowPkg = true
+					} else {
+						rs.allowed[enc] = true
+					}
+					if subs[i].ImportPath == "" {
+						if basePaths[subs[i].BaseQualifier] == nil {
+							basePaths[subs[i].BaseQualifier] = map[string]bool{}
+						}
+						basePaths[subs[i].BaseQualifier][resolvedPath] = true
+					}
 				}
 			}
 			return true
@@ -99,13 +159,49 @@ func resolveMockSubstitutionScopes(
 		astutil.Apply(file, pre, post)
 	}
 
+	// Every input mock that matched no call site still yields a type-resolved
+	// entry with an empty allow-list ("rewrite nowhere"). This preserves the
+	// build-side invariant that a non-empty resolved set means "resolution ran"
+	// (see build/instrumented_overlay.go), never "the caller skipped it".
+	for i := range subs {
+		if matched[i] {
+			continue
+		}
+		obtain(subs[i].QualifiedFunction, subs[i].Expression)
+		if logf != nil {
+			logf("mock substitution: symbol not called as a package function; inactive",
+				"symbol", subs[i].QualifiedFunction)
+		}
+	}
+
 	if logf != nil {
-		for _, s := range subs {
-			if len(s.AllowedFuncs) == 0 && !s.AllowPackageScope {
-				logf("mock substitution: symbol not called as a package function; inactive",
-					"symbol", s.QualifiedFunction)
+		for base, paths := range basePaths {
+			if len(paths) > 1 {
+				logf("mock substitution: bare qualifier matches multiple packages; substituting in all — use a path-qualified spelling to disambiguate",
+					"qualifier", base, "paths", sortedStrings(paths))
 			}
 		}
 	}
-	return subs
+
+	out := make([]instrument.MockSubstitution, 0, len(order))
+	for _, key := range order {
+		rs := resolved[key]
+		out = append(out, instrument.MockSubstitution{
+			QualifiedFunction: rs.spelling,
+			Expression:        rs.expr,
+			AllowedFuncs:      rs.allowed,
+			AllowPackageScope: rs.allowPkg,
+			TypeResolved:      true,
+		})
+	}
+	return out
+}
+
+func sortedStrings(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }

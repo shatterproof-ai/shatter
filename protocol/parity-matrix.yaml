@@ -671,7 +671,19 @@ feature_capabilities:
       type-resolved package-function call sites to the configured mock
       expression (instrument/mocksubst.go), so mocked dependencies never run.
       The wire MockConfig.ReturnValues typed-decode path remains deferred
-      (str-8v66). Go-only at this stage.
+      (str-8v66). Go-only at this stage. Since str-djcv2, mocks are keyed by
+      resolved package IDENTITY, not source spelling: a config symbol may be
+      bare (`pkg.Func`, base-name shorthand) or path-qualified
+      (`import/path.Func`, exact identity); aliased imports match by identity
+      and same-base-name packages no longer collide. The identity model is
+      deliberately language-neutral so it maps cleanly to the other frontends
+      when they adopt hint mocks: Go = import path + function name; TypeScript
+      = module specifier + export name (str-c8djq TS counterpart); Rust = crate
+      path + item path. The canonical concept is "a value expression for an
+      opaque/hard dependency, keyed by canonical symbol identity" — each
+      frontend supplies its own identity tuple, but the keying/dedupe/merge
+      contract (path-qualified exact match, bare base-name match with an
+      ambiguity warning, wire+config field merge) is shared.
     frontends:
       typescript: not_supported
       go: supported
