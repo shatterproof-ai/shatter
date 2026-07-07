@@ -1781,6 +1781,19 @@ fn bucket_counts_from_entries(entries: &[ExploreSummaryEntry]) -> OutcomeBuckets
 /// `wall_time` is the per-function clock used when synthesising the timeout
 /// reason; the caller already tracks it for progress logging, so we reuse
 /// it instead of plumbing the budget separately.
+/// Detect a frontend "not supported" classification carried in a stringified
+/// [`PipelineError`] (str-303gg review #4). The Display chain is stable and
+/// owned by our error types: `ExploreError::Unsupported` renders as
+/// `unsupported: <msg>`, wrapped by `PipelineError` as
+/// `observe stage failed: unsupported: <msg>` (random explorer) or
+/// `concolic observe failed: unsupported: <msg>` (concolic). Anchoring to the
+/// exact wrapped prefixes keeps a genuine runtime message that merely mentions
+/// "unsupported" out of this bucket.
+fn is_unsupported_error_message(msg: &str) -> bool {
+    msg.starts_with("observe stage failed: unsupported:")
+        || msg.starts_with("concolic observe failed: unsupported:")
+}
+
 fn classify_outcome_status(
     result: &Result<shatter_core::explorer::ObservationOutput, String>,
     wall_time: Duration,
@@ -1794,6 +1807,10 @@ fn classify_outcome_status(
             )),
         ),
         Ok(_) => ("completed", None),
+        // str-303gg review #4: a frontend "not supported" classification is not a
+        // failure — surface it as `unsupported` so it lands in the unsupported
+        // bucket (like the scan/observe paths) instead of `runtime_failed`.
+        Err(e) if is_unsupported_error_message(e) => ("unsupported", Some(e.clone())),
         Err(e) => ("failed", Some(e.clone())),
     }
 }
@@ -5507,12 +5524,21 @@ pub(crate) async fn run_explore(
                 .instrument(tracing::info_span!("pipeline.observe"))
                 .await;
 
-                let (result, batch_resume_state) = match observe_result {
+                let (result, batch_resume_state, is_unsupported) = match observe_result {
                     Ok(stage_result) => (
                         Ok(stage_result.observe.observation),
                         stage_result.resume_state,
+                        false,
                     ),
-                    Err(err) => (Err(err.to_string()), None),
+                    // str-303gg review #4: a frontend "not supported"
+                    // classification is not a failure — route it to the
+                    // unsupported bucket like the scan/observe paths so
+                    // `shatter explore --concolic` (and gauntlet) do not report a
+                    // spurious error for a function the frontend cannot execute.
+                    Err(err) => {
+                        let unsupported = err.is_unsupported();
+                        (Err(err.to_string()), None, unsupported)
+                    }
                 };
                 let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
                 // str-gz8j: keep the live progress line consistent with the
@@ -5522,6 +5548,7 @@ pub(crate) async fn run_explore(
                 let progress_status = match &result {
                     Ok(obs) if obs.timed_out => "failed",
                     Ok(_) => "completed",
+                    Err(_) if is_unsupported => "unsupported",
                     Err(_) => "failed",
                 };
                 emit_explore_progress(
@@ -5898,10 +5925,14 @@ pub(crate) async fn run_explore(
             // instead of silently looking like a Completed run.
             let (summary_status, summary_reason) =
                 classify_outcome_status(&outcome.result, outcome.wall_time);
-            if summary_status == "completed" {
-                explore_summary.completed += 1;
-            } else {
-                explore_summary.failed += 1;
+            match summary_status {
+                "completed" => explore_summary.completed += 1,
+                // str-303gg review #4: a frontend-unsupported function is not a
+                // failure. Count it under `skipped` (the legacy superset of the
+                // `unsupported` bucket) rather than `failed`; the precise
+                // `unsupported` bucket is bumped below via outcome_status_from_entry.
+                "unsupported" => explore_summary.skipped += 1,
+                _ => explore_summary.failed += 1,
             }
             // str-oo31: also bump the precise per-OutcomeStatus bucket and
             // the produced-coverage denominator. The bucket assignment must
@@ -5948,6 +5979,12 @@ pub(crate) async fn run_explore(
                     let inferred = match (&outcome.result, summary_status) {
                         (Ok(_), _) => UnavailableReason::WriteFailed,
                         (Err(_), "completed") => UnavailableReason::WriteFailed,
+                        // str-303gg review #4: keep a frontend-unsupported
+                        // classification in the Unsupported bucket rather than
+                        // inferring RuntimeFailed from the generic Err arm.
+                        (Err(msg), _) if is_unsupported_error_message(msg) => {
+                            UnavailableReason::Unsupported
+                        }
                         (Err(msg), _) => {
                             let lower = msg.to_lowercase();
                             if lower.contains("timeout") || lower.contains("timed out") {
@@ -5992,11 +6029,14 @@ pub(crate) async fn run_explore(
                 shatter_core::protocol::OutcomeStatus::PreflightFailed => {
                     explore_summary.preflight_failed += 1;
                 }
-                // Skipped variants don't appear here: this branch only runs
-                // for scheduled work items (completed | failed). Pre-skipped
-                // functions are seeded into `unsupported` at summary init.
-                shatter_core::protocol::OutcomeStatus::Unsupported
-                | shatter_core::protocol::OutcomeStatus::SkippedByPolicy => {}
+                // str-303gg review #4: a scheduled function the frontend reports
+                // as not-supported mid-run lands here too (not only pre-skipped
+                // functions seeded at summary init), so surface it in the
+                // dedicated `unsupported` bucket instead of dropping it.
+                shatter_core::protocol::OutcomeStatus::Unsupported => {
+                    explore_summary.unsupported += 1;
+                }
+                shatter_core::protocol::OutcomeStatus::SkippedByPolicy => {}
             }
             if let Ok(ref result) = outcome.result
                 && result.unique_paths > 0
@@ -9540,6 +9580,32 @@ mod tests {
         let (status, reason) = classify_outcome_status(&result, Duration::from_millis(50));
         assert_eq!(status, "failed");
         assert_eq!(reason.as_deref(), Some("frontend crashed: signal 11"));
+    }
+
+    #[test]
+    fn classify_outcome_status_unsupported_routes_to_unsupported_bucket() {
+        // str-303gg review #4: a frontend not_supported classification (wrapped
+        // by PipelineError) must classify as `unsupported`, not `failed`, so it
+        // lands in the unsupported bucket like the scan/observe paths.
+        for msg in [
+            "concolic observe failed: unsupported: function not in crate_bridge dispatch table",
+            "observe stage failed: unsupported: axum State<AppState> requires native replay input 0",
+        ] {
+            let result: Result<shatter_core::explorer::ObservationOutput, String> =
+                Err(msg.to_string());
+            let (status, reason) = classify_outcome_status(&result, Duration::from_millis(10));
+            assert_eq!(status, "unsupported", "message: {msg}");
+            assert_eq!(reason.as_deref(), Some(msg));
+        }
+
+        // A genuine runtime error that merely mentions "unsupported" is still a
+        // failure — the anchor is the exact PipelineError prefix.
+        let runtime: Result<shatter_core::explorer::ObservationOutput, String> =
+            Err("runtime panic: unsupported opcode".into());
+        assert_eq!(
+            classify_outcome_status(&runtime, Duration::from_millis(10)).0,
+            "failed"
+        );
     }
 
     fn make_named_observation(name: &str) -> shatter_core::explorer::ObservationOutput {

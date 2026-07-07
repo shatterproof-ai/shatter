@@ -50,6 +50,21 @@ pub enum PipelineError {
     StageIo(#[from] StageIoError),
 }
 
+impl PipelineError {
+    /// True when this error is a frontend "not supported" classification for the
+    /// whole function (from either the random explorer or the concolic
+    /// orchestrator). Callers route it to the unsupported bucket rather than
+    /// reporting a hard failure, matching the scan/observe paths (str-303gg
+    /// review #4).
+    pub fn is_unsupported(&self) -> bool {
+        matches!(
+            self,
+            PipelineError::Explore(explorer::ExploreError::Unsupported(_))
+                | PipelineError::ConcolicExplore(orchestrator::ExploreError::Unsupported(_))
+        )
+    }
+}
+
 /// Which stages of the pipeline to execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

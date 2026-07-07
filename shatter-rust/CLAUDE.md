@@ -41,11 +41,18 @@ recorded as **completed/0%**.
 still fail to *compile* (e.g. a parameter type that does not implement
 `DeserializeOwned`). The whole-file harness is the first build candidate; on
 `CompilationFailed` it degrades to a single-function fallback harness for just
-the requested target, so one bad sibling never breaks the others. Only a
-compile failure of the requested function *on its own* is reported as a genuine
-incompatibility (`NonExecutable` / "not JSON-harness compatible"). Locked by
-`crate_bridge_unsupported_sibling_does_not_poison_requested_function` and
+the requested target, so one bad sibling never breaks the others. When the
+requested function fails to compile *on its own*, the failure is reported as
+`NonExecutable` / "not JSON-harness compatible" only when it is a
+serde-bound/`DeserializeOwned` incompatibility (recognised by
+`crate_bridge_serde_bound_failure_reason`); any other solo compile failure
+surfaces as `CompilationFailed` (→ `build_failed`), not `NonExecutable`. Locked
+by `crate_bridge_unsupported_sibling_does_not_poison_requested_function` and
 `crate_bridge_executes_private_function` in `executor.rs`.
+
+When any native replay is present the whole-file candidate is skipped entirely
+(the replay is positional to the requested call and would miscompile against
+siblings); the build goes straight to the single-function harness (str-303gg).
 
 **Engine-side defense-in-depth.** `shatter-core` reclassifies a `not_supported`
 thrown_error nested in an Ok execute result to `Unsupported`
