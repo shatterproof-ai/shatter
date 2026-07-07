@@ -977,6 +977,49 @@ export function convertTypeWithNode(
   if (elementNode) {
     return { kind: "array", element: convertElementNode(elementNode, checker, sourceFile, seen) };
   }
+  // Residual recovery sites the direct match above cannot reach (str-ya5dx —
+  // each still degrades to `{}` and crashes target `.map`/`for..of` code):
+  //
+  // Union members: `Widget[] | null | undefined`. Recover when the node is a
+  // union with exactly one non-nullish member that is syntactically an array;
+  // convert that member and preserve nullability.
+  let node: ts.TypeNode = typeNode;
+  if (ts.isParenthesizedTypeNode(node)) {
+    node = node.type;
+  }
+  if (ts.isUnionTypeNode(node)) {
+    const isNullish = (m: ts.TypeNode) =>
+      m.kind === ts.SyntaxKind.NullKeyword ||
+      m.kind === ts.SyntaxKind.UndefinedKeyword ||
+      (ts.isLiteralTypeNode(m) && m.literal.kind === ts.SyntaxKind.NullKeyword);
+    const nonNullish = node.types.filter((m) => !isNullish(m));
+    const hadNullish = nonNullish.length < node.types.length;
+    if (nonNullish.length === 1) {
+      const memberElement = arrayElementTypeNode(nonNullish[0]!);
+      if (memberElement) {
+        const arr: TypeInfo = {
+          kind: "array",
+          element: convertElementNode(memberElement, checker, sourceFile, seen),
+        };
+        return hadNullish ? { kind: "nullable", inner: arr } : arr;
+      }
+    }
+  }
+  // Array-typed aliases: `type Widgets = Widget[]`. The reference node hides
+  // the array syntax behind the alias; follow one level of alias declaration.
+  if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+    const aliasSymbol = checker.getSymbolAtLocation(node.typeName);
+    const aliasDecl = aliasSymbol?.declarations?.find(ts.isTypeAliasDeclaration);
+    if (aliasDecl) {
+      const aliasElement = arrayElementTypeNode(aliasDecl.type);
+      if (aliasElement) {
+        return {
+          kind: "array",
+          element: convertElementNode(aliasElement, checker, sourceFile, seen),
+        };
+      }
+    }
+  }
   return converted;
 }
 

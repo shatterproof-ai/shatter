@@ -504,6 +504,50 @@ describe("analyzeFile", () => {
           element: { kind: "object", fields: [["id", { kind: "float" }]] },
         });
       });
+
+      // str-ya5dx residual sites: each previously degraded to `{}` and crashed
+      // target `.map` / `for..of` code in the pickpackit web corpus.
+      it("recovers an array union member (Widget[] | null | undefined)", () => {
+        const t = convertEntryParamNoLib(
+          "interface Widget { id: number; }\n" +
+            "export function entry(items: Widget[] | null | undefined): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "nullable",
+          inner: {
+            kind: "array",
+            element: { kind: "object", fields: [["id", { kind: "float" }]] },
+          },
+        });
+      });
+
+      it("recovers an array-typed alias (type Widgets = Widget[])", () => {
+        const t = convertEntryParamNoLib(
+          "interface Widget { id: number; }\n" +
+            "type Widgets = Widget[];\n" +
+            "export function entry(items: Widgets): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "array",
+          element: { kind: "object", fields: [["id", { kind: "float" }]] },
+        });
+      });
+
+      it("tuple parameters already realize as iterable arrays (behavior lock)", () => {
+        // Tuples never needed the syntactic recovery — the checker resolves
+        // them positionally even lib-less. Locked here so a regression to `{}`
+        // (which breaks target iteration) is caught.
+        const t = convertEntryParamNoLib(
+          "export function entry(pair: [string, number]): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "array",
+          element: {
+            kind: "union",
+            variants: [{ kind: "str" }, { kind: "float" }],
+          },
+        });
+      });
     });
 
     // Review finding (Merge-with-fixes): the syntactic recovery in
