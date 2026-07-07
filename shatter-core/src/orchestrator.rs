@@ -735,6 +735,13 @@ pub enum ExploreError {
     Planner(#[from] crate::planner_consumer::PlannerConsumerError),
     #[error("solver feedback error: {0}")]
     SolverFeedback(String),
+    /// Frontend reported the target as `not_supported` during execute — either a
+    /// response-level `ErrorCode::NotSupported` or a `not_supported` thrown_error
+    /// nested in an Ok execute result. The scan layer maps this to
+    /// `SkipCategory::Unsupported` with a clean reason instead of
+    /// `SkipCategory::Error`, mirroring the random explorer path (str-303gg).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 /// A single execution observation: the inputs used, the result, and path classification.
@@ -1216,6 +1223,12 @@ enum ObserveOneResult {
     TriageSkipped,
     /// Frontend returned an error or unexpected response — entry skipped.
     FrontendSkipped,
+    /// Frontend reported the target as `not_supported` for this iteration —
+    /// either a response-level `NotSupported` or a `not_supported` thrown_error
+    /// nested in an Ok result. The iteration produced no observation; the caller
+    /// records the reason and reclassifies the whole FUNCTION as unsupported only
+    /// if it collected no successful observation at all (str-303gg review fix).
+    Unsupported(String),
     /// A termination budget was hit before executing.
     Terminated(TerminationReason),
 }
@@ -1330,12 +1343,29 @@ async fn observe_one(
 
     let exec_result = match response.result {
         ResponseResult::Execute(result) => *result,
-        ResponseResult::Error { message, .. } => {
+        ResponseResult::Error { code, message, .. } => {
+            // str-303gg review fix: a response-level `NotSupported` is an
+            // unsupported iteration, not a generic frontend error. Surface it so
+            // the aggregate classification can reclassify the function as
+            // unsupported when nothing else executed, mirroring the random
+            // explorer path — without aborting a function that did collect
+            // coverage on other iterations.
+            if code == crate::protocol::ErrorCode::NotSupported {
+                return Ok(ObserveOneResult::Unsupported(message));
+            }
             log::warn!("frontend error during execute: {message}");
             return Ok(ObserveOneResult::FrontendSkipped);
         }
         _ => return Ok(ObserveOneResult::FrontendSkipped),
     };
+
+    // str-303gg: a `not_supported` thrown_error nested in an Ok execute result
+    // is an unsupported iteration. Report it (without aborting) so the aggregate
+    // classification can decide — a per-iteration abort would discard coverage
+    // collected on other iterations.
+    if let Some(reason) = crate::observe::thrown_not_supported_reason(&exec_result) {
+        return Ok(ObserveOneResult::Unsupported(reason));
+    }
 
     let path_id = hash_branch_path(&exec_result.branch_path);
 
@@ -2137,6 +2167,10 @@ pub async fn explore_with_oracle(
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut total_executions: usize = 0;
+    // str-303gg review fix: remember a representative `not_supported` reason seen
+    // during exploration. Used only at finalize to reclassify the function as
+    // Unsupported when it collected no successful observation at all.
+    let mut unsupported_reason: Option<String> = None;
     let mut z3_generated: usize = 0;
     let mut fuzz_generated: usize = 0;
     let mut fuzz_attempts: HashMap<u32, FuzzAttemptState> = HashMap::new();
@@ -2495,6 +2529,15 @@ pub async fn explore_with_oracle(
             }
             ObserveOneResult::FrontendSkipped => {
                 total_executions += 1;
+                continue;
+            }
+            ObserveOneResult::Unsupported(reason) => {
+                // str-303gg review fix: a not_supported iteration is skipped like
+                // a frontend error, but its reason is remembered so the function
+                // can be reclassified Unsupported at finalize IF nothing else ever
+                // executed. It never aborts a partially-covered function.
+                total_executions += 1;
+                unsupported_reason.get_or_insert(reason);
                 continue;
             }
             ObserveOneResult::Terminated(reason) => {
@@ -3308,6 +3351,18 @@ pub async fn explore_with_oracle(
     feedback_scheduler.drain_pending_feedback().await?;
     let pipeline_overlaps = feedback_scheduler.pipeline_overlaps();
     let unique_paths = covered_paths.len();
+
+    // str-303gg review fix: reclassify the whole function as Unsupported only
+    // when it produced no successful/behavioral observation at all AND at least
+    // one iteration reported not_supported. A function that collected coverage on
+    // any iteration keeps it — a single not_supported result (e.g. an axum
+    // State<T> handler on a non-native-replay solver input) must not discard it.
+    let had_observation = !executions.is_empty() || unique_paths > 0;
+    if let Some(reason) =
+        crate::observe::aggregate_unsupported_reason(unsupported_reason, had_observation)
+    {
+        return Err(ExploreError::Unsupported(reason));
+    }
     let mcdc_summary = mcdc_table.map(|t| t.summary());
     let opaque_suggestions =
         crate::executability::build_opaque_suggestions(param_infos, &param_fail_counts);

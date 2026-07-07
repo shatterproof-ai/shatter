@@ -327,6 +327,7 @@ fn rust_string_literal(value: &str) -> String {
 }
 
 /// Signature data for a single compatible function used in dispatch harness generation.
+#[derive(Clone)]
 struct CompatFn {
     name: String,
     param_names: Vec<String>,
@@ -334,6 +335,21 @@ struct CompatFn {
     return_type: Option<String>,
     /// True if the function is declared `async fn`.
     is_async: bool,
+}
+
+impl CompatFn {
+    /// Build a `CompatFn` from a discovered function name and its parsed
+    /// signature. Single construction point for the crate_bridge and crate-backed
+    /// dispatch-table collectors (str-303gg review #8).
+    fn from_signature(name: impl Into<String>, sig: &FnSignature) -> Self {
+        Self {
+            name: name.into(),
+            param_names: sig.param_names.clone(),
+            param_types: sig.param_types.clone(),
+            return_type: sig.return_type.clone(),
+            is_async: sig.is_async,
+        }
+    }
 }
 
 /// Cache key for a crate-backed file-level dispatch harness.
@@ -504,6 +520,62 @@ impl Drop for BridgeSourceBackup {
 }
 
 pub type CrateBridgeHarnessCache = Mutex<HashMap<CrateBridgeHarnessKey, CrateBridgeHarnessEntry>>;
+
+/// Process-global negative cache of whole-file crate_bridge plans whose harness
+/// failed to compile (str-303gg review #5). Keyed by the content-addressed
+/// [`CrateBridgeHarnessKey`], so an entry is only valid for the exact
+/// wrapper/source it failed on. Once a file's whole-file plan is known-poisoned,
+/// later functions in the same file skip it and go straight to the
+/// single-function fallback instead of each paying a guaranteed-failing
+/// whole-file `cargo build`.
+static POISONED_WHOLE_FILE_PLANS: std::sync::LazyLock<Mutex<HashSet<CrateBridgeHarnessKey>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Whether a crate_bridge execution should attempt the whole-file dispatch
+/// harness (registering every statically-compatible sibling) before the
+/// single-function fallback.
+///
+/// Only when the file has more than one compatible function AND the requested
+/// call carries no native replay. Native replays are derived positionally from
+/// the requested call's inputs; the whole-file wrapper applies them to every
+/// sibling at the same index, where the parameter type generally differs, so the
+/// harness fails to compile and the whole-file attempt is a guaranteed wasted
+/// build (str-303gg review #2).
+fn crate_bridge_should_try_whole_file(compatible_count: usize, has_native_replay: bool) -> bool {
+    compatible_count > 1 && !has_native_replay
+}
+
+/// Emit a diagnostic line to stderr when `SHATTER_LOG_LEVEL` is `debug` or
+/// `trace`. Stderr is safe for diagnostics — the frontend protocol uses stdout.
+fn crate_bridge_debug(msg: &str) {
+    if matches!(
+        std::env::var("SHATTER_LOG_LEVEL").as_deref(),
+        Ok("debug") | Ok("trace")
+    ) {
+        eprintln!("[shatter-rust] {msg}");
+    }
+}
+
+/// Acquire an exclusive advisory lock guarding the build of a crate_bridge
+/// harness dir (str-303gg review #3). The lock file is a sibling of `harness_dir`
+/// (never inside it) so directory cleanup never deletes it. Serialises concurrent
+/// builders of the SAME content-addressed plan across processes, so parallel scan
+/// workers cannot corrupt each other's `cargo build` in the shared dir and the
+/// CompilationFailed cleanup below is race-free. Returns the locked file handle
+/// whose `Drop` releases the lock, or `None` (proceeding unserialised) when the
+/// lock file cannot be created or locked — the lock is a best-effort race guard,
+/// not a correctness precondition.
+fn acquire_crate_bridge_build_lock(harness_dir: &Path) -> Option<std::fs::File> {
+    let lock_path = harness_dir.with_extension("build-lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
 
 /// A compiled, running harness subprocess ready to accept execute requests via stdin.
 pub struct PersistentHarness {
@@ -679,7 +751,7 @@ fn mocks_hash(mocks: &[Value]) -> u64 {
 /// not the source text it emits.** Bumping invalidates all stale harness caches
 /// so the next run recompiles. Pure source-text changes do not need a bump —
 /// they already change the hash. See str-wcf3.
-const HARNESS_CACHE_VERSION: u64 = 1;
+const HARNESS_CACHE_VERSION: u64 = 2;
 
 /// Hash the source content for stable binary cache invalidation.
 ///
@@ -4477,10 +4549,11 @@ fn execute_function_crate_bridge(
     let source = strip_shatter_wrapper(&raw_source);
     let mh = mocks_hash(mocks);
 
-    // Collect all functions so we can locate the requested target. The
-    // crate_bridge wrapper is intentionally built for one target function at a
-    // time: one non-JSON-compatible sibling in the same file must not poison
-    // execution for every other function in the dispatch harness.
+    // Collect all functions so we can locate the requested target and register
+    // every statically-compatible sibling in one whole-file dispatch harness
+    // (str-303gg). A sibling that fails to *compile* never poisons the requested
+    // function: the whole-file build degrades to a single-function fallback (and
+    // the poisoned plan is remembered so later functions skip it).
     let all_fn_ctxs = extract_all_fn_contexts(&source);
     let static_mut_names = extract_static_mut_items(&source);
 
@@ -4494,27 +4567,66 @@ fn execute_function_crate_bridge(
             "crate_bridge: function `{function_name}` has generic type parameters — cannot deserialise concrete inputs"
         )));
     }
-    let fn_info = CompatFn {
-        name: function_name.to_string(),
-        param_names: ctx.sig.param_names.clone(),
-        param_types: ctx.sig.param_types.clone(),
-        return_type: ctx.sig.return_type.clone(),
-        is_async: ctx.sig.is_async,
-    };
-    if let Some(reason) = crate_bridge_unsupported_reason(&fn_info) {
+    let requested_fn = CompatFn::from_signature(function_name, &ctx.sig);
+    if let Some(reason) = crate_bridge_unsupported_reason(&requested_fn) {
         return Err(ExecuteError::NonExecutable(format!(
             "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
         )));
     }
-    let expected_inputs = fn_info.param_names.len();
-    let compatible_fns = vec![fn_info];
+    let expected_inputs = requested_fn.param_names.len();
     if inputs.len() != expected_inputs {
         return Err(ExecuteError::InstrumentError(format!(
             "expected {expected_inputs} inputs for {function_name}, got {}",
             inputs.len()
         )));
     }
+
+    // Register every statically-compatible function in the file in one dispatch
+    // harness (str-303gg), mirroring the crate_backed filter in
+    // `execute_function_crate_backed`: non-generic and free of trait-object /
+    // raw-pointer / unconstructible-extractor parameters. Previously only the
+    // requested function was registered, so a later request for a sibling that
+    // shares the running harness hit the dispatch table's "unknown" arm and was
+    // misreported as completed/0% instead of executing (or being classified
+    // unsupported). The predicate is *static* — a sibling can still fail to
+    // *compile* (e.g. a parameter type that does not implement
+    // `DeserializeOwned`), which the per-candidate fallback below handles so one
+    // bad sibling never poisons the requested function's harness.
+    let all_compatible: Vec<CompatFn> = all_fn_ctxs
+        .iter()
+        .filter_map(|(name, ctx)| {
+            if ctx.sig.has_generics {
+                return None;
+            }
+            let cf = CompatFn::from_signature(name, &ctx.sig);
+            crate_bridge_unsupported_reason(&cf).is_none().then_some(cf)
+        })
+        .collect();
+
     let native_replays = native_replay_specs(inputs)?;
+    // str-303gg review #2: native replays are derived positionally from the
+    // REQUESTED call's inputs. The whole-file wrapper applies that same
+    // positional replay to every sibling function, whose parameter type at the
+    // same index generally differs — the generated wrapper then fails to compile,
+    // so the whole-file harness is a guaranteed failing build that every function
+    // pays before falling back (making the feature a no-op in axum projects). When
+    // any native replay is present, skip the whole-file candidate and build only
+    // the single-function harness, whose positional replays are correct.
+    let has_native_replay = native_replays.iter().any(Option::is_some);
+
+    // Candidate function sets in priority order: the whole compatible file first
+    // (one harness serves every discovered pub fn), then just the requested
+    // function as a poison-resistant fallback. When the file has a single
+    // compatible function — or a native replay is present (see above) — only the
+    // single-function harness is built. `all_compatible` is guaranteed to contain
+    // the requested function because it passed the same static predicate above.
+    let single = vec![requested_fn.clone()];
+    let candidates: Vec<&[CompatFn]> =
+        if crate_bridge_should_try_whole_file(all_compatible.len(), has_native_replay) {
+            vec![all_compatible.as_slice(), single.as_slice()]
+        } else {
+            vec![single.as_slice()]
+        };
 
     let mocks_json = serde_json::to_string(mocks)
         .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
@@ -4532,49 +4644,69 @@ fn execute_function_crate_bridge(
 
     // In-module wrapper appended to the target file so it sees module-local
     // imports and private items (str-31j.3). The crate-root `__shatter.rs` is
-    // a small FFI stub that forwards to the in-module entry symbol.
-    let in_module_wrapper = generate_in_module_wrapper(
-        &compatible_fns,
-        &mocks_json,
-        &static_mut_names,
-        &native_replays,
-    );
+    // a small FFI stub that forwards to the in-module entry symbol. Precompute
+    // one plan (wrapper + content-addressed cache key) per candidate function
+    // set so the fast-path scan and the slow-path build share hashes without
+    // regenerating wrappers.
     let root_stub = generate_crate_bridge_root_stub();
-    let wrapper_hash = source_hash(&format!("{in_module_wrapper}{root_stub}"));
     let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
 
-    let key = CrateBridgeHarnessKey {
-        crate_root: crate_root.to_path_buf(),
-        wrapper_hash,
-        mocks_hash: mh,
-        cargo_lock_hash,
-    };
+    struct BridgePlan<'a> {
+        fns: &'a [CompatFn],
+        in_module_wrapper: String,
+        wrapper_hash: u64,
+        key: CrateBridgeHarnessKey,
+    }
+    let plans: Vec<BridgePlan> = candidates
+        .iter()
+        .map(|fns| {
+            let in_module_wrapper =
+                generate_in_module_wrapper(fns, &mocks_json, &static_mut_names, &native_replays);
+            let wrapper_hash = source_hash(&format!("{in_module_wrapper}{root_stub}"));
+            let key = CrateBridgeHarnessKey {
+                crate_root: crate_root.to_path_buf(),
+                wrapper_hash,
+                mocks_hash: mh,
+                cargo_lock_hash,
+            };
+            BridgePlan {
+                fns,
+                in_module_wrapper,
+                wrapper_hash,
+                key,
+            }
+        })
+        .collect();
 
-    // Fast path: harness already running and function in dispatch table.
+    // Fast path: a harness for either candidate is already running and serves
+    // the requested function.
     {
         let mut map = bridge_cache.lock().unwrap();
-        if let Some(entry) = map.get_mut(&key)
-            && entry.compatible_functions.contains(function_name)
-        {
-            let result = entry
-                .harness
-                .execute_dispatch(function_name, inputs, timeout_ms)?;
-            if result
-                .thrown_error
-                .as_ref()
-                .and_then(|e| e.get("error_type"))
-                .and_then(|v| v.as_str())
-                == Some("timeout")
+        for plan in &plans {
+            if let Some(entry) = map.get_mut(&plan.key)
+                && entry.compatible_functions.contains(function_name)
             {
-                map.remove(&key);
+                let result = entry
+                    .harness
+                    .execute_dispatch(function_name, inputs, timeout_ms)?;
+                if result
+                    .thrown_error
+                    .as_ref()
+                    .and_then(|e| e.get("error_type"))
+                    .and_then(|v| v.as_str())
+                    == Some("timeout")
+                {
+                    map.remove(&plan.key);
+                }
+                return Ok(result);
             }
-            return Ok(result);
         }
     }
 
     // Slow path: build driver binary against an isolated staging copy of the
     // user crate. The original source files are never modified (str-ja70).
+    // Crate-level metadata is candidate-independent, so read it once.
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
     let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
@@ -4590,16 +4722,6 @@ fn execute_function_crate_bridge(
         )
     })?;
 
-    let harness_dir = stable_crate_bridge_dir(crate_root, wrapper_hash, mh);
-    std::fs::create_dir_all(&harness_dir)?;
-
-    // Create an isolated staging copy of the user crate. All mutations
-    // (instrumented source, wrapper module, Cargo.toml feature injection)
-    // happen inside this copy, leaving the original tree untouched (str-ja70).
-    let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
-        ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
-    })?;
-
     // Map `file_path` from original crate to staging copy. str-oc67: `file_path`
     // may be RELATIVE while `crate_root` is absolute, so a naive
     // `strip_prefix(crate_root)` fails and the instrumented source + in-module
@@ -4611,108 +4733,181 @@ fn execute_function_crate_bridge(
     let crate_root_canon =
         std::fs::canonicalize(crate_root).unwrap_or_else(|_| crate_root.to_path_buf());
     let rel_file = staging_rel_file(&source_path, Path::new(file_path), &crate_root_canon);
-    let staging_file = staging_crate.join(&rel_file);
-    let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| {
-        ExecuteError::NonExecutable("crate_bridge: cannot find lib.rs in staging copy".to_string())
-    })?;
-    let staging_shatter_mod = staging_crate.join("src").join("__shatter.rs");
-    let staging_cargo_toml = staging_crate.join("Cargo.toml");
 
-    // Write the instrumented source + in-module wrapper to the staging copy.
-    let mut target_contents = instr_result.source.clone();
-    if !target_contents.ends_with('\n') {
-        target_contents.push('\n');
-    }
-    target_contents.push_str(&in_module_wrapper);
-    if let Some(parent) = staging_file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
+    // Build each candidate in priority order. A CompilationFailed on the
+    // whole-file harness is treated as a poisoned sibling and degrades to the
+    // single-function fallback; only a failure on the FINAL candidate (the
+    // requested function on its own) is reported as a genuine incompatibility of
+    // the target itself (str-303gg).
+    let plan_count = plans.len();
+    for (idx, plan) in plans.iter().enumerate() {
+        let is_last = idx + 1 == plan_count;
+
+        // str-303gg review #5: skip a whole-file plan already known to fail
+        // compilation in this process — go straight to the single-fn fallback
+        // rather than repay the guaranteed-failing build for every function.
+        if !is_last
+            && POISONED_WHOLE_FILE_PLANS
+                .lock()
+                .unwrap()
+                .contains(&plan.key)
+        {
+            continue;
+        }
+
+        let harness_dir = stable_crate_bridge_dir(crate_root, plan.wrapper_hash, mh);
+
+        // str-303gg review #3: serialise concurrent builders of this exact plan
+        // across processes before touching the shared content-addressed dir. The
+        // lock is held for the whole build+dispatch of this candidate; its Drop at
+        // the end of the iteration (or on return) releases it.
+        if let Some(parent) = harness_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _build_lock = acquire_crate_bridge_build_lock(&harness_dir);
+
+        std::fs::create_dir_all(&harness_dir)?;
+
+        // Create an isolated staging copy of the user crate. All mutations
+        // (instrumented source, wrapper module, Cargo.toml feature injection)
+        // happen inside this copy, leaving the original tree untouched (str-ja70).
+        let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
+            ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
+        })?;
+
+        let staging_file = staging_crate.join(&rel_file);
+        let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| {
+            ExecuteError::NonExecutable(
+                "crate_bridge: cannot find lib.rs in staging copy".to_string(),
+            )
+        })?;
+        let staging_shatter_mod = staging_crate.join("src").join("__shatter.rs");
+        let staging_cargo_toml = staging_crate.join("Cargo.toml");
+
+        // Write the instrumented source + in-module wrapper to the staging copy.
+        let mut target_contents = instr_result.source.clone();
+        if !target_contents.ends_with('\n') {
+            target_contents.push('\n');
+        }
+        target_contents.push_str(&plan.in_module_wrapper);
+        if let Some(parent) = staging_file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ExecuteError::IoError(io::Error::other(format!(
+                    "cannot create staging directories: {e}"
+                )))
+            })?;
+        }
+        std::fs::write(&staging_file, &target_contents).map_err(|e| {
             ExecuteError::IoError(io::Error::other(format!(
-                "cannot create staging directories: {e}"
+                "cannot write instrumented source to staging: {e}"
             )))
         })?;
-    }
-    std::fs::write(&staging_file, &target_contents).map_err(|e| {
-        ExecuteError::IoError(io::Error::other(format!(
-            "cannot write instrumented source to staging: {e}"
-        )))
-    })?;
 
-    // Write the FFI stub at staging crate root.
-    std::fs::write(&staging_shatter_mod, &root_stub).map_err(ExecuteError::IoError)?;
+        // Write the FFI stub at staging crate root.
+        std::fs::write(&staging_shatter_mod, &root_stub).map_err(ExecuteError::IoError)?;
 
-    // Inject mod declaration into staging lib.rs (idempotent).
-    inject_lib_module_declaration(&staging_lib_rs, &crate_name.replace('-', "_"))?;
+        // Inject mod declaration into staging lib.rs (idempotent).
+        inject_lib_module_declaration(&staging_lib_rs, &crate_name.replace('-', "_"))?;
 
-    // Inject feature + deps into staging Cargo.toml (idempotent).
-    inject_crate_bridge_feature(&staging_cargo_toml, &runtime_path)?;
+        // Inject feature + deps into staging Cargo.toml (idempotent).
+        inject_crate_bridge_feature(&staging_cargo_toml, &runtime_path)?;
 
-    let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
-    let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
-    let driver_package_name =
-        crate_bridge_driver_package_name("shatter-crate-bridge-exec", &harness_dir);
-    let driver_cargo_toml = generate_crate_bridge_cargo_toml(
-        &driver_package_name,
-        &crate_name,
-        &staging_crate,
-        needs_tokio,
-    );
+        let needs_tokio = plan.fns.iter().any(|f| f.is_async);
+        let driver_source = generate_crate_bridge_bin(&crate_name.replace('-', "_"));
+        let driver_package_name =
+            crate_bridge_driver_package_name("shatter-crate-bridge-exec", &harness_dir);
+        let driver_cargo_toml = generate_crate_bridge_cargo_toml(
+            &driver_package_name,
+            &crate_name,
+            &staging_crate,
+            needs_tokio,
+        );
 
-    // Shadow `timing` as mutable so we can `take()` it inside the branch.
-    let mut timing = timing;
-
-    let harness_result = if let Some(t) = timing.take() {
-        t.record("execute.build", |t| {
+        let harness_result = if let Some(t) = timing.take() {
+            t.record("execute.build", |t| {
+                build_and_spawn_crate_bridge_harness(
+                    &driver_source,
+                    &driver_cargo_toml,
+                    &harness_dir,
+                    Some(t),
+                )
+            })
+        } else {
             build_and_spawn_crate_bridge_harness(
                 &driver_source,
                 &driver_cargo_toml,
                 &harness_dir,
-                Some(t),
+                None,
             )
-        })
-    } else {
-        build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)
-    };
-    let mut harness = match harness_result {
-        Ok(harness) => harness,
-        Err(ExecuteError::CompilationFailed(msg)) => {
-            let _ = std::fs::remove_dir_all(&harness_dir);
-            if let Some(reason) = crate_bridge_serde_bound_failure_reason(&msg) {
-                return Err(ExecuteError::NonExecutable(format!(
-                    "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
-                )));
+        };
+        let mut harness = match harness_result {
+            Ok(harness) => harness,
+            Err(ExecuteError::CompilationFailed(msg)) => {
+                let _ = std::fs::remove_dir_all(&harness_dir);
+                if is_last {
+                    if let Some(reason) = crate_bridge_serde_bound_failure_reason(&msg) {
+                        return Err(ExecuteError::NonExecutable(format!(
+                            "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
+                        )));
+                    }
+                    return Err(ExecuteError::CompilationFailed(msg));
+                }
+                // A sibling in the whole-file harness failed to compile. Degrade
+                // to the single-function fallback so the requested target still
+                // runs.
+                //
+                // str-303gg review #6: surface WHY (build timeout, a
+                // non-DeserializeOwned sibling, …) — the message is otherwise
+                // silently discarded, hiding build-timeout regressions.
+                crate_bridge_debug(&format!(
+                    "crate_bridge: whole-file harness for `{function_name}` ({} fn(s)) failed to \
+                     compile; falling back to single-function harness: {msg}",
+                    plan.fns.len(),
+                ));
+                // str-303gg review #5: remember this poisoned whole-file plan so
+                // later functions in the same file skip it instead of repaying
+                // the guaranteed-failing build.
+                POISONED_WHOLE_FILE_PLANS
+                    .lock()
+                    .unwrap()
+                    .insert(plan.key.clone());
+                continue;
             }
-            return Err(ExecuteError::CompilationFailed(msg));
-        }
-        Err(err) => {
+            Err(err) => {
+                let _ = std::fs::remove_dir_all(&harness_dir);
+                return Err(err);
+            }
+        };
+
+        let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
+
+        let timed_out = result
+            .thrown_error
+            .as_ref()
+            .and_then(|e| e.get("error_type"))
+            .and_then(|v| v.as_str())
+            == Some("timeout");
+
+        if !timed_out {
+            let compatible_set: HashSet<String> =
+                plan.fns.iter().map(|f| f.name.clone()).collect();
+            bridge_cache.lock().unwrap().insert(
+                plan.key.clone(),
+                CrateBridgeHarnessEntry {
+                    harness,
+                    compatible_functions: compatible_set,
+                },
+            );
+        } else {
             let _ = std::fs::remove_dir_all(&harness_dir);
-            return Err(err);
         }
-    };
 
-    let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
-
-    let timed_out = result
-        .thrown_error
-        .as_ref()
-        .and_then(|e| e.get("error_type"))
-        .and_then(|v| v.as_str())
-        == Some("timeout");
-
-    if !timed_out {
-        let compatible_set: HashSet<String> =
-            compatible_fns.iter().map(|f| f.name.clone()).collect();
-        bridge_cache.lock().unwrap().insert(
-            key,
-            CrateBridgeHarnessEntry {
-                harness,
-                compatible_functions: compatible_set,
-            },
-        );
-    } else {
-        let _ = std::fs::remove_dir_all(&harness_dir);
+        return Ok(result);
     }
 
-    Ok(result)
+    // The final candidate always returns (Ok, a hard Err, or the is_last
+    // CompilationFailed branch), so the loop cannot fall through.
+    unreachable!("crate_bridge candidate loop must return on the final attempt")
 }
 
 /// Execute a function from a crate-backed Rust file using the stable bin-only dispatch harness.
@@ -4783,13 +4978,7 @@ fn execute_function_crate_backed(
         .iter()
         .filter_map(|(name, ctx)| {
             if check_bin_only_compatibility(name, ctx, true).is_ok() {
-                Some(CompatFn {
-                    name: name.clone(),
-                    param_names: ctx.sig.param_names.clone(),
-                    param_types: ctx.sig.param_types.clone(),
-                    return_type: ctx.sig.return_type.clone(),
-                    is_async: ctx.sig.is_async,
-                })
+                Some(CompatFn::from_signature(name, &ctx.sig))
             } else {
                 None
             }
@@ -11039,11 +11228,17 @@ fn enabled(config: Config) -> bool {
     //
     // The function is NOT marked `pub`, verifying that crate_bridge can access
     // crate-private functions that bin_only cannot reach.
+    //
+    // str-303gg: executing ONE function must register EVERY statically-compatible
+    // sibling in the same dispatch harness, so a later request for a sibling is
+    // served by the running harness (real coverage) rather than hitting the
+    // dispatch table's "unknown" arm and being misreported as completed/0%.
 
     #[test]
     fn crate_bridge_executes_private_function() {
         let dir = std::env::temp_dir().join("shatter-test-bridge-private");
-        // Write a crate with a private function.
+        let _ = std::fs::remove_dir_all(&dir);
+        // Write a crate with two private functions.
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(
@@ -11052,7 +11247,7 @@ fn enabled(config: Config) -> bool {
         ).unwrap();
         std::fs::write(
             src.join("lib.rs"),
-            "fn secret_add(a: i32, b: i32) -> i32 { a + b }\n",
+            "fn secret_add(a: i32, b: i32) -> i32 { a + b }\nfn secret_mul(a: i32, b: i32) -> i32 { a * b }\n",
         )
         .unwrap();
 
@@ -11060,8 +11255,11 @@ fn enabled(config: Config) -> bool {
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
         let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
 
+        let lib_path = src.join("lib.rs");
+        let lib_path = lib_path.to_str().unwrap();
+
         let result = execute_function_with_timing(
-            src.join("lib.rs").to_str().unwrap(),
+            lib_path,
             "secret_add",
             &[serde_json::json!(3), serde_json::json!(4)],
             &[],
@@ -11073,8 +11271,6 @@ fn enabled(config: Config) -> bool {
             &bridge_cache,
         );
 
-        let _ = std::fs::remove_dir_all(&dir);
-
         match result {
             Ok(r) => {
                 assert_eq!(
@@ -11082,13 +11278,67 @@ fn enabled(config: Config) -> bool {
                     Some(serde_json::json!(7)),
                     "secret_add(3, 4) should return 7"
                 );
+
+                // str-303gg: the harness built to run `secret_add` must ALSO
+                // register the compatible sibling `secret_mul`.
+                {
+                    let map = bridge_cache.lock().unwrap();
+                    let entry = map
+                        .values()
+                        .next()
+                        .expect("bridge cache should hold the running harness");
+                    assert!(
+                        entry.compatible_functions.contains("secret_add")
+                            && entry.compatible_functions.contains("secret_mul"),
+                        "whole-file harness must register every compatible sibling, got: {:?}",
+                        entry.compatible_functions
+                    );
+                }
+
+                // Requesting the sibling must be served by the SAME running
+                // harness (fast path) — not rebuilt, and not "not in dispatch
+                // table".
+                let sibling = execute_function_with_timing(
+                    lib_path,
+                    "secret_mul",
+                    &[serde_json::json!(3), serde_json::json!(4)],
+                    &[],
+                    60_000,
+                    Some("crate_bridge"),
+                    None,
+                    &cache,
+                    &crate_cache,
+                    &bridge_cache,
+                )
+                .expect("sibling execution should succeed");
+                assert_eq!(
+                    sibling.return_value,
+                    Some(serde_json::json!(12)),
+                    "secret_mul(3, 4) should return 12 from the shared harness"
+                );
+                assert!(
+                    sibling.thrown_error.is_none(),
+                    "sibling must execute, not report a not_supported dispatch error: {:?}",
+                    sibling.thrown_error
+                );
+                assert_eq!(
+                    bridge_cache.lock().unwrap().len(),
+                    1,
+                    "sibling must reuse the single shared harness, not spawn a second"
+                );
+
+                let _ = std::fs::remove_dir_all(&dir);
             }
             Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!(
                     "skipping crate_bridge_executes_private_function: cargo unavailable ({msg})"
                 );
+                let _ = std::fs::remove_dir_all(&dir);
             }
-            Err(e) => panic!("unexpected error: {e:?}"),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                panic!("unexpected error: {e:?}");
+            }
         }
     }
 
@@ -11620,6 +11870,33 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
     }
 
     #[test]
+    fn crate_bridge_whole_file_skipped_when_native_replay_present() {
+        // str-303gg review #2: native replays are positional to the requested
+        // call, so they miscompile against siblings. When any replay is present
+        // the whole-file dispatch harness must be skipped in favour of the
+        // single-function harness — even with many compatible siblings.
+        // black_box defeats const-folding so clippy does not flag these as
+        // constant-valued assertions.
+        use std::hint::black_box;
+        assert!(
+            crate_bridge_should_try_whole_file(black_box(5), black_box(false)),
+            "multiple compatible fns and no native replay → whole-file harness"
+        );
+        assert!(
+            !crate_bridge_should_try_whole_file(black_box(5), black_box(true)),
+            "a native replay must force the single-function harness"
+        );
+        assert!(
+            !crate_bridge_should_try_whole_file(black_box(1), black_box(false)),
+            "a single compatible fn never needs the whole-file harness"
+        );
+        assert!(!crate_bridge_should_try_whole_file(
+            black_box(1),
+            black_box(true)
+        ));
+    }
+
+    #[test]
     fn crate_bridge_unsupported_sibling_does_not_poison_requested_function() {
         let dir = unique_tmp_dir("sibling-poison");
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -11672,12 +11949,7 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
                 Some(serde_json::json!("pos")),
                 "supported functions must execute even when the same file has unsupported siblings",
             ),
-            Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("No such file")
-                    || msg.contains("spurious network error")
-                    || msg.contains("download of config.json failed")
-                    || msg.contains("Could not resolve host") =>
-            {
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!("skipping sibling poison regression: cargo unavailable ({msg})");
             }
             Err(e) => panic!("expected requested function to execute despite sibling, got: {e:?}"),
@@ -11688,12 +11960,7 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
                 msg.contains("JSON-harness compatible"),
                 "unsupported sibling should be classified clearly, got: {msg}"
             ),
-            Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("No such file")
-                    || msg.contains("spurious network error")
-                    || msg.contains("download of config.json failed")
-                    || msg.contains("Could not resolve host") =>
-            {
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!(
                     "skipping unsupported classification assertion: cargo unavailable ({msg})"
                 );

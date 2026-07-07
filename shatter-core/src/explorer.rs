@@ -1112,6 +1112,14 @@ pub async fn explore_function(
     let mut aggregator =
         crate::observation_aggregator::ObservationAggregator::new(config.loop_buckets.clone());
 
+    // str-303gg review fix: a not_supported iteration no longer aborts the
+    // function. Count these attempts so an all-not_supported function still
+    // terminates at the iteration budget (its iterations() stays 0), and keep a
+    // representative reason to reclassify the function Unsupported at finalize iff
+    // no successful observation was ever aggregated.
+    let mut unsupported_iterations: u32 = 0;
+    let mut unsupported_reason: Option<String> = None;
+
     // Tracked for progress reporting: number of branches observed at the last
     // periodic snapshot. The aggregator owns the iteration index at which
     // the most recent new path was aggregated, exposed via
@@ -1314,7 +1322,7 @@ pub async fn explore_function(
 
     loop {
         if let Some(budget) = effective_budget
-            && aggregator.iterations() >= budget
+            && aggregator.iterations() + unsupported_iterations >= budget
         {
             // Initial budget exhausted — try to claim surplus if still productive.
             if let Some(ref surplus) = config.budget_surplus {
@@ -1529,15 +1537,26 @@ pub async fn explore_function(
             config.default_execute_plan.as_ref(),
         )
         .instrument(tracing::info_span!("explore.execute_round_trip"))
-        .await
-        .map_err(|e| match e {
-            crate::observe::ObserveError::Frontend(fe) => ExploreError::Frontend(fe),
-            crate::observe::ObserveError::Unsupported(msg) => ExploreError::Unsupported(msg),
-            crate::observe::ObserveError::UnexpectedResponse(msg)
-            | crate::observe::ObserveError::InstrumentationFailed(msg) => {
-                ExploreError::UnexpectedResponse(msg)
+        .await;
+        let obs = match obs {
+            Ok(obs) => obs,
+            // str-303gg review fix: a not_supported iteration is recorded and
+            // skipped, never aborting a function that collected coverage on other
+            // iterations. observe_single returns before mutating coverage state,
+            // so nothing leaks from this iteration.
+            Err(crate::observe::ObserveError::Unsupported(msg)) => {
+                unsupported_iterations += 1;
+                unsupported_reason.get_or_insert(msg);
+                continue;
             }
-        })?;
+            Err(crate::observe::ObserveError::Frontend(fe)) => {
+                return Err(ExploreError::Frontend(fe));
+            }
+            Err(crate::observe::ObserveError::UnexpectedResponse(msg))
+            | Err(crate::observe::ObserveError::InstrumentationFailed(msg)) => {
+                return Err(ExploreError::UnexpectedResponse(msg));
+            }
+        };
 
         // --- LiveFirst state transitions ---
         // Check connection_failures reported by the frontend and transition
@@ -1850,6 +1869,15 @@ pub async fn explore_function(
         );
     }
 
+    // str-303gg review fix: reclassify Unsupported only when no successful
+    // observation was aggregated. A function that observed any coverage keeps it,
+    // even if some iterations returned not_supported.
+    if let Some(reason) =
+        crate::observe::aggregate_unsupported_reason(unsupported_reason, aggregator.iterations() > 0)
+    {
+        return Err(ExploreError::Unsupported(reason));
+    }
+
     let opaque_suggestions = crate::executability::build_opaque_suggestions(
         &analysis.params,
         &std::collections::HashMap::new(),
@@ -2088,6 +2116,12 @@ struct ObserverObservation {
 
 enum ObserverMessage {
     Observed(Box<ObserverObservation>),
+    /// A worker saw a `not_supported` outcome for one iteration (response-level
+    /// NotSupported or a not_supported thrown_error in an Ok result). It is not
+    /// a fatal error: the consumer records the reason and reclassifies the whole
+    /// function as Unsupported only if no successful observation was ever
+    /// aggregated (str-303gg review fix).
+    Unsupported(String),
     Failed(ExploreError),
 }
 
@@ -2235,11 +2269,22 @@ async fn explore_function_with_observer_pool(
     let mut last_summary_time = Instant::now();
     let mut in_flight = 0usize;
     let mut producer_done = false;
+    // str-303gg review fix: a representative not_supported reason, used only at
+    // finalize to reclassify the function Unsupported when no observation was
+    // ever aggregated; and a count of not_supported iterations so an
+    // all-not_supported function (whose iterations() stays 0) still terminates at
+    // the iteration budget instead of spinning.
+    let mut unsupported_reason: Option<String> = None;
+    let mut unsupported_seen: u32 = 0;
 
     while !producer_done || in_flight > 0 {
         while !producer_done && in_flight < observer_pool {
             if let Some(budget) = config.max_iterations
-                && aggregator.iterations().saturating_add(in_flight as u32) >= budget
+                && aggregator
+                    .iterations()
+                    .saturating_add(in_flight as u32)
+                    .saturating_add(unsupported_seen)
+                    >= budget
             {
                 producer_done = true;
                 break;
@@ -2410,6 +2455,14 @@ async fn explore_function_with_observer_pool(
                     meta_strategy.record_outcome(idx, outcome.is_new_path);
                 }
             }
+            ObserverMessage::Unsupported(reason) => {
+                // str-303gg review fix: record but do not abort — the function is
+                // reclassified Unsupported at finalize only if nothing was ever
+                // observed. Count it toward the budget so an all-not_supported
+                // function terminates.
+                unsupported_seen = unsupported_seen.saturating_add(1);
+                unsupported_reason.get_or_insert(reason);
+            }
             ObserverMessage::Failed(error) => {
                 drop(job_tx);
                 for handle in handles {
@@ -2423,6 +2476,15 @@ async fn explore_function_with_observer_pool(
     drop(job_tx);
     for handle in handles {
         let _ = handle.await;
+    }
+
+    // str-303gg review fix: reclassify Unsupported only when no successful
+    // observation was aggregated. A function that observed any coverage keeps it,
+    // even if some iterations returned not_supported.
+    if let Some(reason) =
+        crate::observe::aggregate_unsupported_reason(unsupported_reason, aggregator.iterations() > 0)
+    {
+        return Err(ExploreError::Unsupported(reason));
     }
 
     let total_lines = instrumentable_line_count
@@ -2601,8 +2663,17 @@ async fn run_observer_worker_inner(
         let exec_result = match response.result {
             ResponseResult::Execute(result) => *result,
             ResponseResult::Error { code, message, .. } => {
+                // str-303gg review fix: a response-level NotSupported is an
+                // unsupported iteration, not a fatal error — report it and keep
+                // observing so a partially-covered function is not aborted.
                 if code == crate::protocol::ErrorCode::NotSupported {
-                    return Err(ExploreError::Unsupported(message));
+                    if result_tx
+                        .send(ObserverMessage::Unsupported(message))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
                 }
                 return Err(ExploreError::UnexpectedResponse(format!(
                     "execute error ({code:?}): {message}"
@@ -2614,6 +2685,19 @@ async fn run_observer_worker_inner(
                 )));
             }
         };
+
+        // str-303gg: a `not_supported` thrown_error nested in an Ok execute
+        // result is an unsupported iteration. Report it without aborting so
+        // coverage collected on other iterations is preserved.
+        if let Some(reason) = crate::observe::thrown_not_supported_reason(&exec_result) {
+            if result_tx
+                .send(ObserverMessage::Unsupported(reason))
+                .is_err()
+            {
+                break;
+            }
+            continue;
+        }
 
         if options.per_execution_setup
             && !options.skip_setup

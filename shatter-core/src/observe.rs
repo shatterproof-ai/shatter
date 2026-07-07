@@ -230,6 +230,46 @@ pub struct SingleObservation {
     pub execution_summary: Option<ExecutionSummary>,
 }
 
+/// Reclassify a `not_supported` thrown error nested inside an otherwise-`Ok`
+/// execute result (str-303gg).
+///
+/// Some frontends report a function that is absent from their execute dispatch
+/// table as a `thrown_error { error_type: "not_supported" }` carried inside an
+/// `Ok(ExecuteResult)` rather than a response-level `ErrorCode::NotSupported`
+/// (e.g. the Rust `crate_bridge` harness's "function not in crate_bridge
+/// dispatch table" arm). Without this defense-in-depth check the engine treats
+/// the result as a normal observation and records the function as completed with
+/// 0% coverage instead of unsupported. Returns the error message when the result
+/// is such a not_supported placeholder.
+pub(crate) fn thrown_not_supported_reason(
+    result: &crate::protocol::ExecuteResult,
+) -> Option<String> {
+    let err = result.thrown_error.as_ref()?;
+    (err.error_type == "not_supported").then(|| err.message.clone())
+}
+
+/// Decide the FUNCTION-level `Unsupported` classification from aggregate
+/// exploration outcomes (str-303gg review fix).
+///
+/// A `not_supported` outcome on an individual iteration must NOT abort the
+/// function or discard coverage collected on other iterations. The canonical
+/// regression is an axum `State<T>` handler that executes normally on
+/// native-replay inputs but returns `not_supported` for a non-replay solver
+/// input — a per-iteration abort would throw away the partial coverage. So a
+/// function is reclassified as `Unsupported` only when it produced **no**
+/// successful/behavioral observation at all AND at least one iteration reported
+/// `not_supported`. When any real observation exists, its coverage is kept and
+/// the not_supported iterations are simply ignored.
+pub(crate) fn aggregate_unsupported_reason(
+    per_iteration_reason: Option<String>,
+    had_successful_observation: bool,
+) -> Option<String> {
+    match per_iteration_reason {
+        Some(reason) if !had_successful_observation => Some(reason),
+        _ => None,
+    }
+}
+
 /// Execute a single input and classify the result against caller-owned tracking
 /// state.
 ///
@@ -283,6 +323,13 @@ pub async fn observe_single(
             )));
         }
     };
+
+    // Defense-in-depth (str-303gg): a `not_supported` thrown_error nested in an
+    // Ok result must reclassify to Unsupported, never be recorded as a
+    // completed/0% observation.
+    if let Some(reason) = thrown_not_supported_reason(&exec_result) {
+        return Err(ObserveError::Unsupported(reason));
+    }
 
     for &line in &exec_result.lines_executed {
         state.all_lines.insert(line);
@@ -992,6 +1039,80 @@ for line in sys.stdin:
             }
             other => panic!("expected ObserveError::Unsupported, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn thrown_not_supported_reason_detects_dispatch_table_placeholder() {
+        // str-303gg: a Rust crate_bridge harness reports a function absent from
+        // its dispatch table as a `not_supported` thrown_error nested in an Ok
+        // execute result. The engine must recognise this so the function is
+        // classified unsupported instead of completed/0%.
+        let mut result = make_exec_result(&[], &[]);
+        result.return_value = None;
+        result.thrown_error = Some(crate::execution_record::ErrorInfo {
+            error_type: "not_supported".into(),
+            message: "function not in crate_bridge dispatch table: score_item".into(),
+            stack: None,
+            error_category: None,
+        });
+        let reason = thrown_not_supported_reason(&result)
+            .expect("not_supported thrown_error must be recognised");
+        assert!(
+            reason.contains("crate_bridge dispatch table"),
+            "reason should carry the frontend message, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn thrown_not_supported_reason_ignores_ordinary_results() {
+        // No thrown_error → not unsupported.
+        let ok = make_exec_result(&[(1, true)], &[10]);
+        assert!(thrown_not_supported_reason(&ok).is_none());
+
+        // A genuine runtime error is NOT an unsupported classification.
+        let mut runtime_err = make_exec_result(&[], &[]);
+        runtime_err.thrown_error = Some(crate::execution_record::ErrorInfo {
+            error_type: "runtime_error".into(),
+            message: "index out of bounds".into(),
+            stack: None,
+            error_category: None,
+        });
+        assert!(thrown_not_supported_reason(&runtime_err).is_none());
+    }
+
+    #[test]
+    fn aggregate_unsupported_keeps_coverage_when_any_observation_succeeded() {
+        // str-303gg review fix: a not_supported on some iteration must not
+        // discard coverage collected on other iterations. iteration 1 succeeds
+        // with coverage, iteration 2 returns not_supported → keep coverage, NOT
+        // Unsupported.
+        let reason = Some("axum State<AppState> requires native replay input 0".to_string());
+        assert_eq!(
+            aggregate_unsupported_reason(reason, /* had_successful_observation */ true),
+            None,
+            "a function with at least one successful observation must never be reclassified Unsupported"
+        );
+    }
+
+    #[test]
+    fn aggregate_unsupported_when_every_iteration_not_supported() {
+        // A genuinely undispatchable function: every execution returned
+        // not_supported and nothing was observed → reclassify Unsupported so the
+        // scan records SkipCategory::Unsupported, not completed/0%.
+        let reason = Some("function not in crate_bridge dispatch table: score_item".to_string());
+        assert_eq!(
+            aggregate_unsupported_reason(reason.clone(), /* had_successful_observation */ false),
+            reason,
+        );
+    }
+
+    #[test]
+    fn aggregate_unsupported_noop_when_no_not_supported_seen() {
+        // No not_supported observed → never Unsupported, regardless of whether
+        // observations were collected (an empty-but-not-unsupported function
+        // stays whatever it was, e.g. completed/timed-out/error).
+        assert_eq!(aggregate_unsupported_reason(None, true), None);
+        assert_eq!(aggregate_unsupported_reason(None, false), None);
     }
 
     #[test]
