@@ -391,6 +391,75 @@ mod tests {
     }
 
     #[test]
+    fn test_changed_files_non_ascii_path() {
+        // str-jz13q: with default core.quotepath=true, git C-quotes non-ASCII
+        // filenames in `diff --name-only` output (e.g. "\346\226\207.ts").
+        // parse_file_list must see the real UTF-8 path, not the quoted literal,
+        // otherwise --changed silently drops such files.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        git_ok(repo, &["init", "-q"]);
+        git_ok(repo, &["config", "user.email", "t@example.com"]);
+        git_ok(repo, &["config", "user.name", "t"]);
+
+        let file = repo.join("文.ts");
+        fs::write(&file, "export const a = 1;\n").expect("write file");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "add"]);
+        fs::write(&file, "export const a = 2;\n").expect("modify file");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(repo, false)
+            .expect("changed_files should succeed");
+
+        // Canonicalize to tolerate symlinked temp dirs and to confirm the path
+        // actually exists (a C-quoted literal would fail to canonicalize).
+        let canon: Vec<PathBuf> = files
+            .iter()
+            .filter_map(|f| f.canonicalize().ok())
+            .collect();
+        let want = file.canonicalize().expect("canonicalize non-ASCII file");
+        assert!(
+            canon.contains(&want),
+            "non-ASCII changed file missing or mis-resolved: {files:?}"
+        );
+    }
+
+    #[test]
+    fn test_diff_files_non_ascii_path() {
+        // str-jz13q: same C-quoting hazard for the `diff --name-only <range>`
+        // path used by --since.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        git_ok(repo, &["init", "-q"]);
+        git_ok(repo, &["config", "user.email", "t@example.com"]);
+        git_ok(repo, &["config", "user.name", "t"]);
+
+        let file = repo.join("变.go");
+        fs::write(&file, "package main\n").expect("write file");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "initial"]);
+        fs::write(&file, "package main // changed\n").expect("modify file");
+        git_ok(repo, &["commit", "-q", "-am", "change"]);
+
+        let provider = GitProvider;
+        let files = provider
+            .diff_files(repo, "HEAD~1")
+            .expect("diff_files should succeed");
+
+        let canon: Vec<PathBuf> = files
+            .iter()
+            .filter_map(|f| f.canonicalize().ok())
+            .collect();
+        let want = file.canonicalize().expect("canonicalize non-ASCII file");
+        assert!(
+            canon.contains(&want),
+            "non-ASCII diffed file missing or mis-resolved: {files:?}"
+        );
+    }
+
+    #[test]
     fn test_changed_files_runs_without_error() {
         // Smoke test: changed_files should not panic in a real git repo
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
