@@ -607,6 +607,332 @@ pub fn classify_byte(b: u8) -> &'static str {
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
+/// Write a minimal multi-file library crate whose target function
+/// (`src/logic.rs::classify_widget`) takes, BY VALUE, a struct (`Widget`)
+/// defined in a SIBLING module (`src/domain.rs`), whose own field is a struct
+/// (`Dimensions`) defined in yet another sibling module (`src/shapes.rs`).
+///
+/// This is the str-do53 cross-file synthesis regression fixture. It exercises,
+/// end-to-end through the real frontend (analyze → instrument → execute → Z3):
+/// - same-crate cross-FILE struct resolution (`Widget` lives in `domain.rs`,
+///   the consumer in `logic.rs`) — without the crate-wide type registry
+///   (`build_crate_type_registry` in shatter-rust `analyzer.rs`) `Widget` would
+///   degrade to `Opaque` and the function would be skipped as unexecutable;
+/// - RECURSIVE cross-file field synthesis (`Widget.dims` is `Dimensions` from a
+///   third file `shapes.rs`), so a regression that stopped recursing into
+///   cross-file field types would surface as a flat/opaque `dims` field.
+///
+/// The structs derive serde `Deserialize` because the frontend executes
+/// crate-resident cross-file functions through the crate-bridge harness, which
+/// materializes each argument via `serde_json::from_value::<T>` and therefore
+/// requires `T: DeserializeOwned` (see `generate_crate_bridge_wrapper` in the
+/// shatter-rust executor). This mirrors the cross-frontend contract: TS/Go pass
+/// synthesized objects by value too; the by-value/owned-then-borrow shim is a
+/// Rust harness detail, but the protocol-visible semantics (a cross-file struct
+/// param becomes an executable `Object`) are identical across frontends.
+///
+/// Returns the path to `src/logic.rs`.
+fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"shatter_do53_fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+         [lib]\npath = \"src/lib.rs\"\n\n\
+         [dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(
+        src_dir.join("lib.rs"),
+        "pub mod shapes;\npub mod domain;\npub mod logic;\n",
+    )
+    .expect("write lib.rs");
+    std::fs::write(
+        src_dir.join("shapes.rs"),
+        "use serde::Deserialize;\n\n\
+         #[derive(Deserialize)]\npub struct Dimensions {\n    pub length: i64,\n    pub height: i64,\n}\n",
+    )
+    .expect("write shapes.rs");
+    std::fs::write(
+        src_dir.join("domain.rs"),
+        "use serde::Deserialize;\n\nuse crate::shapes::Dimensions;\n\n\
+         #[derive(Deserialize)]\npub struct Widget {\n    pub size: i64,\n    pub dims: Dimensions,\n}\n",
+    )
+    .expect("write domain.rs");
+    let logic = src_dir.join("logic.rs");
+    std::fs::write(
+        &logic,
+        "use crate::domain::Widget;\n\n\
+         /// Branches only on the cross-file struct's own field. The\n\
+         /// `size == 4242` arm is the canonical Z3-only target: it is a\n\
+         /// non-boundary value, and boundary-biased random integer generation\n\
+         /// (see `generate_int` in shatter-core `input_gen.rs`, which favors 0,\n\
+         /// -1, 1 and type extremes) essentially never lands on exactly 4242.\n\
+         /// Reaching it therefore proves the solver produced a concrete input\n\
+         /// for a symbolic FIELD of a synthesized cross-file struct and that the\n\
+         /// solved `w.size` value was overlaid back into the object argument.\n\
+         pub fn classify_widget(w: Widget) -> &'static str {\n\
+         \x20   if w.size < 0 {\n        \"negative\"\n\
+         \x20   } else if w.size == 4242 {\n        \"answer\"\n\
+         \x20   } else if w.size <= 100 {\n        \"small\"\n\
+         \x20   } else {\n        \"large\"\n    }\n}\n\n\
+         /// Identical branch structure to `classify_widget`, but the cross-file\n\
+         /// struct arrives BY REFERENCE (`&Widget`). This exercises the\n\
+         /// crate_bridge owned-then-borrow shim (`owned_type_for_ref` in\n\
+         /// shatter-rust `executor.rs`, str-osr7): the wrapper deserializes an\n\
+         /// owned `Widget` and passes `&owned` at the call site, since\n\
+         /// `serde_json::from_value::<&Widget>` is impossible (`&T` is never\n\
+         /// `DeserializeOwned`). Combined with the field-path lowering in the\n\
+         /// instrumentor, the `w.size == 4242` arm is still a Z3-only target.\n\
+         pub fn classify_widget_ref(w: &Widget) -> &'static str {\n\
+         \x20   if w.size < 0 {\n        \"negative\"\n\
+         \x20   } else if w.size == 4242 {\n        \"answer\"\n\
+         \x20   } else if w.size <= 100 {\n        \"small\"\n\
+         \x20   } else {\n        \"large\"\n    }\n}\n",
+    )
+    .expect("write logic.rs");
+    logic
+}
+
+/// str-do53 regression gate: a function taking a struct defined in a SIBLING
+/// file of the same crate — whose own field is a struct from a THIRD file —
+/// must be analyzable AND executable end-to-end, reaching Z3-solved branch
+/// coverage. Before same-crate cross-file synthesis
+/// (`build_crate_type_registry`), such a parameter degraded to `Opaque` and the
+/// consumer function was skipped as unexecutable; this is the single biggest
+/// deep-coverage gap for real crates that split domain types from their
+/// consumers (measured on pickpackit's `suggestions.rs`).
+///
+/// This test is the pipeline-level counterpart to the analyzer unit tests in
+/// `shatter-rust/src/analyzer.rs` (`cross_file_struct_resolves_to_object` et
+/// al.): a module can pass its own unit tests while being silently disconnected
+/// from the analyze → instrument → execute → solve pipeline, so cross-file
+/// synthesis is only "done" once it reaches Z3-solved coverage through the real
+/// frontend subprocess.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_cross_file_struct_discovers_branches() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let logic = write_temp_cross_file_crate(tmp.path());
+    let file_str = logic.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_widget").await;
+    assert_eq!(analysis.params.len(), 1, "classify_widget takes 1 param");
+    // The cross-file struct must synthesize to an `Object`, and its nested
+    // cross-file field must itself resolve RECURSIVELY to an `Object` (not stay
+    // `Opaque`). This asserts both slices of str-do53 at the analyze layer.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert!(
+                matches!(
+                    fields.iter().find(|(n, _)| n == "size"),
+                    Some((_, shatter_core::types::TypeInfo::Int { .. }))
+                ),
+                "cross-file Widget.size must resolve to Int; got fields {fields:?}"
+            );
+            match fields.iter().find(|(n, _)| n == "dims") {
+                Some((_, shatter_core::types::TypeInfo::Object { fields: nested })) => {
+                    assert!(
+                        nested.iter().any(|(n, _)| n == "height"),
+                        "recursively-synthesized cross-file Dimensions must expose its \
+                         fields; got {nested:?}"
+                    );
+                }
+                other => panic!(
+                    "Widget.dims must recursively resolve to a cross-file Object; got {other:?}"
+                ),
+            }
+        }
+        other => panic!("cross-file Widget param must synthesize to Object, got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classify_widget").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+
+    // Seeds must be COMPLETE `Widget` JSON, including the nested `Dimensions`,
+    // or the crate-bridge deserialize step rejects them (`missing field dims`).
+    let seed_inputs = vec![
+        vec![serde_json::json!({"size": 7, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": -3, "dims": {"length": 1, "height": 2}})],
+    ];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_widget",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_cross_file_struct: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"negative\"", "\"answer\"", "\"small\"", "\"large\""] {
+        assert!(
+            return_values.contains(expected),
+            "should discover cross-file-struct branch returning {expected}; \
+             found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 4,
+        "should have at least 4 unique paths; got {}",
+        result.unique_paths
+    );
+    // The `size == 4242` ("answer") branch is a non-boundary exact-equality
+    // target: it is only reachable by solving a constraint on a symbolic field
+    // of the synthesized cross-file struct and overlaying the solved value back
+    // into the object argument. Boundary-biased random generation essentially
+    // never lands on 4242, so reaching "answer" AND a non-zero Z3 count together
+    // prove the Z3 path (not luck) closed the branch.
+    assert!(
+        result.z3_generated > 0,
+        "Z3 should have generated at least one input to hit the size==4242 branch on the \
+         cross-file struct; got z3_generated={}",
+        result.z3_generated
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// str-osr7 / str-do53 regression gate: the SAME cross-file struct passed BY
+/// REFERENCE (`fn classify_widget_ref(w: &Widget)`) must also be executable
+/// end-to-end and reach Z3-solved branch coverage.
+///
+/// This locks str-osr7 (the crate_bridge owned-then-borrow shim) into the E2E
+/// gate. `serde_json::from_value::<&Widget>` is impossible because `&T` is
+/// never `DeserializeOwned`; the wrapper (`owned_type_for_ref` +
+/// `generate_crate_bridge_wrapper` in shatter-rust `executor.rs`) instead
+/// deserializes an owned `Widget` and passes `&owned` at the call site. Before
+/// str-osr7 every by-reference function (including every pickpackit pure domain
+/// fn such as `supply_applies_to_trip(&Trip, ..)`) failed at execute with
+/// "parameters are not JSON-harness compatible and may not implement
+/// DeserializeOwned", so nothing exercised the borrow shim through the real
+/// analyze → instrument → execute → solve pipeline. str-osr7 shipped only
+/// unit/codegen tests; this is the missing end-to-end lock.
+///
+/// It also re-covers the instrumentor field-path lowering (a `&Widget` receiver
+/// still yields a `w.size` field branch), so the non-boundary `w.size == 4242`
+/// arm remains a genuine Z3-only target.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let logic = write_temp_cross_file_crate(tmp.path());
+    let file_str = logic.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_widget_ref").await;
+    assert_eq!(analysis.params.len(), 1, "classify_widget_ref takes 1 param");
+    // A by-reference cross-file struct param must synthesize to an `Object`
+    // (the analyzer strips the leading `&`), exactly like the by-value case —
+    // otherwise the function would be skipped as unexecutable.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert!(
+                fields.iter().any(|(n, _)| n == "size"),
+                "&Widget param must synthesize to an Object exposing `size`; got {fields:?}"
+            );
+        }
+        other => panic!("&Widget param must synthesize to Object, got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classify_widget_ref").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!({"size": 7, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": -3, "dims": {"length": 1, "height": 2}})],
+    ];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_widget_ref",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_cross_file_struct_by_ref: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    // The by-reference function must EXECUTE (not fall back to a
+    // not_supported/DeserializeOwned error). If the borrow shim regressed, the
+    // owned deserialize + `&owned` call would fail to compile and no real branch
+    // return values would appear.
+    let return_values = return_value_set(&result);
+    for expected in ["\"negative\"", "\"answer\"", "\"small\"", "\"large\""] {
+        assert!(
+            return_values.contains(expected),
+            "by-reference cross-file-struct fn should discover branch returning {expected}; \
+             found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.unique_paths >= 4,
+        "should have at least 4 unique paths; got {}",
+        result.unique_paths
+    );
+    assert!(
+        result.z3_generated > 0,
+        "Z3 should have generated at least one input to hit the size==4242 branch through the \
+         by-reference borrow shim; got z3_generated={}",
+        result.z3_generated
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// str-w17c regression gate: the crate-backed Axum harness must resolve the
 /// inner extractor/state types it names by bare identifier (e.g. `AppStateLike`,
 /// a custom `FromRequestParts` extractor, and `Uuid` from `use uuid::Uuid;`)

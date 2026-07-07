@@ -1503,8 +1503,13 @@ fn build_sym_expr(expr: &syn::Expr, param_names: &HashSet<String>) -> SymExpr {
         }
 
         syn::Expr::Field(expr_field) => {
-            if let Some((base_name, mut path)) = resolve_field_chain(expr, param_names) {
-                path.reverse();
+            // resolve_field_chain already returns the path root-first
+            // (`w.dims.height` -> ["dims", "height"]): it pushes each segment
+            // AFTER recursing into the base. Reversing here produced leaf-first
+            // paths for nested chains (`w.height.dims`), diverging from the
+            // instrumentor's field-chain lowering and the solver/orchestrator
+            // consumers, which all expect root-first (str-do53 review).
+            if let Some((base_name, path)) = resolve_field_chain(expr, param_names) {
                 return SymExpr::Param {
                     name: base_name,
                     path,
@@ -2900,6 +2905,22 @@ mod tests {
             SymExpr::Param {
                 name: "order".to_string(),
                 path: vec!["priority".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn builds_nested_field_access_sym_expr_root_first() {
+        // str-do53 review: nested chains must stay root-first; a leaf-first
+        // path (["priority", "meta"]) would solve/overlay the wrong shape.
+        let params: HashSet<String> = ["order".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("order.meta.priority").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::Param {
+                name: "order".to_string(),
+                path: vec!["meta".to_string(), "priority".to_string()],
             }
         );
     }
