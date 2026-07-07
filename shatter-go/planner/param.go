@@ -7,6 +7,7 @@ import (
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
+	"github.com/shatter-dev/shatter/shatter-go/runtimeval"
 )
 
 // DefaultMaxParamValuePlans caps the number of ValuePlans produced for a
@@ -127,7 +128,7 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		// such a param would materialize as a null slot and silently produce an
 		// empty-body request instead of the configured expression. Surface the
 		// conflict loudly, matching the typo-surfacing policy below.
-		if isHTTPRequestBodyParam(p) {
+		if isSymbolicBodyParam(p) {
 			return nil, &protocol.UnsatisfiedRequirement{
 				Kind:     protocol.UnsatisfiedRequirementKindComplexType,
 				TargetID: targetID,
@@ -209,7 +210,7 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		// here as an object/array literal; re-encode it as a JSON string so
 		// the natural config spelling works instead of failing wrapper-side
 		// deserialization on every execution.
-		if isHTTPRequestBodyParam(p) && !isJSONStringLiteral(literal) {
+		if isSymbolicBodyParam(p) && !isJSONStringLiteral(literal) {
 			if encoded, err := json.Marshal(string(literal)); err == nil {
 				literal = encoded
 			}
@@ -229,7 +230,7 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 	// below source-mined string literals (StringLiteralsByParam) — mined
 	// comparison literals are exact known-answer payloads and must not be
 	// evicted by generic seeds under MaxPlansPerParam.
-	if family.typeHint == paramTypeHintString && isHTTPRequestBodyParam(p) {
+	if family.typeHint == paramTypeHintString && isSymbolicBodyParam(p) {
 		addStringLiteralPlans(add, httpRequestBodySeeds, family.typeHint)
 	}
 
@@ -293,11 +294,17 @@ func isJSONStringLiteral(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &s) == nil
 }
 
-func isHTTPRequestBodyParam(p protocol.ParamInfo) bool {
-	if p.TypeName != nil && strings.TrimSpace(*p.TypeName) == "*http.Request" {
+// isSymbolicBodyParam reports whether p is a symbolic-construction parameter
+// (str-ijtww) — one the wrapper builds from a symbolic string input slot (its
+// request body) rather than a JSON literal or a fixed runtime value. The
+// symbolic type list is single-sourced in the runtimeval registry, so this
+// gate stays consistent with the analyzer's slot allocation and the wrapper's
+// slot consumption. The canonical entry is `*http.Request` (str-e41w).
+func isSymbolicBodyParam(p protocol.ParamInfo) bool {
+	if p.TypeName != nil && runtimeval.IsSymbolic(strings.TrimSpace(*p.TypeName)) {
 		return true
 	}
-	return strings.TrimSpace(p.Type.Label) == "*http.Request"
+	return runtimeval.IsSymbolic(strings.TrimSpace(p.Type.Label))
 }
 
 // paramFamily carries the code-generation type hint plus the ordered

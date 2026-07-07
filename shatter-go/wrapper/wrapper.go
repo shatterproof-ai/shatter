@@ -563,8 +563,8 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 		fmt.Fprintf(b, "%svar %s %s = %s\n", indent, p.Name, p.GoType, p.RuntimeValueExpr)
 		return
 	}
-	if isSymbolicHTTPRequestParam(p.GoType) {
-		writeSymbolicHTTPRequestDeserialization(b, p.Name, inputIndex, indent)
+	if cand, ok := runtimeval.LookupSymbolic(strings.TrimSpace(p.GoType)); ok {
+		writeSymbolicParamDeserialization(b, p.Name, cand, inputIndex, indent)
 		return
 	}
 	if p.GoType == "time.Duration" {
@@ -604,26 +604,28 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 	fmt.Fprintf(b, "%s}\n", indent)
 }
 
-// isSymbolicHTTPRequestParam reports whether goType is a direct *http.Request
-// parameter. str-e41w synthesizes these from a symbolic request body input so
-// the solver can drive request payloads into HTTP handlers, instead of binding
-// the fixed empty-body runtime value. The check is intentionally narrow:
-// *http.Request used as a constructor argument or struct field still uses the
-// runtimeval registry's fixed expression (per-input variation there is out of
-// scope and routed through different machinery).
-func isSymbolicHTTPRequestParam(goType string) bool {
-	return strings.TrimSpace(goType) == "*http.Request"
+// isSymbolicParam reports whether goType is a symbolic-construction parameter
+// (str-ijtww) — one built from a symbolic input slot rather than bound to a
+// fixed runtime-value expression. The symbolic type list is single-sourced in
+// the runtimeval registry so this stays consistent with the analyzer's slot
+// allocation and the planner's body-seed handling. The canonical entry is
+// `*http.Request` (str-e41w). The check is intentionally narrow to direct
+// params: a symbolic type used as a constructor argument or struct field still
+// uses the runtimeval registry's fixed expression (per-input variation there is
+// out of scope and routed through different machinery).
+func isSymbolicParam(goType string) bool {
+	return runtimeval.IsSymbolic(strings.TrimSpace(goType))
 }
 
-// writeSymbolicHTTPRequestDeserialization emits a *http.Request whose body is
-// read from the param's symbolic input slot (str-e41w). The method, path, and
-// auth headers are fixed so httptest.NewRequest cannot panic on an invalid
-// verb and handlers do not return before reading the body. The three common
-// API auth conventions are stubbed (`x-api-key`, `Authorization: Bearer`,
-// and Google-style `x-goog-api-key`) so a presence-check on any passes. Only the body is symbolic, which is what
-// handler bodies read and branch on. Making method/path/headers symbolic is
-// deferred follow-up work.
-func writeSymbolicHTTPRequestDeserialization(b *strings.Builder, name string, inputIndex int, indent string) {
+// writeSymbolicParamDeserialization emits a parameter value whose body is read
+// from the param's symbolic input slot (str-e41w / str-ijtww). The body decode
+// scaffolding is uniform across symbolic types; the per-type construction (the
+// httptest.NewRequest call and header stubs for *http.Request) comes from the
+// registry candidate's Construction template, so a new symbolic type is a
+// one-line registry addition rather than a new wrapper code path. Each
+// Construction entry is a fmt format string whose %[1]s is the parameter
+// variable name and %[2]s is the body-input variable.
+func writeSymbolicParamDeserialization(b *strings.Builder, name string, cand runtimeval.SymbolicCandidate, inputIndex int, indent string) {
 	bodyVar := fmt.Sprintf("_shatterReqBody%d", inputIndex)
 	fmt.Fprintf(b, "%svar %s string\n", indent, bodyVar)
 	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, inputIndex)
@@ -631,11 +633,9 @@ func writeSymbolicHTTPRequestDeserialization(b *strings.Builder, name string, in
 	fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s body: %%w\", _e)\n", indent, name)
 	fmt.Fprintf(b, "%s\t}\n", indent)
 	fmt.Fprintf(b, "%s}\n", indent)
-	fmt.Fprintf(b, "%svar %s *http.Request = httptest.NewRequest(\"POST\", \"/\", strings.NewReader(%s))\n", indent, name, bodyVar)
-	fmt.Fprintf(b, "%s%s.Header.Set(\"x-api-key\", \"shatter\")\n", indent, name)
-	fmt.Fprintf(b, "%s%s.Header.Set(\"Authorization\", \"Bearer shatter\")\n", indent, name)
-	fmt.Fprintf(b, "%s%s.Header.Set(\"x-goog-api-key\", \"shatter\")\n", indent, name)
-	fmt.Fprintf(b, "%s%s.Header.Set(\"Content-Type\", \"application/json\")\n", indent, name)
+	for _, stmt := range cand.Construction {
+		fmt.Fprintf(b, "%s%s\n", indent, fmt.Sprintf(stmt, name, bodyVar))
+	}
 }
 
 func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {
@@ -1735,15 +1735,17 @@ func applyRuntimeValueBindingsForPackage(
 		if params[i].IsVariadic {
 			continue
 		}
-		if isSymbolicHTTPRequestParam(params[i].GoType) {
-			// str-e41w: a direct *http.Request parameter is constructed from a
-			// symbolic body input in writeParamDeserializationAtInputIndex,
-			// rather than bound to the fixed empty-body runtime value
-			// (httptest.NewRequest("GET","/",nil)). Leave RuntimeValueExpr empty
-			// so the param consumes its input slot, and record the imports the
-			// construction needs.
-			for _, imp := range []string{"net/http", "net/http/httptest", "strings"} {
-				importSet[imp] = struct{}{}
+		if cand, ok := runtimeval.LookupSymbolic(strings.TrimSpace(params[i].GoType)); ok {
+			// str-e41w / str-ijtww: a symbolic-construction parameter (e.g. a
+			// direct *http.Request) is built from a symbolic input slot in
+			// writeParamDeserializationAtInputIndex, rather than bound to the
+			// fixed runtime value. Leave RuntimeValueExpr empty so the param
+			// consumes its input slot, and record the registry-declared imports
+			// its construction needs.
+			for _, imp := range cand.Imports {
+				if imp != "" {
+					importSet[imp] = struct{}{}
+				}
 			}
 			continue
 		}
@@ -1807,7 +1809,7 @@ func applyImportedConstructorBindingsForPackage(
 			if paramIndex >= len(params) {
 				return
 			}
-			if isSymbolicHTTPRequestParam(params[paramIndex].GoType) {
+			if isSymbolicParam(params[paramIndex].GoType) {
 				paramIndex++
 				continue
 			}
