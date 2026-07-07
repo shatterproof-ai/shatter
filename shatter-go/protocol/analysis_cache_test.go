@@ -81,6 +81,58 @@ func TestComputeDiscoveryHash_DeterministicForSameInputs(t *testing.T) {
 	}
 }
 
+// str-oqynx regression: the frontend build fingerprint is part of the cache
+// key. A DIFFERENT frontend build (simulated via the fingerprint override
+// env) must produce a different hash for identical source — otherwise
+// analyzer-behavior changes keep serving payloads written by older builds
+// for as long as the target source is unchanged (observed on zolem: a
+// pre-str-e41w analysis of *http.Request params served to a post-e41w
+// binary, silently disabling symbolic-body planning).
+func TestComputeDiscoveryHash_FrontendFingerprintInvalidates(t *testing.T) {
+	dir := t.TempDir()
+	writeGoFile(t, dir, "go.mod", minimalGoMod)
+	target := writeGoFile(t, dir, "f.go", minimalPkgFile)
+
+	t.Setenv(frontendFingerprintEnvVar, "build-A")
+	first, err := ComputeDiscoveryHash(target, "")
+	if err != nil {
+		t.Fatalf("hash under build-A: %v", err)
+	}
+	second, err := ComputeDiscoveryHash(target, "")
+	if err != nil {
+		t.Fatalf("second hash under build-A: %v", err)
+	}
+	if first != second {
+		t.Errorf("hash not stable within one build: %q vs %q", first, second)
+	}
+
+	t.Setenv(frontendFingerprintEnvVar, "build-B")
+	other, err := ComputeDiscoveryHash(target, "")
+	if err != nil {
+		t.Fatalf("hash under build-B: %v", err)
+	}
+	if other == first {
+		t.Errorf("hash did not invalidate across frontend builds: %q == %q", other, first)
+	}
+}
+
+// The computed self-fingerprint (no env override) is stable within a process
+// and non-empty — hashing the running test binary.
+func TestFrontendFingerprint_SelfHashStable(t *testing.T) {
+	t.Setenv(frontendFingerprintEnvVar, "")
+	first := frontendFingerprint()
+	second := frontendFingerprint()
+	if first == "" {
+		t.Fatal("self fingerprint is empty")
+	}
+	if first != second {
+		t.Errorf("self fingerprint unstable: %q vs %q", first, second)
+	}
+	if len(first) != discoveryHashHexLength {
+		t.Errorf("fingerprint length = %d, want %d", len(first), discoveryHashHexLength)
+	}
+}
+
 // A single-byte source change must invalidate the hash.
 func TestComputeDiscoveryHash_SourceChangeInvalidates(t *testing.T) {
 	dir := t.TempDir()
