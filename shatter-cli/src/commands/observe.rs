@@ -203,6 +203,9 @@ pub(crate) async fn run_observe(
             Err(shatter_core::orchestrator::ExploreError::Planner(err)) => {
                 Err(shatter_core::explorer::ExploreError::Planner(err))
             }
+            Err(shatter_core::orchestrator::ExploreError::Unsupported(reason)) => {
+                Err(shatter_core::explorer::ExploreError::Unsupported(reason))
+            }
         }
     } else {
         let explore_config = ExploreConfig {
