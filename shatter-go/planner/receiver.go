@@ -40,7 +40,7 @@ const (
 	// reference state consists only of maps by allocating those maps in the
 	// same-package wrapper before invoking the method.
 	ReceiverPlanKindInitializedMaps ReceiverPlanKind = "initialized_maps"
-	// ReceiverPlanKindHint applies an operator-supplied override.
+	// ReceiverPlanKindHint applies an explicit configured receiver recipe.
 	ReceiverPlanKindHint ReceiverPlanKind = "hint"
 )
 
@@ -100,8 +100,9 @@ var UsefulZeroValueTypes = map[string]struct{}{
 // PlanOptions.MaxPlans is zero.
 const DefaultMaxReceiverPlans = 3
 
-// ReceiverHint is an operator-supplied override, typically sourced from
-// .shatter/config.yaml hints.
+// ReceiverHint is an explicit receiver recipe, currently sourced from
+// .shatter/config.yaml. It is planned before auto-discovered receiver
+// strategies so configured recipes cannot be capped out by MaxPlans.
 type ReceiverHint struct {
 	// ReceiverKind is the wrapper-facing token to emit (e.g. "zero_value"
 	// or "constructor:NewThing").
