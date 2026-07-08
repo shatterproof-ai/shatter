@@ -1303,6 +1303,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };

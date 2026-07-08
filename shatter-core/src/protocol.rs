@@ -211,6 +211,38 @@ pub enum ValuePlanKind {
     RuntimeValue,
 }
 
+/// Typed plan for populating one field on a constructed receiver before
+/// invocation (str-mhinv.1).
+///
+/// Expresses "construct this receiver with these fields populated" without an
+/// opaque recipe payload — for example Kapow's `queryResolver` embedding a
+/// `*Resolver` whose `SearchBackend` field must be non-nil. `path` names the
+/// field path from the receiver root (e.g. `["Resolver", "SearchBackend"]` or
+/// `["SearchBackend"]`); `kind` reuses `ValuePlanKind` for the production
+/// strategy (no new value-plan kind is introduced here). As with `ValuePlan`,
+/// `runtime_value` remains the way to name a frontend-supplied non-JSON runtime
+/// collaborator.
+///
+/// This type is the typed wire/data model only. No frontend receiver-field
+/// construction behavior is implemented here — the Go implementation slice is
+/// str-7zhdh, which should consume `receiver_field_plans` rather than invent an
+/// opaque recipe payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReceiverFieldPlan {
+    /// Receiver field path from the receiver root, e.g.
+    /// `["Resolver", "SearchBackend"]` or `["SearchBackend"]`.
+    pub path: Vec<String>,
+    /// Production strategy for this field value; reuses `ValuePlanKind`.
+    pub kind: ValuePlanKind,
+    /// Concrete value when `kind` is `literal` (or the source expression string
+    /// when `kind` is `runtime_value`, mirroring `ValuePlan`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub literal: Option<serde_json::Value>,
+    /// Language-specific type hint for code generation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub type_hint: String,
+}
+
 /// Concrete production strategy for one argument of an `InvocationPlan`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValuePlan {
@@ -251,6 +283,15 @@ pub struct InvocationPlan {
     /// constructor arg values before method param values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constructor_arg_plans: Vec<ValuePlan>,
+    /// Typed field-injection plans for the constructed receiver (str-mhinv.1).
+    /// Each entry names a receiver field path and how to populate it. When
+    /// non-empty, a frontend that supports receiver field construction builds
+    /// the receiver and sets these fields before invoking the target; empty for
+    /// plans that need no receiver field injection. This field carries only the
+    /// wire/data model — frontend construction behavior is out of scope here and
+    /// implemented separately (str-7zhdh for Go).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receiver_field_plans: Vec<ReceiverFieldPlan>,
     /// Relative ordering within a plan set; lower values are tried first.
     pub priority: i32,
     /// Optional human-readable name for this plan.
@@ -1452,6 +1493,7 @@ mod tests {
                         type_hint: "int".into(),
                     }],
                     constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
                     priority: 1,
                     label: "constructor:New + x=0".into(),
                 }),
@@ -3580,11 +3622,93 @@ mod tests {
                 },
             ],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: "constructor_new_counter".into(),
         };
         let json = serde_json::to_string(&plan).expect("serialize");
         let decoded: InvocationPlan = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, plan);
+    }
+
+    /// str-mhinv.1: an `InvocationPlan` carrying `receiver_field_plans`
+    /// survives a JSON round-trip with the typed wire shape intact.
+    #[test]
+    fn invocation_plan_with_receiver_field_plans_round_trips() {
+        let plan = InvocationPlan {
+            target_id: "example.com/pkg:(*queryResolver).Search".into(),
+            receiver_kind: "constructor:NewQueryResolver".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![],
+            constructor_arg_plans: vec![],
+            receiver_field_plans: vec![
+                ReceiverFieldPlan {
+                    path: vec!["Resolver".into(), "SearchBackend".into()],
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(serde_json::json!("newFakeSearchBackend()")),
+                    type_hint: "*SearchBackend".into(),
+                },
+                ReceiverFieldPlan {
+                    path: vec!["MaxResults".into()],
+                    kind: ValuePlanKind::Literal,
+                    literal: Some(serde_json::json!(10)),
+                    type_hint: "int".into(),
+                },
+            ],
+            priority: 0,
+            label: "resolver_with_backend".into(),
+        };
+        let json = serde_json::to_string(&plan).expect("serialize");
+        assert!(
+            json.contains("\"receiver_field_plans\""),
+            "expected receiver_field_plans field, got: {json}"
+        );
+        let decoded: InvocationPlan = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, plan);
+    }
+
+    /// str-mhinv.1: a plan without `receiver_field_plans` omits the field from
+    /// JSON entirely and deserializes to an empty vec, preserving the existing
+    /// wire shape (backward compatibility).
+    #[test]
+    fn invocation_plan_without_receiver_field_plans_is_backward_compatible() {
+        let plan = InvocationPlan {
+            target_id: "example.com/pkg:Add".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "a".into(),
+                kind: ValuePlanKind::Zero,
+                literal: None,
+                type_hint: "int".into(),
+            }],
+            constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
+            priority: 1,
+            label: "zero_args".into(),
+        };
+        let json = serde_json::to_value(&plan).expect("serialize");
+        assert!(
+            !json
+                .as_object()
+                .expect("object")
+                .contains_key("receiver_field_plans"),
+            "empty receiver_field_plans should be omitted from JSON, got: {json}"
+        );
+
+        // Legacy JSON (no receiver_field_plans key) decodes to an empty vec.
+        let legacy = r#"{
+            "target_id": "example.com/pkg:Add",
+            "receiver_kind": "",
+            "argument_plans": [
+                {"param_index": 0, "param_name": "a", "kind": "zero", "type_hint": "int"}
+            ],
+            "priority": 1,
+            "label": "zero_args"
+        }"#;
+        let decoded: InvocationPlan = serde_json::from_str(legacy).expect("deserialize");
+        assert!(decoded.receiver_field_plans.is_empty());
         assert_eq!(decoded, plan);
     }
 
@@ -3643,6 +3767,7 @@ mod tests {
                         type_hint: "int".into(),
                     }],
                     constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
                     priority: 1,
                     label: "zero_args".into(),
                 }],
@@ -3903,6 +4028,7 @@ mod tests {
                 type_hint: "int".into(),
             }],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: "ctor_new".into(),
         };

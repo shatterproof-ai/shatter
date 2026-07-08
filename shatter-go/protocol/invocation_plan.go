@@ -110,6 +110,34 @@ type ValuePlan struct {
 	TypeHint string `json:"type_hint,omitempty"`
 }
 
+// ReceiverFieldPlan is a typed plan for populating one field on a constructed
+// receiver before invocation (str-mhinv.1).
+//
+// It expresses "construct this receiver with these fields populated" without an
+// opaque recipe payload — for example Kapow's queryResolver embedding a
+// *Resolver whose SearchBackend field must be non-nil. Path names the field
+// path from the receiver root (e.g. ["Resolver", "SearchBackend"] or
+// ["SearchBackend"]); Kind reuses ValuePlanKind for the production strategy (no
+// new value-plan kind is introduced here). As with ValuePlan, "runtime_value"
+// remains the way to name a frontend-supplied non-JSON runtime collaborator.
+//
+// This is the typed wire/data model only; no frontend receiver-field
+// construction behavior is implemented here. The Go implementation slice is
+// str-7zhdh, which should consume ReceiverFieldPlan rather than invent an opaque
+// recipe payload.
+type ReceiverFieldPlan struct {
+	// Path is the receiver field path from the receiver root, e.g.
+	// ["Resolver", "SearchBackend"] or ["SearchBackend"].
+	Path []string `json:"path"`
+	// Kind specifies the value production strategy; reuses ValuePlanKind.
+	Kind ValuePlanKind `json:"kind"`
+	// Literal holds the concrete value when Kind is "literal" (or the source
+	// expression string when Kind is "runtime_value", mirroring ValuePlan).
+	Literal json.RawMessage `json:"literal,omitempty"`
+	// TypeHint carries the Go type string for code generation.
+	TypeHint string `json:"type_hint,omitempty"`
+}
+
 // InvocationPlan is a complete, resolved plan for invoking a target once.
 // It is the primary output of the planner for a satisfiable InvocationRequirement.
 type InvocationPlan struct {
@@ -131,6 +159,14 @@ type InvocationPlan struct {
 	// sent to the wrapper prepends constructor arg values before method
 	// param values, so the wrapper can split them by count.
 	ConstructorArgPlans []ValuePlan `json:"constructor_arg_plans,omitempty"`
+	// ReceiverFieldPlans holds typed field-injection plans for the constructed
+	// receiver (str-mhinv.1). Each entry names a receiver field path and how to
+	// populate it. When non-empty, a frontend that supports receiver field
+	// construction builds the receiver and sets these fields before invoking the
+	// target; empty for plans that need no receiver field injection. This field
+	// carries only the wire/data model — frontend construction behavior is out of
+	// scope here and implemented separately (str-7zhdh).
+	ReceiverFieldPlans []ReceiverFieldPlan `json:"receiver_field_plans,omitempty"`
 	// Priority is the relative ordering of this plan within a plan set.
 	// Lower values are tried first.
 	Priority int `json:"priority"`

@@ -636,6 +636,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7)), zero_plan(1, "b")],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -651,6 +652,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![zero_plan(0, "s")],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -672,17 +674,20 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
         let compatible = InvocationPlan {
             argument_plans: vec![literal_plan(0, "event", json!("second"))],
+            receiver_field_plans: vec![],
             priority: 1,
             ..selected.clone()
         };
         let incompatible = InvocationPlan {
             receiver_kind: "constructor:OtherThing".into(),
             argument_plans: vec![literal_plan(0, "event", json!("wrong"))],
+            receiver_field_plans: vec![],
             priority: 2,
             ..selected.clone()
         };
@@ -710,6 +715,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -773,6 +779,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -824,6 +831,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -849,6 +857,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -870,6 +879,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -899,6 +909,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -920,6 +931,7 @@ mod tests {
                 type_hint: String::new(),
             }],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -945,6 +957,7 @@ mod tests {
                 type_hint: "context.Context".into(),
             }],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -977,6 +990,7 @@ mod tests {
                 literal_plan(1, "upstream", json!("http://localhost:11434")),
             ],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -1003,6 +1017,7 @@ mod tests {
                 literal_plan(1, "r", body.clone()),
             ],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -1020,6 +1035,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7))],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -1036,6 +1052,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(v))],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -1103,6 +1120,7 @@ mod tests {
                                 generic_type_args: vec![],
                                 argument_plans: args,
                                 constructor_arg_plans: vec![],
+                                receiver_field_plans: vec![],
                                 priority: 0,
                                 label: String::new(),
                             })
@@ -1154,6 +1172,7 @@ mod tests {
                         },
                     ],
                     constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
                     priority: 0,
                     label: String::new(),
                 };
@@ -1189,6 +1208,7 @@ mod tests {
                         },
                     ],
                     constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
                     priority: 0,
                     label: String::new(),
                 };

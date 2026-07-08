@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -194,6 +195,94 @@ func TestInvocationPlanMethodReceiver(t *testing.T) {
 	}
 	if got.ReceiverKind != "constructor:NewCounter" {
 		t.Errorf("ReceiverKind = %q, want %q", got.ReceiverKind, "constructor:NewCounter")
+	}
+}
+
+// ---- ReceiverFieldPlan round-trip (str-mhinv.1) ----
+
+func TestInvocationPlanReceiverFieldPlansRoundTrip(t *testing.T) {
+	backendLit, _ := json.Marshal("newFakeSearchBackend()")
+	maxLit, _ := json.Marshal(10)
+	orig := protocol.InvocationPlan{
+		TargetID:      "example.com/pkg:(*queryResolver).Search",
+		ReceiverKind:  "constructor:NewQueryResolver",
+		ArgumentPlans: []protocol.ValuePlan{},
+		ReceiverFieldPlans: []protocol.ReceiverFieldPlan{
+			{
+				Path:     []string{"Resolver", "SearchBackend"},
+				Kind:     protocol.ValuePlanKindRuntimeValue,
+				Literal:  backendLit,
+				TypeHint: "*SearchBackend",
+			},
+			{
+				Path:     []string{"MaxResults"},
+				Kind:     protocol.ValuePlanKindLiteral,
+				Literal:  maxLit,
+				TypeHint: "int",
+			},
+		},
+		Priority: 0,
+		Label:    "resolver_with_backend",
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"receiver_field_plans"`)) {
+		t.Fatalf("expected receiver_field_plans in JSON, got: %s", data)
+	}
+	if !bytes.Contains(data, []byte(`"path":["Resolver","SearchBackend"]`)) {
+		t.Fatalf("expected typed path array in JSON, got: %s", data)
+	}
+	var got protocol.InvocationPlan
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.ReceiverFieldPlans) != 2 {
+		t.Fatalf("ReceiverFieldPlans len = %d, want 2", len(got.ReceiverFieldPlans))
+	}
+	first := got.ReceiverFieldPlans[0]
+	if len(first.Path) != 2 || first.Path[0] != "Resolver" || first.Path[1] != "SearchBackend" {
+		t.Errorf("Path = %v, want [Resolver SearchBackend]", first.Path)
+	}
+	if first.Kind != protocol.ValuePlanKindRuntimeValue {
+		t.Errorf("Kind = %q, want %q", first.Kind, protocol.ValuePlanKindRuntimeValue)
+	}
+	if string(first.Literal) != string(backendLit) {
+		t.Errorf("Literal = %s, want %s", first.Literal, backendLit)
+	}
+	if first.TypeHint != "*SearchBackend" {
+		t.Errorf("TypeHint = %q, want %q", first.TypeHint, "*SearchBackend")
+	}
+}
+
+// TestInvocationPlanWithoutReceiverFieldPlansBackwardCompatible verifies that a
+// plan with no receiver field plans omits the key entirely and that legacy JSON
+// lacking the key decodes to a nil/empty slice — preserving the existing wire
+// shape.
+func TestInvocationPlanWithoutReceiverFieldPlansBackwardCompatible(t *testing.T) {
+	orig := protocol.InvocationPlan{
+		TargetID:      "example.com/pkg:Add",
+		ReceiverKind:  "",
+		ArgumentPlans: []protocol.ValuePlan{{ParamIndex: 0, ParamName: "a", Kind: protocol.ValuePlanKindZero, TypeHint: "int"}},
+		Priority:      1,
+		Label:         "zero_args",
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(data, []byte("receiver_field_plans")) {
+		t.Errorf("empty ReceiverFieldPlans should be omitted from JSON, got: %s", data)
+	}
+
+	legacy := `{"target_id":"example.com/pkg:Add","receiver_kind":"","argument_plans":[{"param_index":0,"param_name":"a","kind":"zero","type_hint":"int"}],"priority":1,"label":"zero_args"}`
+	var got protocol.InvocationPlan
+	if err := json.Unmarshal([]byte(legacy), &got); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if len(got.ReceiverFieldPlans) != 0 {
+		t.Errorf("ReceiverFieldPlans len = %d, want 0", len(got.ReceiverFieldPlans))
 	}
 }
 

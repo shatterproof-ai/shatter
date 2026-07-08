@@ -781,6 +781,7 @@ for line in sys.stdin:
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: "path constructor".into(),
         };
