@@ -127,6 +127,8 @@ pub(crate) async fn run_scan(
     language_filter: Option<&str>,
     include_patterns: &[String],
     exclude_patterns: &[String],
+    include_anchor: Option<&Path>,
+    exclude_anchor: Option<&Path>,
     changed: bool,
     since: Option<&str>,
     until: Option<&str>,
@@ -246,9 +248,17 @@ pub(crate) async fn run_scan(
     }
 
     // Discover source files.
+    //
+    // Config-file include/exclude patterns are anchored at the config file's
+    // directory (project root) via `include_anchor`/`exclude_anchor`, so
+    // project-root patterns like `web/src/**/*.test.tsx` keep working when the
+    // scan root is a subdirectory. CLI `--include`/`--exclude` pass `None`
+    // (scan-root-relative). See str-1q12y.
     let options = DiscoveryOptions {
         include_patterns: include_patterns.to_vec(),
         exclude_patterns: exclude_patterns.to_vec(),
+        include_anchor: include_anchor.map(Path::to_path_buf),
+        exclude_anchor: exclude_anchor.map(Path::to_path_buf),
         respect_gitignore: true,
         max_depth,
     };
@@ -483,7 +493,8 @@ pub(crate) async fn run_scan(
         // see only "No supported source files found" and have no idea
         // their `internal/runtime/*.go` pattern never matched because
         // the scan root is already `<repo>/internal/runtime`.
-        if !include_patterns.is_empty() {
+        if !include_patterns.is_empty() && include_anchor.is_none() {
+            // CLI `--include` patterns are scan-root-relative (str-94cg).
             for pat in include_patterns {
                 let suggestion = discovery::suggest_corrected_include_pattern(pat, &effective_root);
                 match suggestion {
@@ -500,6 +511,18 @@ pub(crate) async fn run_scan(
                         effective_root.display(),
                     ),
                 }
+            }
+        } else if !include_patterns.is_empty() {
+            // Config-file `include` patterns are anchored at the config file's
+            // directory (project root), not the scan root (str-1q12y).
+            let anchor = include_anchor.unwrap_or(&effective_root);
+            for pat in include_patterns {
+                log::warn!(
+                    "config include pattern '{pat}' matched 0 files. \
+                     Config patterns are evaluated relative to the config file's \
+                     directory: {}.",
+                    anchor.display(),
+                );
             }
         } else {
             log::info!("No supported source files found in {}", root.display());

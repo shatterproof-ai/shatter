@@ -45,6 +45,18 @@ pub struct DiscoveryOptions {
     pub include_patterns: Vec<String>,
     /// Glob patterns for files to exclude (e.g. `["**/vendor/**"]`).
     pub exclude_patterns: Vec<String>,
+    /// Directory that `include_patterns` are anchored to (str-1q12y).
+    ///
+    /// When `Some`, include patterns are matched against each file's path
+    /// relative to this directory (the config file's directory / project root)
+    /// instead of the scan root. This keeps project-root-anchored config
+    /// patterns such as `web/src/**/*.ts` working when the scan root is a
+    /// subdirectory like `web/src`. `None` (the default) means scan-root
+    /// relative, which is correct for CLI `--include` flags.
+    pub include_anchor: Option<PathBuf>,
+    /// Directory that `exclude_patterns` are anchored to (str-1q12y). See
+    /// [`DiscoveryOptions::include_anchor`]; `None` means scan-root relative.
+    pub exclude_anchor: Option<PathBuf>,
     /// Whether to respect `.gitignore` files.
     pub respect_gitignore: bool,
     /// Maximum directory traversal depth. `None` means unlimited.
@@ -56,6 +68,8 @@ impl Default for DiscoveryOptions {
         Self {
             include_patterns: vec![],
             exclude_patterns: vec![],
+            include_anchor: None,
+            exclude_anchor: None,
             respect_gitignore: true,
             max_depth: None,
         }
@@ -171,6 +185,8 @@ pub fn discover_files(
             default_exclude_set: &default_exclude_set,
             ignore_matcher: ignore_matcher.as_ref(),
             shatter_ignore_matcher: shatter_ignore_matcher.as_ref(),
+            include_anchor: options.include_anchor.as_deref(),
+            exclude_anchor: options.exclude_anchor.as_deref(),
             max_depth: options.max_depth,
         },
         &mut results,
@@ -180,12 +196,40 @@ pub fn discover_files(
     Ok(results)
 }
 
+/// Select the path used to match user include/exclude glob patterns
+/// (str-1q12y).
+///
+/// When `anchor` is set (config-file patterns anchored at the config
+/// directory / project root) and the absolute `path` lives under it, patterns
+/// are matched against the anchor-relative path. Otherwise they fall back to
+/// `scan_relative` (relative to the scan root), which is the correct default
+/// for CLI `--include`/`--exclude` flags. The anchor is expected to be an
+/// ancestor of the scan root; the `scan_relative` fallback keeps matching
+/// well-defined even if it is not.
+fn pattern_relative<'p>(
+    path: &'p Path,
+    scan_relative: &'p Path,
+    anchor: Option<&Path>,
+) -> &'p Path {
+    if let Some(anchor) = anchor
+        && let Ok(rel) = path.strip_prefix(anchor)
+    {
+        rel
+    } else {
+        scan_relative
+    }
+}
+
 struct WalkConfig<'a> {
     include_set: &'a Option<GlobSet>,
     exclude_set: &'a Option<GlobSet>,
     default_exclude_set: &'a Option<GlobSet>,
     ignore_matcher: Option<&'a GlobSet>,
     shatter_ignore_matcher: Option<&'a GlobSet>,
+    /// Anchor directory for `include_set` matching (str-1q12y).
+    include_anchor: Option<&'a Path>,
+    /// Anchor directory for `exclude_set` matching (str-1q12y).
+    exclude_anchor: Option<&'a Path>,
     max_depth: Option<usize>,
 }
 
@@ -222,8 +266,14 @@ fn walk_dir(
             {
                 continue;
             }
+            // User excludes match against the exclude anchor (str-1q12y): a
+            // config pattern like `web/src/vendor/**` must still prune the
+            // `web/src/vendor` directory when the scan root is `web/src`.
+            let exclude_dir_rel = pattern_relative(&path, relative, config.exclude_anchor);
+            let exclude_dir_pattern =
+                PathBuf::from(format!("{}/sentinel", exclude_dir_rel.display()));
             if let Some(set) = config.exclude_set
-                && set.is_match(&dir_pattern_path)
+                && set.is_match(&exclude_dir_pattern)
             {
                 continue;
             }
@@ -248,9 +298,10 @@ fn walk_dir(
             continue;
         }
 
-        // Check user excludes
+        // Check user excludes (matched against the exclude anchor, str-1q12y)
+        let exclude_rel = pattern_relative(&path, relative, config.exclude_anchor);
         if let Some(set) = config.exclude_set
-            && set.is_match(relative)
+            && set.is_match(exclude_rel)
         {
             continue;
         }
@@ -276,9 +327,11 @@ fn walk_dir(
             continue;
         };
 
-        // Check user includes (if specified, file must match at least one)
+        // Check user includes (if specified, file must match at least one;
+        // matched against the include anchor, str-1q12y)
+        let include_rel = pattern_relative(&path, relative, config.include_anchor);
         if let Some(set) = config.include_set
-            && !set.is_match(relative)
+            && !set.is_match(include_rel)
         {
             continue;
         }
@@ -335,8 +388,10 @@ pub fn filter_file_list(
             continue;
         }
 
+        // User excludes match against the exclude anchor (str-1q12y).
+        let exclude_rel = pattern_relative(&path, relative, options.exclude_anchor.as_deref());
         if let Some(ref set) = exclude_set
-            && set.is_match(relative)
+            && set.is_match(exclude_rel)
         {
             continue;
         }
@@ -358,8 +413,10 @@ pub fn filter_file_list(
             continue;
         };
 
+        // User includes match against the include anchor (str-1q12y).
+        let include_rel = pattern_relative(&path, relative, options.include_anchor.as_deref());
         if let Some(ref set) = include_set
-            && !set.is_match(relative)
+            && !set.is_match(include_rel)
         {
             continue;
         }
@@ -715,6 +772,138 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].0.ends_with("app.ts"));
+    }
+
+    // ── config-pattern anchoring for subdirectory scan roots (str-1q12y) ──
+
+    #[test]
+    fn exclude_anchor_makes_project_root_pattern_match_subdir_scan() {
+        // Repro of str-1q12y: a config exclude anchored at the project root
+        // (`web/src/**/*.test.tsx`) must still exclude the test file when the
+        // scan root is the `web/src` subdirectory.
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "web/src/features/widget.tsx");
+        create_file(dir.path(), "web/src/features/widget.test.tsx");
+        let scan_root = dir.path().join("web/src");
+
+        // Without an anchor (old behavior) the project-root pattern misses.
+        let unanchored = DiscoveryOptions {
+            exclude_patterns: vec!["web/src/**/*.test.tsx".to_string()],
+            ..Default::default()
+        };
+        let results = discover_files(&scan_root, &unanchored).expect("discover");
+        assert_eq!(
+            results.len(),
+            2,
+            "unanchored project-root pattern should not match scan-root-relative paths"
+        );
+
+        // With the exclude anchored at the project root, the pattern matches.
+        let anchored = DiscoveryOptions {
+            exclude_patterns: vec!["web/src/**/*.test.tsx".to_string()],
+            exclude_anchor: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let results = discover_files(&scan_root, &anchored).expect("discover");
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["widget.tsx"],
+            "anchored exclude should drop the test file"
+        );
+    }
+
+    #[test]
+    fn include_anchor_makes_project_root_pattern_match_subdir_scan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "web/src/features/widget.tsx");
+        create_file(dir.path(), "web/src/features/other.ts");
+        let scan_root = dir.path().join("web/src");
+
+        let anchored = DiscoveryOptions {
+            include_patterns: vec!["web/src/**/*.tsx".to_string()],
+            include_anchor: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let results = discover_files(&scan_root, &anchored).expect("discover");
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["widget.tsx"], "anchored include keeps only .tsx");
+    }
+
+    #[test]
+    fn exclude_anchor_prunes_project_root_directory_pattern() {
+        // Directory-level pruning must also honor the anchor.
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "web/src/app.tsx");
+        create_file(dir.path(), "web/src/vendor/lib.tsx");
+        let scan_root = dir.path().join("web/src");
+
+        let anchored = DiscoveryOptions {
+            exclude_patterns: vec!["web/src/vendor/**".to_string()],
+            exclude_anchor: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let results = discover_files(&scan_root, &anchored).expect("discover");
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["app.tsx"],
+            "anchored dir exclude should prune vendor/"
+        );
+    }
+
+    #[test]
+    fn cli_relative_pattern_unaffected_when_no_anchor() {
+        // CLI flags stay scan-root-relative: `**/*.test.tsx` still works and
+        // no anchor is set.
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "web/src/features/widget.tsx");
+        create_file(dir.path(), "web/src/features/widget.test.tsx");
+        let scan_root = dir.path().join("web/src");
+
+        let options = DiscoveryOptions {
+            exclude_patterns: vec!["**/*.test.tsx".to_string()],
+            ..Default::default()
+        };
+        let results = discover_files(&scan_root, &options).expect("discover");
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["widget.tsx"]);
+    }
+
+    #[test]
+    fn filter_file_list_honors_exclude_anchor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_file(dir.path(), "web/src/features/widget.tsx");
+        create_file(dir.path(), "web/src/features/widget.test.tsx");
+        let scan_root = dir.path().join("web/src");
+        let files = vec![
+            scan_root.join("features/widget.tsx"),
+            scan_root.join("features/widget.test.tsx"),
+        ];
+
+        let anchored = DiscoveryOptions {
+            exclude_patterns: vec!["web/src/**/*.test.tsx".to_string()],
+            exclude_anchor: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let results = filter_file_list(&scan_root, files, &anchored).expect("filter");
+        let names: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["widget.tsx"]);
     }
 
     #[test]
