@@ -55,6 +55,11 @@ pub(crate) fn run_scope_from_project_config(root: &Path) -> RunScope {
         options: DiscoveryOptions {
             include_patterns: cfg.include.clone(),
             exclude_patterns: cfg.exclude.clone(),
+            // `run` loads the config from `root` and scans `root`, so config
+            // patterns are already scan-root-relative — no separate anchor
+            // needed (str-1q12y).
+            include_anchor: None,
+            exclude_anchor: None,
             respect_gitignore: true,
             max_depth: cfg.max_depth,
         },
