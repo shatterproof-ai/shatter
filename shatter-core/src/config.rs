@@ -1923,6 +1923,41 @@ llm:
         assert_eq!(merged.defaults.timeout, Some(120)); // falls through to far
     }
 
+    /// str-7lab0: one YAML must satisfy both consumers of `.shatter/config.yaml`.
+    /// The Go frontend reads mocks as bare expression strings (str-c8djq); the
+    /// CLI must parse that shorthand (→ MockOverride{expression}) alongside the
+    /// struct form instead of rejecting the file before analysis.
+    #[test]
+    fn mock_override_parses_string_and_struct_forms() {
+        let yaml = r#"
+functions:
+  "*.resolvers.go:*":
+    mocks:
+      "auth.GetAccount": "auth.StaticAccount()"
+      "db.Query":
+        return_values:
+          - {"rows": []}
+      "svc.Fetch":
+        expression: "svc.Fake()"
+"#;
+        let cfg: ShatterConfig = serde_yaml::from_str(yaml).expect("both mock forms must parse");
+        let entry = &cfg.functions["*.resolvers.go:*"];
+        let mocks = entry.mocks.as_ref().expect("mocks parsed");
+        assert_eq!(
+            mocks["auth.GetAccount"].expression.as_deref(),
+            Some("auth.StaticAccount()"),
+            "bare string is expression shorthand"
+        );
+        assert!(mocks["auth.GetAccount"].return_values.is_none());
+        assert_eq!(
+            mocks["db.Query"].return_values.as_ref().map(Vec::len),
+            Some(1),
+            "struct form keeps return_values semantics"
+        );
+        assert!(mocks["db.Query"].expression.is_none());
+        assert_eq!(mocks["svc.Fetch"].expression.as_deref(), Some("svc.Fake()"));
+    }
+
     #[test]
     fn merge_configs_mocks_near_overrides_far() {
         let far = ShatterConfig {
@@ -1933,6 +1968,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!({"rows": [1]})]),
                             behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                                                    expression: None,
                         },
                     ),
                     (
@@ -1940,6 +1976,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!({"accepted": true})]),
                             behavior: Some(crate::protocol::MockBehavior::Passthrough),
+                                                    expression: None,
                         },
                     ),
                 ])),
@@ -1955,6 +1992,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!({"rows": [2]})]),
                             behavior: Some(crate::protocol::MockBehavior::ThrowError),
+                                                    expression: None,
                         },
                     ),
                     (
@@ -1962,6 +2000,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!("hit")]),
                             behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                            expression: None,
                         },
                     ),
                 ])),
@@ -1979,6 +2018,7 @@ llm:
             Some(&crate::auto_mock::MockOverride {
                 return_values: Some(vec![serde_json::json!({"rows": [2]})]),
                 behavior: Some(crate::protocol::MockBehavior::ThrowError),
+                            expression: None,
             })
         );
         assert_eq!(
@@ -1986,6 +2026,7 @@ llm:
             Some(&crate::auto_mock::MockOverride {
                 return_values: Some(vec![serde_json::json!({"accepted": true})]),
                 behavior: Some(crate::protocol::MockBehavior::Passthrough),
+                            expression: None,
             })
         );
         assert_eq!(
@@ -1993,6 +2034,7 @@ llm:
             Some(&crate::auto_mock::MockOverride {
                 return_values: Some(vec![serde_json::json!("hit")]),
                 behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                expression: None,
             })
         );
     }

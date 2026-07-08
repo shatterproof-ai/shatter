@@ -72,10 +72,10 @@ type FunctionConfig struct {
 	Defaults map[string]DefaultValue `yaml:"defaults,omitempty"`
 
 	// Mocks supplies per-target mock substitutions keyed by qualified
-	// function name (e.g. "fmt.Println"). The value is the Go source
-	// expression a code generator pastes in place of the original call
-	// (str-hy9b.G3 AC2).
-	Mocks map[string]string `yaml:"mocks,omitempty"`
+	// function name (e.g. "fmt.Println"). The value's Expression is the Go
+	// source expression pasted in place of the original call
+	// (str-hy9b.G3 AC2; execute-time substitution str-c8djq).
+	Mocks map[string]MockValue `yaml:"mocks,omitempty"`
 
 	// Generators names a runtime-value registry entry per parameter. The
 	// planner consults the named generator before falling back to primitive
@@ -87,6 +87,32 @@ type FunctionConfig struct {
 	// Receiver supplies a method receiver construction recipe for targets
 	// whose useful behavior requires initialized receiver fields.
 	Receiver *ReceiverConfig `yaml:"receiver,omitempty"`
+}
+
+// MockValue is one `mocks` entry. Two YAML forms are accepted so the same
+// config file satisfies both the Go frontend and the Rust CLI schema
+// (str-7lab0): a bare string — the call-site substitution expression — and a
+// mapping with an optional `expression` key. CLI-owned mapping keys
+// (`return_values`, `behavior`) are tolerated and ignored here; a mapping
+// without an expression parses to the empty string, which every downstream
+// consumer skips.
+type MockValue struct {
+	Expression string
+}
+
+// UnmarshalYAML implements the dual string/mapping form for MockValue.
+func (m *MockValue) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&m.Expression)
+	}
+	var full struct {
+		Expression string `yaml:"expression"`
+	}
+	if err := node.Decode(&full); err != nil {
+		return fmt.Errorf("mocks entry must be an expression string or a mapping with an `expression` key: %w", err)
+	}
+	m.Expression = full.Expression
+	return nil
 }
 
 // PolicyConfig carries the user-facing safety policy overrides.

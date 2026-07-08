@@ -98,11 +98,46 @@ functions:
 		t.Fatalf("unexpected warnings: %v", file.Warnings)
 	}
 	entry := file.MatchTarget("target.go", "UsesFmt")
-	if got := entry.Mocks["fmt.Println"]; !strings.Contains(got, "return 0, nil") {
+	if got := entry.Mocks["fmt.Println"].Expression; !strings.Contains(got, "return 0, nil") {
 		t.Errorf("fmt.Println mock = %q, want substring \"return 0, nil\"", got)
 	}
-	if got := entry.Mocks["time.Now"]; !strings.Contains(got, "time.Time{}") {
+	if got := entry.Mocks["time.Now"].Expression; !strings.Contains(got, "time.Time{}") {
 		t.Errorf("time.Now mock = %q, want substring \"time.Time{}\"", got)
+	}
+}
+
+// str-7lab0: one YAML file feeds both this loader and the Rust CLI, whose
+// schema is struct-shaped ({expression, return_values, behavior}). Both the
+// bare-string shorthand and the struct form must parse here; CLI-owned keys
+// are tolerated, and a struct entry without an expression yields the empty
+// string (skipped by every downstream consumer).
+func TestLoad_MocksDualForm(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "target.go:*":
+    mocks:
+      "auth.GetAccount": "auth.StaticAccount()"
+      "svc.Fetch":
+        expression: "svc.Fake()"
+      "db.Query":
+        return_values:
+          - {"rows": []}
+        behavior: repeat_last
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	entry := file.MatchTarget("target.go", "Anything")
+	if got := entry.Mocks["auth.GetAccount"].Expression; got != "auth.StaticAccount()" {
+		t.Errorf("bare-string mock = %q, want auth.StaticAccount()", got)
+	}
+	if got := entry.Mocks["svc.Fetch"].Expression; got != "svc.Fake()" {
+		t.Errorf("struct-form expression = %q, want svc.Fake()", got)
+	}
+	if got := entry.Mocks["db.Query"].Expression; got != "" {
+		t.Errorf("CLI-owned struct entry should parse to empty expression, got %q", got)
 	}
 }
 
@@ -291,7 +326,7 @@ functions:
 	if got := entry.Defaults["name"]; string(got.JSON) != `"specific"` {
 		t.Errorf("specific defaults.name = %s, want \"specific\"", string(got.JSON))
 	}
-	if entry.Mocks["fmt.Println"] != "noop" {
+	if entry.Mocks["fmt.Println"].Expression != "noop" {
 		t.Errorf("specific mock missing: %v", entry.Mocks)
 	}
 	// Pattern that only matches the wildcard still resolves.
