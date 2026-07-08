@@ -27,6 +27,26 @@ export const REACT_MODULE_NAMES = new Set([
   "react/jsx-dev-runtime",
 ]);
 
+/**
+ * React-family specifiers aliased onto the Shatter shim in Node's *native*
+ * module cache (see `installNativeReactAliases` in `executor.ts`) so that
+ * dependencies loaded from `node_modules` via `createRequire` receive the shim
+ * on their transitive `require('react')` &c. instead of the project's real
+ * React (whose hook dispatcher is null outside a renderer → null-dispatcher
+ * crashes).
+ *
+ * This is a superset of `REACT_MODULE_NAMES`: the latter governs only in-sandbox
+ * target/instrumented-code resolution (JSX runtime), whereas native aliasing
+ * also covers `react-dom` / `react-dom/client` which dependencies pull in.
+ */
+export const NATIVE_REACT_ALIAS_NAMES: readonly string[] = [
+  "react",
+  "react-dom",
+  "react-dom/client",
+  "react/jsx-runtime",
+  "react/jsx-dev-runtime",
+];
+
 // ── JSX element construction ────────────────────────────────────────
 
 interface ReactElement {
@@ -101,6 +121,32 @@ function useId(): string {
 }
 
 /**
+ * Store-subscription hook (React 18). Third-party state libraries loaded via the
+ * native-alias path call this — notably zustand v5's `useStore`
+ * (`react.js` → `useSyncExternalStore`). Deterministic stub: return the current
+ * snapshot without subscribing, so the store's value flows into the component
+ * for concolic exploration.
+ */
+function useSyncExternalStore<T>(
+  _subscribe: unknown,
+  getSnapshot: () => T,
+  getServerSnapshot?: () => T,
+): T {
+  const snapshot = getSnapshot ?? getServerSnapshot;
+  return typeof snapshot === "function" ? snapshot() : (undefined as T);
+}
+
+/** Pass-through: expose the value immediately (no deferral). */
+function useDeferredValue<T>(value: T): T {
+  return value;
+}
+
+/** Non-pending transition that runs its callback synchronously. */
+function useTransition(): [boolean, (cb: () => void) => void] {
+  return [false, (cb: () => void) => (typeof cb === "function" ? cb() : undefined)];
+}
+
+/**
  * Stub of React.createContext. Returns an object exposing `_currentValue`
  * (read by the `useContext` stub above), a `Provider` that updates
  * `_currentValue` from its `value` prop and renders its children, and a
@@ -158,6 +204,12 @@ const reactModule = {
   useRef,
   useContext,
   useId,
+  useSyncExternalStore,
+  useInsertionEffect: noop,
+  useImperativeHandle: noop,
+  useDebugValue: noop,
+  useDeferredValue,
+  useTransition,
   createContext,
   createElement,
   Fragment,
@@ -190,10 +242,40 @@ const jsxDevRuntimeModule = {
   Fragment,
 };
 
+// react-dom shim. Third-party dependencies (e.g. Mantine portals) may
+// transitively `require('react-dom')` / `require('react-dom/client')`. The
+// concolic sandbox never renders to a real DOM, so these are pass-throughs /
+// no-ops — just enough surface for a dependency's module top level to load
+// without reaching for a live renderer.
+const reactDomModule = {
+  createPortal: (children: unknown) => children,
+  render: noop,
+  hydrate: noop,
+  unmountComponentAtNode: () => false,
+  findDOMNode: () => null,
+  flushSync: <T>(fn: () => T): T | undefined =>
+    typeof fn === "function" ? fn() : undefined,
+  unstable_batchedUpdates: <A>(fn: (a: A) => void, a: A) => fn(a),
+  createRoot: () => ({ render: noop, unmount: noop }),
+  hydrateRoot: () => ({ render: noop, unmount: noop }),
+  version: "0.0.0-shatter-shim",
+  default: undefined as unknown,
+};
+reactDomModule.default = reactDomModule;
+
+const reactDomClientModule = {
+  createRoot: reactDomModule.createRoot,
+  hydrateRoot: reactDomModule.hydrateRoot,
+  default: undefined as unknown,
+};
+reactDomClientModule.default = reactDomClientModule;
+
 const shimRegistry: Record<string, Record<string, unknown>> = {
   "react": reactModule,
   "react/jsx-runtime": jsxRuntimeModule,
   "react/jsx-dev-runtime": jsxDevRuntimeModule,
+  "react-dom": reactDomModule,
+  "react-dom/client": reactDomClientModule,
 };
 
 /**

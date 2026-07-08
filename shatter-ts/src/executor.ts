@@ -55,7 +55,11 @@ import {
   buildSymExprWithFlow,
 } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
-import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
+import {
+  REACT_MODULE_NAMES,
+  NATIVE_REACT_ALIAS_NAMES,
+  getReactShim,
+} from "./react-shim.js";
 import {
   DEFAULT_JSX_RUNTIME_OPTIONS,
   loadJsxRuntimeOptions,
@@ -630,11 +634,143 @@ export function setProjectRoot(projectRoot: string | null | undefined): void {
       // Force Node to re-read NODE_PATH for future require calls
       require("module").Module._initPaths();
     }
+    installNativeReactAliases(projectRoot);
   }
   // Resolve and cache the project's JSX runtime configuration so subsequent
   // transpiles honor `jsx` / `jsxImportSource`. Falls back to the default
   // automatic-React runtime when no project root or no tsconfig is present.
   currentJsxRuntimeOptions = loadJsxRuntimeOptions(projectRoot);
+}
+
+/** Marker set on synthetic Module cache entries we install as React aliases. */
+const SHATTER_REACT_ALIAS = Symbol("shatterReactAlias");
+
+/** Resolution bases already processed, so seeding runs at most once per base. */
+const reactAliasedBases = new Set<string>();
+
+/**
+ * Seed Node's native module cache so that dependencies loaded from
+ * `node_modules` via `createRequire` (the executor's native fall-through in
+ * `resolveModuleWithAdapters`) receive Shatter's React shim when they
+ * internally `require('react')` / `react-dom` / the automatic JSX runtimes —
+ * instead of the project's real React.
+ *
+ * Why this is needed: target and instrumented code route react-family
+ * specifiers to the shim through the adapter-aware require
+ * (`getDefaultResolverAdapters` / the stateful adapter). But a third-party
+ * dependency loaded natively runs entirely inside Node's module system; its
+ * transitive `require('react')` resolves to the *real* package and returns a
+ * live React whose hook dispatcher is null outside a renderer — producing
+ * "Cannot read properties of null (reading 'useCallback')"-style crashes even
+ * for components correctly executed under the react-hook adapter (kapow:
+ * zustand/react.js, Mantine).
+ *
+ * Aliasing at the *resolved filename* of each react-family module in
+ * `Module._cache` is a single choke point that covers arbitrarily deep
+ * transitive requires: every `require('react')` under a given dependency tree
+ * resolves to the same file and hits the cached shim. Native resolution is
+ * preserved for every other specifier (perf + fidelity).
+ *
+ * Resolution base: we seed from the *importer's own location* (the target
+ * source file), not just the CLI project root. In pnpm workspaces / monorepos
+ * react is often installed only in a sub-package's `node_modules` (kapow:
+ * `web/node_modules/.pnpm/react@…`), which a project-root require cannot
+ * resolve. Resolving from the source file walks the same `node_modules` chain
+ * the dependency itself uses, so the seeded filename matches. Seeding is
+ * idempotent per resolved file, so repeated bases are cheap.
+ *
+ * Version-mismatch note: we deliberately force the shim onto dependencies
+ * regardless of the React major they were compiled against. The shim
+ * implements the stable hook / createElement surface, and the goal is
+ * exploration fidelity (executing component branches), not React-runtime
+ * fidelity. Transitive dependencies get the default (non-stateful) shim — the
+ * per-invocation stateful hook semantics apply only to the target component,
+ * which is resolved to the shim through the adapter-aware require instead.
+ */
+/**
+ * Minimal shape of the Node `Module` API and cache we touch. We obtain these
+ * from a *native* require (see below) rather than an `import`, so the cache we
+ * seed is the exact one that `createRequire`-created requires read from — even
+ * under test runners (e.g. jest) that swap the module registry seen by imports.
+ */
+interface NativeModuleEntry {
+  id: string;
+  filename: string | null;
+  loaded: boolean;
+  exports: unknown;
+  children: NativeModuleEntry[];
+  paths: string[];
+  [SHATTER_REACT_ALIAS]?: boolean;
+}
+interface NativeModuleApi {
+  new (id: string): NativeModuleEntry;
+  _cache: Record<string, NativeModuleEntry>;
+}
+
+/**
+ * Seed the native module cache with React shims, resolving specifiers through
+ * `baseRequire`. `baseRequire` MUST be a genuine Node require created via
+ * `createRequire(<real file>)`: its `.resolve` then walks the real
+ * `node_modules` chain, and its `.Module._cache` is the exact cache the
+ * dependency's transitive `require('react')` reads from.
+ */
+function installNativeReactAliasesVia(
+  baseRequire: NodeRequire,
+  dedupeKey: string,
+): void {
+  if (reactAliasedBases.has(dedupeKey)) return;
+  reactAliasedBases.add(dedupeKey);
+
+  const nativeModule = baseRequire("module") as { Module: NativeModuleApi };
+  const ModuleApi = nativeModule.Module;
+  const moduleCache = ModuleApi._cache;
+
+  for (const specifier of NATIVE_REACT_ALIAS_NAMES) {
+    const shim = getReactShim(specifier);
+    if (!shim) continue;
+    let resolved: string;
+    try {
+      resolved = baseRequire.resolve(specifier);
+    } catch {
+      // Package not installed relative to this base — nothing to alias.
+      continue;
+    }
+    // Idempotent across bases that resolve to the same file.
+    if (moduleCache[resolved]?.[SHATTER_REACT_ALIAS]) continue;
+
+    const aliasModule = new ModuleApi(resolved);
+    aliasModule.filename = resolved;
+    aliasModule.loaded = true;
+    aliasModule.exports = shim;
+    aliasModule[SHATTER_REACT_ALIAS] = true;
+    moduleCache[resolved] = aliasModule;
+  }
+}
+
+/**
+ * Best-effort seed from the CLI project root (covers the common single-package
+ * layout). When react lives only in a sub-package (pnpm workspace / monorepo),
+ * resolution here finds nothing; the per-target seeding in `loadModule` /
+ * `buildInstrumentedSandbox` — resolved from the actual source file — does the
+ * real work.
+ */
+function installNativeReactAliases(projectRoot: string): void {
+  const resolvedRoot = path.resolve(projectRoot);
+  installNativeReactAliasesVia(
+    createRequire(path.join(resolvedRoot, "__shatter_react_alias__.js")),
+    `root:${resolvedRoot}`,
+  );
+}
+
+/**
+ * Seed React aliases resolved from a specific source file's location. Called on
+ * every native-require creation so transitive `require('react')` in
+ * dependencies of that file (however deep) hits the shim, regardless of where
+ * react is installed in a workspace.
+ */
+function installNativeReactAliasesForFile(sourceFile: string): void {
+  const abs = path.resolve(sourceFile);
+  installNativeReactAliasesVia(createRequire(abs), `file:${abs}`);
 }
 
 /**
@@ -877,6 +1013,10 @@ function loadModule(
     });
   }
 
+  // Route this file's dependencies' transitive `require('react')` &c. to the
+  // shim (see installNativeReactAliasesForFile). Resolves react from this file's
+  // own node_modules chain so pnpm / workspace layouts are covered.
+  installNativeReactAliasesForFile(absolutePath);
   const targetRequire = createAdapterAwareRequire(
     createRequire(absolutePath),
     absolutePath,
@@ -2592,6 +2732,12 @@ function buildInstrumentedSandbox(params: {
   const sandboxProc = capture
     ? createCapturingProcess(sideEffects)
     : NOOP_PROCESS;
+  if (sourceFilePath) {
+    // Seed React aliases from the target file's location so its dependencies'
+    // transitive `require('react')` hits the shim on the direct (instrumented)
+    // execution path too — not just the adapter path.
+    installNativeReactAliasesForFile(sourceFilePath);
+  }
   const rawRequire = sourceFilePath
     ? createRequire(path.resolve(sourceFilePath))
     : require;

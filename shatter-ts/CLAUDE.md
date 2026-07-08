@@ -83,6 +83,40 @@ The **browser-globals (`browser-dom`) adapter is a `SandboxProvider`, not an `In
 
 Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts`, `executeAdapterOwned` / `loadInstrumentedModuleInSandbox` / `buildInstrumentedSandbox` in `src/executor.ts`, `InvocationContext.loadInstrumentedExports` in `src/runtime-hooks.ts`, react-hook usage in `src/react-hook-invocation.ts`, dispatch site in `src/handlers.ts` execute case. Analyses cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}`, cleared on shutdown / function-level teardown / `clearInstrumentedSources`.
 
+## Native React Aliasing Contract (str-rzsej)
+
+Target and instrumented code route react-family specifiers to the shim through
+the adapter-aware require (`getDefaultResolverAdapters` / the stateful adapter).
+But a third-party dependency loaded from `node_modules` via `createRequire` runs
+inside Node's *native* module system; its transitive `require('react')` would
+otherwise resolve to the project's real React, whose hook dispatcher is null
+outside a renderer → `Cannot read properties of null (reading 'use…')` crashes
+(kapow: zustand v5 `useStore` → `react.development.js` useCallback; Mantine).
+
+Fix: `installNativeReactAliasesForFile` (`src/executor.ts`) seeds Node's
+`Module._cache` with the shim at the *resolved filename* of each
+`NATIVE_REACT_ALIAS_NAMES` specifier (`react`, `react-dom`, `react-dom/client`,
+`react/jsx-runtime`, `react/jsx-dev-runtime`). This is a single choke point
+covering arbitrarily deep transitive requires. It is called from **both**
+native-require creation sites — `loadModule` and `buildInstrumentedSandbox` — so
+the direct (instrumented) and adapter paths are both covered. Resolution is
+done from the **target source file's** own `node_modules` chain (not just the
+CLI project root) so pnpm workspaces / monorepo sub-packages
+(`web/node_modules/.pnpm/react@…`) are covered; a root-only resolve misses them.
+
+Notes: (1) the Module class + cache are obtained from the native require itself,
+not an ESM import, because jest replaces the imported module registry — the
+native-require path is only exercised in a real `node` subprocess (see the
+str-rzsej test, which bundles the executor via esbuild and spawns node; jest
+cannot exercise it in-process). (2) The shim is forced onto dependencies
+regardless of the React major they were compiled against — exploration fidelity,
+not React-runtime fidelity, is the goal. (3) When forcing the shim onto
+dependencies, the shim must cover the stable hook surface those deps call — this
+change added `useSyncExternalStore` (zustand v5), `useDeferredValue`,
+`useTransition`, `useInsertionEffect`, `useImperativeHandle`, `useDebugValue`.
+No protocol/wire change — JSON output shape is unchanged, so no parity-matrix
+update is required.
+
 ## Feature Capability Parity
 
 TS declares support for `outcome` only in

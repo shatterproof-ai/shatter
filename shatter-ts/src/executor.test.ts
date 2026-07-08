@@ -1322,6 +1322,209 @@ describe("JSX runtime configuration (str-jeen.29)", () => {
   });
 });
 
+describe("transitive require('react') from node_modules (str-rzsej)", () => {
+  // The fix hooks Node's *native* module system (`Module._cache`), which jest
+  // fully replaces inside its sandbox — `createRequire`, `_resolveFilename`,
+  // and `_nodeModulePaths` are all jest-resolve-backed under jest, so the
+  // native createRequire path cannot be exercised in-process here. We therefore
+  // drive the scenario in a real `node` subprocess against an esbuild bundle of
+  // the executor, mirroring how the Rust E2E suites spawn the real frontend.
+  //
+  // Fixture project (generated node_modules tree):
+  //  - react         → stand-in for the *real* React whose hooks read a null
+  //                    dispatcher and throw outside a renderer (reproduces the
+  //                    kapow null-dispatcher crash).
+  //  - helper-widget → a dependency that internally `require('react')` and
+  //                    calls useState (the transitive leak).
+  //  - fs-user       → a dependency using Node fs/path (guard: native
+  //                    resolution must be preserved for non-react modules).
+  //
+  // Layout mirrors kapow's pnpm monorepo: the project root passed to
+  // setProjectRoot is the repo root, but react/helper/fs-user and the target
+  // live under a `web/` sub-package. Only the file-relative seeding (resolved
+  // from the target's own node_modules chain) can find react — a root-only
+  // resolve finds nothing, exactly as it did in kapow.
+  let repoRoot: string;
+  let webDir: string;
+  let bundlePath: string;
+  let harnessPath: string;
+
+  const runInNode = (
+    fnName: string,
+    args: unknown[],
+  ): { return_value: unknown; thrown_error: { message?: string } | null } => {
+    const out = require("node:child_process").execFileSync(
+      process.execPath,
+      [harnessPath, repoRoot, path.join(webDir, "widget-host.tsx"), fnName, JSON.stringify(args)],
+      {
+        encoding: "utf-8",
+        timeout: 25000,
+        // The bundle leaves node_modules deps external (fast bundling); the
+        // subprocess resolves them from shatter-ts's node_modules via NODE_PATH.
+        env: {
+          ...process.env,
+          NODE_PATH: path.resolve(__dirname, "..", "node_modules"),
+        },
+      },
+    );
+    return JSON.parse(out);
+  };
+
+  beforeAll(() => {
+    repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shatter-react-leak-"));
+    webDir = path.join(repoRoot, "web");
+    fs.mkdirSync(webDir, { recursive: true });
+    const nm = path.join(webDir, "node_modules");
+
+    const writePkg = (name: string, indexJs: string): void => {
+      const dir = path.join(nm, ...name.split("/"));
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "package.json"),
+        JSON.stringify({ name, version: "0.0.0", main: "index.js" }),
+      );
+      fs.writeFileSync(path.join(dir, "index.js"), indexJs);
+    };
+
+    // Stand-in for real React: hooks indirect through a dispatcher that is null
+    // outside a renderer, throwing exactly like react.development.js
+    // ("Cannot read properties of null (reading ...)").
+    writePkg(
+      "react",
+      `const Internals = { ReactCurrentDispatcher: { current: null } };
+exports.useState = function (v) { return Internals.ReactCurrentDispatcher.current.useState(v); };
+exports.useCallback = function (cb, d) { return Internals.ReactCurrentDispatcher.current.useCallback(cb, d); };
+exports.useMemo = function (fn, d) { return Internals.ReactCurrentDispatcher.current.useMemo(fn, d); };
+exports.__isRealReactStandIn = true;
+module.exports.default = module.exports;
+`,
+    );
+    writePkg(
+      "helper-widget",
+      `const React = require("react");
+exports.useWidgetLabel = function (seed) { return React.useState("widget:" + seed)[0]; };
+`,
+    );
+    writePkg(
+      "fs-user",
+      `const fs = require("fs");
+const path = require("path");
+exports.check = function () { return fs.existsSync(__filename) && path.basename(__filename) === "index.js"; };
+`,
+    );
+
+    fs.writeFileSync(
+      path.join(webDir, "widget-host.tsx"),
+      `import { useWidgetLabel } from "helper-widget";
+import { check } from "fs-user";
+export function WidgetHost(props: { seed: string }): string { return useWidgetLabel(props.seed); }
+export function NativeFsHost(): boolean { return check(); }
+`,
+    );
+
+    // Bundle the executor (resolving the whole TS graph) so the subprocess runs
+    // real production code with the real Node module system.
+    bundlePath = path.join(repoRoot, "executor.bundle.cjs");
+    const esbuild = require("esbuild");
+    esbuild.buildSync({
+      stdin: {
+        contents: `export * from ${JSON.stringify(path.resolve(__dirname, "executor.ts"))};`,
+        resolveDir: __dirname,
+        loader: "ts",
+      },
+      bundle: true,
+      platform: "node",
+      format: "cjs",
+      target: "node22",
+      // Only bundle the local TS graph; leave node_modules (typescript, pino,
+      // …) external so bundling stays fast. Resolved at runtime via NODE_PATH.
+      packages: "external",
+      outfile: bundlePath,
+    });
+
+    harnessPath = path.join(repoRoot, "harness.cjs");
+    fs.writeFileSync(
+      harnessPath,
+      `const ex = require(${JSON.stringify(bundlePath)});
+const [, , projectDir, targetFile, fnName, argsJson] = process.argv;
+(async () => {
+  ex.setProjectRoot(projectDir);
+  ex.clearModuleCache();
+  const res = await ex.executeFunction(targetFile, fnName, JSON.parse(argsJson));
+  process.stdout.write(JSON.stringify({ return_value: res.return_value, thrown_error: res.thrown_error }));
+  // Force exit: the executor may keep worker threads / timers alive (jest uses
+  // forceExit for the same reason), which would otherwise hang execFileSync.
+  process.exit(0);
+})().catch((e) => { process.stderr.write(String(e && e.stack || e)); process.exit(1); });
+`,
+    );
+  }, 30000);
+
+  afterAll(() => {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it("routes a dependency's transitive require('react') to the shim (no null-dispatcher crash)", () => {
+    const result = runInNode("WidgetHost", [{ seed: "abc" }]);
+    expect(result.thrown_error).toBeNull();
+    // Shim useState returns the initial value deterministically — proof the
+    // dependency's transitive `require('react')` hit the shim, not real React
+    // (which would have thrown the null-dispatcher TypeError).
+    expect(result.return_value).toBe("widget:abc");
+  });
+
+  it("preserves native resolution for a dependency using fs/path", () => {
+    const result = runInNode("NativeFsHost", []);
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe(true);
+  });
+});
+
+describe("react-family shims (str-rzsej)", () => {
+  const { getReactShim, NATIVE_REACT_ALIAS_NAMES } =
+    require("./react-shim.js") as typeof import("./react-shim.js");
+
+  it("exposes react-dom / react-dom/client shims for native aliasing", () => {
+    const reactDom = getReactShim("react-dom") as Record<string, unknown>;
+    expect(typeof reactDom.createPortal).toBe("function");
+    // createPortal passes children through so the concolic engine can descend.
+    expect((reactDom.createPortal as (c: unknown) => unknown)("kid")).toBe("kid");
+    expect(typeof reactDom.createRoot).toBe("function");
+    const client = getReactShim("react-dom/client") as Record<string, unknown>;
+    expect(typeof client.createRoot).toBe("function");
+  });
+
+  it("useSyncExternalStore returns the current snapshot (zustand v5 path)", () => {
+    const react = getReactShim("react") as Record<string, unknown>;
+    const useSyncExternalStore = react.useSyncExternalStore as (
+      subscribe: unknown,
+      getSnapshot: () => unknown,
+    ) => unknown;
+    expect(typeof useSyncExternalStore).toBe("function");
+    // zustand's useStore calls this with (subscribe, getSnapshot); the shim must
+    // return the store's current value so it flows into the component.
+    expect(useSyncExternalStore(() => () => {}, () => "state-value")).toBe(
+      "state-value",
+    );
+  });
+
+  it("NATIVE_REACT_ALIAS_NAMES covers the react family plus react-dom", () => {
+    expect(NATIVE_REACT_ALIAS_NAMES).toEqual(
+      expect.arrayContaining([
+        "react",
+        "react-dom",
+        "react-dom/client",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+      ]),
+    );
+    // Every aliased specifier must resolve to a shim (else seeding is a no-op).
+    for (const name of NATIVE_REACT_ALIAS_NAMES) {
+      expect(getReactShim(name)).toBeDefined();
+    }
+  });
+});
+
 describe("scope events in execution", () => {
   it("loop function returns scope_events with loop_enter/loop_exit", async () => {
     const source = `export function countdown(n: number): number {
