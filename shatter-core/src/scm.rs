@@ -55,11 +55,11 @@ impl ScmProvider for GitProvider {
         let repo_root = repo_root(root)?;
 
         // Staged + unstaged changes vs HEAD
-        let output = run_git(root, &["diff", "--name-only", "HEAD"])?;
+        let output = run_git_paths(root, &["diff", "--name-only", "HEAD"])?;
         let mut files = parse_file_list(&output, &repo_root);
 
         // Also include staged-only changes (new files that are staged but not yet committed)
-        let staged_output = run_git(root, &["diff", "--name-only", "--cached"])?;
+        let staged_output = run_git_paths(root, &["diff", "--name-only", "--cached"])?;
         let staged_files = parse_file_list(&staged_output, &repo_root);
         for f in staged_files {
             if !files.contains(&f) {
@@ -71,7 +71,7 @@ impl ScmProvider for GitProvider {
             // --full-name: ls-files prints cwd-relative paths by default,
             // unlike `git diff --name-only` which is repo-root-relative. The
             // scan root may be a repo subdirectory (str-g9i4v).
-            let untracked_output = run_git(
+            let untracked_output = run_git_paths(
                 root,
                 &["ls-files", "--others", "--exclude-standard", "--full-name"],
             )?;
@@ -93,7 +93,7 @@ impl ScmProvider for GitProvider {
 
         // Three-dot diff: changes between merge-base(base_ref, HEAD) and HEAD
         let range = format!("{base_ref}...HEAD");
-        let output = run_git(root, &["diff", "--name-only", &range])?;
+        let output = run_git_paths(root, &["diff", "--name-only", &range])?;
         let mut files = parse_file_list(&output, &repo_root);
         files.sort();
         files.dedup();
@@ -108,7 +108,7 @@ impl ScmProvider for GitProvider {
     ) -> Result<Vec<PathBuf>, ScmError> {
         let repo_root = repo_root(root)?;
         let range = format!("{since_ref}...{until_ref}");
-        let output = run_git(root, &["diff", "--name-only", &range])?;
+        let output = run_git_paths(root, &["diff", "--name-only", &range])?;
         let mut files = parse_file_list(&output, &repo_root);
         files.sort();
         files.dedup();
@@ -230,6 +230,20 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Run a git command that emits a pathname list, then return stdout.
+///
+/// Prepends `-c core.quotepath=false` so git does not C-quote (octal-escape)
+/// non-ASCII bytes in pathnames. With the default `core.quotepath=true`, a path
+/// like `文.ts` is printed as the literal `"\346\226\207.ts"`, which
+/// `parse_file_list` would join verbatim into a nonexistent path — silently
+/// dropping such files from `--changed`/`--since` (str-jz13q). The config flag
+/// must precede the git subcommand.
+fn run_git_paths(root: &Path, args: &[&str]) -> Result<String, ScmError> {
+    let mut full: Vec<&str> = vec!["-c", "core.quotepath=false"];
+    full.extend_from_slice(args);
+    run_git(root, &full)
 }
 
 fn repo_root(root: &Path) -> Result<PathBuf, ScmError> {
@@ -387,6 +401,75 @@ mod tests {
         assert!(
             canon.contains(&untracked_canon),
             "untracked file missing or mis-resolved: {files:?}"
+        );
+    }
+
+    #[test]
+    fn test_changed_files_non_ascii_path() {
+        // str-jz13q: with default core.quotepath=true, git C-quotes non-ASCII
+        // filenames in `diff --name-only` output (e.g. "\346\226\207.ts").
+        // parse_file_list must see the real UTF-8 path, not the quoted literal,
+        // otherwise --changed silently drops such files.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        git_ok(repo, &["init", "-q"]);
+        git_ok(repo, &["config", "user.email", "t@example.com"]);
+        git_ok(repo, &["config", "user.name", "t"]);
+
+        let file = repo.join("文.ts");
+        fs::write(&file, "export const a = 1;\n").expect("write file");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "add"]);
+        fs::write(&file, "export const a = 2;\n").expect("modify file");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(repo, false)
+            .expect("changed_files should succeed");
+
+        // Canonicalize to tolerate symlinked temp dirs and to confirm the path
+        // actually exists (a C-quoted literal would fail to canonicalize).
+        let canon: Vec<PathBuf> = files
+            .iter()
+            .filter_map(|f| f.canonicalize().ok())
+            .collect();
+        let want = file.canonicalize().expect("canonicalize non-ASCII file");
+        assert!(
+            canon.contains(&want),
+            "non-ASCII changed file missing or mis-resolved: {files:?}"
+        );
+    }
+
+    #[test]
+    fn test_diff_files_non_ascii_path() {
+        // str-jz13q: same C-quoting hazard for the `diff --name-only <range>`
+        // path used by --since.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        git_ok(repo, &["init", "-q"]);
+        git_ok(repo, &["config", "user.email", "t@example.com"]);
+        git_ok(repo, &["config", "user.name", "t"]);
+
+        let file = repo.join("变.go");
+        fs::write(&file, "package main\n").expect("write file");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "initial"]);
+        fs::write(&file, "package main // changed\n").expect("modify file");
+        git_ok(repo, &["commit", "-q", "-am", "change"]);
+
+        let provider = GitProvider;
+        let files = provider
+            .diff_files(repo, "HEAD~1")
+            .expect("diff_files should succeed");
+
+        let canon: Vec<PathBuf> = files
+            .iter()
+            .filter_map(|f| f.canonicalize().ok())
+            .collect();
+        let want = file.canonicalize().expect("canonicalize non-ASCII file");
+        assert!(
+            canon.contains(&want),
+            "non-ASCII diffed file missing or mis-resolved: {files:?}"
         );
     }
 
