@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 func TestGinHandlerFactory_ID(t *testing.T) {
@@ -156,6 +158,59 @@ func TestExecuteAdapterViaLauncher_GinHandler(t *testing.T) {
 	}
 }
 
+// TestExecuteAdapterViaLauncher_GinHandlerReportsCoverage asserts the gin
+// adapter launcher path threads real instrumentation coverage (str-1qd5i):
+// AbortExample branches on the Authorization header, so the authorized and
+// unauthorized requests report non-empty, distinct lines_executed.
+func TestExecuteAdapterViaLauncher_GinHandlerReportsCoverage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	file := testFilePath(t, "gin_project/handler.go")
+	pathJSON, _ := json.Marshal("/status")
+	bodyJSON, _ := json.Marshal("")
+	routeParamsJSON, _ := json.Marshal(map[string]string{})
+
+	// Drive through the full adapter substrate (hook.Invoke -> outcome ->
+	// ExecuteAdapterOwned) so the test also guards outcome propagation of
+	// branch_path/lines_executed, matching the handleExecute path.
+	invoke := func(headers map[string]string) *instrument.ExecuteResult {
+		methodJSON, _ := json.Marshal("GET")
+		headersJSON, _ := json.Marshal(headers)
+		result, err := ExecuteAdapterOwned(&ginHandlerHook{}, InvocationContext{
+			File:         file,
+			FunctionName: "AbortExample",
+			Inputs:       []json.RawMessage{methodJSON, pathJSON, headersJSON, bodyJSON, routeParamsJSON},
+			Capture:      true,
+		})
+		if err != nil {
+			t.Fatalf("execute gin adapter owned: %v", err)
+		}
+		if result.ThrownError != nil {
+			t.Fatalf("unexpected thrown error: %+v", result.ThrownError)
+		}
+		return result
+	}
+
+	unauthorized := invoke(map[string]string{})
+	authorized := invoke(map[string]string{"Authorization": "Bearer token"})
+
+	if len(unauthorized.LinesExecuted) == 0 {
+		t.Fatal("unauthorized: gin adapter-owned lines_executed must be non-empty (str-1qd5i)")
+	}
+	if len(authorized.LinesExecuted) == 0 {
+		t.Fatal("authorized: gin adapter-owned lines_executed must be non-empty (str-1qd5i)")
+	}
+
+	if setsEqual(intSet(unauthorized.LinesExecuted), intSet(authorized.LinesExecuted)) {
+		t.Fatalf(
+			"header-driven branch should drive distinct line coverage; unauthorized=%v authorized=%v",
+			intSet(unauthorized.LinesExecuted), intSet(authorized.LinesExecuted),
+		)
+	}
+}
+
 func TestGinHandler_Execute_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -221,9 +276,15 @@ func TestGinHandler_Execute_Integration(t *testing.T) {
 		t.Fatalf("expected Content-Type application/json, got %v", ct)
 	}
 
-	// Adapter-owned: empty branch path
+	// Adapter-owned invocations now thread real instrumentation from the
+	// launcher (str-1qd5i). ListUsers is branchless, so branch_path stays empty,
+	// but its body executes source lines — lines_executed proves the
+	// instrumented target ran and coverage reached the response.
 	if len(execResp.BranchPath) != 0 {
-		t.Fatalf("expected empty branch path for adapter-owned, got %d", len(execResp.BranchPath))
+		t.Fatalf("ListUsers is branchless; expected empty branch path, got %d", len(execResp.BranchPath))
+	}
+	if len(execResp.LinesExecuted) == 0 {
+		t.Fatal("expected non-empty lines_executed for adapter-owned execute (str-1qd5i)")
 	}
 }
 

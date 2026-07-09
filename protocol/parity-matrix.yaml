@@ -959,11 +959,19 @@ allowed_divergences:
       The TS browser-globals adapter is a SandboxProvider, not an
       InvocationHook, so its targets stay invocation_model = direct and have
       always reported real coverage.
-      Go (net/http, gin) and Rust (axum) adapter-owned launchers still return
-      empty instrumentation fields — tracked by the sibling children
-      str-1qd5i (Go) and str-3eki5 (Rust). Until those land, adapter-owned
-      coverage is TS-only.
-    affected_frontends: [go, rust]
+      Go now closes this for both its invocation-owned adapters, net/http
+      (go/http-handler) and gin (go/gin) (str-1qd5i): the adapter launcher links
+      the instrumented target package (build.BuildAdapterInstrumentationOverlay
+      emits the recorder, runtime support, and an exported
+      ShatterAdapterReset/ShatterAdapterResults bridge), resets the recorder
+      before the httptest-driven handler runs, and drains branch_path /
+      lines_executed / scope_events into ExecuteResult, so adapter-owned coverage
+      matches the direct wrapper path. calls_to_external follows the same
+      outcome-propagation path (empty until the launcher records external calls).
+      Only the Rust axum adapter-owned launcher still returns empty
+      instrumentation fields — tracked by the sibling child str-3eki5. Until it
+      lands, adapter-owned coverage is TS + Go.
+    affected_frontends: [rust]
     affected_commands: [execute]
     status: tracked
     owner: Ketan Gangatirkar

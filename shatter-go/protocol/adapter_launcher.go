@@ -5,19 +5,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"go/ast"
-	"go/parser"
-	"go/printer"
-	"go/token"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/shatter-dev/shatter/shatter-go/build"
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
 	"github.com/shatter-dev/shatter/shatter-go/launcher"
 	goloader "github.com/shatter-dev/shatter/shatter-go/loader"
-	"github.com/shatter-dev/shatter/shatter-go/overlay"
 	"github.com/shatter-dev/shatter/shatter-go/sandbox"
-	"golang.org/x/tools/go/packages"
 )
 
 func executeAdapterViaLauncher(adapterID string, ctx InvocationContext) (*instrument.ExecuteResult, error) {
@@ -63,16 +58,15 @@ func prepareAdapterLauncher(file, function, adapterID string) (*preparedLauncher
 	}
 
 	discoveryHash := adapterDiscoveryHash(adapterID, absoluteFilePath, function)
-	overlayPath, err := writeImportablePackageOverlay(pkg, ws.GeneratedDir(), discoveryHash)
-	if err != nil {
-		return nil, err
-	}
-	runtimeDir, err := instrument.EnsureHarnessRuntimeDir()
-	if err != nil {
-		return nil, fmt.Errorf("harness runtime: %w", err)
-	}
 	if pkg.Name == "main" && !ast.IsExported(function) {
 		return nil, fmt.Errorf("unexported package main HTTP handler %q cannot be invoked through import-based adapter launcher", function)
+	}
+	// Instrument the target package (recorder + runtime support + exported
+	// adapter bridge) so the httptest-driven invocation records branch_path /
+	// lines_executed just like the normal wrapper launcher path (str-1qd5i).
+	overlayPath, runtimeDir, err := build.BuildAdapterInstrumentationOverlay(packageDir, pkg.Name, discoveryHash, ws.GeneratedDir())
+	if err != nil {
+		return nil, err
 	}
 	mainSource, err := generateAdapterLauncherMain(adapterID, packageImportPathForBuild(pkg, modulePath), function)
 	if err != nil {
@@ -115,116 +109,6 @@ func adapterDiscoveryHash(adapterID, file, function string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-func writeImportablePackageOverlay(pkg *packages.Package, generatedDir, hash string) (string, error) {
-	packageName := importablePackageName(pkg.Name)
-	if packageName == pkg.Name {
-		return "", nil
-	}
-
-	files := pkg.GoFiles
-	if len(files) == 0 {
-		files = pkg.CompiledGoFiles
-	}
-	if len(files) == 0 {
-		return "", fmt.Errorf("package has no Go files")
-	}
-	packageDir := filepath.Dir(files[0])
-	testPackageNames, err := importableTestFilePackages(packageDir, pkg.Name, packageName)
-	if err != nil {
-		return "", err
-	}
-	for sourcePath := range testPackageNames {
-		files = append(files, sourcePath)
-	}
-	files = uniqueFilePaths(files)
-
-	overlaysDir := filepath.Join(generatedDir, hash, "adapter-overlays")
-	builder := overlay.NewBuilder(overlaysDir, hash)
-	rewrittenDir := filepath.Join(generatedDir, hash, "adapter-importable")
-	for _, sourcePath := range files {
-		rewrittenPath := filepath.Join(rewrittenDir, filepath.Base(sourcePath))
-		targetPackageName := packageName
-		if testPackageName, ok := testPackageNames[sourcePath]; ok {
-			targetPackageName = testPackageName
-		}
-		if err := rewritePackageFile(sourcePath, rewrittenPath, targetPackageName); err != nil {
-			return "", fmt.Errorf("rewrite package file %q: %w", sourcePath, err)
-		}
-		if err := builder.Add(sourcePath, rewrittenPath); err != nil {
-			return "", fmt.Errorf("overlay %q: %w", sourcePath, err)
-		}
-	}
-
-	overlayPath, err := builder.Write()
-	if err != nil {
-		return "", fmt.Errorf("write overlay manifest: %w", err)
-	}
-	return overlayPath, nil
-}
-
-func importableTestFilePackages(packageDir, packageName, importablePackageName string) (map[string]string, error) {
-	matches, err := filepath.Glob(filepath.Join(packageDir, "*_test.go"))
-	if err != nil {
-		return nil, fmt.Errorf("glob package test files: %w", err)
-	}
-	testPackages := make(map[string]string, len(matches))
-	fset := token.NewFileSet()
-	for _, match := range matches {
-		file, err := parser.ParseFile(fset, match, nil, parser.PackageClauseOnly)
-		if err != nil {
-			return nil, fmt.Errorf("parse test file package %q: %w", match, err)
-		}
-		if file.Name == nil {
-			continue
-		}
-		switch file.Name.Name {
-		case packageName:
-			testPackages[match] = importablePackageName
-		case packageName + "_test":
-			testPackages[match] = importablePackageName + "_test"
-		}
-	}
-	return testPackages, nil
-}
-
-func uniqueFilePaths(files []string) []string {
-	seen := make(map[string]struct{}, len(files))
-	unique := make([]string, 0, len(files))
-	for _, file := range files {
-		if _, ok := seen[file]; ok {
-			continue
-		}
-		seen[file] = struct{}{}
-		unique = append(unique, file)
-	}
-	return unique
-}
-
-func importablePackageName(name string) string {
-	if name == "main" {
-		return "shattertarget"
-	}
-	return name
-}
-
-func rewritePackageFile(sourcePath, rewrittenPath, packageName string) error {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
-	if err != nil {
-		return err
-	}
-	file.Name = ast.NewIdent(packageName)
-	if err := os.MkdirAll(filepath.Dir(rewrittenPath), 0o755); err != nil {
-		return err
-	}
-	out, err := os.Create(rewrittenPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	return printer.Fprint(out, fset, file)
-}
-
 func generateAdapterLauncherMain(adapterID, targetImportPath, function string) (string, error) {
 	if isReceiverQualifiedFunctionName(function) {
 		return "", fmt.Errorf("adapter launcher does not support receiver method target %q", function)
@@ -237,6 +121,34 @@ func generateAdapterLauncherMain(adapterID, targetImportPath, function string) (
 	default:
 		return "", fmt.Errorf("unsupported adapter launcher: %s", adapterID)
 	}
+}
+
+// writeAdapterRecorderDrain appends, to an adapter launcher main, the code that
+// reads the instrumented target's recorder (branch_path / lines_executed /
+// scope_events) after the handler returns and copies each non-empty field into
+// resp. It runs inside the harness.RunLoop closure at two-tab indentation and
+// leaves resp's pre-initialized empty arrays untouched on any drain or decode
+// error, so a recorder failure degrades to empty instrumentation rather than a
+// failed invocation (str-1qd5i).
+func writeAdapterRecorderDrain(b *strings.Builder) {
+	b.WriteString("\t\tif _rec, _recErr := target.ShatterAdapterResults(); _recErr == nil {\n")
+	b.WriteString("\t\t\tvar _results struct {\n")
+	b.WriteString("\t\t\t\tLinesExecuted json.RawMessage `json:\"lines_executed\"`\n")
+	b.WriteString("\t\t\t\tBranchPath    json.RawMessage `json:\"branch_path\"`\n")
+	b.WriteString("\t\t\t\tScopeEvents   json.RawMessage `json:\"scope_events\"`\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\tif _uErr := json.Unmarshal(_rec, &_results); _uErr == nil {\n")
+	b.WriteString("\t\t\t\tif len(_results.BranchPath) > 0 {\n")
+	b.WriteString("\t\t\t\t\tresp.BranchPath = _results.BranchPath\n")
+	b.WriteString("\t\t\t\t}\n")
+	b.WriteString("\t\t\t\tif len(_results.LinesExecuted) > 0 {\n")
+	b.WriteString("\t\t\t\t\tresp.LinesExecuted = _results.LinesExecuted\n")
+	b.WriteString("\t\t\t\t}\n")
+	b.WriteString("\t\t\t\tif len(_results.ScopeEvents) > 0 {\n")
+	b.WriteString("\t\t\t\t\tresp.ScopeEvents = _results.ScopeEvents\n")
+	b.WriteString("\t\t\t\t}\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t}\n")
 }
 
 func generateHTTPAdapterLauncherMain(targetImportPath, function string) string {
@@ -279,10 +191,12 @@ func generateHTTPAdapterLauncherMain(targetImportPath, function string) string {
 	b.WriteString("\t\tfor k, v := range headers {\n")
 	b.WriteString("\t\t\thttpReq.Header.Set(k, v)\n")
 	b.WriteString("\t\t}\n")
+	b.WriteString("\t\ttarget.ShatterAdapterReset()\n")
 	b.WriteString("\t\tthrown := harness.SafeCall(func() {\n")
 	fmt.Fprintf(&b, "\t\t\thttp.HandlerFunc(target.%s).ServeHTTP(recorder, httpReq)\n", function)
 	b.WriteString("\t\t})\n")
 	b.WriteString("\t\tresp.ThrownError = thrown\n")
+	writeAdapterRecorderDrain(&b)
 	b.WriteString("\t\tresult := recorder.Result()\n")
 	b.WriteString("\t\tdefer result.Body.Close()\n")
 	b.WriteString("\t\tpayload, err := json.Marshal(struct {\n")
@@ -355,10 +269,12 @@ func generateGinAdapterLauncherMain(targetImportPath, function string) string {
 	b.WriteString("\t\t\t}\n")
 	b.WriteString("\t\t\tctx.Params = params\n")
 	b.WriteString("\t\t}\n")
+	b.WriteString("\t\ttarget.ShatterAdapterReset()\n")
 	b.WriteString("\t\tthrown := harness.SafeCall(func() {\n")
 	fmt.Fprintf(&b, "\t\t\ttarget.%s(ctx)\n", function)
 	b.WriteString("\t\t})\n")
 	b.WriteString("\t\tresp.ThrownError = thrown\n")
+	writeAdapterRecorderDrain(&b)
 	b.WriteString("\t\tresult := recorder.Result()\n")
 	b.WriteString("\t\tdefer result.Body.Close()\n")
 	b.WriteString("\t\tpayload, err := json.Marshal(struct {\n")

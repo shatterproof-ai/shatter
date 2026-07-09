@@ -36,7 +36,9 @@ use std::time::Duration;
 use shatter_core::frontend::{Frontend, FrontendConfig};
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult};
 use shatter_core::planner_consumer::fetch_planner_seeds;
-use shatter_core::protocol::{Command as ProtoCommand, FunctionAnalysis, ResponseResult};
+use shatter_core::protocol::{
+    Command as ProtoCommand, FunctionAnalysis, InvocationModel, ResponseResult,
+};
 use shatter_core::sym_expr::SymExpr;
 
 // ---------------------------------------------------------------------------
@@ -152,6 +154,48 @@ async fn analyze_function(
             panic!("analyze error ({code:?}): {message}")
         }
         other => panic!("expected Analyze response, got: {other:?}"),
+    }
+}
+
+/// Execute an adapter-owned target once through the protocol Execute path and
+/// return the resulting `ExecuteResult`. The Go frontend resolves the adapter
+/// strategy from the analysis cached by a prior `analyze_function` call AND the
+/// `ExecutionProfile` on the Execute request (which selects the hook factory),
+/// so callers must analyze the target first and name the adapter here. Mirrors
+/// `execute_adapter_owned` in e2e_concolic.rs (str-1qd5i / str-26fhi).
+async fn execute_adapter_owned(
+    frontend: &mut Frontend,
+    function: &str,
+    adapter_id: &str,
+    inputs: Vec<serde_json::Value>,
+) -> shatter_core::protocol::ExecuteResult {
+    use shatter_core::protocol::{ExecutionAdapter, ExecutionProfile};
+    let response = frontend
+        .send(ProtoCommand::Execute {
+            function: function.to_string(),
+            inputs,
+            mocks: vec![],
+            setup_context: None,
+            capture: true,
+            prepare_id: None,
+            execution_profile: Some(ExecutionProfile {
+                adapters: vec![ExecutionAdapter {
+                    id: adapter_id.to_string(),
+                    apply: None,
+                    options: None,
+                }],
+            }),
+            plan: None,
+        })
+        .await
+        .expect("adapter-owned execute transport failed");
+
+    match response.result {
+        ResponseResult::Execute(result) => *result,
+        ResponseResult::Error { code, message, .. } => {
+            panic!("adapter-owned execute returned error ({code:?}): {message}")
+        }
+        other => panic!("expected Execute response, got: {other:?}"),
     }
 }
 
@@ -1827,6 +1871,154 @@ async fn e2e_go_enum_value_domain_random_explorer_reaches_valid_arms() {
         hit_valid,
         "random explorer should reach a valid enum arm via enum_values; found: {valid_arms:?}"
     );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test: net/http HandlerFunc adapter reports real instrumentation (str-1qd5i).
+//
+// MethodBranchHandler(w, r) branches on the request method:
+//   GET  -> 200, body "listed"
+//   POST -> 201, body "created"
+//
+// The handler is analyzed as an adapter target (go/http-handler): its real
+// (http.ResponseWriter, *http.Request) params are replaced by the synthetic
+// method/path/headers/body slots, and every Execute runs through the adapter
+// launcher's httptest harness rather than the direct wrapper path.
+//
+// Before str-1qd5i that launcher drove the handler but returned empty
+// instrumentation fields by construction (protocol/adapter.go
+// ExecuteAdapterOwned), so the concolic pipeline saw no branch_path /
+// lines_executed for handler adapters. This is the full-pipeline proof that the
+// launcher now instruments the target and propagates coverage: driving the two
+// method arms yields non-empty, method-dependent lines_executed reaching the
+// Rust core. It complements the Go-side unit test
+// (TestExecuteAdapterViaLauncher_HTTPHandlerReportsCoverage) by exercising the
+// analyze -> instrument -> execute -> orchestrator path across the subprocess
+// protocol boundary.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_http_handler_adapter_reports_coverage() {
+    let file = repo_examples_go_dir()
+        .join("http-handler-coverage")
+        .join("handler.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("http-handler-coverage").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "MethodBranchHandler").await;
+    match &analysis.invocation_model {
+        InvocationModel::Adapter {
+            adapter_id,
+            synthetic_params,
+            ..
+        } => {
+            assert_eq!(
+                adapter_id, "go/http-handler",
+                "MethodBranchHandler should route to the net/http handler adapter"
+            );
+            // Synthetic params (method/path/headers/body) live on the invocation
+            // model, not on FunctionAnalysis.params (which keeps the raw handler
+            // signature).
+            assert_eq!(
+                synthetic_params.len(),
+                4,
+                "http-handler adapter exposes 4 synthetic params (method/path/headers/body); got {}",
+                synthetic_params.len()
+            );
+        }
+        other => panic!("MethodBranchHandler should analyze as an adapter target; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "MethodBranchHandler").await;
+
+    // Params are [method, path, headers, body]; drive each method arm once.
+    let get = execute_adapter_owned(
+        &mut frontend,
+        "MethodBranchHandler",
+        "go/http-handler",
+        vec![
+            serde_json::json!("GET"),
+            serde_json::json!("/items"),
+            serde_json::json!({}),
+            serde_json::json!(""),
+        ],
+    )
+    .await;
+    assert!(
+        get.thrown_error.is_none(),
+        "GET execute errored: {:?}",
+        get.thrown_error
+    );
+
+    let post = execute_adapter_owned(
+        &mut frontend,
+        "MethodBranchHandler",
+        "go/http-handler",
+        vec![
+            serde_json::json!("POST"),
+            serde_json::json!("/items"),
+            serde_json::json!({}),
+            serde_json::json!(""),
+        ],
+    )
+    .await;
+    assert!(
+        post.thrown_error.is_none(),
+        "POST execute errored: {:?}",
+        post.thrown_error
+    );
+
+    // Core assertion: the adapter launcher now threads real instrumentation
+    // through the protocol. Before str-1qd5i both fields were empty by
+    // construction (ExecuteAdapterOwned), so the concolic pipeline saw no
+    // coverage for handler adapters.
+    assert!(
+        !get.lines_executed.is_empty(),
+        "GET: adapter-owned lines_executed must be non-empty (str-1qd5i)"
+    );
+    assert!(
+        !post.lines_executed.is_empty(),
+        "POST: adapter-owned lines_executed must be non-empty (str-1qd5i)"
+    );
+    assert!(
+        !get.branch_path.is_empty(),
+        "GET: adapter-owned branch_path must be non-empty (str-1qd5i)"
+    );
+    assert_eq!(
+        get.path_constraints.len(),
+        get.branch_path.len(),
+        "path_constraints must mirror branch_path length, as on the direct path"
+    );
+
+    // The method-driven branch touches disjoint arms, so GET and POST must
+    // report different line coverage.
+    let get_lines: HashSet<u32> = get.lines_executed.iter().copied().collect();
+    let post_lines: HashSet<u32> = post.lines_executed.iter().copied().collect();
+    assert_ne!(
+        get_lines, post_lines,
+        "method-driven branch should drive distinct line coverage; GET={get_lines:?} POST={post_lines:?}"
+    );
+
+    // Both method arms are observed end-to-end: the httptest response comes back
+    // as the handler's return value (200 for GET, 201 for POST).
+    let status_of = |result: &shatter_core::protocol::ExecuteResult| -> Option<i64> {
+        result
+            .return_value
+            .as_ref()
+            .and_then(|v| v.get("status"))
+            .and_then(serde_json::Value::as_i64)
+    };
+    assert_eq!(status_of(&get), Some(200), "GET should return HTTP 200");
+    assert_eq!(status_of(&post), Some(201), "POST should return HTTP 201");
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
