@@ -1015,10 +1015,18 @@ async fn fetch_planner_extra_seeds(
                 bundle.plans.len(),
                 bundle.unsatisfied.len(),
             );
-            let selected_plan = bundle.plans.iter().find_map(|plan| {
-                shatter_core::planner_consumer::materialize_seed_for_plan(plan, &func.params)
-                    .map(|_| plan.clone())
-            });
+            // str-ozjv: for method targets the receiver-construction plan must
+            // be threaded as the default execute plan even when its method-
+            // argument seed cannot be fully materialized (an unsatisfiable
+            // method parameter yields a receiver-only fallback plan whose
+            // `argument_plans` is empty). The prior `find_map(materialize_seed_
+            // for_plan)` selection dropped such plans — losing the constructor
+            // input prefix so generated method args leaked into the wrapper's
+            // constructor-arg slots (`json: cannot unmarshal object into Go
+            // value of type string`). `select_execute_plan` prefers the
+            // receiver plan, mirroring the scan path's selection.
+            let selected_plan =
+                shatter_core::planner_consumer::select_execute_plan(&bundle.plans, &func.params);
             match selected_plan {
                 Some(plan) => {
                     let seeds =

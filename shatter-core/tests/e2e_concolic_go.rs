@@ -1312,6 +1312,133 @@ async fn e2e_go_error_param_classify() {
 }
 
 // ---------------------------------------------------------------------------
+// Test: parameterized constructor with PRIMITIVE arguments (str-ozjv).
+//
+// (*Matcher).Score(x int) string is constructed by
+// NewMatcher(label string, weight float64, timeout time.Duration). The Go
+// wrapper decodes each constructor argument from the JSON input prefix. When
+// the planner materializes those prefix slots as aggregate (`{}`) or null
+// values instead of primitive JSON zero values, the wrapper's json.Unmarshal
+// fails before the method body runs, e.g.:
+//
+//   param _shatterCtorArg1: json: cannot unmarshal object into Go value of type float64
+//
+// This test pins the full analyze -> plan -> materialize-prefix -> wrapper
+// decode -> execute pipeline: the primitive constructor prefix must decode and
+// the receiver method body must run.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_primitive_constructor_prefix_decodes() {
+    let file = repo_examples_go_dir()
+        .join("primitive-constructor")
+        .join("matcher.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("primitive-constructor").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "Score").await;
+    assert_eq!(analysis.params.len(), 1, "(*Matcher).Score takes 1 param");
+
+    instrument_function(&mut frontend, &file_str, "Score").await;
+
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    let execute_plan = bundle
+        .plans
+        .into_iter()
+        .find(|p| {
+            p.receiver_kind.starts_with("constructor:")
+                && !p.constructor_arg_plans.is_empty()
+                && p.argument_plans.len() == analysis.params.len()
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "PLANNER GAP: planner returned no constructor receiver plan with args for {target_id}; \
+                 unsatisfied={:?}",
+                bundle.unsatisfied
+            )
+        });
+    // The three primitive constructor arguments must all consume input-prefix
+    // slots with primitive type hints (none skipped, none aggregate-shaped).
+    let hints: Vec<&str> = execute_plan
+        .constructor_arg_plans
+        .iter()
+        .map(|vp| vp.type_hint.as_str())
+        .collect();
+    assert_eq!(
+        hints,
+        vec!["string", "float64", "time.Duration"],
+        "constructor arg plans should carry primitive type hints; plan={execute_plan:?}"
+    );
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        default_execute_plan: Some(execute_plan),
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-1)]];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        &analysis.name,
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    assert_no_unknown_receiver_kind(&result, "(*Matcher).Score");
+
+    // No execution may fail decoding a primitive constructor-prefix slot into
+    // its Go type. This is the str-ozjv regression: an aggregate/null prefix
+    // value cannot json.Unmarshal into string / float64 / time.Duration.
+    for exec in &result.executions {
+        if let Some(ref err) = exec.thrown_error {
+            assert!(
+                !err.message.contains("cannot unmarshal")
+                    || !err.message.contains("_shatterCtorArg"),
+                "str-ozjv regression: primitive constructor-prefix slot failed to decode; \
+                 thrown_error={:?}",
+                err.message
+            );
+        }
+    }
+
+    // The constructor must actually succeed and the method body must run: with
+    // all-zero constructor state (label="", weight=0, timeout=0) and seeded x,
+    // Score returns "positive" (x>0) and "base" (x<=0).
+    let return_values = return_value_set(&result);
+    for expected in ["\"positive\"", "\"base\""] {
+        assert!(
+            return_values.contains(expected),
+            "constructor should succeed and method body reach branch returning {expected}; \
+             found: {return_values:?}"
+        );
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
 // str-e41w: direct *http.Request params take a symbolic JSON body.
 //
 // ClassifyRequest(r *http.Request) branches on the DECODED body: parse
