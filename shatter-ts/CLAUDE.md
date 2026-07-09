@@ -104,18 +104,39 @@ done from the **target source file's** own `node_modules` chain (not just the
 CLI project root) so pnpm workspaces / monorepo sub-packages
 (`web/node_modules/.pnpm/react@…`) are covered; a root-only resolve misses them.
 
+`NATIVE_REACT_ALIAS_NAMES` is derived from `shimRegistry`'s keys (react-shim.ts)
+so a new shim entry is automatically eligible for native aliasing — do not
+maintain a second hand-written list.
+
 Notes: (1) the Module class + cache are obtained from the native require itself,
 not an ESM import, because jest replaces the imported module registry — the
 native-require path is only exercised in a real `node` subprocess (see the
 str-rzsej test, which bundles the executor via esbuild and spawns node; jest
 cannot exercise it in-process). (2) The shim is forced onto dependencies
 regardless of the React major they were compiled against — exploration fidelity,
-not React-runtime fidelity, is the goal. (3) When forcing the shim onto
-dependencies, the shim must cover the stable hook surface those deps call — this
-change added `useSyncExternalStore` (zustand v5), `useDeferredValue`,
-`useTransition`, `useInsertionEffect`, `useImperativeHandle`, `useDebugValue`.
-No protocol/wire change — JSON output shape is unchanged, so no parity-matrix
-update is required.
+not React-runtime fidelity, is the goal. (3) Because the shim now *replaces*
+real React for **every** react-family require (not just hook-using components),
+it must cover the surface any loaded dependency touches at module-load or
+render time — not only hooks. This change added the hook surface
+(`useSyncExternalStore` for zustand v5, `useDeferredValue`, `useTransition`,
+`useInsertionEffect`, `useImperativeHandle`, `useDebugValue`) **and** the
+non-hook surface class/Suspense/lazy dependencies rely on (`Component`,
+`PureComponent`, `Suspense`, `StrictMode`, `lazy`, `cloneElement`,
+`isValidElement`, `createRef`, `startTransition`, `version`); omitting these
+turns a previously-working class-component dependency into a `not a constructor`
+crash. (4) Seeding never overwrites an already-installed alias and only marks a
+resolution base "done" once react actually resolved from it, so a project-root
+seed that finds nothing in a monorepo does not block the later per-file seed;
+a base where nothing resolved is logged at `debug`. No protocol/wire change —
+JSON output shape is unchanged, so no parity-matrix update is required.
+
+**Known limitation.** Seeding keys off the *target file's* own react resolution.
+A dependency with its own **nested/duplicate** react copy (pnpm version-conflict
+layout: `web/node_modules/.pnpm/react@18…` vs `…/react@19…`) resolves that
+transitive `require('react')` to a *different* filename that was never seeded, so
+the null-dispatcher crash can still occur for that dependency. Solving it fully
+would require patching `Module._load` globally (out of scope here). Tracked as
+follow-up `str-bt7sm`.
 
 ## Feature Capability Parity
 

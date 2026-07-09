@@ -719,12 +719,12 @@ function installNativeReactAliasesVia(
   dedupeKey: string,
 ): void {
   if (reactAliasedBases.has(dedupeKey)) return;
-  reactAliasedBases.add(dedupeKey);
 
   const nativeModule = baseRequire("module") as { Module: NativeModuleApi };
   const ModuleApi = nativeModule.Module;
   const moduleCache = ModuleApi._cache;
 
+  let resolvedAny = false;
   for (const specifier of NATIVE_REACT_ALIAS_NAMES) {
     const shim = getReactShim(specifier);
     if (!shim) continue;
@@ -735,6 +735,7 @@ function installNativeReactAliasesVia(
       // Package not installed relative to this base — nothing to alias.
       continue;
     }
+    resolvedAny = true;
     // Idempotent across bases that resolve to the same file.
     if (moduleCache[resolved]?.[SHATTER_REACT_ALIAS]) continue;
 
@@ -744,6 +745,25 @@ function installNativeReactAliasesVia(
     aliasModule.exports = shim;
     aliasModule[SHATTER_REACT_ALIAS] = true;
     moduleCache[resolved] = aliasModule;
+  }
+
+  // Only mark this base processed once at least one react-family specifier
+  // actually resolved. If none did, we leave the key absent so a later call
+  // from a base that *can* reach react (e.g. the per-file seeding after the
+  // project-root seeding found nothing in a monorepo) is not permanently
+  // blocked from installing the aliases.
+  if (resolvedAny) {
+    reactAliasedBases.add(dedupeKey);
+  } else {
+    // Expected for non-react targets and for the project root in a workspace
+    // where react lives only in a sub-package (per-file seeding covers it), so
+    // this is debug- rather than warn-level to avoid drowning real signal —
+    // but it is logged so a genuine "react unreachable, components will hit
+    // null-dispatcher crashes" case is diagnosable with verbose logging.
+    logger.debug(
+      "react native-alias seeding: no react-family module resolved from %s",
+      dedupeKey,
+    );
   }
 }
 

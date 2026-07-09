@@ -27,25 +27,9 @@ export const REACT_MODULE_NAMES = new Set([
   "react/jsx-dev-runtime",
 ]);
 
-/**
- * React-family specifiers aliased onto the Shatter shim in Node's *native*
- * module cache (see `installNativeReactAliases` in `executor.ts`) so that
- * dependencies loaded from `node_modules` via `createRequire` receive the shim
- * on their transitive `require('react')` &c. instead of the project's real
- * React (whose hook dispatcher is null outside a renderer → null-dispatcher
- * crashes).
- *
- * This is a superset of `REACT_MODULE_NAMES`: the latter governs only in-sandbox
- * target/instrumented-code resolution (JSX runtime), whereas native aliasing
- * also covers `react-dom` / `react-dom/client` which dependencies pull in.
- */
-export const NATIVE_REACT_ALIAS_NAMES: readonly string[] = [
-  "react",
-  "react-dom",
-  "react-dom/client",
-  "react/jsx-runtime",
-  "react/jsx-dev-runtime",
-];
+// `NATIVE_REACT_ALIAS_NAMES` is derived from `shimRegistry` further down, so a
+// new shim entry is automatically covered by native aliasing (single source of
+// truth). See the export just after `shimRegistry`.
 
 // ── JSX element construction ────────────────────────────────────────
 
@@ -192,6 +176,92 @@ function memo(component: unknown): unknown {
 
 const Fragment = Symbol.for("react.fragment");
 
+// ── Class components & element utilities ────────────────────────────
+//
+// The native-alias fix forces this shim onto *all* react-family requires,
+// including dependencies that never touched the hook-dispatcher bug — e.g. ones
+// built on class components, Suspense, or lazy(). Those previously resolved to
+// real React and worked. Without the surface below they would newly crash
+// ("X is not a constructor", "Suspense is undefined"). These are deterministic,
+// render-context-free stand-ins — enough for such dependencies to load and for
+// the concolic engine to introspect the resulting element tree.
+
+/**
+ * Minimal class-component base. A subclass supplies `render()`; the concolic
+ * engine constructs the instance and reads `render()`. `setState`/`forceUpdate`
+ * are no-ops — the sandbox does not schedule re-renders.
+ */
+class Component<P = Record<string, unknown>, S = unknown> {
+  props: P;
+  context: unknown;
+  state: S | null = null;
+  constructor(props: P, context?: unknown) {
+    this.props = props;
+    this.context = context;
+  }
+  setState(): void {}
+  forceUpdate(): void {}
+  render(): unknown {
+    return null;
+  }
+}
+
+/** Identical to `Component` in the sandbox — there is no re-render to skip. */
+class PureComponent<P = Record<string, unknown>, S = unknown> extends Component<
+  P,
+  S
+> {}
+
+/** Pass-through wrapper component — renders its children (no fallback/boundary). */
+const Suspense = (props: { children?: unknown }): unknown => props?.children;
+
+/** Pass-through wrapper component — renders its children (no dev-mode checks). */
+const StrictMode = (props: { children?: unknown }): unknown => props?.children;
+
+/**
+ * Renders nothing. The real `lazy` resolves a dynamic `import()` asynchronously,
+ * which the synchronous sandbox cannot await; a null-rendering component is
+ * enough for a dependency's module top level to call `lazy()` without crashing.
+ */
+function lazy(_factory: unknown): () => unknown {
+  return () => null;
+}
+
+/** Clone a shim element, shallow-merging props and overriding children. */
+function cloneElement(
+  element: ReactElement,
+  props?: Record<string, unknown> | null,
+  ...children: unknown[]
+): ReactElement {
+  const merged = { ...element.props, ...props };
+  if (children.length === 1) {
+    merged.children = children[0];
+  } else if (children.length > 1) {
+    merged.children = children;
+  }
+  const key = (props?.["key"] as string | undefined) ?? element.key ?? undefined;
+  return createElementObject(element.type, merged, key);
+}
+
+/** True for objects produced by this shim's `createElement` / `jsx`. */
+function isValidElement(object: unknown): boolean {
+  return (
+    object != null &&
+    typeof object === "object" &&
+    (object as { $$typeof?: symbol }).$$typeof === REACT_ELEMENT_TYPE
+  );
+}
+
+/** React.createRef — a mutable ref container initialized to null. */
+function createRef<T = unknown>(): { current: T | null } {
+  return { current: null };
+}
+
+/** Runs the callback synchronously (no transition scheduling). */
+function startTransition(callback: () => void): void {
+  if (typeof callback === "function") callback();
+}
+
 // ── Assembled module mocks ──────────────────────────────────────────
 
 const reactModule = {
@@ -212,9 +282,19 @@ const reactModule = {
   useTransition,
   createContext,
   createElement,
+  cloneElement,
+  isValidElement,
+  createRef,
+  startTransition,
+  Component,
+  PureComponent,
+  Suspense,
+  StrictMode,
+  lazy,
   Fragment,
   forwardRef,
   memo,
+  version: "0.0.0-shatter-shim",
   Children: {
     map: (children: unknown, fn: (child: unknown, index: number) => unknown) =>
       Array.isArray(children) ? children.map(fn) : children != null ? [fn(children, 0)] : [],
@@ -277,6 +357,27 @@ const shimRegistry: Record<string, Record<string, unknown>> = {
   "react-dom": reactDomModule,
   "react-dom/client": reactDomClientModule,
 };
+
+/**
+ * React-family specifiers aliased onto the Shatter shim in Node's *native*
+ * module cache (see `installNativeReactAliases` in `executor.ts`) so that
+ * dependencies loaded from `node_modules` via `createRequire` receive the shim
+ * on their transitive `require('react')` &c. instead of the project's real
+ * React (whose hook dispatcher is null outside a renderer → null-dispatcher
+ * crashes).
+ *
+ * Derived directly from `shimRegistry` so the two never drift: adding a shim
+ * entry automatically makes that specifier eligible for native aliasing. This
+ * is a superset of `REACT_MODULE_NAMES` (which governs only in-sandbox
+ * target/instrumented-code resolution): native aliasing also covers `react-dom`
+ * / `react-dom/client` that dependencies pull in.
+ *
+ * Known gap: `react-dom/server` and `react-dom/test-utils` are not shimmed; a
+ * dependency that transitively requires them will still get the real package
+ * (or fail to resolve). Add a `shimRegistry` entry if a target/dep needs one.
+ */
+export const NATIVE_REACT_ALIAS_NAMES: readonly string[] =
+  Object.keys(shimRegistry);
 
 /**
  * Returns the mock module for the given React module name, or undefined

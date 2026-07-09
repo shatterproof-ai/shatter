@@ -1412,13 +1412,29 @@ const path = require("path");
 exports.check = function () { return fs.existsSync(__filename) && path.basename(__filename) === "index.js"; };
 `,
     );
+    // A dependency built on a *class component*. The react stand-in above has no
+    // Component export, so `new React.Component()` throws unless the transitive
+    // require('react') is routed to Shatter's shim (which now exports Component).
+    // This is the end-to-end guard for the "shim forced onto all react-family
+    // requires must cover the non-hook surface" regression (str-rzsej review).
+    writePkg(
+      "class-widget",
+      `const React = require("react");
+class Box extends React.Component {
+  render() { return "box:" + this.props.label; }
+}
+exports.renderBox = function (label) { return new Box({ label }).render(); };
+`,
+    );
 
     fs.writeFileSync(
       path.join(webDir, "widget-host.tsx"),
       `import { useWidgetLabel } from "helper-widget";
 import { check } from "fs-user";
+import { renderBox } from "class-widget";
 export function WidgetHost(props: { seed: string }): string { return useWidgetLabel(props.seed); }
 export function NativeFsHost(): boolean { return check(); }
+export function ClassHost(props: { label: string }): string { return renderBox(props.label); }
 `,
     );
 
@@ -1478,6 +1494,14 @@ const [, , projectDir, targetFile, fnName, argsJson] = process.argv;
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe(true);
   });
+
+  it("routes a class-component dependency's require('react') to the shim (Component exists)", () => {
+    const result = runInNode("ClassHost", [{ label: "z" }]);
+    // The react stand-in has no Component; a pass proves the transitive
+    // require('react') hit the shim AND the shim exports the class surface.
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("box:z");
+  });
 });
 
 describe("react-family shims (str-rzsej)", () => {
@@ -1522,6 +1546,94 @@ describe("react-family shims (str-rzsej)", () => {
     for (const name of NATIVE_REACT_ALIAS_NAMES) {
       expect(getReactShim(name)).toBeDefined();
     }
+  });
+
+  // The native-alias fix forces the shim onto ALL react-family requires, so
+  // dependencies that only use class components / Suspense / lazy — which
+  // previously resolved to real React and worked without a render context —
+  // must not newly crash on missing exports.
+  it("exposes class-component & non-hook React surface (regression guard)", () => {
+    const react = getReactShim("react") as Record<string, unknown>;
+    // Class components: constructible, render()/setState present.
+    const Component = react.Component as new (props: unknown) => {
+      props: unknown;
+      render(): unknown;
+      setState(s: unknown): void;
+    };
+    expect(typeof Component).toBe("function");
+    class Widget extends Component {
+      override render(): string {
+        return "rendered";
+      }
+    }
+    const inst = new Widget({ a: 1 });
+    expect(inst.props).toEqual({ a: 1 });
+    expect(inst.render()).toBe("rendered");
+    expect(() => inst.setState({})).not.toThrow();
+    expect(typeof react.PureComponent).toBe("function");
+
+    // Suspense / StrictMode: pass-through wrapper components.
+    const Suspense = react.Suspense as (p: { children?: unknown }) => unknown;
+    expect(Suspense({ children: "kids" })).toBe("kids");
+    const StrictMode = react.StrictMode as (p: {
+      children?: unknown;
+    }) => unknown;
+    expect(StrictMode({ children: "kids" })).toBe("kids");
+
+    // lazy: returns a component that renders without throwing.
+    const lazy = react.lazy as (f: unknown) => () => unknown;
+    const Lazy = lazy(() => Promise.resolve({ default: Widget }));
+    expect(typeof Lazy).toBe("function");
+    expect(() => Lazy()).not.toThrow();
+
+    // startTransition / createRef.
+    let ran = false;
+    (react.startTransition as (cb: () => void) => void)(() => {
+      ran = true;
+    });
+    expect(ran).toBe(true);
+    expect((react.createRef as () => { current: unknown })()).toEqual({
+      current: null,
+    });
+    expect(react.version).toBe("0.0.0-shatter-shim");
+  });
+
+  it("cloneElement / isValidElement operate on shim elements", () => {
+    const react = getReactShim("react") as Record<string, unknown>;
+    const createElement = react.createElement as (
+      type: unknown,
+      props: Record<string, unknown> | null,
+      ...children: unknown[]
+    ) => Record<string, unknown>;
+    const isValidElement = react.isValidElement as (o: unknown) => boolean;
+    const cloneElement = react.cloneElement as (
+      el: unknown,
+      props?: Record<string, unknown> | null,
+      ...children: unknown[]
+    ) => Record<string, unknown>;
+
+    const el = createElement("div", { id: "a" }, "child");
+    expect(isValidElement(el)).toBe(true);
+    expect(isValidElement({})).toBe(false);
+    expect(isValidElement(null)).toBe(false);
+
+    const cloned = cloneElement(el, { id: "b" }, "newchild");
+    expect(isValidElement(cloned)).toBe(true);
+    const props = cloned.props as Record<string, unknown>;
+    expect(props.id).toBe("b");
+    expect(props.children).toBe("newchild");
+    // Original is untouched.
+    expect((el.props as Record<string, unknown>).id).toBe("a");
+  });
+
+  it("NATIVE_REACT_ALIAS_NAMES is derived from the shim registry (no drift)", () => {
+    // Every aliased name resolves to a shim, and every shimmed module is
+    // aliased — the two are the same set (single source of truth).
+    for (const name of NATIVE_REACT_ALIAS_NAMES) {
+      expect(getReactShim(name)).toBeDefined();
+    }
+    // react-dom is a shimmed module, so it must be in the alias list.
+    expect(NATIVE_REACT_ALIAS_NAMES).toContain("react-dom");
   });
 });
 
