@@ -189,6 +189,41 @@ Authoritative matrix entry: `protocol/parity-matrix.yaml`
 `shared_wire_types.no_target_reason.frontends.typescript:
 implemented_via_cli_classifier`.
 
+## Enum Value-Domain Contract (str-knf0v)
+
+The analyzer emits the optional `enum_values` field on a param's TypeInfo
+`union` variant when the declared type resolves to a concrete value domain,
+matching Go's named-type → const-set contract (`enumValuesFromNamed` in
+`shatter-go/protocol/analyzer.go`). Fires for:
+
+1. A TS `enum` declaration — string and numeric enums. Member **values**, not
+   names; numeric enums forward the number only (`enum E { A = 1 }` → `[1]`,
+   never `"A"` — TypeScript's runtime reverse mappings never appear in the
+   param's union type).
+2. A type alias whose definition is a union of string/number/boolean literal
+   types (`type Mode = "fast" | "slow"`), including nested alias resolution
+   (the checker flattens these for free).
+
+Wire shape mirrors Go: a `union` with the distinct base primitive variant(s)
+(`str` / `float` / `bool`) plus `enum_values`, capped at `MAX_ENUM_VALUES`
+(64) with one WARN-level `logger.warn` line per truncated type. Unresolvable
+nesting (circular aliases, generics, conditional types) or any non-literal
+member falls back to a plain union with no `enum_values` — never guessed.
+
+Implementation: `literalEnumDomain` in `src/analyzer.ts`, called from both
+`convertType` (single-member enum literals, checked **before** the
+primitive-literal flag branches) and `convertUnionType` (multi-member enums and
+literal-union aliases, after the nullable and `true|false`→bool short-circuits).
+The core consumer is `generate_union` in `shatter-core/src/input_gen.rs` (85%
+valid-member draw, 15% off-domain probe) — no core changes. Parity: `implemented`
+on `protocol/parity-matrix.yaml` `type_info_enum_values`; Rust remains the only
+`enum-value-domain-partial` divergence. Tests: `src/analyzer.test.ts` +
+`src/protocol.test.ts` (emitted domains) and
+`e2e_ts_enum_value_domain_reaches_all_arms` in
+`shatter-core/tests/e2e_concolic.rs`. Note the e2e reads `raw_results`, not
+`result.executions`: TS `switch` records case *lines* but emits no `branch_path`
+decisions, so path-dedup collapses switch executions to one entry.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

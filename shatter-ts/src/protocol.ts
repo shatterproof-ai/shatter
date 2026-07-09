@@ -463,9 +463,9 @@ export type TypeInfo =
       kind: "union";
       variants: TypeInfo[];
       // str-pjlc1: concrete value domain for named enum-like types (Go const
-      // sets, TS string-literal unions, Rust fieldless enums). When present the
-      // core draws valid members directly. TS frontend emission is a tracked
-      // follow-up; the field exists here for wire/round-trip parity.
+      // sets, TS string-literal unions and enum declarations, Rust fieldless
+      // enums). When present the core draws valid members directly. Go and TS
+      // (str-knf0v) emit it from the analyzer; Rust still round-trips only.
       enum_values?: (string | number | boolean)[];
     }
   | { kind: "nullable"; inner: TypeInfo }

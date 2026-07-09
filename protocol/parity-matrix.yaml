@@ -74,12 +74,16 @@ shared_wire_types:
       rejection paths stay covered. The field is additive and omitted for plain
       type unions, so existing consumers are byte-identical. Go emits it for
       named string/int types whose defining-package scope holds constants of
-      that exact type (gqlgen enums, iota int enums). TypeScript and Rust carry
-      the field on the wire for round-trip parity but do not yet emit it (their
-      enum/literal-union declarations still produce plain unions); see
+      that exact type (gqlgen enums, iota int enums). TypeScript emits it
+      (str-knf0v) for parameters whose declared type resolves to a TS `enum`
+      declaration (string and numeric enums, forward member values only) or a
+      literal-union alias (`type Mode = "fast" | "slow"`), as a union with the
+      base primitive variant(s) plus enum_values, capped at 64 with a warn.
+      Rust carries the field on the wire for round-trip parity but does not yet
+      emit it (fieldless enums still produce plain unions); see
       allowed_divergences `enum-value-domain-partial`.
     frontends:
-      typescript: wire_only
+      typescript: implemented
       go: implemented
       rust: wire_only
 
@@ -800,29 +804,28 @@ allowed_divergences:
     description: >
       The optional `enum_values` field on the TypeInfo `union` variant
       (str-pjlc1) carries a concrete value domain for named enum-like types.
-      Go implements extraction: for a param whose type is a named string or
-      integer type, the analyzer enumerates the constants of that exact type
-      from the defining package's type-checked scope and emits them (capped at
-      64, warn-on-truncate). TypeScript and Rust accept and round-trip the
-      field on the wire but do not yet emit it — TS string-literal-union and
-      enum declarations, and Rust fieldless enums, still produce plain unions
-      with no value domain. This is a value-coverage divergence (Go reaches the
-      bodies of enum-guarded functions; TS/Rust rely on generic candidates),
-      not a wire-shape divergence.
-    affected_frontends: [typescript, rust]
+      Go and TypeScript implement extraction: Go enumerates the constants of a
+      param's named string/int type from the defining package's type-checked
+      scope; TypeScript (str-knf0v) emits enum_values for params whose declared
+      type resolves to a TS `enum` declaration or a string/number/boolean
+      literal-union alias. Both cap at 64 with a warn-on-truncate. Rust accepts
+      and round-trips the field on the wire but does not yet emit it — Rust
+      fieldless enums still produce plain unions with no value domain. This is a
+      value-coverage divergence (Go/TS reach the bodies of enum-guarded
+      functions; Rust relies on generic candidates), not a wire-shape
+      divergence.
+    affected_frontends: [rust]
     affected_commands: [analyze]
     status: tracked
     owner: Ketan Gangatirkar
-    tracking_issue: str-knf0v (TypeScript), str-2nfoe (Rust)
+    tracking_issue: str-2nfoe (Rust)
     resolution_condition: >
-      The TypeScript analyzer emits enum_values for enum declarations and
-      string/numeric literal-union aliases, and the Rust analyzer emits
-      enum_values for fieldless enums, matching Go's named-type → value-domain
-      contract.
+      The Rust analyzer emits enum_values for fieldless enums, matching Go's and
+      TypeScript's named-type → value-domain contract.
     resolution: >
-      Extend each frontend's analyzer to populate enum_values from its native
-      enum/literal-union representation, reusing the same union+enum_values
-      wire shape Go already emits. Deferred to per-frontend follow-ups.
+      Extend the Rust analyzer to populate enum_values from its native fieldless
+      enum representation, reusing the same union+enum_values wire shape Go and
+      TypeScript already emit. Deferred to the str-2nfoe follow-up.
 
   - id: go-side-effects-partial
     description: >
