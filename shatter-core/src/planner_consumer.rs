@@ -178,6 +178,40 @@ pub fn materialize_seed_for_plan(
     Some(values)
 }
 
+/// Select the `InvocationPlan` to install as a target's default execute plan.
+///
+/// A receiver-construction plan (non-empty `receiver_kind`, e.g.
+/// `constructor:NewThing`) is preferred whenever the frontend emits one, even
+/// when its method-argument seed cannot be fully materialized. Method targets
+/// with an unsatisfiable parameter yield a receiver-only fallback plan whose
+/// `argument_plans` is empty but whose `constructor_arg_plans` still describes
+/// the constructor input prefix. That prefix MUST be threaded to
+/// [`execute_inputs_for_plan`]; otherwise no prefix is materialized at execute
+/// time and generated method arguments leak into the wrapper's constructor-arg
+/// slots, so the wrapper's positional decode fails before the target method
+/// runs (`json: cannot unmarshal object into Go value of type string`,
+/// str-ozjv).
+///
+/// Free-function targets carry an empty `receiver_kind`, so they fall through
+/// to the historical behavior: the first plan whose seed fully materializes.
+///
+/// Selecting a plan whose `argument_plans` do not line up with `param_infos`
+/// is safe for execution: [`execute_inputs_for_plan`] derives the method-arg
+/// arity from `param_infos` (not from the plan) and only consumes the plan's
+/// `constructor_arg_plans` for the prefix.
+#[must_use]
+pub fn select_execute_plan(
+    plans: &[InvocationPlan],
+    param_infos: &[ParamInfo],
+) -> Option<InvocationPlan> {
+    if let Some(receiver_plan) = plans.iter().find(|plan| !plan.receiver_kind.is_empty()) {
+        return Some(receiver_plan.clone());
+    }
+    plans
+        .iter()
+        .find_map(|plan| materialize_seed_for_plan(plan, param_infos).map(|_| plan.clone()))
+}
+
 /// Materialize all seeds that can safely execute under `selected_plan`.
 ///
 /// The explorer/orchestrator currently install a single default execute plan
@@ -626,6 +660,107 @@ mod tests {
             literal: Some(json!("runtime")),
             type_hint: type_hint.to_string(),
         }
+    }
+
+    fn ctor_zero_plan(param_index: u32, param_name: &str, type_hint: &str) -> ValuePlan {
+        ValuePlan {
+            param_index,
+            param_name: param_name.to_string(),
+            kind: ValuePlanKind::Zero,
+            literal: None,
+            type_hint: type_hint.to_string(),
+        }
+    }
+
+    fn opaque_param(name: &str) -> ParamInfo {
+        ParamInfo {
+            name: name.to_string(),
+            typ: TypeInfo::Opaque {
+                label: "Aggregate".into(),
+                static_opacity: None,
+                medium_opacity: None,
+            },
+            type_name: None,
+        }
+    }
+
+    /// str-ozjv: a method whose parameter cannot be seeded still yields a
+    /// receiver-only construction plan (empty `argument_plans`) that carries
+    /// the primitive constructor input prefix. `select_execute_plan` must pick
+    /// it so the prefix is materialized; the prior explore selection —
+    /// `find_map(materialize_seed_for_plan)` — dropped it because
+    /// `argument_plans.len() != param count`, losing the constructor prefix and
+    /// leaking the method argument into the wrapper's constructor-arg slot
+    /// (`json: cannot unmarshal object into Go value of type string`).
+    #[test]
+    fn select_execute_plan_keeps_receiver_only_plan_with_primitive_ctor_prefix() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewMatcher".into(),
+            generic_type_args: vec![],
+            // Method parameter is unsatisfiable, so no argument plan is emitted.
+            argument_plans: vec![],
+            constructor_arg_plans: vec![
+                ctor_zero_plan(0, "label", "string"),
+                ctor_zero_plan(1, "weight", "float64"),
+                ctor_zero_plan(2, "timeout", "time.Duration"),
+            ],
+            priority: 0,
+            label: String::new(),
+        };
+        let params = vec![opaque_param("call")];
+
+        // Regression witness: the old selection dropped this plan because its
+        // per-argument seed cannot materialize against the method params.
+        assert!(
+            materialize_seed_for_plan(&plan, &params).is_none(),
+            "receiver-only plan has no fully-materializable method-arg seed",
+        );
+
+        // The fix: the receiver plan is still selected as the execute plan.
+        let selected = select_execute_plan(std::slice::from_ref(&plan), &params)
+            .expect("receiver-construction plan must be selected");
+        assert_eq!(selected.receiver_kind, "constructor:NewMatcher");
+
+        // And its primitive constructor prefix materializes to primitive JSON
+        // zero values — string "", float64 0.0, time.Duration 0 — not `{}`.
+        let planned = execute_inputs_for_plan(&[json!({})], &params, Some(&selected))
+            .expect("primitive constructor prefix must materialize");
+        assert_eq!(
+            &planned.inputs()[..3],
+            &[json!(""), json!(0.0), json!(0)],
+            "constructor prefix must be primitive zero values, got {:?}",
+            planned.inputs(),
+        );
+    }
+
+    /// A free-function target (empty `receiver_kind`) keeps the historical
+    /// behavior: the first plan whose seed fully materializes is selected.
+    #[test]
+    fn select_execute_plan_free_function_prefers_materializable_plan() {
+        let unmaterializable = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "a".into(),
+                kind: ValuePlanKind::Symbolic,
+                literal: None,
+                type_hint: String::new(),
+            }],
+            constructor_arg_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+        let good = InvocationPlan {
+            argument_plans: vec![literal_plan(0, "a", json!(7))],
+            priority: 1,
+            ..unmaterializable.clone()
+        };
+        let selected = select_execute_plan(&[unmaterializable, good.clone()], &[int_param("a")])
+            .expect("a materializable free-function plan must be selected");
+        assert_eq!(selected.argument_plans, good.argument_plans);
     }
 
     #[test]
@@ -1200,6 +1335,65 @@ mod tests {
                 prop_assert_eq!(&seeds[0][0], &Value::Null, "RuntimeValue slot must be null");
                 prop_assert_eq!(&seeds[0][1], &json!(literal_val), "Literal slot must keep its value");
             }
+
+            /// str-ozjv core invariant: whenever ANY plan carries a
+            /// receiver-construction kind, `select_execute_plan` returns the
+            /// FIRST such plan — never dropping it — even when every argument
+            /// seed is unsatisfiable (Random/Symbolic) so no seed materializes.
+            /// This is precisely the property whose absence let the constructor
+            /// input prefix leak: the old `find_map(materialize_seed_for_plan)`
+            /// selection dropped receiver plans whose method-arg seed could not
+            /// materialize. When no plan carries a receiver, the selection falls
+            /// back to a materializable plan that must be a member of the input.
+            #[test]
+            fn select_execute_plan_never_drops_receiver_plan(
+                plans in prop::collection::vec(arb_plan_with_optional_receiver(), 1..6),
+            ) {
+                let params = vec![int_param("p0")];
+                let selected = select_execute_plan(&plans, &params);
+                match plans.iter().find(|p| !p.receiver_kind.is_empty()) {
+                    Some(expected) => {
+                        let sel = selected
+                            .expect("a receiver plan must always be selected");
+                        prop_assert!(!sel.receiver_kind.is_empty(),
+                            "selected plan must carry a receiver kind");
+                        prop_assert_eq!(&sel, expected,
+                            "must select the FIRST receiver-construction plan");
+                    }
+                    None => {
+                        // No receiver plan: selection mirrors the historical
+                        // free-function behavior — the first materializable plan,
+                        // which must be a member of the input (or None).
+                        if let Some(sel) = &selected {
+                            prop_assert!(plans.iter().any(|p| p == sel),
+                                "selected free-function plan must be a member of the input");
+                        }
+                    }
+                }
+            }
+        }
+
+        /// A plan carrying either an empty or a constructor receiver kind, with
+        /// 0..2 argument slots whose value plans may be unsatisfiable. Drives
+        /// [`select_execute_plan_never_drops_receiver_plan`].
+        fn arb_plan_with_optional_receiver() -> impl Strategy<Value = InvocationPlan> {
+            (
+                any::<bool>(),
+                prop::collection::vec(arb_value_plan(0), 0..2),
+            )
+                .prop_map(|(has_receiver, args)| InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: if has_receiver {
+                        "constructor:NewThing".into()
+                    } else {
+                        String::new()
+                    },
+                    generic_type_args: vec![],
+                    argument_plans: args,
+                    constructor_arg_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                })
         }
     }
 }

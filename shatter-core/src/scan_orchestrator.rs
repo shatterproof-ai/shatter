@@ -5257,22 +5257,14 @@ async fn fetch_planner_seeds_for_scan(
                 );
             }
             let is_method = is_method_target_name(&analysis.name);
-            // Select the plan whose seeds we materialize. For methods prefer the
-            // receiver plan so seeds match the installed default_execute_plan;
-            // for free functions take the first materializable plan (mirrors
-            // explore's `find_map(materialize_seed_for_plan)`).
-            let selected = if is_method {
-                bundle
-                    .plans
-                    .iter()
-                    .find(|p| !p.receiver_kind.is_empty())
-                    .cloned()
-            } else {
-                bundle.plans.iter().find_map(|plan| {
-                    crate::planner_consumer::materialize_seed_for_plan(plan, &analysis.params)
-                        .map(|_| plan.clone())
-                })
-            };
+            // Select the plan whose seeds we materialize. For methods this
+            // prefers the receiver plan so seeds match the installed
+            // default_execute_plan; free functions take the first
+            // materializable plan. Shared with the explore path via
+            // `select_execute_plan` so the two planner consumers cannot drift
+            // (str-ozjv).
+            let selected =
+                crate::planner_consumer::select_execute_plan(&bundle.plans, &analysis.params);
             let seeds = match &selected {
                 Some(sel) => crate::planner_consumer::materialize_seeds_compatible_with_plan(
                     &bundle.plans,
