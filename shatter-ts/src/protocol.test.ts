@@ -1,4 +1,8 @@
+import * as path from "node:path";
 import type { TypeInfo } from "./protocol.js";
+import { analyzeFile } from "./analyzer.js";
+
+const fixtures = path.join(__dirname, "__fixtures__");
 
 // str-pjlc1: the shared TypeInfo union variant carries an optional
 // `enum_values` value domain (Go const sets today; TS string-literal-union
@@ -34,5 +38,21 @@ describe("TypeInfo union enum_values", () => {
       variants: [{ kind: "str" }, { kind: "int" }],
     };
     expect(JSON.stringify(ti)).not.toContain("enum_values");
+  });
+
+  // str-knf0v: the analyzer now EMITS enum_values (not just round-trips a
+  // hand-built value). Pin that the emitted TypeInfo survives a JSON wire trip
+  // with the value domain intact.
+  it("round-trips an analyzer-emitted enum_values domain", () => {
+    const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "classify");
+    const emitted = results[0]!.params[0]!.type;
+    expect(emitted).toEqual({
+      kind: "union",
+      variants: [{ kind: "str" }],
+      enum_values: ["RED", "GREEN", "BLUE"],
+    });
+    const decoded = JSON.parse(JSON.stringify(emitted)) as TypeInfo;
+    expect(decoded).toEqual(emitted);
+    expect(JSON.stringify(emitted)).toContain("enum_values");
   });
 });

@@ -11,6 +11,7 @@ import { refineIntegerParams } from "./integer-heuristic.js";
 import { refineParamShapesFromBody } from "./param-shape-inference.js";
 import { recognizeBrowserGlobals } from "./browser-globals-recognizer.js";
 import { recognizeReactHooks, REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
+import logger from "./logger.js";
 import type {
   FunctionAnalysis,
   ParamInfo,
@@ -619,6 +620,93 @@ function analyzeParameter(
 const MAX_TYPE_DEPTH = 32;
 
 /**
+ * Maximum number of enum member values carried in a union's `enum_values`
+ * domain before truncation. Mirrors Go's `maxEnumValues` (str-pjlc1) so the
+ * two frontends bound the wire payload identically; the core generator still
+ * probes off-domain values from `variants` regardless of the cap (str-knf0v).
+ */
+const MAX_ENUM_VALUES = 64;
+
+/**
+ * Best-effort human-readable label for an enum-like type, used only in the
+ * truncation warning. Prefers the alias name (`type Mode = …`), then the
+ * type's own symbol (an `enum` declaration), then the checker's rendering.
+ */
+function enumTypeLabel(type: ts.Type, checker: ts.TypeChecker): string {
+  return (
+    type.aliasSymbol?.getName() ??
+    type.getSymbol()?.getName() ??
+    checker.typeToString(type)
+  );
+}
+
+/**
+ * When every member of `members` is a string, number, or boolean *literal*
+ * type, collect the concrete values into an `enum_values` domain and return a
+ * `union` TypeInfo whose `variants` are the distinct base primitive kinds
+ * (str-knf0v). This is the TS analog of Go's named-type → const-set extraction
+ * (`enumValuesFromNamed`): it fires for a literal-union alias
+ * (`type Mode = "fast" | "slow"`) and for TS `enum` declarations, whose member
+ * types also carry the String/Number literal flag.
+ *
+ * Returns null when any member is not a literal — a widened `string` / `number`,
+ * an object, etc. — so the caller falls back to a plain union with no value
+ * domain and never guesses (matching the Go contract and the str-knf0v scope).
+ * Numeric enums contribute forward member values only; TypeScript's runtime
+ * reverse mappings never appear in the param's union type, so `enum E { A = 1 }`
+ * emits `[1]`, never `"A"`.
+ */
+function literalEnumDomain(
+  members: readonly ts.Type[],
+  label: string,
+): TypeInfo | null {
+  const values: (string | number | boolean)[] = [];
+  const seenBaseKinds = new Set<string>();
+  const variants: TypeInfo[] = [];
+  const addBase = (base: TypeInfo): void => {
+    if (!seenBaseKinds.has(base.kind)) {
+      seenBaseKinds.add(base.kind);
+      variants.push(base);
+    }
+  };
+
+  for (const member of members) {
+    const flags = member.getFlags();
+    if (flags & ts.TypeFlags.StringLiteral) {
+      values.push((member as ts.StringLiteralType).value);
+      addBase({ kind: "str" });
+    } else if (flags & ts.TypeFlags.NumberLiteral) {
+      values.push((member as ts.NumberLiteralType).value);
+      addBase({ kind: "float" });
+    } else if (flags & ts.TypeFlags.BooleanLiteral) {
+      // Boolean literal types expose their value via the internal
+      // `intrinsicName` ("true" / "false").
+      const intrinsic = (member as unknown as { intrinsicName?: string })
+        .intrinsicName;
+      values.push(intrinsic === "true");
+      addBase({ kind: "bool" });
+    } else {
+      return null;
+    }
+  }
+
+  if (values.length === 0) {
+    return null;
+  }
+
+  let domain = values;
+  if (domain.length > MAX_ENUM_VALUES) {
+    logger.warn(
+      { type: label, found: domain.length, cap: MAX_ENUM_VALUES },
+      "enum value domain truncated",
+    );
+    domain = domain.slice(0, MAX_ENUM_VALUES);
+  }
+
+  return { kind: "union", variants, enum_values: domain };
+}
+
+/**
  * Fallback used when `convertType` must bail out early (cycle detection or the
  * depth guard). A bare `{kind: "unknown"}` throws away array-ness: the core may
  * then realize a non-array value for what is actually an array field, and target
@@ -805,6 +893,20 @@ export function convertType(
 
   const flags = type.getFlags();
 
+  // Enum types must be checked before the primitive-literal branches below: a
+  // single-member enum literal (e.g. `Solo.Only`) also carries the
+  // String/Number literal flag, and would otherwise collapse to a plain
+  // `str`/`float` and lose its value domain. Multi-member enums are unions,
+  // already handled above by convertUnionType. Emit the member value as an
+  // enum_values domain so numeric enums forward the number and string enums
+  // forward the string; fall back to a plain `str` when the member is not a
+  // string/number/boolean literal (str-knf0v).
+  if (flags & ts.TypeFlags.Enum || flags & ts.TypeFlags.EnumLiteral) {
+    const domain = literalEnumDomain([type], enumTypeLabel(type, checker));
+    seen.delete(type);
+    return domain ?? { kind: "str" };
+  }
+
   if (flags & ts.TypeFlags.String || flags & ts.TypeFlags.StringLiteral) {
     seen.delete(type);
     return { kind: "str" };
@@ -872,12 +974,6 @@ export function convertType(
           : { kind: "union", variants: unique };
     seen.delete(type);
     return { kind: "array", element };
-  }
-
-  // Check for enum types
-  if (flags & ts.TypeFlags.Enum || flags & ts.TypeFlags.EnumLiteral) {
-    seen.delete(type);
-    return { kind: "str" };
   }
 
   // Check for well-known complex types by symbol name
@@ -977,6 +1073,17 @@ function convertUnionType(
   );
   if (allBooleanLiterals && variants.length === 2) {
     return { kind: "bool" };
+  }
+
+  // str-knf0v: a union whose members are all string/number/boolean literals —
+  // a literal-union alias (`type Mode = "fast" | "slow"`) or a multi-member TS
+  // `enum` (whose members are literal types) — carries a concrete value domain.
+  // Emit it as enum_values on a base-primitive union so the core draws valid
+  // members instead of only generic candidates. Falls through to a plain union
+  // when any member is non-literal.
+  const domain = literalEnumDomain(variants, enumTypeLabel(type, checker));
+  if (domain) {
+    return domain;
   }
 
   // Regular union

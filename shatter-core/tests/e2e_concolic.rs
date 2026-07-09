@@ -2671,3 +2671,138 @@ async fn concolic_tsconfig_at_alias_executes() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test: enum value-domain extraction (str-knf0v), TypeScript, concolic path.
+//
+// Mirrors `e2e_go_enum_value_domain_reaches_all_arms`. `classifyColor(c: Color)`
+// where `Color` is a string-literal union alias ("RED" | "GREEN" | "BLUE")
+// switches over all three members plus a default arm:
+//   "RED"   -> "warm"
+//   "GREEN" -> "cool-green"
+//   "BLUE"  -> "cool-blue"
+//   *       -> "invalid"
+//
+// The three valid arms are reachable ONLY when the generator produces valid
+// enum members. We seed a single OFF-domain string ("zzz") so the run starts
+// without a valid answer; the analyzer's enum_values domain on the param's
+// union TypeInfo is what lets the core draw RED/GREEN/BLUE and reach every valid
+// arm. Before str-knf0v the TS param was a plain union and only the "invalid"
+// default arm was ever hit. The `switch` (rather than an if-chain) is
+// deliberate: the concolic solver has no branch constraint to negate here
+// (z3_generated stays 0), so reaching the valid arms proves enum_values drove
+// generation, not Z3 string solving — mirroring the Go fixture's intent.
+//
+// We collect return values from `raw_results` (every executed input) rather
+// than `result.executions`: the TS instrumentor records switch-case *lines* but
+// emits no `branch_path` decisions, so the orchestrator's path-based dedup
+// collapses all switch executions into one empty-path entry. `raw_results`
+// preserves each generated input's outcome, which is the signal under test
+// (this matches how the Go random-explorer enum test reads its results).
+// ---------------------------------------------------------------------------
+
+const TS_ENUM_FIXTURE: &str = r#"
+export type Color = "RED" | "GREEN" | "BLUE";
+
+export function classifyColor(c: Color): string {
+  switch (c) {
+    case "RED":
+      return "warm";
+    case "GREEN":
+      return "cool-green";
+    case "BLUE":
+      return "cool-blue";
+    default:
+      return "invalid";
+  }
+}
+"#;
+
+#[tokio::test]
+async fn e2e_ts_enum_value_domain_reaches_all_arms() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("enum-color.ts");
+    std::fs::write(&file, TS_ENUM_FIXTURE).expect("write enum fixture");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyColor").await;
+    assert_eq!(analysis.params.len(), 1, "classifyColor takes 1 param");
+    // The analyzer must surface the value domain as a union with enum_values.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
+            assert!(
+                !enum_values.is_empty(),
+                "analyzer should carry a non-empty enum_values domain for Color; got {enum_values:?}"
+            );
+            assert_eq!(
+                variants.len(),
+                1,
+                "Color union should have a single str base variant; got {variants:?}"
+            );
+        }
+        other => panic!("Color param should be a union with enum_values; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classifyColor").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(60),
+        max_executions: Some(120),
+        plateau_threshold: 40,
+        ..Default::default()
+    };
+
+    // Deliberately off-domain seed: generation from enum_values must find the
+    // valid members on its own.
+    let seed_inputs = vec![vec![serde_json::json!("zzz")]];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "classifyColor",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    // Enum generation must not have leaned on Z3 — with a switch there is no
+    // branch constraint to solve, so any valid arm reached came from the
+    // enum_values value domain.
+    assert_eq!(
+        result.z3_generated, 0,
+        "switch fixture should give the solver nothing to negate; z3_generated={}",
+        result.z3_generated
+    );
+
+    let mut return_values: HashSet<String> = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            return_values.insert(v.to_string());
+        }
+    }
+    for expected in ["\"warm\"", "\"cool-green\"", "\"cool-blue\""] {
+        assert!(
+            return_values.contains(expected),
+            "enum value-domain generation should reach valid arm {expected}; found: {return_values:?}"
+        );
+    }
+    // The off-domain probe path (default arm) should also stay covered.
+    assert!(
+        return_values.contains("\"invalid\""),
+        "off-domain probes should still reach the default arm; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

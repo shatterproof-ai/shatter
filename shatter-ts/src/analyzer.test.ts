@@ -675,6 +675,64 @@ describe("analyzeFile", () => {
     });
   });
 
+  describe("enum and literal-union value domains (str-knf0v)", () => {
+    it("emits enum_values for a literal-union alias parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "pickMode");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "str" }],
+        enum_values: ["fast", "slow", "off"],
+      });
+    });
+
+    it("emits enum_values for a string enum parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "classify");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "str" }],
+        enum_values: ["RED", "GREEN", "BLUE"],
+      });
+    });
+
+    it("emits forward numeric member values for a numeric enum parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "rank");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "float" }],
+        enum_values: [1, 2, 3],
+      });
+    });
+
+    it("emits enum_values for a single-member numeric enum parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "solo");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "float" }],
+        enum_values: [7],
+      });
+    });
+
+    it("does not emit enum_values for a widened primitive union", () => {
+      const results = analyzeFile(path.join(fixtures, "unions.ts"), "format");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      const typ = fn.params[0]!.type;
+      expect(typ).toEqual({
+        kind: "union",
+        variants: [{ kind: "str" }, { kind: "float" }],
+      });
+      expect(typ.kind === "union" && typ.enum_values).toBeUndefined();
+    });
+  });
+
   describe("arrow functions", () => {
     it("extracts arrow function parameter and return types", () => {
       const results = analyzeFile(path.join(fixtures, "arrows.ts"), "double");
