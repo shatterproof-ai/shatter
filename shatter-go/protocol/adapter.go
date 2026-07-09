@@ -19,11 +19,20 @@ type InvocationContext struct {
 // AdapterInvocationOutcome is the adapter-local mirror of the protocol
 // InvocationOutcome. SideEffects uses instrument.SideEffect to avoid a
 // redundant conversion step on the response path.
+//
+// BranchPath, LinesExecuted, ScopeEvents, and ExternalCalls carry the
+// instrumentation an adapter captured when it drove the target through an
+// instrumented launcher (str-1qd5i). Adapters that do not instrument leave
+// them nil, and ExecuteAdapterOwned substitutes empty slices.
 type AdapterInvocationOutcome struct {
-	Status      OutcomeStatus
-	ReturnValue json.RawMessage
-	ThrownError *instrument.ErrorInfo
-	SideEffects []instrument.SideEffect
+	Status        OutcomeStatus
+	ReturnValue   json.RawMessage
+	ThrownError   *instrument.ErrorInfo
+	SideEffects   []instrument.SideEffect
+	BranchPath    []instrument.BranchDecision
+	LinesExecuted []int
+	ScopeEvents   []json.RawMessage
+	ExternalCalls []instrument.ExternalCall
 }
 
 // InvocationHook dispatches adapter-owned invocation for a specific adapter ID.
@@ -109,9 +118,11 @@ func ResolveRuntimeHooks(profile *ExecutionProfile, ctx RuntimeHookContext, fact
 }
 
 // ExecuteAdapterOwned invokes a target through an adapter hook instead of the
-// instrumented subprocess harness. Returns an instrument.ExecuteResult with
-// empty instrumentation fields (branch_path, lines_executed, path_constraints,
-// calls_to_external) since adapter-owned calls are not instrumented.
+// instrumented subprocess harness. Instrumentation fields (branch_path,
+// lines_executed, scope_events, calls_to_external) are propagated from the
+// hook's outcome when the adapter instrumented the target — e.g. the
+// launcher-backed net/http and gin adapters (str-1qd5i) — and default to
+// empty slices for adapters that do not instrument.
 func ExecuteAdapterOwned(hook InvocationHook, ctx InvocationContext) (*instrument.ExecuteResult, error) {
 	outcome, err := hook.Invoke(ctx)
 	if err != nil {
@@ -122,16 +133,32 @@ func ExecuteAdapterOwned(hook InvocationHook, ctx InvocationContext) (*instrumen
 	if sideEffects == nil {
 		sideEffects = []instrument.SideEffect{}
 	}
+	branchPath := outcome.BranchPath
+	if branchPath == nil {
+		branchPath = []instrument.BranchDecision{}
+	}
+	linesExecuted := outcome.LinesExecuted
+	if linesExecuted == nil {
+		linesExecuted = []int{}
+	}
+	scopeEvents := outcome.ScopeEvents
+	if scopeEvents == nil {
+		scopeEvents = []json.RawMessage{}
+	}
+	externalCalls := outcome.ExternalCalls
+	if externalCalls == nil {
+		externalCalls = []instrument.ExternalCall{}
+	}
 
 	result := &instrument.ExecuteResult{
 		ReturnValue:            outcome.ReturnValue,
 		ThrownError:            outcome.ThrownError,
-		BranchPath:             []instrument.BranchDecision{},
-		LinesExecuted:          []int{},
-		ExternalCalls:          []instrument.ExternalCall{},
+		BranchPath:             branchPath,
+		LinesExecuted:          linesExecuted,
+		ExternalCalls:          externalCalls,
 		DiscoveredDependencies: []instrument.DiscoveredDependency{},
 		SideEffects:            sideEffects,
-		ScopeEvents:            []json.RawMessage{},
+		ScopeEvents:            scopeEvents,
 	}
 
 	return result, nil

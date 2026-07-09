@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/shatter-dev/shatter/shatter-go/instrument"
 )
 
 func TestHTTPHandlerFactory_ID(t *testing.T) {
@@ -228,6 +230,78 @@ func TestExecuteAdapterViaLauncher_HTTPHandlerPackageMainUnexportedUnsupported(t
 	}
 }
 
+// TestExecuteAdapterViaLauncher_HTTPHandlerReportsCoverage asserts that the
+// adapter launcher path now threads real instrumentation coverage (str-1qd5i):
+// a net/http handler whose executed lines are gated on the request method
+// reports non-empty lines_executed, and GET vs POST drive distinct line sets
+// (the method-driven branch), matching the direct wrapper path's behavior.
+func TestExecuteAdapterViaLauncher_HTTPHandlerReportsCoverage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	file := testFilePath(t, "http_branch_project/handler.go")
+	headersJSON, _ := json.Marshal(map[string]string{})
+	bodyJSON, _ := json.Marshal("")
+	pathJSON, _ := json.Marshal("/items")
+
+	// Drive through the full adapter substrate (hook.Invoke -> outcome ->
+	// ExecuteAdapterOwned) that handleExecute uses, so the test also guards the
+	// outcome propagation of branch_path/lines_executed, not just the launcher.
+	invoke := func(method string) *instrument.ExecuteResult {
+		methodJSON, _ := json.Marshal(method)
+		result, err := ExecuteAdapterOwned(&httpHandlerHook{}, InvocationContext{
+			File:         file,
+			FunctionName: "MethodBranchHandler",
+			Inputs:       []json.RawMessage{methodJSON, pathJSON, headersJSON, bodyJSON},
+			Capture:      true,
+		})
+		if err != nil {
+			t.Fatalf("execute adapter owned (%s): %v", method, err)
+		}
+		if result.ThrownError != nil {
+			t.Fatalf("unexpected thrown error (%s): %+v", method, result.ThrownError)
+		}
+		return result
+	}
+
+	get := invoke("GET")
+	post := invoke("POST")
+
+	if len(get.LinesExecuted) == 0 {
+		t.Fatal("GET: adapter-owned lines_executed must be non-empty (str-1qd5i)")
+	}
+	if len(post.LinesExecuted) == 0 {
+		t.Fatal("POST: adapter-owned lines_executed must be non-empty (str-1qd5i)")
+	}
+
+	getLines := intSet(get.LinesExecuted)
+	postLines := intSet(post.LinesExecuted)
+	if setsEqual(getLines, postLines) {
+		t.Fatalf("method-driven branch should drive distinct line coverage; GET=%v POST=%v", getLines, postLines)
+	}
+}
+
+func intSet(lines []int) map[int]struct{} {
+	set := make(map[int]struct{}, len(lines))
+	for _, line := range lines {
+		set[line] = struct{}{}
+	}
+	return set
+}
+
+func setsEqual(a, b map[int]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func TestGenerateHTTPAdapterLauncherRejectsReceiverMethod(t *testing.T) {
 	_, err := generateAdapterLauncherMain(HTTPHandlerAdapterID, "example.com/app", "(*Server).Handle")
 	if err == nil {
@@ -301,9 +375,14 @@ func TestHTTPHandler_Execute_Integration(t *testing.T) {
 		t.Fatalf("expected Content-Type text/plain, got %v", ct)
 	}
 
-	// Adapter-owned: empty branch path
-	if len(execResp.BranchPath) != 0 {
-		t.Fatalf("expected empty branch path for adapter-owned, got %d", len(execResp.BranchPath))
+	// Adapter-owned invocations now thread real instrumentation from the
+	// launcher (str-1qd5i): HelloHandler branches on the request method, so the
+	// GET path records a branch decision and executes source lines.
+	if len(execResp.BranchPath) == 0 {
+		t.Fatal("expected non-empty branch path for adapter-owned execute (str-1qd5i)")
+	}
+	if len(execResp.LinesExecuted) == 0 {
+		t.Fatal("expected non-empty lines_executed for adapter-owned execute (str-1qd5i)")
 	}
 }
 
