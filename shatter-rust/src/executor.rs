@@ -2611,6 +2611,12 @@ fn generate_dispatch_harness(
         );
     }
     h.push_str(&module_block);
+    // Bring the wrapped user types into scope so bare param-type bindings
+    // (`let c: Color = …`) resolve. Function calls and globals are qualified
+    // (`user_code::…`), but param types are emitted bare from the source
+    // signature, so without this glob a locally-defined struct/enum param fails
+    // to compile (`cannot find type` — str-2nfoe). Mirrors `generate_harness`.
+    h.push_str("\nuse crate::user_code::*;\n");
     for spec in native_replays.iter().flatten() {
         let file_path = rust_string_literal(&spec.file_path.display().to_string());
         h.push_str(&format!(
@@ -9271,6 +9277,29 @@ pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
         assert!(
             harness.contains("Err(ref msg)"),
             "dispatch harness must use Err(ref msg)\n\nharness:\n{harness}"
+        );
+    }
+
+    /// Regression test (str-2nfoe): the dispatch harness emits param-type
+    /// bindings with bare type names (`let c: Color = …`) taken verbatim from the
+    /// source signature, so it must bring the wrapped user types into scope with
+    /// `use crate::user_code::*;`. Without it, any locally-defined struct/enum
+    /// param fails to compile with `cannot find type`.
+    #[test]
+    fn generate_dispatch_harness_imports_user_code_glob() {
+        let source = r#"pub enum Color { Red, Green, Blue }
+        pub fn classify_color(c: Color) -> u32 { match c { Color::Red => 0, Color::Green => 1, Color::Blue => 2 } }"#;
+        let fns = vec![CompatFn {
+            name: "classify_color".to_string(),
+            param_names: vec!["c".to_string()],
+            param_types: vec!["Color".to_string()],
+            return_type: Some("u32".to_string()),
+            is_async: false,
+        }];
+        let harness = generate_dispatch_harness(source, &fns, "[]", &[], &[]).unwrap();
+        assert!(
+            harness.contains("use crate::user_code::*;"),
+            "dispatch harness must import wrapped user types so bare param-type bindings resolve\n\nharness:\n{harness}"
         );
     }
 

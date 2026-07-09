@@ -271,8 +271,9 @@ primitive-literal flag branches) and `convertUnionType` (multi-member enums and
 literal-union aliases, after the nullable and `true|false`→bool short-circuits).
 The core consumer is `generate_union` in `shatter-core/src/input_gen.rs` (85%
 valid-member draw, 15% off-domain probe) — no core changes. Parity: `implemented`
-on `protocol/parity-matrix.yaml` `type_info_enum_values`; Rust remains the only
-`enum-value-domain-partial` divergence. Tests: `src/analyzer.test.ts` +
+on `protocol/parity-matrix.yaml` `type_info_enum_values`; all three frontends now
+implement it and the `enum-value-domain-partial` divergence has been removed.
+Tests: `src/analyzer.test.ts` +
 `src/protocol.test.ts` (emitted domains) and
 `e2e_ts_enum_value_domain_reaches_all_arms` in
 `shatter-core/tests/e2e_concolic.rs`. Note the e2e reads `raw_results`, not
