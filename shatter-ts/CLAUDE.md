@@ -83,6 +83,61 @@ The **browser-globals (`browser-dom`) adapter is a `SandboxProvider`, not an `In
 
 Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts`, `executeAdapterOwned` / `loadInstrumentedModuleInSandbox` / `buildInstrumentedSandbox` in `src/executor.ts`, `InvocationContext.loadInstrumentedExports` in `src/runtime-hooks.ts`, react-hook usage in `src/react-hook-invocation.ts`, dispatch site in `src/handlers.ts` execute case. Analyses cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}`, cleared on shutdown / function-level teardown / `clearInstrumentedSources`.
 
+## Native React Aliasing Contract (str-rzsej)
+
+Target and instrumented code route react-family specifiers to the shim through
+the adapter-aware require (`getDefaultResolverAdapters` / the stateful adapter).
+But a third-party dependency loaded from `node_modules` via `createRequire` runs
+inside Node's *native* module system; its transitive `require('react')` would
+otherwise resolve to the project's real React, whose hook dispatcher is null
+outside a renderer → `Cannot read properties of null (reading 'use…')` crashes
+(kapow: zustand v5 `useStore` → `react.development.js` useCallback; Mantine).
+
+Fix: `installNativeReactAliasesForFile` (`src/executor.ts`) seeds Node's
+`Module._cache` with the shim at the *resolved filename* of each
+`NATIVE_REACT_ALIAS_NAMES` specifier (`react`, `react-dom`, `react-dom/client`,
+`react/jsx-runtime`, `react/jsx-dev-runtime`). This is a single choke point
+covering arbitrarily deep transitive requires. It is called from **both**
+native-require creation sites — `loadModule` and `buildInstrumentedSandbox` — so
+the direct (instrumented) and adapter paths are both covered. Resolution is
+done from the **target source file's** own `node_modules` chain (not just the
+CLI project root) so pnpm workspaces / monorepo sub-packages
+(`web/node_modules/.pnpm/react@…`) are covered; a root-only resolve misses them.
+
+`NATIVE_REACT_ALIAS_NAMES` is derived from `shimRegistry`'s keys (react-shim.ts)
+so a new shim entry is automatically eligible for native aliasing — do not
+maintain a second hand-written list.
+
+Notes: (1) the Module class + cache are obtained from the native require itself,
+not an ESM import, because jest replaces the imported module registry — the
+native-require path is only exercised in a real `node` subprocess (see the
+str-rzsej test, which bundles the executor via esbuild and spawns node; jest
+cannot exercise it in-process). (2) The shim is forced onto dependencies
+regardless of the React major they were compiled against — exploration fidelity,
+not React-runtime fidelity, is the goal. (3) Because the shim now *replaces*
+real React for **every** react-family require (not just hook-using components),
+it must cover the surface any loaded dependency touches at module-load or
+render time — not only hooks. This change added the hook surface
+(`useSyncExternalStore` for zustand v5, `useDeferredValue`, `useTransition`,
+`useInsertionEffect`, `useImperativeHandle`, `useDebugValue`) **and** the
+non-hook surface class/Suspense/lazy dependencies rely on (`Component`,
+`PureComponent`, `Suspense`, `StrictMode`, `lazy`, `cloneElement`,
+`isValidElement`, `createRef`, `startTransition`, `version`); omitting these
+turns a previously-working class-component dependency into a `not a constructor`
+crash. (4) Seeding never overwrites an already-installed alias and only marks a
+resolution base "done" once react actually resolved from it, so a project-root
+seed that finds nothing in a monorepo does not block the later per-file seed;
+a base where nothing resolved is logged at `debug`. No protocol/wire change —
+JSON output shape is unchanged, so no parity-matrix update is required.
+
+**Known limitation.** Seeding keys off the *target file's* own react resolution.
+A dependency with its own **nested/duplicate** react copy (pnpm version-conflict
+layout: `web/node_modules/.pnpm/react@18…` vs `…/react@19…`) resolves that
+transitive `require('react')` to a *different* filename that was never seeded, so
+the null-dispatcher crash can still occur for that dependency. Solving it fully
+would require patching `Module._load` globally (out of scope here). Tracked as
+follow-up `str-bt7sm`.
+
 ## Feature Capability Parity
 
 TS declares support for `outcome` only in
