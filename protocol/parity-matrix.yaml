@@ -655,6 +655,29 @@ feature_capabilities:
       go: supported
       rust: not_applicable
 
+  invocation_plan_receiver_field_plans:
+    status: optional
+    notes: >
+      str-mhinv.1: optional `receiver_field_plans` field on InvocationPlan —
+      a typed way to express "construct this receiver with these fields
+      populated" without an opaque recipe payload (e.g. Kapow's queryResolver
+      embedding a *Resolver whose SearchBackend field must be non-nil). Each
+      `ReceiverFieldPlan` carries `path` (field path from the receiver root,
+      e.g. ["Resolver", "SearchBackend"]), `kind` (reuses ValuePlanKind — no
+      new value-plan kind), `literal`, and `type_hint`. `runtime_value`
+      remains the way to name a frontend-supplied non-JSON runtime
+      collaborator. This issue adds only the typed wire/data model to Rust
+      core, Go protocol types, and the JSON schemas; no frontend receiver
+      construction behavior is implemented yet. The Go implementation slice
+      is str-7zhdh, which should consume `receiver_field_plans` rather than
+      invent an opaque recipe payload. Core and all frontends handle absence
+      gracefully via omit-when-empty (`skip_serializing_if = "Vec::is_empty"`
+      / `omitempty`).
+    frontends:
+      typescript: not_applicable
+      go: not_applicable
+      rust: not_applicable
+
   unsatisfied_requirement_requires_construction:
     status: optional
     notes: >

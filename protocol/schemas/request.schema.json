@@ -379,6 +379,30 @@
       },
       "required": ["param_index", "param_name", "kind"]
     },
+    "receiver_field_plan": {
+      "type": "object",
+      "description": "Typed plan for populating one field on a constructed receiver before invocation (str-mhinv.1).",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Receiver field path from the receiver root, e.g. [\"Resolver\", \"SearchBackend\"] or [\"SearchBackend\"]."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["literal", "zero", "random", "symbolic", "runtime_value"],
+          "description": "Field value production strategy; reuses the value_plan kind. `runtime_value` names a frontend-supplied non-JSON runtime collaborator, with `literal` carrying the source expression as a JSON-encoded string."
+        },
+        "literal": {
+          "description": "Concrete value when kind is literal (or the source expression string when kind is runtime_value)."
+        },
+        "type_hint": {
+          "type": "string",
+          "description": "Language-specific type hint for code generation."
+        }
+      },
+      "required": ["path", "kind"]
+    },
     "invocation_plan": {
       "type": "object",
       "properties": {
@@ -399,6 +423,16 @@
           "type": "array",
           "items": { "$ref": "#/$defs/value_plan" },
           "description": "One value plan per parameter, in declaration order."
+        },
+        "constructor_arg_plans": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/value_plan" },
+          "description": "Value plans for parameterized constructor arguments. When non-empty, the constructor named in receiver_kind takes these as positional arguments, prepended to the method param values in the wrapper inputs array."
+        },
+        "receiver_field_plans": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/receiver_field_plan" },
+          "description": "Typed field-injection plans for the constructed receiver (str-mhinv.1). When non-empty, a frontend that supports receiver field construction builds the receiver and sets these fields before invoking the target."
         },
         "priority": {
           "type": "integer",
