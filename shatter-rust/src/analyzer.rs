@@ -358,8 +358,52 @@ fn is_tokio_macro_attr(attr: &syn::Attribute) -> bool {
 /// Collected struct definitions from the same file.
 type StructDefs = HashMap<String, Vec<(String, syn::Type)>>;
 
-/// Collected enum definitions: maps enum name → Vec of (variant_name, fields).
-type EnumDefs = HashMap<String, Vec<(String, syn::Fields)>>;
+/// A single collected enum variant with the metadata needed to (a) synthesize
+/// its payload type and (b) reconstruct the serde-facing scalar value a fieldless
+/// variant deserializes from (str-2nfoe).
+#[derive(Clone)]
+struct EnumVariantDef {
+    /// The Rust variant identifier.
+    ident: String,
+    /// The variant's fields (`Unit` for a fieldless variant).
+    fields: syn::Fields,
+    /// Variant-level `#[serde(rename = "…")]`, if present. Overrides the
+    /// enum-level `rename_all` per serde's own precedence.
+    rename: Option<String>,
+    /// True when the variant carries a `#[serde(...)]` argument other than
+    /// `rename` — configuration we cannot reason about, so the enum's value
+    /// domain is suppressed ("never guess").
+    exotic_serde: bool,
+    /// Explicit integer discriminant (`Variant = N`), evaluated when the
+    /// discriminant is an integer literal (optionally negated).
+    discriminant: Option<i128>,
+    /// True when the variant has an explicit discriminant expression we could
+    /// not evaluate (a const reference, arithmetic, etc.).
+    opaque_discriminant: bool,
+}
+
+/// A collected enum definition: its variants plus the enum-level serde/`repr`
+/// attributes that determine what serde accepts for a fieldless variant.
+#[derive(Clone)]
+struct EnumDef {
+    /// Variants in declaration order (the value-domain order).
+    variants: Vec<EnumVariantDef>,
+    /// Enum-level `#[serde(rename_all = "…")]`, if present.
+    rename_all: Option<String>,
+    /// Integer `#[repr(iN/uN)]` as `(bit_width, signed)`, if present. serde_repr
+    /// encodes the enum as this integer type.
+    int_repr: Option<(u8, bool)>,
+    /// True when the enum derives serde_repr (`Serialize_repr`/`Deserialize_repr`),
+    /// meaning serde accepts the integer discriminant rather than the name.
+    serde_repr: bool,
+    /// True when the enum carries a `#[serde(...)]` argument other than
+    /// `rename_all` — configuration we cannot reason about, so the value domain
+    /// is suppressed ("never guess").
+    exotic_serde: bool,
+}
+
+/// Collected enum definitions: maps enum name → its [`EnumDef`].
+type EnumDefs = HashMap<String, EnumDef>;
 
 /// Read a `#[serde(rename_all = "…")]` value from a set of attributes, if present.
 fn serde_rename_all(attrs: &[syn::Attribute]) -> Option<String> {
@@ -466,15 +510,323 @@ fn collect_enum_defs(file: &syn::File) -> EnumDefs {
     let mut defs = HashMap::new();
     for item in &file.items {
         if let syn::Item::Enum(e) = item {
-            let variants: Vec<(String, syn::Fields)> = e
+            let variants: Vec<EnumVariantDef> = e
                 .variants
                 .iter()
-                .map(|v| (v.ident.to_string(), v.fields.clone()))
+                .map(|v| {
+                    let (discriminant, opaque_discriminant) = match &v.discriminant {
+                        Some((_, expr)) => match eval_discriminant(expr) {
+                            Some(value) => (Some(value), false),
+                            None => (None, true),
+                        },
+                        None => (None, false),
+                    };
+                    EnumVariantDef {
+                        ident: v.ident.to_string(),
+                        fields: v.fields.clone(),
+                        rename: serde_field_rename(&v.attrs),
+                        exotic_serde: has_unknown_serde_args(&v.attrs, &["rename"]),
+                        discriminant,
+                        opaque_discriminant,
+                    }
+                })
                 .collect();
-            defs.insert(e.ident.to_string(), variants);
+            defs.insert(
+                e.ident.to_string(),
+                EnumDef {
+                    variants,
+                    rename_all: serde_rename_all(&e.attrs),
+                    int_repr: parse_int_repr(&e.attrs),
+                    serde_repr: has_serde_repr_derive(&e.attrs),
+                    exotic_serde: has_unknown_serde_args(&e.attrs, &["rename_all"]),
+                },
+            );
         }
     }
     defs
+}
+
+/// Cap on the number of value-domain members emitted for a single enum type,
+/// matching the Go frontend's `maxEnumValues`. Larger domains are truncated with
+/// one WARN-level diagnostic per type (str-2nfoe).
+const MAX_ENUM_VALUES: usize = 64;
+
+/// Truncate an enum value domain to [`MAX_ENUM_VALUES`], emitting one WARN-level
+/// line to stderr (safe: the frontend protocol uses stdout) when it does.
+fn cap_enum_values(mut values: Vec<serde_json::Value>, type_name: &str) -> Vec<serde_json::Value> {
+    if values.len() > MAX_ENUM_VALUES {
+        eprintln!(
+            "[shatter-rust] WARN enum value domain truncated: type={type_name} found={} cap={MAX_ENUM_VALUES}",
+            values.len()
+        );
+        values.truncate(MAX_ENUM_VALUES);
+    }
+    values
+}
+
+/// Compute the serde-facing value domain for a fieldless enum, plus the base
+/// [`TypeInfo`] the core uses for off-domain probe generation. Returns `None`
+/// when the enum is not fieldless, has no variants, or carries serde/`repr`
+/// configuration whose accepted values we cannot prove — in which case the
+/// caller falls back to a plain type union with no value domain (str-2nfoe).
+///
+/// Governing invariant: every returned member must be accepted by serde
+/// deserialization of the enum as written. When in doubt, emit nothing.
+fn fieldless_enum_domain(
+    name: &str,
+    def: &EnumDef,
+) -> Option<(TypeInfo, Vec<serde_json::Value>)> {
+    // Only fieldless enums have a scalar value domain; a single data-carrying
+    // variant makes serde expect an object/externally-tagged shape.
+    if def.variants.is_empty()
+        || def
+            .variants
+            .iter()
+            .any(|v| !matches!(v.fields, syn::Fields::Unit))
+    {
+        return None;
+    }
+    // Enum-level serde configuration outside `rename_all` (tag/content/untagged/
+    // …) changes the wire representation in ways we do not model.
+    if def.exotic_serde {
+        return None;
+    }
+
+    if def.serde_repr {
+        int_enum_domain(name, def)
+    } else {
+        string_enum_domain(name, def)
+    }
+}
+
+/// Value domain for a default-serde fieldless enum: each variant's serde-facing
+/// JSON key (variant `rename` > enum `rename_all` > raw name).
+fn string_enum_domain(
+    name: &str,
+    def: &EnumDef,
+) -> Option<(TypeInfo, Vec<serde_json::Value>)> {
+    let mut values = Vec::with_capacity(def.variants.len());
+    for v in &def.variants {
+        if v.exotic_serde {
+            return None;
+        }
+        let key = match &v.rename {
+            Some(explicit) => explicit.clone(),
+            None => match &def.rename_all {
+                // An unrecognized rename_all rule means we cannot prove the key.
+                Some(rule) => apply_rename_all_variant(&v.ident, rule)?,
+                None => v.ident.clone(),
+            },
+        };
+        values.push(serde_json::Value::String(key));
+    }
+    Some((TypeInfo::Str, cap_enum_values(values, name)))
+}
+
+/// Value domain for a serde_repr fieldless enum: the integer discriminant of
+/// each variant (explicit literal or C-style sequential fill). Returns `None`
+/// when the enum lacks an integer `repr`, a discriminant is unevaluable, a
+/// discriminant does not fit the repr, or a variant carries a `rename` (which
+/// serde_repr ignores — an exotic combination we refuse to guess at).
+fn int_enum_domain(
+    name: &str,
+    def: &EnumDef,
+) -> Option<(TypeInfo, Vec<serde_json::Value>)> {
+    let (width, signed) = def.int_repr?;
+    let mut values = Vec::with_capacity(def.variants.len());
+    let mut next: i128 = 0;
+    for v in &def.variants {
+        if v.exotic_serde || v.rename.is_some() {
+            return None;
+        }
+        let disc = match v.discriminant {
+            Some(d) => d,
+            None if v.opaque_discriminant => return None,
+            None => next,
+        };
+        values.push(int_discriminant_json(disc, signed)?);
+        next = disc.checked_add(1)?;
+    }
+    Some((int_type(width, signed), cap_enum_values(values, name)))
+}
+
+/// Encode an integer discriminant as a JSON number, respecting signedness and
+/// rejecting values outside the `i64`/`u64` range serde_json can represent
+/// losslessly (returns `None` so the caller suppresses the domain).
+fn int_discriminant_json(disc: i128, signed: bool) -> Option<serde_json::Value> {
+    if signed {
+        i64::try_from(disc).ok().map(|v| serde_json::json!(v))
+    } else {
+        u64::try_from(disc).ok().map(|v| serde_json::json!(v))
+    }
+}
+
+/// Evaluate an explicit enum discriminant expression to its integer value.
+/// Handles a plain integer literal and a negated integer literal; anything else
+/// (const references, arithmetic) is unevaluable and yields `None`.
+fn eval_discriminant(expr: &syn::Expr) -> Option<i128> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(i),
+            ..
+        }) => i.base10_parse::<i128>().ok(),
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(i),
+                ..
+            }) = expr.as_ref()
+            {
+                i.base10_parse::<i128>().ok().map(|v| -v)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// True when `attrs` carry a `#[serde(...)]` argument whose key is outside
+/// `allowed`, or when a serde attribute fails to parse in the simple `key`
+/// / `key = "lit"` forms we understand. Conservative by design: an unknown
+/// shape counts as "cannot prove", so the caller suppresses the value domain.
+fn has_unknown_serde_args(attrs: &[syn::Attribute], allowed: &[&str]) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let mut unknown = false;
+        let parsed = attr.parse_nested_meta(|meta| {
+            let is_allowed = meta
+                .path
+                .get_ident()
+                .is_some_and(|id| allowed.contains(&id.to_string().as_str()));
+            if is_allowed {
+                // Known keys are always `key = "string"`; consume the value.
+                let value = meta.value()?;
+                let _: syn::LitStr = value.parse()?;
+            } else {
+                unknown = true;
+                // Best-effort: consume a `= <lit>` tail so parsing can advance
+                // to sibling arguments; bare flags and list forms error out
+                // below, which we also treat as unknown.
+                if meta.input.peek(syn::Token![=]) {
+                    let value = meta.value()?;
+                    let _: syn::Lit = value.parse()?;
+                }
+            }
+            Ok(())
+        });
+        if parsed.is_err() || unknown {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when `#[derive(...)]` includes a serde_repr derive (`Serialize_repr` or
+/// `Deserialize_repr`), meaning serde encodes the enum as its integer
+/// discriminant rather than the variant name.
+fn has_serde_repr_derive(attrs: &[syn::Attribute]) -> bool {
+    let mut found = false;
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        let _ = attr.parse_nested_meta(|meta| {
+            if let Some(seg) = meta.path.segments.last() {
+                let ident = seg.ident.to_string();
+                if ident == "Serialize_repr" || ident == "Deserialize_repr" {
+                    found = true;
+                }
+            }
+            Ok(())
+        });
+    }
+    found
+}
+
+/// Parse an integer `#[repr(iN/uN)]` into `(bit_width, signed)`. Returns `None`
+/// when there is no integer repr (`#[repr(C)]`, `#[repr(transparent)]`, or none).
+fn parse_int_repr(attrs: &[syn::Attribute]) -> Option<(u8, bool)> {
+    for attr in attrs {
+        if !attr.path().is_ident("repr") {
+            continue;
+        }
+        let mut found = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if let Some(id) = meta.path.get_ident()
+                && let Some(ws) = int_repr_width_signed(&id.to_string())
+            {
+                found = Some(ws);
+            }
+            Ok(())
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// Map a primitive integer type name to `(bit_width, signed)`.
+fn int_repr_width_signed(name: &str) -> Option<(u8, bool)> {
+    match name {
+        "i8" => Some((8, true)),
+        "u8" => Some((8, false)),
+        "i16" => Some((16, true)),
+        "u16" => Some((16, false)),
+        "i32" => Some((32, true)),
+        "u32" => Some((32, false)),
+        "i64" => Some((64, true)),
+        "u64" => Some((64, false)),
+        "i128" => Some((128, true)),
+        "u128" => Some((128, false)),
+        "isize" => Some((64, true)),
+        "usize" => Some((64, false)),
+        _ => None,
+    }
+}
+
+/// Apply a serde `rename_all` rule to an enum VARIANT name, mirroring serde's
+/// `RenameRule::apply_to_variant` (which splits the PascalCase variant on case
+/// boundaries — distinct from [`apply_rename_all`], which splits snake_case
+/// struct FIELD names on underscores). Returns `None` for an unrecognized rule
+/// so callers suppress the domain rather than emit a value serde would reject.
+fn apply_rename_all_variant(variant: &str, rule: &str) -> Option<String> {
+    let to_snake = || {
+        let mut snake = String::new();
+        for (i, ch) in variant.char_indices() {
+            if i > 0 && ch.is_uppercase() {
+                snake.push('_');
+            }
+            snake.push(ch.to_ascii_lowercase());
+        }
+        snake
+    };
+    let out = match rule {
+        "PascalCase" => variant.to_string(),
+        "lowercase" => variant.to_ascii_lowercase(),
+        "UPPERCASE" => variant.to_ascii_uppercase(),
+        "camelCase" => {
+            let mut chars = variant.chars();
+            match chars.next() {
+                Some(first) => {
+                    first.to_ascii_lowercase().to_string() + chars.as_str()
+                }
+                None => String::new(),
+            }
+        }
+        "snake_case" => to_snake(),
+        "SCREAMING_SNAKE_CASE" => to_snake().to_ascii_uppercase(),
+        "kebab-case" => to_snake().replace('_', "-"),
+        "SCREAMING-KEBAB-CASE" => to_snake().to_ascii_uppercase().replace('_', "-"),
+        _ => return None,
+    };
+    Some(out)
 }
 
 /// Cross-file (same-crate) struct/enum definitions, keyed by bare type name.
@@ -576,8 +928,8 @@ fn build_crate_type_registry(file_path: &Path) -> CrateTypeRegistry {
                 dupes.insert(name);
             }
         }
-        for (name, variants) in collect_enum_defs(&parsed) {
-            if enums.insert(name.clone(), variants).is_some() {
+        for (name, def) in collect_enum_defs(&parsed) {
+            if enums.insert(name.clone(), def).is_some() {
                 dupes.insert(name);
             }
         }
@@ -608,8 +960,8 @@ fn merge_type_defs(extra: Option<&CrateTypeRegistry>, file: &syn::File) -> Crate
     for (name, fields) in collect_struct_defs(file) {
         structs.insert(name, fields);
     }
-    for (name, variants) in collect_enum_defs(file) {
-        enums.insert(name, variants);
+    for (name, def) in collect_enum_defs(file) {
+        enums.insert(name, def);
     }
     (structs, enums)
 }
@@ -1070,24 +1422,44 @@ fn convert_type_path(
                 converting.remove(&name);
                 object
             // Enum defined in this file or elsewhere in the crate → Union
-            } else if let Some(variants) = enums.get(&name) {
+            } else if let Some(def) = enums.get(&name) {
                 // Guard against recursive enums
                 if !converting.insert(name.clone()) {
                     return TypeInfo::Opaque { label: name };
                 }
-                let variant_types = variants
-                    .iter()
-                    .map(|(_, fields)| {
-                        enum_variant_to_type(fields, structs, enums, generic_params, converting)
-                    })
-                    .collect();
+                // str-2nfoe: for a fieldless enum whose serde-accepted values we
+                // can prove, emit a value domain (variant-name strings, or
+                // serde_repr integer discriminants) over a single base variant,
+                // mirroring Go. The core input generator draws members that
+                // deserialize and reach every match arm. Non-fieldless enums —
+                // and any whose representation we cannot prove — keep today's
+                // per-variant type union with no value domain.
+                let union = if let Some((base, enum_values)) = fieldless_enum_domain(&name, def) {
+                    TypeInfo::Union {
+                        variants: vec![base],
+                        enum_values,
+                    }
+                } else {
+                    let variant_types = def
+                        .variants
+                        .iter()
+                        .map(|v| {
+                            enum_variant_to_type(
+                                &v.fields,
+                                structs,
+                                enums,
+                                generic_params,
+                                converting,
+                            )
+                        })
+                        .collect();
+                    TypeInfo::Union {
+                        variants: variant_types,
+                        enum_values: Vec::new(),
+                    }
+                };
                 converting.remove(&name);
-                // str-pjlc1: fieldless-enum value-domain extraction (populating
-                // enum_values here) is a tracked follow-up; plain type union for now.
-                TypeInfo::Union {
-                    variants: variant_types,
-                    enum_values: Vec::new(),
-                }
+                union
             } else if name == "Value" {
                 // serde_json::Value (and other dynamic-JSON value types): ANY
                 // JSON deserializes into it, so it is freely synthesizable.
@@ -3188,8 +3560,16 @@ mod tests {
 
     // ── Enum type mapping tests ──
 
+    /// Shorthand for a JSON string value in enum-domain assertions.
+    fn jstr(s: &str) -> serde_json::Value {
+        serde_json::Value::String(s.to_string())
+    }
+
     #[test]
-    fn maps_unit_enum_to_union_of_unknowns() {
+    fn maps_fieldless_enum_to_union_with_string_enum_values() {
+        // str-2nfoe: a fieldless enum now carries a value domain (variant-name
+        // strings) over a single `str` base variant, so the core generator draws
+        // members that deserialize and reach every match arm.
         let code = r#"
             enum Direction { North, South, East, West }
             fn f(d: Direction) {}
@@ -3198,15 +3578,201 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Union {
-                variants: vec![
-                    TypeInfo::Unknown,
-                    TypeInfo::Unknown,
-                    TypeInfo::Unknown,
-                    TypeInfo::Unknown,
+                variants: vec![TypeInfo::Str],
+                enum_values: vec![
+                    jstr("North"),
+                    jstr("South"),
+                    jstr("East"),
+                    jstr("West"),
                 ],
-                enum_values: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn fieldless_enum_respects_variant_rename() {
+        // Variant-level `#[serde(rename)]` overrides the raw name.
+        let code = r#"
+            enum Status {
+                Active,
+                #[serde(rename = "on_hold")]
+                OnHold,
+            }
+            fn f(s: Status) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![TypeInfo::Str],
+                enum_values: vec![jstr("Active"), jstr("on_hold")],
+            }
+        );
+    }
+
+    #[test]
+    fn fieldless_enum_respects_rename_all() {
+        // Enum-level `#[serde(rename_all)]` splits PascalCase variants on case
+        // boundaries (serde's variant rule), not on underscores.
+        let code = r#"
+            #[serde(rename_all = "snake_case")]
+            enum Phase { InProgress, Done }
+            fn f(p: Phase) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![TypeInfo::Str],
+                enum_values: vec![jstr("in_progress"), jstr("done")],
+            }
+        );
+    }
+
+    #[test]
+    fn fieldless_enum_variant_rename_overrides_rename_all() {
+        // serde precedence: a variant `rename` wins over the enum `rename_all`.
+        let code = r#"
+            #[serde(rename_all = "UPPERCASE")]
+            enum Kind {
+                First,
+                #[serde(rename = "second-custom")]
+                Second,
+            }
+            fn f(k: Kind) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![TypeInfo::Str],
+                enum_values: vec![jstr("FIRST"), jstr("second-custom")],
+            }
+        );
+    }
+
+    #[test]
+    fn serde_repr_enum_emits_integer_domain() {
+        // serde_repr encodes the enum as its integer discriminant, so the domain
+        // is the discriminants (explicit + C-style sequential fill), not names.
+        let code = r#"
+            #[derive(Serialize_repr, Deserialize_repr)]
+            #[repr(u8)]
+            enum Level { Low = 1, Medium, High = 9 }
+            fn f(l: Level) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![int_ty(8, false)],
+                enum_values: vec![
+                    serde_json::json!(1),
+                    serde_json::json!(2),
+                    serde_json::json!(9),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn repr_int_without_serde_repr_stays_string_domain() {
+        // `#[repr(i32)]` alone does NOT change serde: default serde still accepts
+        // variant-name strings, so the domain is names, not discriminants.
+        let code = r#"
+            #[repr(i32)]
+            enum Code { Ok = 0, NotFound = 404 }
+            fn f(c: Code) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        assert_eq!(
+            f.params[0].typ,
+            TypeInfo::Union {
+                variants: vec![TypeInfo::Str],
+                enum_values: vec![jstr("Ok"), jstr("NotFound")],
+            }
+        );
+    }
+
+    #[test]
+    fn data_carrying_enum_emits_no_enum_values() {
+        // Unchanged behavior: an enum with any data-carrying variant produces a
+        // plain per-variant type union with no value domain.
+        let code = r#"
+            enum Mixed { Unit, Payload(i32) }
+            fn f(m: Mixed) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        match f.params[0].typ {
+            TypeInfo::Union {
+                ref enum_values, ..
+            } => assert!(
+                enum_values.is_empty(),
+                "data-carrying enum must not carry a value domain: {enum_values:?}"
+            ),
+            ref other => panic!("expected union, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exotic_serde_enum_suppresses_enum_values() {
+        // An enum-level serde attribute outside `rename_all` (here `untagged`)
+        // means we cannot prove the accepted values, so no domain is emitted.
+        let code = r#"
+            #[serde(untagged)]
+            enum Weird { A, B }
+            fn f(w: Weird) {}
+        "#;
+        let f = analyze_fn(code, "f");
+        match f.params[0].typ {
+            TypeInfo::Union {
+                ref enum_values, ..
+            } => assert!(
+                enum_values.is_empty(),
+                "exotic-serde enum must not carry a value domain: {enum_values:?}"
+            ),
+            ref other => panic!("expected union, got {other:?}"),
+        }
+    }
+
+    proptest::proptest! {
+        /// Invariant (str-2nfoe): a plain fieldless enum (no serde attributes)
+        /// always yields the variant names as its string value domain, in
+        /// declaration order, over a single `str` base variant, truncated to
+        /// [`MAX_ENUM_VALUES`]. Every emitted member is exactly a variant name,
+        /// which default serde accepts — the governing correctness contract.
+        #[test]
+        fn plain_fieldless_enum_domain_is_variant_names_capped(
+            raw in proptest::collection::vec("[A-Z][a-z]{0,5}", 1..70)
+        ) {
+            // Suffix with the index so every variant identifier is unique and
+            // valid regardless of collisions in the generated stems.
+            let variants: Vec<String> = raw
+                .into_iter()
+                .enumerate()
+                .map(|(i, stem)| format!("{stem}{i}"))
+                .collect();
+            let code = format!("enum E {{ {} }}\nfn f(e: E) {{}}", variants.join(", "));
+            let f = analyze_source(&code, Some("f"))
+                .expect("analysis should succeed")
+                .into_iter()
+                .next()
+                .expect("function should be found");
+            match &f.params[0].typ {
+                TypeInfo::Union { variants: vs, enum_values } => {
+                    proptest::prop_assert_eq!(vs.clone(), vec![TypeInfo::Str]);
+                    let expected_len = variants.len().min(MAX_ENUM_VALUES);
+                    proptest::prop_assert_eq!(enum_values.len(), expected_len);
+                    for (i, value) in enum_values.iter().enumerate() {
+                        proptest::prop_assert_eq!(
+                            value,
+                            &serde_json::Value::String(variants[i].clone())
+                        );
+                    }
+                }
+                other => proptest::prop_assert!(false, "expected union, got {:?}", other),
+            }
+        }
     }
 
     #[test]

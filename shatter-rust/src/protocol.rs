@@ -75,10 +75,9 @@ pub enum TypeInfo {
     Union {
         variants: Vec<TypeInfo>,
         /// Optional concrete value domain for named enum-like types (str-pjlc1).
-        /// Additive wire field; carried for round-trip parity with the core and
-        /// Go frontend. The Rust analyzer does not yet populate it (fieldless
-        /// enums still produce a plain union) — see the `enum-value-domain-partial`
-        /// entry in protocol/parity-matrix.yaml.
+        /// Additive wire field. The Rust analyzer populates it for fieldless
+        /// enums defined in the analyzed file (str-2nfoe); see
+        /// `shatter-rust/CLAUDE.md`'s Enum Value-Domain Parity Contract.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         enum_values: Vec<serde_json::Value>,
     },
