@@ -705,6 +705,7 @@ mod tests {
                 ctor_zero_plan(1, "weight", "float64"),
                 ctor_zero_plan(2, "timeout", "time.Duration"),
             ],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -750,6 +751,7 @@ mod tests {
                 type_hint: String::new(),
             }],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -1411,6 +1413,7 @@ mod tests {
                     generic_type_args: vec![],
                     argument_plans: args,
                     constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
                     priority: 0,
                     label: String::new(),
                 })
