@@ -58,6 +58,7 @@ fn explore_from_artifacts_exits_nonzero_when_every_target_failed() {
     // `--from-artifacts` short-circuit skips analysis. Pass an arbitrary
     // placeholder so argument parsing succeeds.
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .arg("explore")
         .arg("--from-artifacts")
         .arg(artifact_root)
@@ -155,6 +156,7 @@ fn explore_from_artifacts_exits_zero_when_some_target_succeeded() {
     .expect("write good summary");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .arg("explore")
         .arg("--from-artifacts")
         .arg(artifact_root)
@@ -207,6 +209,7 @@ fn explore_from_artifacts_exits_nonzero_when_only_parser_failure_summary() {
     .expect("write parser-failure summary");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .arg("explore")
         .arg("--from-artifacts")
         .arg(artifact_root)

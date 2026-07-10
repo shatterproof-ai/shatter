@@ -160,6 +160,18 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     pub(crate) project_dir: Option<std::path::PathBuf>,
 
+    /// Permit executing target functions on the host without an OS sandbox.
+    ///
+    /// By default (str-gg9v) Shatter refuses to execute target functions when no
+    /// sandbox backend is configured, because a target can create, modify, or
+    /// delete files by relative path in the invoking repository. Pass this flag
+    /// (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in,
+    /// targets still run in a throwaway working directory so relative-path writes
+    /// do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap`
+    /// is the safer alternative and does not require this flag.
+    #[arg(long, global = true)]
+    pub(crate) allow_host_writes: bool,
+
     /// Override config values using dotted-path key=value pairs (repeatable).
     ///
     /// Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`

@@ -999,6 +999,26 @@ fn to_absolute(p: PathBuf) -> PathBuf {
     }
 }
 
+/// Working directory for *executing* a compiled harness binary (str-gg9v).
+///
+/// The shatter CLI default-denies unsandboxed host execution; when the operator
+/// opts in, it exports `SHATTER_HOST_WRITE_DIR` pointing at a throwaway
+/// directory. Running the harness there means a target's relative-path file
+/// writes (`std::fs::write("out", ...)`) land in the throwaway directory and are
+/// cleaned with the run, instead of littering the invoking repository. When the
+/// variable is unset (in-tree tests, or a caller that manages isolation itself)
+/// the harness build directory is used unchanged. The compiled binary path is
+/// absolute, so the redirected cwd does not affect binary lookup.
+///
+/// Applied only at harness *execution* sites, never to `cargo build`/`cargo
+/// check`, which must run in the harness build directory.
+fn harness_exec_cwd(default_dir: &Path) -> PathBuf {
+    match std::env::var_os("SHATTER_HOST_WRITE_DIR") {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => default_dir.to_path_buf(),
+    }
+}
+
 /// Read the harness cache root from `SHATTER_HARNESS_CACHE`.
 /// Returns `None` if unset or empty. Always returns an absolute path so that
 /// all derived paths (`standalone_target_dir`, `make_harness_dir`, etc.) are
@@ -2974,7 +2994,7 @@ fn build_and_spawn_harness(
 
     // Spawn the subprocess with stdin/stdout pipes
     let mut child = Command::new(&binary_path)
-        .current_dir(harness_dir)
+        .current_dir(harness_exec_cwd(harness_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -3116,7 +3136,7 @@ fn build_and_spawn_crate_harness(
     }
 
     let mut child = Command::new(&binary_path)
-        .current_dir(harness_dir)
+        .current_dir(harness_exec_cwd(harness_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -4481,7 +4501,7 @@ fn build_and_spawn_crate_bridge_harness(
     }
 
     let mut child = Command::new(&binary_path)
-        .current_dir(harness_dir)
+        .current_dir(harness_exec_cwd(harness_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

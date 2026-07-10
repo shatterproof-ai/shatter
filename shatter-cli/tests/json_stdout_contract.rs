@@ -46,6 +46,7 @@ fn scan_dry_run_json_stdout_emits_plan() {
     write_go_fixture(tmp.path());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "scan",
@@ -105,6 +106,7 @@ fn scan_dry_run_json_default_stdout_emits_plan() {
     write_go_fixture(tmp.path());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "scan",
@@ -143,6 +145,7 @@ fn scan_dry_run_with_json_output_file_succeeds() {
     let json_out = tmp.path().join("scan-report.json");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "scan",
@@ -190,6 +193,7 @@ fn explore_json_stdout_is_rejected_by_clap() {
     prepare_project(tmp.path());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "explore",
@@ -241,6 +245,7 @@ fn explore_json_default_stdout_is_rejected_by_clap() {
     prepare_project(tmp.path());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args(["explore", "nonexistent.go:Func", "--format", "json"])
         .output()
@@ -264,6 +269,7 @@ fn explore_from_artifacts_json_stdout_is_rejected_by_clap() {
     std::fs::create_dir_all(&artifacts).unwrap();
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "explore",
@@ -292,6 +298,7 @@ fn explore_from_artifacts_json_stdout_is_rejected_by_clap() {
 #[test]
 fn explore_help_does_not_advertise_json_format() {
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args(["explore", "--help"])
         .output()
         .expect("invoke shatter explore --help");
@@ -343,6 +350,7 @@ fn explore_json_to_file_is_accepted() {
     let out_path = tmp.path().join("out.json");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "explore",

@@ -23,6 +23,7 @@ fn explore_rust_target_reports_unavailable_with_install_hint() {
     // Setting cwd to the empty tempdir makes the `./shatter-rust/...` and
     // `./target/...` candidates miss as well.
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args(["explore", rust_file.to_str().expect("utf8 path")])
         .env("PATH", "")
         .current_dir(tmp.path())
@@ -80,6 +81,7 @@ fn scan_skips_rust_files_when_frontend_unavailable_and_other_languages_present()
     .expect("write toy.rs");
 
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args([
             "scan",
             tmp.path().to_str().expect("utf8 path"),
@@ -172,6 +174,7 @@ fn explore_mixed_rust_go_skips_rust_with_structured_status_and_exits_zero() {
         .expect("write toy.rs");
 
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args([
             "explore",
             "--analyze-only",
@@ -239,6 +242,7 @@ fn explore_mixed_rust_go_with_require_rust_hard_fails() {
         .expect("write toy.rs");
 
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args([
             "explore",
             "--require-rust",
@@ -278,6 +282,7 @@ fn explore_all_rust_targets_hard_fails_when_rust_unavailable() {
         .expect("write toy.rs");
 
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args(["explore", rust_file.to_str().expect("utf8 path")])
         .env("PATH", "")
         .current_dir(tmp.path())
@@ -314,6 +319,7 @@ fn scan_mixed_emits_structured_status_per_skipped_rust_file() {
         .expect("write two.rs");
 
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args([
             "scan",
             tmp.path().to_str().expect("utf8 path"),
@@ -361,6 +367,7 @@ fn scan_with_require_rust_hard_fails_when_rust_unavailable() {
     .expect("write toy.rs");
 
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args([
             "scan",
             tmp.path().to_str().expect("utf8 path"),

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# str-gg9v: the walkthrough executes target functions without an OS sandbox. Opt
+# into unsandboxed host execution so the default-deny guard permits it; the
+# targets still run in a throwaway working directory, so no stray files land in
+# the repo. Configure SHATTER_SANDBOX_BACKEND instead to run fully sandboxed.
+export SHATTER_ALLOW_HOST_WRITES="${SHATTER_ALLOW_HOST_WRITES:-1}"
+
 # Shatter Walkthrough — Compact Demo
 # Reads step definitions from demo/walkthrough.yaml (single source of truth).
 # For the exhaustive coverage run, see demo/gauntlet.sh.

@@ -301,6 +301,10 @@ tasks:
   smoke:
     desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function, failed-instrumentation regression."
     deps: [ts:build]
+    # str-gg9v: these steps execute target functions without an OS sandbox, so
+    # opt into host execution (targets still run in a throwaway working dir).
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
@@ -330,18 +334,24 @@ tasks:
   walkthrough:
     desc: Run the compact walkthrough demo
     deps: [build]
+    # str-gg9v: demo/walkthrough.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
       - bash demo/walkthrough.sh --auto --delay 0
 
   gauntlet:
     desc: Run the broad CLI coverage gauntlet
     deps: [build]
+    # str-gg9v: demo/gauntlet.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
       - bash demo/gauntlet.sh --auto --delay 0
 
   broad-run-corpus:
     desc: Run the broad-run validation corpus gate (Kapow failure-class fixtures)
     deps: [cli:build]
+    # str-gg9v: scans execute target functions unsandboxed; opt in so the
+    # default-deny guard permits execution (writes go to a throwaway working dir).
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
     preconditions:
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
@@ -481,6 +491,10 @@ tasks:
   broad-run-validation:
     desc: "Broad-run validation corpus gate (str-jeen.14). Documented local check; not in CI."
     deps: [cli:build, ts:build, go:build]
+    # str-gg9v: scans execute target functions unsandboxed; opt in so the
+    # default-deny guard permits execution (writes go to a throwaway working dir).
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
     preconditions:
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
