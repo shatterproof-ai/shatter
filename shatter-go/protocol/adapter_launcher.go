@@ -90,11 +90,15 @@ func prepareAdapterLauncher(file, function, adapterID string) (*preparedLauncher
 		return nil, fmt.Errorf("build adapter launcher: %w", err)
 	}
 
+	sb := sandbox.FromEnv()
 	return &preparedLauncher{
 		BinaryPath:  binaryPath,
 		ProjectRoot: moduleDir,
-		WorkDir:     moduleDir,
-		Sandbox:     sandbox.FromEnv(),
+		// str-gg9v: honor the host-write isolation directory on the adapter
+		// path too — this is a parallel execution path to prepareDirectExecution
+		// and would otherwise let unsandboxed relative-path writes hit the repo.
+		WorkDir: executionWorkDir(sb, moduleDir),
+		Sandbox: sb,
 		// Adapter-owned launcher exposes a synthetic invocation surface
 		// rather than a wrapper-target-keyed switch; TargetID and the
 		// receiver_kind override are unused on the adapter path. Leave

@@ -254,6 +254,44 @@ Single-target commands (`observe`, `revalidate`, `stale`) require a concrete
 error — use `explore`/`properties` for glob targets and `scan --include` for
 repository discovery.
 
+## Executing Target Functions Safely
+
+> **Breaking change (str-gg9v).** Commands that *run* your target functions —
+> `explore`, `scan`, `run`, `observe`, `properties`, `revalidate`, `bench` —
+> now **refuse to execute without a sandbox** unless you explicitly opt in.
+> Analysis-only commands (`analyze`, `solve`, `specify`, `stale`, `diff`,
+> `list-targets`, …) are unaffected.
+
+Shatter explores a function by *calling it* with mined and generated inputs. A
+target that opens, creates, renames, or deletes a file by **relative path**
+will mutate the directory the command runs in — historically this left stray
+files (named after generated string inputs) scattered through the invoking
+repository, unnoticed for weeks. Two independent controls now prevent that:
+
+1. **Default-deny.** With no OS sandbox configured, execution commands exit with
+   an instructive error instead of running. Choose one remedy:
+
+   ```bash
+   # Recommended: run targets inside an OS sandbox (Go frontend).
+   export SHATTER_SANDBOX_BACKEND=docker   # or: bwrap
+
+   # Or opt into unsandboxed execution (see control #2 below):
+   shatter explore shipping.ts:calculateShipping --allow-host-writes
+   # …or once per shell / CI job:
+   export SHATTER_ALLOW_HOST_WRITES=1
+   ```
+
+2. **Throwaway working directory.** Even with `--allow-host-writes`, each
+   unsandboxed run executes in a fresh temp directory that is deleted when the
+   command finishes, so a target that writes `./foo` leaves nothing behind in
+   your repository. (A configured `SHATTER_SANDBOX_BACKEND` supersedes this —
+   the sandbox already contains writes, so runs are unchanged.)
+
+If you script Shatter in CI or a wrapper, prefer configuring
+`SHATTER_SANDBOX_BACKEND`; use `SHATTER_ALLOW_HOST_WRITES=1` only where an OS
+sandbox is unavailable and you accept that targets run against the host
+filesystem (confined to the throwaway directory).
+
 ## Core Commands
 
 Use `shatter --help` and `shatter <command> --help` for the current CLI surface. The commands most users start with are:

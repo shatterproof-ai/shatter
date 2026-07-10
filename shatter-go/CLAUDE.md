@@ -232,7 +232,9 @@ Docker options:
 - `SHATTER_SANDBOX_DOCKER_IMAGE` defaults to `debian:bookworm-slim`.
 - `SHATTER_SANDBOX_DOCKER_RUNTIME` optionally selects a runtime such as `runsc` for gVisor.
 
-The sandbox runner contains local filesystem writes, but it does not yet emit `file_write` side effects and it is not yet required by the `local_fs` policy gate. The next enforcement step is to make `local_fs` execution require an active sandbox unless an explicit unsafe compatibility flag is set.
+The sandbox runner contains local filesystem writes, but it does not yet emit `file_write` side effects and it is not yet required by the `local_fs` policy gate.
+
+**Host-write default-deny (str-gg9v).** The `shatter` CLI now refuses to *execute* targets when no sandbox backend is configured unless the operator passes `--allow-host-writes` (or `SHATTER_ALLOW_HOST_WRITES=1`). When it does run a target unsandboxed, it exports `SHATTER_HOST_WRITE_DIR` (an absolute path to a throwaway directory) into the frontend environment. The Go frontend honors it in `executionWorkDir` (`protocol/prepared_launcher.go`), used by both `prepareDirectExecution` and the adapter-launcher path (`protocol/adapter_launcher.go`): when the sandbox is disabled (`Runner.Enabled()` is false) and the variable is set, the launcher's `WorkDir` becomes that directory instead of the target module directory, so a target's relative-path writes land in the throwaway directory rather than the invoking repo. A configured `SHATTER_SANDBOX_BACKEND` disables this redirect — the sandbox already contains writes and the CLI never sets `SHATTER_HOST_WRITE_DIR` in that case. This env-driven cwd change leaves JSON output identical, so it requires no parity-matrix change.
 
 ## Hint Config v1 Contract (str-hy9b.G3)
 

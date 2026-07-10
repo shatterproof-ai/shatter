@@ -12,6 +12,7 @@ mod commands;
 mod embedded_frontend;
 mod embedded_go_frontend;
 mod helpers;
+mod host_writes;
 mod render;
 mod telemetry_flush;
 
@@ -124,6 +125,7 @@ async fn main() -> ExitCode {
     let subcommand_name = subcommand_label(&cli.command);
     let cmd_start = std::time::Instant::now();
     let timing_start_unix_ms = timing::unix_timestamp_ms_now();
+
     let timing_handle = if timing_config.mode.is_enabled() {
         let handle = TimingHandle::default();
         if let Err(err) = handle.install_global() {
@@ -132,6 +134,28 @@ async fn main() -> ExitCode {
         Some(handle)
     } else {
         None
+    };
+
+    // str-gg9v: default-deny host filesystem writes. Commands that execute or
+    // replay target functions refuse to run when no OS sandbox backend is
+    // configured unless the operator opts in (`--allow-host-writes` /
+    // `SHATTER_ALLOW_HOST_WRITES=1`). When they do run unsandboxed, targets are
+    // confined to a throwaway working directory held alive by this guard for the
+    // command's duration. Analysis-only commands (`analyze`, `stale`) are exempt.
+    let _host_write_isolation = match host_writes::setup(&cli.command, cli.allow_host_writes) {
+        Ok(guard) => guard,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
+            let duration_ms = cmd_start.elapsed().as_millis() as u64;
+            return finalize_exit_code(
+                &subcommand_name,
+                duration_ms,
+                1,
+                &timing_config,
+                timing_start_unix_ms,
+                timing_handle.as_ref(),
+            );
+        }
     };
 
     let result = match cli.command {

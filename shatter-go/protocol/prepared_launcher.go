@@ -22,6 +22,29 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
 
+// hostWriteDirEnv carries the absolute path of the Rust CLI's throwaway
+// host-write isolation directory (str-gg9v). It is set only when a target is
+// executed with no OS sandbox backend configured; the launcher then runs with
+// this as its working directory so a target's relative-path file writes
+// (`os.OpenFile("./out", ...)`) land in the throwaway directory rather than
+// mutating the invoking repository. Sandbox backends already contain writes and
+// never receive this variable, so it is ignored when a sandbox is enabled.
+const hostWriteDirEnv = "SHATTER_HOST_WRITE_DIR"
+
+// executionWorkDir returns the working directory for the launcher subprocess.
+// When no OS sandbox is active and the CLI supplied a host-write isolation
+// directory, that directory wins over the target module directory so
+// relative-path writes are redirected out of the repo. Otherwise the target
+// module directory is used unchanged.
+func executionWorkDir(sb sandbox.Runner, targetModuleDir string) string {
+	if !sb.Enabled() {
+		if dir := strings.TrimSpace(os.Getenv(hostWriteDirEnv)); dir != "" {
+			return dir
+		}
+	}
+	return targetModuleDir
+}
+
 type preparedExecution interface {
 	IsValid() bool
 	Cleanup()
@@ -253,11 +276,12 @@ func (h *Handler) prepareDirectExecution(
 		return nil, fmt.Errorf("build failed: %w", err)
 	}
 
+	sb := sandbox.FromEnv()
 	return &preparedLauncher{
 		BinaryPath:             result.BinaryPath,
 		ProjectRoot:            req.TargetModuleDir,
-		WorkDir:                req.TargetModuleDir,
-		Sandbox:                sandbox.FromEnv(),
+		WorkDir:                executionWorkDir(sb, req.TargetModuleDir),
+		Sandbox:                sb,
 		TargetID:               targetID,
 		DefaultReceiverKind:    defaultReceiverKind,
 		DefaultGenericTypeArgs: append([]string{}, defaultGenericTypeArgs...),

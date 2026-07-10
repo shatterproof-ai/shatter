@@ -598,6 +598,16 @@ pub(crate) fn frontend_config(
             .push(("GOMAXPROCS".to_string(), GO_FRONTEND_GOMAXPROCS.to_string()));
     }
 
+    // str-gg9v: host-write isolation is applied at *target execution* time, not
+    // to the frontend process as a whole. Redirecting the frontend's own cwd
+    // would break relative source-path resolution during analysis (the frontend
+    // resolves the target file against its cwd). Instead the CLI exports
+    // `SHATTER_HOST_WRITE_DIR` (see `host_writes::IsolationGuard`), and each
+    // frontend redirects only the cwd of the subprocess/context that actually
+    // runs the target: the Go launcher (`prepared_launcher.go`), the Rust
+    // harness binary (`executor.rs`). The frontend inherits the exported env var
+    // automatically, so nothing is threaded through `FrontendConfig` here.
+
     Ok(config)
 }
 
