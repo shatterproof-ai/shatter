@@ -85,6 +85,7 @@ fn explore_respects_tmpdir_no_host_tmp_pollution() {
     let before = snapshot_tmp_shatter_entries();
 
     let child = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .env("TMPDIR", &sentinel_path)
         .args([
             "scan",

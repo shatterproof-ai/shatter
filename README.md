@@ -285,7 +285,11 @@ repository, unnoticed for weeks. Two independent controls now prevent that:
    unsandboxed run executes in a fresh temp directory that is deleted when the
    command finishes, so a target that writes `./foo` leaves nothing behind in
    your repository. (A configured `SHATTER_SANDBOX_BACKEND` supersedes this —
-   the sandbox already contains writes, so runs are unchanged.)
+   the sandbox already contains writes, so runs are unchanged.) **Go and Rust
+   targets only** — the TypeScript frontend does not yet redirect relative-path
+   writes into the throwaway directory (str-02i70 tracks this); an
+   unsandboxed, opted-in TS target can still write into the invoking
+   repository. Configure an OS sandbox for TS targets until str-02i70 lands.
 
 If you script Shatter in CI or a wrapper, prefer configuring
 `SHATTER_SANDBOX_BACKEND`; use `SHATTER_ALLOW_HOST_WRITES=1` only where an OS

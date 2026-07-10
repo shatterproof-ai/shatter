@@ -16,6 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # str-gg9v: CI runs unsandboxed, so opt into host execution for any step that
+    # runs target functions (test-standard's CLI integration tests, etc.). Targets
+    # still run in a throwaway working directory. The default-deny guard's refusal
+    # behavior is covered independently by host_writes unit tests, which clear this
+    # variable in-test, so setting it here does not mask a regression.
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
 
     steps:
       - uses: actions/checkout@v4

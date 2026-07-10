@@ -37,6 +37,7 @@ fn scan_dry_run_keeps_executable_partial_http_writer() {
     prepare_partial_writer_project(tmp.path());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "scan",
@@ -88,6 +89,7 @@ fn explore_keeps_executable_partial_http_writer() {
     let target = format!("{}:WritePartial", tmp.path().join("main.go").display());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "explore",

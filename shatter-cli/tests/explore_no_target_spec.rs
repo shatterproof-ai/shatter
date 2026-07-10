@@ -59,6 +59,7 @@ fn explore_spec_out_emits_no_target_marker_for_declaration_only_ts() {
     let spec_out = tmp.path().join("spec.json");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .arg("explore")
         .arg("--from-artifacts")
         .arg(artifact_root)
@@ -113,6 +114,7 @@ fn explore_spec_out_emits_no_target_marker_for_go_with_no_functions() {
     let spec_out = tmp.path().join("spec.json");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .arg("explore")
         .arg("--from-artifacts")
         .arg(artifact_root)
