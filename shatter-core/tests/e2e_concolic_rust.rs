@@ -95,6 +95,15 @@ fn rust_examples_dir() -> PathBuf {
     examples_root().join("rust/src")
 }
 
+/// Resolve a repo-local Rust example fixture (mirrors `repo_examples_go_dir()`
+/// in `e2e_concolic_go.rs`). Used for fixtures that must ship with the shatter
+/// repo rather than the external examples checkout — e.g. the str-2nfoe enum
+/// value-domain fixture, whose own `Cargo.toml` bounds the analyzer's crate-root
+/// walk to its directory.
+fn repo_examples_rust_dir() -> PathBuf {
+    workspace_path("../examples/rust")
+}
+
 const RUST_FRONTEND_BUILD_TIMEOUT_SECS: &str = "180";
 const RUST_FRONTEND_EXEC_TIMEOUT_SECS: &str = "60";
 const RUST_FRONTEND_REQUEST_TIMEOUT_SECS: u64 = 240;
@@ -1420,6 +1429,115 @@ async fn e2e_rust_chrono_naive_date_field_materializes_and_executes() {
         return_values.contains("\"short\""),
         "should reach the duration_days<=7 branch; found: {return_values:?}"
     );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test: enum value-domain extraction (str-2nfoe), concolic path.
+//
+// Mirror of `e2e_go_enum_value_domain_reaches_all_arms`. `classify_color(c:
+// Color)` matches over a fieldless 3-variant enum:
+//   Color::Red   -> "warm"
+//   Color::Green -> "cool-green"
+//   Color::Blue  -> "cool-blue"
+//
+// Rust's match is exhaustive (no default arm) and an off-domain string fails to
+// deserialize into `Color` before the body runs, so every reachable return is a
+// valid arm. The three arms are reachable ONLY when the generator produces valid
+// enum members. We seed a single valid member ("Red") so the run starts
+// executing; the analyzer's enum_values domain on the param's union TypeInfo is
+// what lets the core draw Green/Blue and reach the other two arms. Before
+// str-2nfoe the param was a plain union of unknowns and only the seeded arm was
+// ever hit.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_enum_value_domain_reaches_all_arms() {
+    let file = repo_examples_rust_dir()
+        .join("enum-color")
+        .join("src")
+        .join("color.rs");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_color").await;
+    assert_eq!(analysis.params.len(), 1, "classify_color takes 1 param");
+    // The analyzer must surface the value domain as a union with enum_values.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
+            assert!(
+                !enum_values.is_empty(),
+                "analyzer should carry a non-empty enum_values domain for Color"
+            );
+            assert_eq!(
+                variants.len(),
+                1,
+                "Color union should have a single str base variant"
+            );
+        }
+        other => panic!("Color param should be a union with enum_values; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classify_color").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(60),
+        max_executions: Some(120),
+        plateau_threshold: 40,
+        ..Default::default()
+    };
+
+    // Single valid seed: generation from enum_values must find the other two
+    // members on its own.
+    let seed_inputs = vec![vec![serde_json::json!("Red")]];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_color",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_enum_value_domain: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"warm\"", "\"cool-green\"", "\"cool-blue\""] {
+        assert!(
+            return_values.contains(expected),
+            "enum value-domain generation should reach valid arm {expected}; \
+             found: {return_values:?}"
+        );
+    }
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }

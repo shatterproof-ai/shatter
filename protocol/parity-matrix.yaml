@@ -79,13 +79,14 @@ shared_wire_types:
       declaration (string and numeric enums, forward member values only) or a
       literal-union alias (`type Mode = "fast" | "slow"`), as a union with the
       base primitive variant(s) plus enum_values, capped at 64 with a warn.
-      Rust carries the field on the wire for round-trip parity but does not yet
-      emit it (fieldless enums still produce plain unions); see
-      allowed_divergences `enum-value-domain-partial`.
+      Rust emits it for fieldless enums defined in the analyzed file (str-2nfoe):
+      variant-name strings (respecting `#[serde(rename)]`/`#[serde(rename_all)]`)
+      or, for serde_repr enums, integer discriminants. All three frontends now
+      implement this field.
     frontends:
       typescript: implemented
       go: implemented
-      rust: wire_only
+      rust: implemented
 
 # --- Commands ---
 #
@@ -822,33 +823,6 @@ allowed_divergences:
       in those frontends) and in Rust (when method-target invocation
       becomes part of the Rust frontend's surface). Both are deferred
       until a real planner exists in the corresponding frontend.
-
-  - id: enum-value-domain-partial
-    description: >
-      The optional `enum_values` field on the TypeInfo `union` variant
-      (str-pjlc1) carries a concrete value domain for named enum-like types.
-      Go and TypeScript implement extraction: Go enumerates the constants of a
-      param's named string/int type from the defining package's type-checked
-      scope; TypeScript (str-knf0v) emits enum_values for params whose declared
-      type resolves to a TS `enum` declaration or a string/number/boolean
-      literal-union alias. Both cap at 64 with a warn-on-truncate. Rust accepts
-      and round-trips the field on the wire but does not yet emit it — Rust
-      fieldless enums still produce plain unions with no value domain. This is a
-      value-coverage divergence (Go/TS reach the bodies of enum-guarded
-      functions; Rust relies on generic candidates), not a wire-shape
-      divergence.
-    affected_frontends: [rust]
-    affected_commands: [analyze]
-    status: tracked
-    owner: Ketan Gangatirkar
-    tracking_issue: str-2nfoe (Rust)
-    resolution_condition: >
-      The Rust analyzer emits enum_values for fieldless enums, matching Go's and
-      TypeScript's named-type → value-domain contract.
-    resolution: >
-      Extend the Rust analyzer to populate enum_values from its native fieldless
-      enum representation, reusing the same union+enum_values wire shape Go and
-      TypeScript already emit. Deferred to the str-2nfoe follow-up.
 
   - id: go-side-effects-partial
     description: >

@@ -68,6 +68,16 @@ harness binaries cached before this change.
 
 Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map because the runtime hook observes loop entry without a source-level symbolic environment or local flow map.
 
+## Enum Value-Domain Parity Contract (str-2nfoe)
+
+For a parameter whose type resolves to a **fieldless enum defined in the analyzed file**, the analyzer emits a `TypeInfo::Union` carrying an `enum_values` value domain over a single base variant, matching Go's `union`+`enum_values` wire shape (str-pjlc1). The core input generator (`generate_union`) then draws valid members so validating decoders accept the input and every match arm executes; off-domain probes still come from the base variant.
+
+- **Default serde (string domain):** base variant `Str`; members are each variant's serde-facing JSON key — variant-level `#[serde(rename = "…")]` wins, else enum-level `#[serde(rename_all = "…")]` applied with serde's *variant* rule (PascalCase split on case boundaries, via `apply_rename_all_variant` — distinct from the struct-field `apply_rename_all` which splits snake_case on underscores), else the raw variant name.
+- **serde_repr (integer domain):** when the enum derives `Serialize_repr`/`Deserialize_repr` and has an integer `#[repr(iN/uN)]`, base variant is the sized `Int`; members are the discriminants (explicit integer literals or C-style sequential fill). Plain `#[repr(iN)]` WITHOUT serde_repr keeps the string domain — default serde still accepts variant names.
+- **Governing invariant:** every emitted member must be accepted by serde deserialization of the enum as written. When the accepted values cannot be proven (data-carrying variants, enum-level serde args outside `rename_all`, variant serde args outside `rename`, an unrecognized `rename_all` rule, an unevaluable discriminant, or serde_repr without an int repr), the analyzer emits NO `enum_values` and falls back to the plain per-variant type union — never guess.
+- **Truncation:** capped at `MAX_ENUM_VALUES` (64) with one WARN line to stderr per truncated type, mirroring Go.
+- **Out of scope:** cross-file/cross-crate enum resolution (single-file constraint) and data-carrying variants. Authoritative matrix: `protocol/parity-matrix.yaml` `shared_wire_types.type_info_enum_values` (rust, go, typescript: all implemented; the `enum-value-domain-partial` divergence is resolved and removed). E2E: `e2e_rust_enum_value_domain_reaches_all_arms` in `shatter-core/tests/e2e_concolic_rust.rs` over `examples/rust/enum-color/src/color.rs`.
+
 ## Prepare Parity Contract
 
 Rust implements `prepare` to pre-build the harness binary so subsequent execute calls skip compilation. Handler: `handle_prepare()` in `src/handler.rs`. Advertised in capabilities list. `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`compute_prepare_id` in `executor.rs`). Storage: `handler.prepared_harnesses: HashMap<String, PreparedHarnessInfo>`. Idempotent. Source file must exist and function must be analyzable. `prepared_harnesses.clear()` on function-level teardown + shutdown.
