@@ -260,14 +260,20 @@ tasks:
       - meta
 
   check-unit:
-    desc: "check stage 2: unit test suites"
+    desc: "check stage 2: unit test suites (nested-build suites serialized last)"
     deps:
-      - cli:test
-      - rust-fe:test
       - rust-rt:test
       - ts:test
       - go:test
       - go:vet
+    cmds:
+      # cli:test and rust-fe:test both spawn nested cargo builds from inside
+      # tests (scan pipelines / fixture-crate harnesses). Run in parallel with
+      # each other and the deps above they starve those builds past their
+      # 60s deadlines (str-35vtk.3 baseline: 13x "build timed out" flakes at
+      # loadavg 105). Sequenced here, not parallel deps.
+      - task: cli:test
+      - task: rust-fe:test
 
   check-integration:
     desc: "check stage 3: expensive integration (core e2e superset, conformance, parity)"
