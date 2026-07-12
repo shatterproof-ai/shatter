@@ -10,7 +10,9 @@ tasks:
     generates:
       - bin/shatter-go
     cmds:
-      - go build -buildvcs=false ./...
+      # Package-level compile coverage comes from `vet`/`test`; the -o build
+      # compiles main plus all transitive deps, so a separate `go build ./...`
+      # only duplicated work (str-35vtk.3).
       - go build -buildvcs=false -o bin/shatter-go .
 
   test:
