@@ -70,8 +70,14 @@ tasks:
     deps: [core:clippy, cli:clippy, rust-fe:clippy, rust-rt:clippy, go:vet]
 
   check-fast:
-    desc: "Fast quality gate (pre-push: clippy + tests + TS + Go)"
-    deps: [core:clippy, cli:clippy, core:test-ignored, cli:test, ts:test, go:test]
+    desc: "Fast quality gate (pre-push: clippy + tests + TS + Go; nested-build suites serialized)"
+    deps: [core:clippy, cli:clippy, ts:test, go:test]
+    cmds:
+      # Same starvation hazard as check-unit: cli:test and core:test-ignored
+      # spawn cargo/go builds from inside tests; run them after the parallel
+      # deps, one at a time.
+      - task: cli:test
+      - task: core:test-ignored
 
   # --- Cross-cutting quality (issue 5) ---
 
@@ -90,10 +96,8 @@ tasks:
     cmds:
       - python3 protocol/schemas/test_schema_validation.py
 
-  # NOTE: `parity` is defined once, below (registry validation + codegen check
-  # + validate-parity + golden tests). A second, narrower definition that only
-  # ran validate-parity.py used to shadow-precede it and was dead (go-task
-  # uses the last definition); removed in str-35vtk.3.
+  # `parity` is defined once, below. go-task silently uses the LAST definition
+  # of a duplicated task name — don't add another `parity:` here.
 
   conformance:
     desc: Run protocol conformance tests across all frontends
@@ -117,6 +121,8 @@ tasks:
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
     sources:
       - protocol/registry.yaml
       - protocol/conformance/golden_cases.yaml
@@ -249,7 +255,7 @@ tasks:
       - task: check-integration
 
   check-static:
-    desc: "check stage 1: cheap static analysis and docs/meta lint"
+    desc: "check stage 1: cheap checks — clippy, schemas, docs lint, meta (meta includes small go/python test runs)"
     deps:
       - core:clippy
       - cli:clippy
@@ -268,18 +274,19 @@ tasks:
       - go:vet
     cmds:
       # cli:test and rust-fe:test both spawn nested cargo builds from inside
-      # tests (scan pipelines / fixture-crate harnesses). Run in parallel with
-      # each other and the deps above they starve those builds past their
-      # 60s deadlines (str-35vtk.3 baseline: 13x "build timed out" flakes at
-      # loadavg 105). Sequenced here, not parallel deps.
+      # tests (scan pipelines / fixture-crate harnesses). If run in parallel
+      # with each other and the deps above, they starve those builds past
+      # their 60s deadlines ("build timed out" flakes). Keep them sequenced
+      # here, not as parallel deps.
       - task: cli:test
       - task: rust-fe:test
 
   check-integration:
-    desc: "check stage 3: expensive integration (core e2e superset, conformance, parity)"
+    desc: "check stage 3: expensive integration (core e2e superset, conformance, parity). Core unit-test failures surface here, not stage 2: they ride in core:test-ignored to avoid running the core suite twice per check; stage-1 clippy already catches compile-level core breaks."
     deps:
-      - core:test-ignored
+      - go:build
     cmds:
+      - task: core:test-ignored
       - task: conformance
       - task: parity
 
@@ -287,6 +294,9 @@ tasks:
 
   e2e:
     desc: Run E2E concolic pipeline tests (TS + Rust + Go frontends)
+    # Build all three frontends in parallel up front; the subtasks' own dep
+    # checks then no-op and the test phases run sequentially.
+    deps: [ts:build, go:build, rust-fe:build]
     cmds:
       - task: e2e-ts
       - task: e2e-go
@@ -305,7 +315,7 @@ tasks:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
         SHATTER_EXAMPLES_DIR="$examples_root" \
-          SHATTER_GO_FRONTEND_BIN="{{.ROOT_DIR}}/shatter-go/bin/shatter-go" \
+          SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go" \
           cargo test --test e2e_concolic
 
   e2e-go:
@@ -318,9 +328,9 @@ tasks:
       - scripts/examples_checkout.py
     cmds:
       - |
-        examples_root="$(python3 scripts/examples_checkout.py)"
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
         SHATTER_EXAMPLES_DIR="$examples_root" \
-          SHATTER_GO_FRONTEND_BIN="{{.ROOT_DIR}}/shatter-go/bin/shatter-go" \
+          SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go" \
           cargo test --test e2e_concolic_go -- --include-ignored
 
   e2e-rust:
@@ -333,7 +343,7 @@ tasks:
       - scripts/examples_checkout.py
     cmds:
       - |
-        examples_root="$(python3 scripts/examples_checkout.py)"
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
         SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic_rust -- --include-ignored
 
   smoke:

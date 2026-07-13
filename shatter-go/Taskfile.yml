@@ -10,9 +10,11 @@ tasks:
     generates:
       - bin/shatter-go
     cmds:
-      # Package-level compile coverage comes from `vet`/`test`; the -o build
-      # compiles main plus all transitive deps, so a separate `go build ./...`
-      # only duplicated work (str-35vtk.3).
+      # `go build ./...` stays: packages outside main's dep graph (e.g.
+      # reconstruct/) get compile coverage ONLY here in CI, which runs
+      # build via parity/conformance deps but never go:vet/go:test. With a
+      # warm GOCACHE the follow-up -o build reuses everything.
+      - go build -buildvcs=false ./...
       - go build -buildvcs=false -o bin/shatter-go .
 
   test:
