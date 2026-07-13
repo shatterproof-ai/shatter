@@ -1156,34 +1156,26 @@ fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
     if param.is_empty() {
         return None;
     }
+    // Preserve the raw source-level field name as the JSON overlay key. The
+    // segment is the field identifier exactly as written in the analyzed source
+    // (e.g. `unit_price` for a Rust struct, `unitPrice` for a TS property), and
+    // for every frontend the JSON key the executor reconstructs the value under
+    // matches that source spelling: Rust serde-derive structs default to
+    // snake_case keys, TS object properties are the literal identifiers, and Go
+    // struct field names carry no underscores. Any transformation here only ever
+    // mutates snake_case names — which corrupts the one frontend (Rust) that
+    // actually uses them, producing `missing field <name>` deserialize failures
+    // (str-wp6cf). Keep the segment verbatim.
     let path: Vec<String> = parts
         .filter(|part| !part.is_empty())
         .filter(|part| !part.contains('(') && !part.contains(')'))
-        .map(json_field_name)
+        .map(str::to_string)
         .collect();
     if path.is_empty() {
         None
     } else {
         Some((param, path))
     }
-}
-
-fn json_field_name(field: &str) -> String {
-    let mut out = String::with_capacity(field.len());
-    let mut uppercase_next = false;
-    for ch in field.chars() {
-        if ch == '_' {
-            uppercase_next = true;
-            continue;
-        }
-        if uppercase_next {
-            out.extend(ch.to_uppercase());
-            uppercase_next = false;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 fn overlay_json_path(target: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
@@ -3879,8 +3871,16 @@ mod tests {
         );
     }
 
+    /// Snake_case field segments must be overlaid under the RAW field name, not
+    /// a camelCased one. Rust serde-derive structs default to snake_case JSON
+    /// keys, so a solved `payload.owner_person_id` value must land under
+    /// `owner_person_id` — camelCasing it to `ownerPersonId` makes serde reject
+    /// the object with `missing field owner_person_id` and the execution fails
+    /// (str-wp6cf). This is the fast, frontend-independent regression for the
+    /// same defect the `#[ignore]`d e2e `classify_widget` fixture exercises
+    /// through a real Rust frontend subprocess.
     #[test]
-    fn overlay_nested_payload_field_uses_json_field_name() {
+    fn overlay_nested_payload_field_preserves_snake_case() {
         let base = vec![serde_json::json!({ "label": "existing" })];
         let mut solved = HashMap::new();
         solved.insert(
@@ -3894,7 +3894,7 @@ mod tests {
             result,
             vec![serde_json::json!({
                 "label": "existing",
-                "ownerPersonId": "person-id",
+                "owner_person_id": "person-id",
             })]
         );
     }
@@ -6235,6 +6235,32 @@ mod tests {
                 let result = overlay_solved_values(&base, &solved, &names);
                 prop_assert_eq!(result.len(), 1);
                 prop_assert_eq!(&result[0], &base_val);
+            }
+
+            /// A solved object-path variable overlays its value under the RAW
+            /// field name — no camelCase (or any other) transformation of the
+            /// segment (str-wp6cf). Rust serde-derive structs default to
+            /// snake_case JSON keys, so mutating the segment produces a key
+            /// serde rejects. Generate arbitrary snake_case field identifiers
+            /// and assert the overlaid object carries that exact key.
+            #[test]
+            fn overlay_object_path_preserves_raw_field_name(
+                field in "[a-z][a-z0-9]{0,4}(_[a-z0-9]{1,4}){0,3}",
+            ) {
+                let base = vec![serde_json::json!({})];
+                let names = vec!["p".to_string()];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{field}"), ConcreteValue::Int(7));
+                let result = overlay_solved_values(&base, &solved, &names);
+                let obj = result[0]
+                    .as_object()
+                    .expect("overlay target must be an object");
+                prop_assert!(
+                    obj.contains_key(&field),
+                    "overlay must use the raw field name {field:?} as the key; got keys {:?}",
+                    obj.keys().collect::<Vec<_>>()
+                );
+                prop_assert_eq!(&obj[&field], &serde_json::json!(7));
             }
 
             /// Worklist dequeues entries in non-increasing InputSource priority.

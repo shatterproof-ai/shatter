@@ -665,7 +665,7 @@ fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
     std::fs::write(
         src_dir.join("domain.rs"),
         "use serde::Deserialize;\n\nuse crate::shapes::Dimensions;\n\n\
-         #[derive(Deserialize)]\npub struct Widget {\n    pub size: i64,\n    pub dims: Dimensions,\n}\n",
+         #[derive(Deserialize)]\npub struct Widget {\n    pub size: i64,\n    pub unit_price: i64,\n    pub dims: Dimensions,\n}\n",
     )
     .expect("write domain.rs");
     let logic = src_dir.join("logic.rs");
@@ -680,8 +680,15 @@ fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
          /// Reaching it therefore proves the solver produced a concrete input\n\
          /// for a symbolic FIELD of a synthesized cross-file struct and that the\n\
          /// solved `w.size` value was overlaid back into the object argument.\n\
+         /// The `unit_price == 7777` arm is the str-wp6cf regression: a\n\
+         /// SNAKE_CASE cross-file field. Reaching \"priced\" requires the solver\n\
+         /// to overlay the solved `w.unit_price` value back under the RAW\n\
+         /// `unit_price` key. If the overlay camelCased it to `unitPrice`, the\n\
+         /// crate-bridge serde deserialize would reject the Widget with\n\
+         /// `missing field unit_price` and \"priced\" would never be observed.\n\
          pub fn classify_widget(w: Widget) -> &'static str {\n\
-         \x20   if w.size < 0 {\n        \"negative\"\n\
+         \x20   if w.unit_price == 7777 {\n        \"priced\"\n\
+         \x20   } else if w.size < 0 {\n        \"negative\"\n\
          \x20   } else if w.size == 4242 {\n        \"answer\"\n\
          \x20   } else if w.size <= 100 {\n        \"small\"\n\
          \x20   } else {\n        \"large\"\n    }\n}\n\n\
@@ -694,7 +701,8 @@ fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
          /// `DeserializeOwned`). Combined with the field-path lowering in the\n\
          /// instrumentor, the `w.size == 4242` arm is still a Z3-only target.\n\
          pub fn classify_widget_ref(w: &Widget) -> &'static str {\n\
-         \x20   if w.size < 0 {\n        \"negative\"\n\
+         \x20   if w.unit_price == 7777 {\n        \"priced\"\n\
+         \x20   } else if w.size < 0 {\n        \"negative\"\n\
          \x20   } else if w.size == 4242 {\n        \"answer\"\n\
          \x20   } else if w.size <= 100 {\n        \"small\"\n\
          \x20   } else {\n        \"large\"\n    }\n}\n",
@@ -741,6 +749,17 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
                 ),
                 "cross-file Widget.size must resolve to Int; got fields {fields:?}"
             );
+            // The snake_case field must survive analysis under its RAW name
+            // (str-wp6cf); a camelCased `unitPrice` here would foreshadow the
+            // overlay-key defect.
+            assert!(
+                matches!(
+                    fields.iter().find(|(n, _)| n == "unit_price"),
+                    Some((_, shatter_core::types::TypeInfo::Int { .. }))
+                ),
+                "cross-file Widget.unit_price must resolve to Int under its raw \
+                 snake_case name; got fields {fields:?}"
+            );
             match fields.iter().find(|(n, _)| n == "dims") {
                 Some((_, shatter_core::types::TypeInfo::Object { fields: nested })) => {
                     assert!(
@@ -766,11 +785,12 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
         ..Default::default()
     };
 
-    // Seeds must be COMPLETE `Widget` JSON, including the nested `Dimensions`,
-    // or the crate-bridge deserialize step rejects them (`missing field dims`).
+    // Seeds must be COMPLETE `Widget` JSON, including the nested `Dimensions`
+    // and the snake_case `unit_price` field, or the crate-bridge deserialize
+    // step rejects them (`missing field dims` / `missing field unit_price`).
     let seed_inputs = vec![
-        vec![serde_json::json!({"size": 7, "dims": {"length": 1, "height": 2}})],
-        vec![serde_json::json!({"size": -3, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": 7, "unit_price": 1, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": -3, "unit_price": 2, "dims": {"length": 1, "height": 2}})],
     ];
 
     let explore_outcome = orchestrator::explore(
@@ -802,7 +822,15 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
     };
 
     let return_values = return_value_set(&result);
-    for expected in ["\"negative\"", "\"answer\"", "\"small\"", "\"large\""] {
+    // "priced" is the str-wp6cf snake_case-field target: reachable only if the
+    // solved `w.unit_price` value is overlaid under the raw `unit_price` key.
+    for expected in [
+        "\"negative\"",
+        "\"answer\"",
+        "\"small\"",
+        "\"large\"",
+        "\"priced\"",
+    ] {
         assert!(
             return_values.contains(expected),
             "should discover cross-file-struct branch returning {expected}; \
@@ -810,8 +838,8 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
         );
     }
     assert!(
-        result.unique_paths >= 4,
-        "should have at least 4 unique paths; got {}",
+        result.unique_paths >= 5,
+        "should have at least 5 unique paths; got {}",
         result.unique_paths
     );
     // The `size == 4242` ("answer") branch is a non-boundary exact-equality
@@ -883,8 +911,8 @@ async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
     };
 
     let seed_inputs = vec![
-        vec![serde_json::json!({"size": 7, "dims": {"length": 1, "height": 2}})],
-        vec![serde_json::json!({"size": -3, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": 7, "unit_price": 1, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": -3, "unit_price": 2, "dims": {"length": 1, "height": 2}})],
     ];
 
     let explore_outcome = orchestrator::explore(
@@ -920,7 +948,13 @@ async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
     // owned deserialize + `&owned` call would fail to compile and no real branch
     // return values would appear.
     let return_values = return_value_set(&result);
-    for expected in ["\"negative\"", "\"answer\"", "\"small\"", "\"large\""] {
+    for expected in [
+        "\"negative\"",
+        "\"answer\"",
+        "\"small\"",
+        "\"large\"",
+        "\"priced\"",
+    ] {
         assert!(
             return_values.contains(expected),
             "by-reference cross-file-struct fn should discover branch returning {expected}; \
@@ -928,8 +962,8 @@ async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
         );
     }
     assert!(
-        result.unique_paths >= 4,
-        "should have at least 4 unique paths; got {}",
+        result.unique_paths >= 5,
+        "should have at least 5 unique paths; got {}",
         result.unique_paths
     );
     assert!(
