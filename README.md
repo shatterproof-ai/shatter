@@ -216,6 +216,34 @@ replace the config entirely (they are not appended). For boolean flags
 (`--no-cache`, `--capture-side-effects`): passing the flag on the CLI sets the
 value to true, overriding the config.
 
+`shatter doctor` prints which of the two files are present in the current
+project and restates this precedence, so an integrating repo can confirm what
+is in effect without reading this table.
+
+### Build-tool wrappers
+
+When you wire Shatter into a `Makefile`, `Taskfile.yml`, or `package.json`
+(for example via the `add-shatter-target` skill so `run-shatter` discovers it),
+invoke the binary as `shatter` — resolved from `PATH` — rather than a checkout
+path. Never hardcode a build path such as
+`$(HOME)/project/shatter/target/release/shatter`; it breaks for every other
+contributor and after the checkout moves. When a target needs an override knob,
+default to `PATH` and let an environment variable win:
+
+```make
+# Makefile
+SHATTER_BIN ?= shatter
+
+.PHONY: shatter
+shatter:
+	$(SHATTER_BIN)
+```
+
+A contributor with a source build points at it with
+`SHATTER_BIN=./target/release/shatter make shatter`; everyone else gets the
+`PATH` binary with no edits. The same convention applies to Taskfile and
+`package.json` wrappers.
+
 ## Quick Start
 
 See [QUICKSTART.md](QUICKSTART.md) for a copy-paste first run.

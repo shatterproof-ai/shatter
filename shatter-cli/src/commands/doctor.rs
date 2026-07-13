@@ -26,7 +26,10 @@ const GO_FRONTEND_SOURCE_DIR: &str = env!("GO_FRONTEND_SOURCE_DIR");
 /// Run `shatter doctor`. Returns `Ok(true)` when healthy, `Ok(false)` when a
 /// stale embedded frontend is detected (so the caller can exit non-zero).
 pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
-    crate::helpers::print_stdout(&format!("{}Shatter doctor{}\n\n", colors.bold, colors.reset));
+    crate::helpers::print_stdout(&format!(
+        "{}Shatter doctor{}\n\n",
+        colors.bold, colors.reset
+    ));
 
     crate::helpers::print_stdout(&format!(
         "shatter version:          {}\n",
@@ -41,6 +44,16 @@ pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
     crate::helpers::print_stdout(&format!(
         "ts-frontend bundle hash:  {TS_FRONTEND_BUNDLE_HASH}\n\n"
     ));
+
+    // Project configuration report (str-mktn). Printed before the embedded
+    // frontend staleness check so it is visible to installed binaries too —
+    // integrators run an installed `shatter`, where the staleness section
+    // early-returns below.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for line in config_report_lines(&detect_config_presence(&cwd)) {
+        crate::helpers::print_stdout(&format!("{line}\n"));
+    }
+    crate::helpers::print_stdout("\n");
 
     let source_dir = Path::new(GO_FRONTEND_SOURCE_DIR);
     if !source_dir.is_dir() {
@@ -72,7 +85,9 @@ pub fn run_doctor(colors: &Colors) -> Result<bool, Box<dyn std::error::Error>> {
              `shatter-go/` than what is on disk.\n",
             colors.bold, colors.reset
         ));
-        crate::helpers::print_stdout(&format!("  embedded source hash: {GO_FRONTEND_SOURCE_HASH}\n"));
+        crate::helpers::print_stdout(&format!(
+            "  embedded source hash: {GO_FRONTEND_SOURCE_HASH}\n"
+        ));
         crate::helpers::print_stdout(&format!("  current  source hash: {current_hash}\n"));
         crate::helpers::print_stdout(
             "  Run `cargo build -p shatter-cli` to rebuild the embedded frontend.\n",
@@ -156,6 +171,51 @@ fn sha256_hex(data: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "empty sha256sum output".to_string())
 }
 
+/// Which of the two project-config files are present in a checkout (str-mktn).
+///
+/// Shatter reads two distinct config files with non-overlapping ownership;
+/// `doctor` reports both so an integrating repo can see which are in effect and
+/// how they rank. See the "Project Configuration" section of `README.md`.
+struct ConfigPresence {
+    /// `shatter.config.json` at the project root (scan-global settings).
+    project_json: bool,
+    /// `.shatter/config.yaml` at the project root (per-function settings).
+    yaml: bool,
+}
+
+/// Detect the two project-config files relative to `root`.
+fn detect_config_presence(root: &Path) -> ConfigPresence {
+    ConfigPresence {
+        project_json: root
+            .join(shatter_core::config::PROJECT_CONFIG_FILENAME)
+            .is_file(),
+        yaml: root.join(".shatter").join("config.yaml").is_file(),
+    }
+}
+
+/// Human-readable lines describing the two config files and their precedence.
+///
+/// Kept pure (no I/O, no printing) so it can be unit-tested. The precedence
+/// line mirrors `README.md`'s "Override Precedence"; keep the two in sync.
+fn config_report_lines(presence: &ConfigPresence) -> Vec<String> {
+    let mark = |present: bool| if present { "present" } else { "not found" };
+    vec![
+        "Project configuration".to_string(),
+        format!(
+            "  shatter.config.json:   {:<9}  scan-global: discovery, output, caching, resource limits",
+            mark(presence.project_json)
+        ),
+        format!(
+            "  .shatter/config.yaml:  {:<9}  per-function: iterations, timeouts, mocks, generators, setup, opaque types",
+            mark(presence.yaml)
+        ),
+        "  Precedence: CLI flags > --set overrides > .shatter/config.yaml (nearest wins) \
+         > shatter.config.json > built-in defaults"
+            .to_string(),
+        "  The two files do not overlap; see README \"Project Configuration\".".to_string(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,7 +226,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("shatter-doctor-{name}-{}-{unique}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "shatter-doctor-{name}-{}-{unique}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -214,7 +277,38 @@ mod tests {
         // enter the built binary.
         std::fs::write(dir.join("main_test.go"), b"package main\n").unwrap();
         let after = hash_go_source_tree(&dir).unwrap();
-        assert_eq!(before, after, "test files must not affect the staleness hash");
+        assert_eq!(
+            before, after,
+            "test files must not affect the staleness hash"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_report_marks_present_and_absent_files() {
+        let dir = isolated_dir("config-presence");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".shatter")).unwrap();
+
+        // Neither file present.
+        let none = detect_config_presence(&dir);
+        assert!(!none.project_json && !none.yaml);
+        let lines = config_report_lines(&none);
+        assert!(lines[1].contains("not found"), "json line: {}", lines[1]);
+        assert!(lines[2].contains("not found"), "yaml line: {}", lines[2]);
+        // Precedence line is always present so integrators see ordering even
+        // when neither file exists.
+        assert!(lines.iter().any(|l| l.contains("Precedence: CLI flags")));
+
+        // Both files present.
+        std::fs::write(dir.join("shatter.config.json"), b"{}\n").unwrap();
+        std::fs::write(dir.join(".shatter").join("config.yaml"), b"defaults: {}\n").unwrap();
+        let both = detect_config_presence(&dir);
+        assert!(both.project_json && both.yaml);
+        let lines = config_report_lines(&both);
+        assert!(lines[1].contains("present"), "json line: {}", lines[1]);
+        assert!(lines[2].contains("present"), "yaml line: {}", lines[2]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
