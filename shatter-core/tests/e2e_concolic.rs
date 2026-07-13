@@ -1946,6 +1946,17 @@ async fn mcdc_compound_or_discovers_all_branches() {
 /// build into a per-process tmpdir keyed on a stable name so repeat
 /// invocations within one `cargo test` invocation reuse the binary.
 fn ensure_go_frontend_binary() -> PathBuf {
+    if let Ok(prebuilt) = env::var("SHATTER_GO_FRONTEND_BIN") {
+        if !prebuilt.is_empty() {
+            let prebuilt = PathBuf::from(prebuilt);
+            assert!(
+                prebuilt.exists(),
+                "SHATTER_GO_FRONTEND_BIN set but missing: {}",
+                prebuilt.display()
+            );
+            return prebuilt;
+        }
+    }
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let go_dir = manifest_dir.join("..").join("shatter-go");
     assert!(

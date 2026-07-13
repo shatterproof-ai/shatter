@@ -36,6 +36,11 @@ tasks:
     cmds:
       - |
         examples_root="$(python3 ../scripts/examples_checkout.py)"
+        # Reuse the prebuilt Go frontend when present (root check-integration
+        # deps go:build); the e2e tests fall back to building it otherwise.
+        if [ -x "$PWD/../shatter-go/bin/shatter-go" ]; then
+          export SHATTER_GO_FRONTEND_BIN="$PWD/../shatter-go/bin/shatter-go"
+        fi
         SHATTER_EXAMPLES_DIR="$examples_root" cargo test -p shatter-core -- --include-ignored
 
   clippy:

@@ -74,6 +74,17 @@ fn repo_examples_go_dir() -> PathBuf {
 /// a per-process tmpdir so repeat invocations within one `cargo test` reuse
 /// the binary. Mirrors `ensure_go_frontend_binary` in `e2e_concolic.rs`.
 fn ensure_go_frontend_binary() -> PathBuf {
+    if let Ok(prebuilt) = env::var("SHATTER_GO_FRONTEND_BIN") {
+        if !prebuilt.is_empty() {
+            let prebuilt = PathBuf::from(prebuilt);
+            assert!(
+                prebuilt.exists(),
+                "SHATTER_GO_FRONTEND_BIN set but missing: {}",
+                prebuilt.display()
+            );
+            return prebuilt;
+        }
+    }
     let go_dir = manifest_dir().join("..").join("shatter-go");
     assert!(
         go_dir.join("main.go").exists(),

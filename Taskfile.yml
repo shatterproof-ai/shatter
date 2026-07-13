@@ -70,8 +70,14 @@ tasks:
     deps: [core:clippy, cli:clippy, rust-fe:clippy, rust-rt:clippy, go:vet]
 
   check-fast:
-    desc: "Fast quality gate (pre-push: clippy + tests + TS + Go)"
-    deps: [core:clippy, cli:clippy, core:test-ignored, cli:test, ts:test, go:test]
+    desc: "Fast quality gate (pre-push: clippy + tests + TS + Go; nested-build suites serialized)"
+    deps: [core:clippy, cli:clippy, ts:test, go:test]
+    cmds:
+      # Same starvation hazard as check-unit: cli:test and core:test-ignored
+      # spawn cargo/go builds from inside tests; run them after the parallel
+      # deps, one at a time.
+      - task: cli:test
+      - task: core:test-ignored
 
   # --- Cross-cutting quality (issue 5) ---
 
@@ -90,24 +96,8 @@ tasks:
     cmds:
       - python3 protocol/schemas/test_schema_validation.py
 
-  parity:
-    desc: Validate frontend capabilities against the parity contract (protocol/parity-matrix.yaml)
-    preconditions:
-      - sh: command -v python3
-        msg: "python3 not installed"
-      - sh: python3 -c "import yaml" 2>/dev/null
-        msg: "pyyaml not installed (pip install pyyaml)"
-    sources:
-      - protocol/parity-matrix.yaml
-      - protocol/registry.yaml
-      - shatter-ts/src/handlers.ts
-      - shatter-ts/src/executor.ts
-      - shatter-go/protocol/constants.go
-      - shatter-go/protocol/handler.go
-      - shatter-go/instrument/executor.go
-      - shatter-rust/src/handler.rs
-    cmds:
-      - python3 scripts/validate-parity.py
+  # `parity` is defined once, below. go-task silently uses the LAST definition
+  # of a duplicated task name — don't add another `parity:` here.
 
   conformance:
     desc: Run protocol conformance tests across all frontends
@@ -131,6 +121,8 @@ tasks:
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
     sources:
       - protocol/registry.yaml
       - protocol/conformance/golden_cases.yaml
@@ -256,24 +248,45 @@ tasks:
         done
 
   check:
-    desc: "Full quality suite"
+    desc: "Full quality suite (staged fail-fast: static -> unit -> integration)"
+    cmds:
+      - task: check-static
+      - task: check-unit
+      - task: check-integration
+
+  check-static:
+    desc: "check stage 1: cheap checks — clippy, schemas, docs lint, meta (meta includes small go/python test runs)"
     deps:
-      - core:test-ignored
-      - cli:test
       - core:clippy
       - cli:clippy
-      - rust-fe:test
       - rust-fe:clippy
-      - rust-rt:test
       - rust-rt:clippy
+      - schemas
+      - docs
+      - meta
+
+  check-unit:
+    desc: "check stage 2: unit test suites (nested-build suites serialized last)"
+    deps:
+      - rust-rt:test
       - ts:test
       - go:test
       - go:vet
-      - schemas
-      - parity
-      - docs
-      - meta
     cmds:
+      # cli:test and rust-fe:test both spawn nested cargo builds from inside
+      # tests (scan pipelines / fixture-crate harnesses). If run in parallel
+      # with each other and the deps above, they starve those builds past
+      # their 60s deadlines ("build timed out" flakes). Keep them sequenced
+      # here, not as parallel deps.
+      - task: cli:test
+      - task: rust-fe:test
+
+  check-integration:
+    desc: "check stage 3: expensive integration (core e2e superset, conformance, parity). Core unit-test failures surface here, not stage 2: they ride in core:test-ignored to avoid running the core suite twice per check; stage-1 clippy already catches compile-level core breaks."
+    deps:
+      - go:build
+    cmds:
+      - task: core:test-ignored
       - task: conformance
       - task: parity
 
@@ -281,22 +294,57 @@ tasks:
 
   e2e:
     desc: Run E2E concolic pipeline tests (TS + Rust + Go frontends)
-    deps: [ts:build, rust-fe:build]
+    # Build all three frontends in parallel up front; the subtasks' own dep
+    # checks then no-op and the test phases run sequentially.
+    deps: [ts:build, go:build, rust-fe:build]
+    cmds:
+      - task: e2e-ts
+      - task: e2e-go
+      - task: e2e-rust
+
+  e2e-ts:
+    desc: "E2E concolic pipeline: TypeScript frontend (e2e_concolic.rs; also uses the prebuilt Go frontend for its Go planner section)"
+    deps: [ts:build, go:build]
     sources:
       - shatter-core/tests/e2e_concolic.rs
-      - shatter-core/tests/e2e_concolic_rust.rs
-      - shatter-core/tests/e2e_concolic_go.rs
       - shatter-core/src/**/*.rs
       - shatter-ts/src/**/*.ts
-      - shatter-rust/src/**/*.rs
       - shatter-go/**/*.go
       - scripts/examples_checkout.py
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
-        SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic
+        SHATTER_EXAMPLES_DIR="$examples_root" \
+          SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go" \
+          cargo test --test e2e_concolic
+
+  e2e-go:
+    desc: "E2E concolic pipeline: Go frontend (e2e_concolic_go.rs)"
+    deps: [go:build]
+    sources:
+      - shatter-core/tests/e2e_concolic_go.rs
+      - shatter-core/src/**/*.rs
+      - shatter-go/**/*.go
+      - scripts/examples_checkout.py
+    cmds:
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+        SHATTER_EXAMPLES_DIR="$examples_root" \
+          SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go" \
+          cargo test --test e2e_concolic_go -- --include-ignored
+
+  e2e-rust:
+    desc: "E2E concolic pipeline: Rust frontend (e2e_concolic_rust.rs)"
+    deps: [rust-fe:build]
+    sources:
+      - shatter-core/tests/e2e_concolic_rust.rs
+      - shatter-core/src/**/*.rs
+      - shatter-rust/src/**/*.rs
+      - scripts/examples_checkout.py
+    cmds:
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
         SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic_rust -- --include-ignored
-        SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic_go -- --include-ignored
 
   smoke:
     desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function, failed-instrumentation regression."

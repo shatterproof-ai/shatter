@@ -10,6 +10,10 @@ tasks:
     generates:
       - bin/shatter-go
     cmds:
+      # `go build ./...` stays: packages outside main's dep graph (e.g.
+      # reconstruct/) get compile coverage ONLY here in CI, which runs
+      # build via parity/conformance deps but never go:vet/go:test. With a
+      # warm GOCACHE the follow-up -o build reuses everything.
       - go build -buildvcs=false ./...
       - go build -buildvcs=false -o bin/shatter-go .
 
