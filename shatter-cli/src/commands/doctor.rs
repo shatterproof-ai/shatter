@@ -142,14 +142,16 @@ fn check_generated_paths_ignored(directory: Option<&Path>, colors: &Colors) -> b
 
 /// Resolve the project root for the gitignore check: the explicit directory if
 /// given, else the auto-detected project root, else the current directory.
+///
+/// Delegates to `helpers::resolve_project_root`, the same auto-detection logic
+/// `analyze`/`explore` use, so `doctor` never disagrees with the rest of the CLI
+/// about which directory a project's root is.
 fn resolve_project_root(directory: Option<&Path>) -> PathBuf {
-    if let Some(dir) = directory {
-        return dir.to_path_buf();
-    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    shatter_core::project::detect_project_root(&cwd)
-        .map(|root| root.path)
-        .unwrap_or(cwd)
+    if let Some(root) = crate::helpers::resolve_project_root(directory, &cwd) {
+        return PathBuf::from(root);
+    }
+    cwd
 }
 
 /// Whether a file contributes to the Go frontend build. Must mirror

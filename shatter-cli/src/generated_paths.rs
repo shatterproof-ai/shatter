@@ -123,13 +123,71 @@ pub(crate) fn collect_generated_ignore_entries(project_root: &Path) -> Vec<Strin
 /// an entry equal to it or to an ancestor directory of it (so `.shatter/`
 /// covers `.shatter/seeds/`), whether inside or outside the managed block.
 /// Returns entries in the same order as `collect_generated_ignore_entries`.
+///
+/// `project_root` (where `.shatter/` lives) is not always where the repo's
+/// `.gitignore` lives: in a monorepo it is common to run `shatter init` inside
+/// a package directory while the tracked `.gitignore` sits at the enclosing
+/// git root. Coverage is checked against `project_root`'s own `.gitignore`
+/// **and** every ancestor `.gitignore` up to the git root (see
+/// `collect_gitignore_text`), so that layout does not false-positive every
+/// generated path as un-ignored.
 pub(crate) fn unignored_generated_paths(project_root: &Path) -> Vec<String> {
     let entries = collect_generated_ignore_entries(project_root);
-    let gitignore = std::fs::read_to_string(project_root.join(".gitignore")).unwrap_or_default();
+    let gitignore = collect_gitignore_text(project_root);
     entries
         .into_iter()
         .filter(|entry| !gitignore_covers(&gitignore, entry))
         .collect()
+}
+
+/// Maximum number of ancestor directories to search for a git root above
+/// `project_root`. Bounds the walk so a directory with no `.git` anywhere
+/// above it (e.g. a bare temp directory in a test) never reads unrelated
+/// `.gitignore` files from outside the repository.
+const MAX_GIT_ROOT_ANCESTORS: usize = 32;
+
+/// Collect the combined text of `project_root`'s own `.gitignore` plus, when
+/// `project_root` is nested inside a git repository whose root lies above it,
+/// every ancestor `.gitignore` up to and including the git root.
+///
+/// If no `.git` directory is found within `MAX_GIT_ROOT_ANCESTORS` levels
+/// above `project_root`, only `project_root`'s own `.gitignore` is read — this
+/// keeps the check hermetic (it never wanders into unrelated ancestor
+/// directories) when `project_root` is not part of a git checkout at all.
+fn collect_gitignore_text(project_root: &Path) -> String {
+    let mut ancestors: Vec<PathBuf> = vec![project_root.to_path_buf()];
+    let mut found_git_root = project_root.join(".git").exists();
+
+    if !found_git_root {
+        let mut dir = project_root.to_path_buf();
+        for _ in 0..MAX_GIT_ROOT_ANCESTORS {
+            let Some(parent) = dir.parent() else { break };
+            if parent == dir {
+                break;
+            }
+            dir = parent.to_path_buf();
+            ancestors.push(dir.clone());
+            if dir.join(".git").exists() {
+                found_git_root = true;
+                break;
+            }
+        }
+    }
+
+    if !found_git_root {
+        // No enclosing git repo found nearby: fall back to `project_root`'s
+        // own `.gitignore` only, exactly as before this walk existed.
+        ancestors.truncate(1);
+    }
+
+    let mut combined = String::new();
+    for dir in &ancestors {
+        if let Ok(contents) = std::fs::read_to_string(dir.join(".gitignore")) {
+            combined.push_str(&contents);
+            combined.push('\n');
+        }
+    }
+    combined
 }
 
 /// Whether `gitignore` contents contain a pattern that covers `entry`.
@@ -471,5 +529,67 @@ mod tests {
             // And exactly one managed block regardless of prior content.
             prop_assert_eq!(updated.matches(GITIGNORE_BEGIN).count(), 1);
         }
+
+        // `normalize_relative` must reject every absolute path (str-1fwt): an
+        // absolute generated-path override can never be expressed as a portable
+        // repo-root `.gitignore` entry, so it must always come back `None`
+        // rather than silently emitting a nonsensical entry.
+        #[test]
+        fn normalize_relative_rejects_all_absolute_paths(
+            components in prop::collection::vec(path_component(), 1..5),
+        ) {
+            let abs = PathBuf::from("/").join(components.join("/"));
+            prop_assert_eq!(normalize_relative(&abs), None);
+        }
+    }
+
+    #[test]
+    fn unignored_finds_gitignore_at_enclosing_git_root() {
+        // The monorepo layout: `.shatter/` (and this project's own
+        // `shatter.config.json`) live in a package subdirectory, but the
+        // tracked `.gitignore` lives at the enclosing git root. Checking only
+        // the package directory's own (nonexistent) `.gitignore` would
+        // false-positive every generated path as un-ignored even though the
+        // root `.gitignore` already covers them (str-1fwt).
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        std::fs::write(
+            repo.path().join(".gitignore"),
+            ".shatter-cache/\n.shatter/seeds/\n.shatter/cache/\nshatter-artifacts/\n",
+        )
+        .unwrap();
+
+        let package_dir = repo.path().join("packages/foo");
+        std::fs::create_dir_all(package_dir.join(".shatter")).unwrap();
+
+        assert!(
+            unignored_generated_paths(&package_dir).is_empty(),
+            "the enclosing git root's .gitignore must be consulted, not just the package dir's own"
+        );
+    }
+
+    #[test]
+    fn unignored_does_not_escape_a_directory_with_no_git_root() {
+        // No `.git` anywhere above `project_root`: the search must not wander
+        // into unrelated ancestor directories (e.g. a shared /tmp parent) —
+        // only `project_root`'s own `.gitignore` is consulted, exactly as
+        // before the git-root walk was added.
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a/b/c");
+        std::fs::create_dir_all(&nested).unwrap();
+        // A decoy `.gitignore` above `project_root` that must NOT be read
+        // because no `.git` marker exists anywhere in this ancestry.
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            ".shatter-cache/\n.shatter/seeds/\n.shatter/cache/\nshatter-artifacts/\n",
+        )
+        .unwrap();
+
+        let missing = unignored_generated_paths(&nested);
+        assert_eq!(
+            missing,
+            collect_generated_ignore_entries(&nested),
+            "an ancestor .gitignore above a non-git directory must not be consulted"
+        );
     }
 }
