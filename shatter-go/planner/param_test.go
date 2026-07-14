@@ -867,3 +867,133 @@ func TestPlanParam_ByteSlice_GoByteElement_NoTypeName(t *testing.T) {
 		}
 	})
 }
+
+// unionStringParam builds a ParamInfo shaped like the analyzer's output for a
+// named string-alias enum (type X string; const A, B, … X = …). The analyzer's
+// enumValuesFromNamed emits Kind="union" with a single str base variant and the
+// constant string domain in EnumValues (str-pjlc1). str-9pkrb teaches the
+// planner to consume that domain as high-priority ValuePlan candidates.
+func unionStringParam(name string, values ...string) protocol.ParamInfo {
+	ev := make([]any, len(values))
+	for i, v := range values {
+		ev[i] = v
+	}
+	return protocol.ParamInfo{
+		Name: name,
+		Type: protocol.TypeInfo{
+			Kind:       "union",
+			Variants:   []protocol.TypeInfo{{Kind: "str"}},
+			EnumValues: ev,
+		},
+	}
+}
+
+// str-9pkrb: a named string-alias enum parameter must seed every same-package
+// constant as a string candidate so an enum-like switch reaches its case arms
+// without a hand-written generator. Before this change classifyParamFamily had
+// no "union" case and the parameter fell to the unsupported path.
+func TestPlanParam_NamedStringEnum_SeedsConstantCandidates(t *testing.T) {
+	// Four constants + the default per-param cap of 4 also verifies the cap is
+	// expanded so both the full enum domain AND the generic fuzz family survive.
+	p := unionStringParam("t", "CORE", "LOCATION", "ACADEMICS", "OTHER")
+	plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+
+	got := map[string]bool{}
+	for i, pl := range plans {
+		if pl.TypeHint != "string" {
+			t.Errorf("plans[%d].TypeHint = %q, want string", i, pl.TypeHint)
+		}
+		if pl.ParamName != "t" {
+			t.Errorf("plans[%d].ParamName = %q, want t", i, pl.ParamName)
+		}
+		if pl.ParamIndex != 0 {
+			t.Errorf("plans[%d].ParamIndex = %d, want 0", i, pl.ParamIndex)
+		}
+		if pl.Kind == protocol.ValuePlanKindLiteral {
+			var s string
+			if json.Unmarshal(pl.Literal, &s) == nil {
+				got[s] = true
+			}
+		}
+	}
+	for _, want := range []string{"CORE", "LOCATION", "ACADEMICS", "OTHER"} {
+		if !got[want] {
+			t.Errorf("enum constant %q missing from candidates %+v", want, plans)
+		}
+	}
+
+	// Existing random/string fuzzing is preserved (not replaced): the generic
+	// string family's zero-value (empty string) off-domain probe still appears.
+	foundZero := false
+	for _, pl := range plans {
+		if pl.Kind == protocol.ValuePlanKindZero {
+			foundZero = true
+			break
+		}
+	}
+	if !foundZero {
+		t.Errorf("expected generic zero-value candidate preserved for off-domain fuzzing, got %+v", plans)
+	}
+}
+
+// str-9pkrb: enum constants are seeded as high-priority candidates, but an
+// operator override (config default) must still win the top slot — mirroring
+// the primitive-family precedence in TestPlanParam_HintOverrideTakesPriority.
+func TestPlanParam_NamedStringEnum_HintTakesPriority(t *testing.T) {
+	p := unionStringParam("t", "CORE", "LOCATION")
+	lit := json.RawMessage(`"CUSTOM"`)
+	opts := planner.ParamPlanOptions{
+		HintsByName: map[string]planner.ParamValueHint{
+			"t": {Literal: lit, TypeHint: "string"},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, p, opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan")
+	}
+	if plans[0].Kind != protocol.ValuePlanKindLiteral || !bytes.Equal(plans[0].Literal, lit) {
+		t.Errorf("plans[0] = %+v, want hint literal %s first", plans[0], lit)
+	}
+	// Enum constants still follow the hint.
+	got := map[string]bool{}
+	for _, pl := range plans {
+		if pl.Kind == protocol.ValuePlanKindLiteral {
+			var s string
+			if json.Unmarshal(pl.Literal, &s) == nil {
+				got[s] = true
+			}
+		}
+	}
+	for _, want := range []string{"CORE", "LOCATION"} {
+		if !got[want] {
+			t.Errorf("enum constant %q missing from candidates %+v", want, plans)
+		}
+	}
+}
+
+// str-9pkrb scope boundary: int enums are out of scope (semantic domain
+// inference for arbitrary numeric enums is explicitly deferred). A union with a
+// non-string base must not be seeded as string candidates; it retains the
+// pre-existing unsupported behavior so no int-enum regression is introduced.
+func TestPlanParam_NamedIntEnum_NotSeededAsStrings(t *testing.T) {
+	p := protocol.ParamInfo{
+		Name: "p",
+		Type: protocol.TypeInfo{
+			Kind:       "union",
+			Variants:   []protocol.TypeInfo{{Kind: "int"}},
+			EnumValues: []any{int64(0), int64(1), int64(2)},
+		},
+	}
+	plans, _ := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{})
+	for i, pl := range plans {
+		if pl.TypeHint == "string" {
+			t.Errorf("plans[%d]=%+v: int enum must not be seeded as a string candidate", i, pl)
+		}
+	}
+}

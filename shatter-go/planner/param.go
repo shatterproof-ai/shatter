@@ -145,6 +145,18 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		}
 	}
 
+	// str-9pkrb: named string-alias enums (e.g. `type Theme string` with a
+	// same-package const set) arrive from the analyzer as a union TypeInfo
+	// carrying the constant domain in EnumValues (str-pjlc1's
+	// enumValuesFromNamed). classifyParamFamily has no union case, so without
+	// this these parameters fall to the unsupported path and enum-like switch
+	// statements over the alias never reach their case arms. Seed each constant
+	// as a high-priority string candidate while preserving generic string
+	// fuzzing. Non-string enums (int/uint) stay out of scope and fall through.
+	if values, ok := enumStringValues(p); ok {
+		return planEnumStringParam(paramIndex, p, values, opts, maxPlans), nil
+	}
+
 	family, ok := classifyParamFamily(p)
 	if !ok {
 		if isEmptyInterfaceParam(p) {
@@ -253,6 +265,145 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		}
 	}
 	return plans, nil
+}
+
+// enumStringValues reports the string constant domain of a named string-alias
+// enum parameter. The analyzer emits such a parameter as a union TypeInfo whose
+// single base variant is a string and whose EnumValues carry the same-package
+// constant set (str-pjlc1). It returns ok=false for any other shape — in
+// particular integer/unsigned enums, whose EnumValues are numeric and which are
+// out of scope for str-9pkrb (named string aliases only).
+func enumStringValues(p protocol.ParamInfo) ([]string, bool) {
+	if p.Type.Kind != "union" || len(p.Type.EnumValues) == 0 {
+		return nil, false
+	}
+	// The base variant records the underlying kind ("str" for string enums).
+	// Require it explicitly so a future non-string union cannot be misread as a
+	// string domain even if its values happened to decode as strings.
+	if len(p.Type.Variants) == 0 || p.Type.Variants[0].Kind != "str" {
+		return nil, false
+	}
+	values := make([]string, 0, len(p.Type.EnumValues))
+	for _, v := range p.Type.EnumValues {
+		s, ok := v.(string)
+		if !ok {
+			return nil, false
+		}
+		values = append(values, s)
+	}
+	return values, true
+}
+
+// planEnumStringParam builds the ValuePlan slice for a named string-alias enum
+// parameter. Priority order mirrors the primitive string path: an operator
+// override (config default) wins the top slot, then source-mined comparison
+// literals, then the enum constant domain (the high-priority candidates this
+// change adds), and finally the generic string family so off-domain random/
+// string fuzzing is preserved rather than replaced (str-9pkrb acceptance).
+//
+// Enum domains are bounded (enumValuesFromNamed caps at maxEnumValues) and each
+// constant is a distinct switch case, so the per-parameter cap is raised to fit
+// every constant plus the generic family. The invocation-plan-level cap
+// (MaxPlansPerTarget) still bounds the emitted plan count, so the cartesian
+// product does not blow up.
+func planEnumStringParam(paramIndex int, p protocol.ParamInfo, enumValues []string, opts ParamPlanOptions, maxPlans int) []protocol.ValuePlan {
+	generic := stringFamily()
+	minedLiterals := opts.StringLiteralsByParam[p.Name]
+	needed := len(enumValues) + len(generic.candidates) + len(minedLiterals)
+	if _, hasHint := opts.HintsByName[p.Name]; hasHint {
+		needed++
+	}
+	if maxPlans < needed {
+		maxPlans = needed
+	}
+
+	plans := make([]protocol.ValuePlan, 0, maxPlans)
+	add := func(plan protocol.ValuePlan) bool {
+		if len(plans) >= maxPlans {
+			return false
+		}
+		plan.ParamIndex = paramIndex
+		plan.ParamName = p.Name
+		plans = append(plans, plan)
+		return true
+	}
+
+	// Track string values already planned so the enum domain and the generic
+	// family cannot emit a duplicate candidate (e.g. a mined literal that
+	// matches a constant, or a constant equal to the generic "" probe).
+	seen := make(map[string]bool)
+	addStr := func(s string) bool {
+		if seen[s] {
+			return true
+		}
+		seen[s] = true
+		encoded, err := json.Marshal(s)
+		if err != nil {
+			return true
+		}
+		return add(protocol.ValuePlan{
+			Kind:     protocol.ValuePlanKindLiteral,
+			Literal:  encoded,
+			TypeHint: paramTypeHintString,
+		})
+	}
+
+	// 1. Operator override (config default) wins top priority.
+	if hint, found := opts.HintsByName[p.Name]; found {
+		typeHint := hint.TypeHint
+		if typeHint == "" {
+			typeHint = paramTypeHintString
+		}
+		// Mark a string-valued hint as seen so the enum domain does not re-emit
+		// it as a duplicate candidate below.
+		var hs string
+		if json.Unmarshal(hint.Literal, &hs) == nil {
+			seen[hs] = true
+		}
+		add(protocol.ValuePlan{
+			Kind:     protocol.ValuePlanKindLiteral,
+			Literal:  hint.Literal,
+			TypeHint: typeHint,
+		})
+	}
+	// 2. Source-mined comparison literals — exact known-answer for local branches.
+	for _, s := range minedLiterals {
+		if !addStr(s) {
+			break
+		}
+	}
+	// 3. Enum constant domain — the seeding this change adds.
+	for _, s := range enumValues {
+		if !addStr(s) {
+			break
+		}
+	}
+	// 4. Generic string family preserves off-domain fuzzing.
+	for _, cand := range generic.candidates {
+		if cand.kind == protocol.ValuePlanKindZero {
+			// The zero-value probe is the empty string; skip it if the enum
+			// domain already covers "".
+			if seen[""] {
+				continue
+			}
+			seen[""] = true
+			if !add(protocol.ValuePlan{Kind: cand.kind, TypeHint: paramTypeHintString}) {
+				break
+			}
+			continue
+		}
+		var s string
+		if json.Unmarshal(cand.literal, &s) == nil {
+			if !addStr(s) {
+				break
+			}
+			continue
+		}
+		if !add(protocol.ValuePlan{Kind: cand.kind, Literal: cand.literal, TypeHint: paramTypeHintString}) {
+			break
+		}
+	}
+	return plans
 }
 
 // httpRequestBodySeeds are schema-agnostic JSON bodies that push a handler
