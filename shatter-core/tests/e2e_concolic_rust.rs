@@ -665,13 +665,31 @@ fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
     std::fs::write(
         src_dir.join("domain.rs"),
         "use serde::Deserialize;\n\nuse crate::shapes::Dimensions;\n\n\
-         #[derive(Deserialize)]\npub struct Widget {\n    pub size: i64,\n    pub dims: Dimensions,\n}\n",
+         #[derive(Deserialize)]\npub struct Widget {\n    pub size: i64,\n    pub unit_price: i64,\n    pub dims: Dimensions,\n}\n\n\
+         // str-wp6cf: a struct with `#[serde(rename_all = \"camelCase\")]`. The\n\
+         // analyzer records the JSON key `lineTotal`, but the instrumentor lowers\n\
+         // the source field access as the raw `line_total`. The overlay must\n\
+         // resolve raw -> declared key via the param's TypeInfo, or serde rejects\n\
+         // the object with `missing field lineTotal`.\n\
+         #[derive(Deserialize)]\n#[serde(rename_all = \"camelCase\")]\n\
+         pub struct Invoice {\n    pub line_total: i64,\n}\n",
     )
     .expect("write domain.rs");
     let logic = src_dir.join("logic.rs");
     std::fs::write(
         &logic,
-        "use crate::domain::Widget;\n\n\
+        "use crate::domain::Widget;\nuse crate::domain::Invoice;\n\n\
+         /// str-wp6cf rename_all regression: branches on the snake_case source\n\
+         /// field `line_total` of a `#[serde(rename_all = \"camelCase\")]` struct\n\
+         /// whose JSON key is `lineTotal`. The `line_total == 5150` arm is a\n\
+         /// non-boundary Z3-only target; reaching \"invoiced\" requires the solved\n\
+         /// value to be overlaid under the DECLARED `lineTotal` key. A blanket\n\
+         /// raw-name overlay would emit `line_total`, which serde rejects\n\
+         /// (`missing field lineTotal`), so \"invoiced\" would never be observed.\n\
+         pub fn classify_invoice(inv: Invoice) -> &'static str {\n\
+         \x20   if inv.line_total == 5150 {\n        \"invoiced\"\n\
+         \x20   } else if inv.line_total < 0 {\n        \"credit\"\n\
+         \x20   } else {\n        \"pending\"\n    }\n}\n\n\
          /// Branches only on the cross-file struct's own field. The\n\
          /// `size == 4242` arm is the canonical Z3-only target: it is a\n\
          /// non-boundary value, and boundary-biased random integer generation\n\
@@ -680,8 +698,15 @@ fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
          /// Reaching it therefore proves the solver produced a concrete input\n\
          /// for a symbolic FIELD of a synthesized cross-file struct and that the\n\
          /// solved `w.size` value was overlaid back into the object argument.\n\
+         /// The `unit_price == 7777` arm is the str-wp6cf regression: a\n\
+         /// SNAKE_CASE cross-file field. Reaching \"priced\" requires the solver\n\
+         /// to overlay the solved `w.unit_price` value back under the RAW\n\
+         /// `unit_price` key. If the overlay camelCased it to `unitPrice`, the\n\
+         /// crate-bridge serde deserialize would reject the Widget with\n\
+         /// `missing field unit_price` and \"priced\" would never be observed.\n\
          pub fn classify_widget(w: Widget) -> &'static str {\n\
-         \x20   if w.size < 0 {\n        \"negative\"\n\
+         \x20   if w.unit_price == 7777 {\n        \"priced\"\n\
+         \x20   } else if w.size < 0 {\n        \"negative\"\n\
          \x20   } else if w.size == 4242 {\n        \"answer\"\n\
          \x20   } else if w.size <= 100 {\n        \"small\"\n\
          \x20   } else {\n        \"large\"\n    }\n}\n\n\
@@ -694,7 +719,8 @@ fn write_temp_cross_file_crate(dir: &Path) -> PathBuf {
          /// `DeserializeOwned`). Combined with the field-path lowering in the\n\
          /// instrumentor, the `w.size == 4242` arm is still a Z3-only target.\n\
          pub fn classify_widget_ref(w: &Widget) -> &'static str {\n\
-         \x20   if w.size < 0 {\n        \"negative\"\n\
+         \x20   if w.unit_price == 7777 {\n        \"priced\"\n\
+         \x20   } else if w.size < 0 {\n        \"negative\"\n\
          \x20   } else if w.size == 4242 {\n        \"answer\"\n\
          \x20   } else if w.size <= 100 {\n        \"small\"\n\
          \x20   } else {\n        \"large\"\n    }\n}\n",
@@ -741,6 +767,17 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
                 ),
                 "cross-file Widget.size must resolve to Int; got fields {fields:?}"
             );
+            // The snake_case field must survive analysis under its RAW name
+            // (str-wp6cf); a camelCased `unitPrice` here would foreshadow the
+            // overlay-key defect.
+            assert!(
+                matches!(
+                    fields.iter().find(|(n, _)| n == "unit_price"),
+                    Some((_, shatter_core::types::TypeInfo::Int { .. }))
+                ),
+                "cross-file Widget.unit_price must resolve to Int under its raw \
+                 snake_case name; got fields {fields:?}"
+            );
             match fields.iter().find(|(n, _)| n == "dims") {
                 Some((_, shatter_core::types::TypeInfo::Object { fields: nested })) => {
                     assert!(
@@ -766,11 +803,12 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
         ..Default::default()
     };
 
-    // Seeds must be COMPLETE `Widget` JSON, including the nested `Dimensions`,
-    // or the crate-bridge deserialize step rejects them (`missing field dims`).
+    // Seeds must be COMPLETE `Widget` JSON, including the nested `Dimensions`
+    // and the snake_case `unit_price` field, or the crate-bridge deserialize
+    // step rejects them (`missing field dims` / `missing field unit_price`).
     let seed_inputs = vec![
-        vec![serde_json::json!({"size": 7, "dims": {"length": 1, "height": 2}})],
-        vec![serde_json::json!({"size": -3, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": 7, "unit_price": 1, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": -3, "unit_price": 2, "dims": {"length": 1, "height": 2}})],
     ];
 
     let explore_outcome = orchestrator::explore(
@@ -802,7 +840,15 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
     };
 
     let return_values = return_value_set(&result);
-    for expected in ["\"negative\"", "\"answer\"", "\"small\"", "\"large\""] {
+    // "priced" is the str-wp6cf snake_case-field target: reachable only if the
+    // solved `w.unit_price` value is overlaid under the raw `unit_price` key.
+    for expected in [
+        "\"negative\"",
+        "\"answer\"",
+        "\"small\"",
+        "\"large\"",
+        "\"priced\"",
+    ] {
         assert!(
             return_values.contains(expected),
             "should discover cross-file-struct branch returning {expected}; \
@@ -810,8 +856,8 @@ async fn e2e_rust_cross_file_struct_discovers_branches() {
         );
     }
     assert!(
-        result.unique_paths >= 4,
-        "should have at least 4 unique paths; got {}",
+        result.unique_paths >= 5,
+        "should have at least 5 unique paths; got {}",
         result.unique_paths
     );
     // The `size == 4242` ("answer") branch is a non-boundary exact-equality
@@ -883,8 +929,8 @@ async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
     };
 
     let seed_inputs = vec![
-        vec![serde_json::json!({"size": 7, "dims": {"length": 1, "height": 2}})],
-        vec![serde_json::json!({"size": -3, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": 7, "unit_price": 1, "dims": {"length": 1, "height": 2}})],
+        vec![serde_json::json!({"size": -3, "unit_price": 2, "dims": {"length": 1, "height": 2}})],
     ];
 
     let explore_outcome = orchestrator::explore(
@@ -920,7 +966,13 @@ async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
     // owned deserialize + `&owned` call would fail to compile and no real branch
     // return values would appear.
     let return_values = return_value_set(&result);
-    for expected in ["\"negative\"", "\"answer\"", "\"small\"", "\"large\""] {
+    for expected in [
+        "\"negative\"",
+        "\"answer\"",
+        "\"small\"",
+        "\"large\"",
+        "\"priced\"",
+    ] {
         assert!(
             return_values.contains(expected),
             "by-reference cross-file-struct fn should discover branch returning {expected}; \
@@ -928,14 +980,121 @@ async fn e2e_rust_cross_file_struct_by_ref_discovers_branches() {
         );
     }
     assert!(
-        result.unique_paths >= 4,
-        "should have at least 4 unique paths; got {}",
+        result.unique_paths >= 5,
+        "should have at least 5 unique paths; got {}",
         result.unique_paths
     );
     assert!(
         result.z3_generated > 0,
         "Z3 should have generated at least one input to hit the size==4242 branch through the \
          by-reference borrow shim; got z3_generated={}",
+        result.z3_generated
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// str-wp6cf regression gate: a struct with `#[serde(rename_all = "camelCase")]`
+/// must have its Z3-solved field value overlaid under the DECLARED JSON key, not
+/// the raw Rust source field name.
+///
+/// The solver records field segments as raw source identifiers
+/// (`inv.line_total`), while the analyzer's `TypeInfo::Object` carries the
+/// serde-resolved JSON key (`lineTotal`). `overlay_solved_values` bridges the
+/// two by resolving each raw segment against the parameter's type metadata. If
+/// it instead kept the raw name (the original str-wp6cf fix's blanket behavior),
+/// the crate-bridge deserialize would reject the object with
+/// `missing field lineTotal` and the `line_total == 5150` ("invoiced") arm — a
+/// non-boundary Z3-only target — would never be reached. This is the
+/// pipeline-level lock for the rename_all path; the unit/property coverage lives
+/// in `orchestrator.rs` (`overlay_resolves_serde_rename_all_camel_case_field`,
+/// `overlay_resolves_to_declared_camel_case_key`).
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_serde_rename_all_field_overlay() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let logic = write_temp_cross_file_crate(tmp.path());
+    let file_str = logic.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_invoice").await;
+    assert_eq!(analysis.params.len(), 1, "classify_invoice takes 1 param");
+    // The renamed struct must synthesize to an `Object` whose declared field
+    // name is the serde-resolved JSON key (`lineTotal`), NOT the raw source
+    // field (`line_total`) — this is precisely the key the overlay must target.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert!(
+                matches!(
+                    fields.iter().find(|(n, _)| n == "lineTotal"),
+                    Some((_, shatter_core::types::TypeInfo::Int { .. }))
+                ),
+                "rename_all struct must expose the camelCase JSON key `lineTotal`; \
+                 got fields {fields:?}"
+            );
+        }
+        other => panic!("Invoice param must synthesize to Object, got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classify_invoice").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+
+    // Seeds must use the serde-declared camelCase key or the crate-bridge
+    // deserialize rejects them (`missing field lineTotal`).
+    let seed_inputs = vec![
+        vec![serde_json::json!({"lineTotal": 10})],
+        vec![serde_json::json!({"lineTotal": -5})],
+    ];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_invoice",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_serde_rename_all_field_overlay: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    let return_values = return_value_set(&result);
+    // "invoiced" is only reachable if the solved `line_total` value is overlaid
+    // under the declared `lineTotal` key so serde accepts the Invoice.
+    for expected in ["\"invoiced\"", "\"credit\"", "\"pending\""] {
+        assert!(
+            return_values.contains(expected),
+            "rename_all struct fn should discover branch returning {expected}; \
+             found: {return_values:?}"
+        );
+    }
+    assert!(
+        result.z3_generated > 0,
+        "Z3 should have generated at least one input to hit line_total==5150 on the \
+         rename_all struct; got z3_generated={}",
         result.z3_generated
     );
 

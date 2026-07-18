@@ -1237,8 +1237,13 @@ impl InputStrategy for Z3SolverStrategy {
 
             match solve_result {
                 Ok(Ok(SolveResult::Sat(values))) => {
-                    let new_inputs =
-                        crate::orchestrator::overlay_solved_values(inputs, &values, &param_names);
+                    let param_types = crate::orchestrator::param_types_of(&self.param_infos);
+                    let new_inputs = crate::orchestrator::overlay_solved_values(
+                        inputs,
+                        &values,
+                        &param_names,
+                        &param_types,
+                    );
                     self.pending.push_back(new_inputs);
                 }
                 _ => {
