@@ -634,6 +634,18 @@ feature_capabilities:
       `materialize_value` path remains unchanged: it still skips
       `runtime_value` plans because no seed is needed — the wrapper
       already has the value baked in.
+
+      str-9pkrb: a named string-alias enum parameter (analyzed as a `union`
+      TypeInfo carrying its same-package constant domain in `enum_values`, see
+      `type_info_enum_values`) is now planned instead of returning an
+      unsatisfied requirement. The Go planner seeds each string constant as a
+      high-priority `literal` argument plan (ordered after config-hint defaults
+      and source-mined comparison literals), then appends the generic string
+      family so off-domain fuzzing is preserved. No new field or ValuePlanKind:
+      the constants ride the existing `literal` kind. This is a Go-planner-only
+      behavior — TypeScript/Rust have no planner — and does not change any
+      frontend's analyze output (`enum_values` is already emitted identically by
+      all three). Integer/unsigned enums remain out of scope on this path.
     frontends:
       typescript: not_supported
       go: supported

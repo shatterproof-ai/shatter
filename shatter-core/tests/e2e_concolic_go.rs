@@ -1887,6 +1887,67 @@ async fn e2e_go_enum_value_domain_random_explorer_reaches_valid_arms() {
 }
 
 // ---------------------------------------------------------------------------
+// Test: named string-alias enum constants seed the get_invocation_plan
+// planner path (str-9pkrb).
+//
+// The two tests above validate the CORE's enum generation: the concolic one
+// hand-feeds an off-domain seed and the random one relies on the core drawing
+// from the param's union TypeInfo. Neither exercises the `get_invocation_plan`
+// PLANNER seeds, which are a separately-wired code path
+// (`fetch_planner_seeds` → the Go `planner` package). Before str-9pkrb the Go
+// planner had no `union` case, so `get_invocation_plan` for `ClassifyColor`
+// returned an unsatisfied requirement and the concolic orchestrator received
+// NO planner-provided enum candidates. This asserts, across the real subprocess
+// protocol boundary, that the planner now emits RED/GREEN/BLUE as concrete
+// argument seeds — the exact behavior this change adds — so an enum-like switch
+// is covered without a hand-written generator.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_enum_planner_seeds_include_constants() {
+    let file = repo_examples_go_dir().join("enum-color").join("color.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("enum-planner-seeds").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "ClassifyColor").await;
+    assert_eq!(analysis.params.len(), 1, "ClassifyColor takes 1 param");
+
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    assert!(
+        bundle.unsatisfied.is_empty(),
+        "named string enum param must not be unsatisfied by the planner; unsatisfied={:?}",
+        bundle.unsatisfied
+    );
+
+    // Flatten every planner seed's single argument into the set of concrete
+    // string candidates the orchestrator would explore.
+    let mut seeded: HashSet<String> = HashSet::new();
+    for seed in &bundle.seeds {
+        if let Some(serde_json::Value::String(s)) = seed.first() {
+            seeded.insert(s.clone());
+        }
+    }
+    for expected in ["RED", "GREEN", "BLUE"] {
+        assert!(
+            seeded.contains(expected),
+            "planner seeds should include the enum constant {expected:?}; got {seeded:?}"
+        );
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
 // Test: net/http HandlerFunc adapter reports real instrumentation (str-1qd5i).
 //
 // MethodBranchHandler(w, r) branches on the request method:
