@@ -1199,7 +1199,8 @@ fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
 /// JSON keys (e.g. `unitPrice` under `#[serde(rename_all = "camelCase")]`). For
 /// each segment we look up the matching declared field (see
 /// [`resolve_field_key`]) and descend into its type. Once a level is not an
-/// object (opaque/partial metadata, or a genuinely dynamic map), the remaining
+/// object (`Opaque`/`Complex` from partial metadata, a genuinely dynamic map, or
+/// a `Union`/enum-variant type whose fields we don't model here), the remaining
 /// segments are kept verbatim — the safe default that matches serde structs
 /// without renames and every non-Rust frontend.
 fn resolve_field_path(raw_path: &[String], root: &TypeInfo) -> Vec<String> {
@@ -1224,8 +1225,9 @@ fn resolve_field_path(raw_path: &[String], root: &TypeInfo) -> Vec<String> {
     out
 }
 
-/// Borrow the field list of an object type, transparently unwrapping a single
-/// `Nullable` layer (`Option<Struct>` still overlays into the inner struct).
+/// Borrow the field list of an object type, transparently unwrapping any number
+/// of nested `Nullable` layers (`Option<Option<Struct>>` still overlays into the
+/// inner struct). Non-object, non-nullable types yield `None`.
 fn object_fields(typ: &TypeInfo) -> Option<&[(String, TypeInfo)]> {
     match typ {
         TypeInfo::Object { fields } => Some(fields),
@@ -1259,34 +1261,57 @@ fn resolve_field_key(segment: &str, fields: &[(String, TypeInfo)]) -> String {
     segment.to_string()
 }
 
-/// Produce the serde `rename_all` renderings of a snake_case identifier, ordered
-/// most-common first. Mirrors serde's `RenameRule` set so a raw source field
-/// name can be matched against a struct's declared JSON keys.
+/// Capitalize one word: upper-case the first char, lower-case the remainder.
+///
+/// MUST stay byte-identical to `capitalize_word` in `shatter-rust`'s
+/// `analyzer.rs` (the source of the declared JSON keys we match against). See
+/// [`serde_rename_variants`] for why.
+fn capitalize_word(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+    })
+}
+
+/// Produce the serde `rename_all` renderings of a snake_case identifier — one per
+/// serde `RenameRule` — so a raw source field name can be matched against a
+/// struct's declared JSON keys.
+///
+/// IMPORTANT: the declared keys we match against are computed by `shatter-rust`'s
+/// `apply_rename_all`/`capitalize_word` (`analyzer.rs`), NOT by serde directly,
+/// and this function MUST produce byte-identical output for every rule — a
+/// mismatch (e.g. differing case-folding of a word's remainder) silently drops
+/// back to the raw name and reintroduces the `missing field` bug this exists to
+/// fix. `shatter-core` cannot depend on `shatter-rust` (one-directional
+/// dependency rule), so there is no compiler-enforced link — the two independent
+/// implementations must be kept in sync by hand, guarded by
+/// `serde_rename_variants_match_shatter_rust_rules`.
 fn serde_rename_variants(snake: &str) -> Vec<String> {
     let words: Vec<&str> = snake.split('_').filter(|w| !w.is_empty()).collect();
     if words.is_empty() {
         return Vec::new();
     }
-    let capitalize = |w: &str| {
-        let mut chars = w.chars();
-        chars.next().map_or_else(String::new, |first| {
-            first.to_uppercase().collect::<String>() + chars.as_str()
-        })
-    };
-    let pascal: String = words.iter().map(|w| capitalize(w)).collect();
+    let pascal: String = words.iter().map(|w| capitalize_word(w)).collect();
     let camel: String = words
         .iter()
         .enumerate()
-        .map(|(i, w)| if i == 0 { (*w).to_string() } else { capitalize(w) })
+        .map(|(i, w)| {
+            if i == 0 {
+                w.to_lowercase()
+            } else {
+                capitalize_word(w)
+            }
+        })
         .collect();
     vec![
-        camel,                       // camelCase
-        pascal,                      // PascalCase
-        words.join("-"),             // kebab-case
-        snake.to_uppercase(),        // SCREAMING_SNAKE_CASE
-        words.join("-").to_uppercase(), // SCREAMING-KEBAB-CASE
-        words.concat(),              // lowercase
-        words.concat().to_uppercase(), // UPPERCASE
+        camel,                            // camelCase
+        pascal,                           // PascalCase
+        words.concat().to_lowercase(),    // lowercase
+        words.concat().to_uppercase(),    // UPPERCASE
+        words.join("_").to_lowercase(),   // snake_case
+        words.join("_").to_uppercase(),   // SCREAMING_SNAKE_CASE
+        words.join("-").to_lowercase(),   // kebab-case
+        words.join("-").to_uppercase(),   // SCREAMING-KEBAB-CASE
     ]
 }
 
@@ -4098,23 +4123,101 @@ mod tests {
         assert_eq!(result, vec![serde_json::json!({ "unit_price": 9 })]);
     }
 
+    /// Independent reference implementation of `shatter-rust`'s
+    /// `apply_rename_all` (`analyzer.rs`), duplicated here on purpose: it pins the
+    /// exact byte-level semantics `serde_rename_variants` must reproduce, so a
+    /// drift between the two crates' hand-written serde-rule reimplementations
+    /// fails a test instead of silently reintroducing the `missing field` bug.
+    /// If serde's rules or shatter-rust's copy change, update BOTH this reference
+    /// and `serde_rename_variants`.
+    fn shatter_rust_apply_rename_all(field: &str, rule: &str) -> String {
+        let words: Vec<&str> = field.split('_').filter(|w| !w.is_empty()).collect();
+        let capitalize = |w: &str| {
+            let mut chars = w.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+            })
+        };
+        match rule {
+            "lowercase" => words.concat().to_lowercase(),
+            "UPPERCASE" => words.concat().to_uppercase(),
+            "PascalCase" => words.iter().map(|w| capitalize(w)).collect(),
+            "camelCase" => words
+                .iter()
+                .enumerate()
+                .map(|(i, w)| if i == 0 { w.to_lowercase() } else { capitalize(w) })
+                .collect(),
+            "snake_case" => words.join("_").to_lowercase(),
+            "SCREAMING_SNAKE_CASE" => words.join("_").to_uppercase(),
+            "kebab-case" => words.join("-").to_lowercase(),
+            "SCREAMING-KEBAB-CASE" => words.join("-").to_uppercase(),
+            other => panic!("unknown rule {other}"),
+        }
+    }
+
+    const SERDE_RULES: [&str; 8] = [
+        "lowercase",
+        "UPPERCASE",
+        "PascalCase",
+        "camelCase",
+        "snake_case",
+        "SCREAMING_SNAKE_CASE",
+        "kebab-case",
+        "SCREAMING-KEBAB-CASE",
+    ];
+
     #[test]
     fn serde_rename_variants_cover_serde_rules() {
         let variants = serde_rename_variants("unit_price");
         for expected in [
-            "unitPrice",   // camelCase
-            "UnitPrice",   // PascalCase
-            "unit-price",  // kebab-case
-            "UNIT_PRICE",  // SCREAMING_SNAKE_CASE
-            "UNIT-PRICE",  // SCREAMING-KEBAB-CASE
-            "unitprice",   // lowercase
-            "UNITPRICE",   // UPPERCASE
+            "unitPrice",  // camelCase
+            "UnitPrice",  // PascalCase
+            "unit-price", // kebab-case
+            "unit_price", // snake_case
+            "UNIT_PRICE", // SCREAMING_SNAKE_CASE
+            "UNIT-PRICE", // SCREAMING-KEBAB-CASE
+            "unitprice",  // lowercase
+            "UNITPRICE",  // UPPERCASE
         ] {
             assert!(
                 variants.iter().any(|v| v == expected),
                 "expected variant {expected:?} in {variants:?}"
             );
         }
+    }
+
+    /// Every rule's `serde_rename_variants` output must equal `shatter-rust`'s
+    /// `apply_rename_all`, INCLUDING for mixed-case source idents like
+    /// `request_URL` where the two previously diverged (`requestUrl` vs
+    /// `requestURL`) — the divergence that dropped the overlay back to the raw
+    /// name (team-lead second review).
+    #[test]
+    fn serde_rename_variants_match_shatter_rust_rules() {
+        for field in ["unit_price", "request_URL", "HTTPServer_id", "x", "a_b_c"] {
+            let variants = serde_rename_variants(field);
+            for rule in SERDE_RULES {
+                let expected = shatter_rust_apply_rename_all(field, rule);
+                assert!(
+                    variants.contains(&expected),
+                    "field {field:?} rule {rule:?}: expected {expected:?} in {variants:?}"
+                );
+            }
+        }
+    }
+
+    /// The specific mixed-case regression, pinned to concrete strings so a
+    /// re-divergence is unmistakable.
+    #[test]
+    fn serde_rename_variants_lowercase_word_remainder() {
+        let variants = serde_rename_variants("request_URL");
+        assert!(
+            variants.iter().any(|v| v == "requestUrl"),
+            "camelCase of request_URL must be requestUrl (remainder lower-cased); got {variants:?}"
+        );
+        assert!(
+            !variants.iter().any(|v| v == "requestURL"),
+            "must NOT emit requestURL — diverges from shatter-rust apply_rename_all"
+        );
     }
 
     // -- WorklistEntry ordering tests --
@@ -6482,23 +6585,24 @@ mod tests {
             }
 
             /// When the parameter's type declares a serde-renamed key, the raw
-            /// snake_case segment resolves to that declared key. For any snake
-            /// field, a struct whose only declared key is the camelCase form
-            /// must overlay the value under the camelCase key, never the raw
-            /// snake one (str-wp6cf rename_all resolution).
+            /// source segment resolves to that declared key. The declared key is
+            /// computed by the INDEPENDENT reference `shatter_rust_apply_rename_all`
+            /// (mirroring the crate that populates `TypeInfo`), and the field
+            /// regex generates MIXED-CASE idents (`request_URL`), so a divergence
+            /// between `serde_rename_variants` and shatter-rust's rules — not just
+            /// the all-lowercase happy path — fails here (team-lead second review).
             #[test]
-            fn overlay_resolves_to_declared_camel_case_key(
-                field in "[a-z]{1,5}(_[a-z]{1,5}){1,3}",
+            fn overlay_resolves_to_declared_renamed_key(
+                field in "[a-zA-Z][a-zA-Z0-9]{0,4}(_[a-zA-Z0-9]{1,4}){1,3}",
+                rule_idx in 0..SERDE_RULES.len(),
             ) {
-                let camel = serde_rename_variants(&field)
-                    .into_iter()
-                    .next()
-                    .expect("multi-word snake name yields a camelCase variant");
-                prop_assume!(camel != field);
+                let rule = SERDE_RULES[rule_idx];
+                let declared = shatter_rust_apply_rename_all(&field, rule);
+                prop_assume!(declared != field);
                 let base = vec![serde_json::json!({})];
                 let names = vec!["p".to_string()];
                 let param_types = vec![TypeInfo::Object {
-                    fields: vec![(camel.clone(), bare_int())],
+                    fields: vec![(declared.clone(), bare_int())],
                 }];
                 let mut solved = std::collections::HashMap::new();
                 solved.insert(format!("p.{field}"), ConcreteValue::Int(7));
@@ -6507,13 +6611,14 @@ mod tests {
                     .as_object()
                     .expect("overlay target must be an object");
                 prop_assert!(
-                    obj.contains_key(&camel),
-                    "overlay must resolve to declared key {camel:?}; got keys {:?}",
+                    obj.contains_key(&declared),
+                    "overlay must resolve {field:?} under rule {rule:?} to declared key \
+                     {declared:?}; got keys {:?}",
                     obj.keys().collect::<Vec<_>>()
                 );
                 prop_assert!(
                     !obj.contains_key(&field),
-                    "overlay must not emit the raw snake key {field:?}"
+                    "overlay must not emit the raw key {field:?}"
                 );
             }
 
