@@ -300,6 +300,15 @@ fn build_config_yaml(language: &str) -> String {
 # Place this file alongside your source code in a `.shatter/` directory.
 # Shatter discovers config files by walking upward from each target file;
 # the nearest config wins when settings conflict.
+#
+# This file owns PER-FUNCTION analysis behavior (iterations, timeouts, mocks,
+# generators, setup, opaque types). SCAN-GLOBAL settings (file discovery,
+# output, caching, resource limits, seeds_dir) live in `shatter.config.json`
+# at the project root. The two files do not overlap.
+# Precedence (highest first):
+#   CLI flags > --set overrides > .shatter/config.yaml (nearest wins)
+#     > shatter.config.json > built-in defaults
+# See the "Project Configuration" section of README.md for details.
 
 # ── Global defaults ──────────────────────────────────────────────────────
 # These apply to every function unless overridden below.
@@ -384,6 +393,16 @@ mod tests {
             std::fs::read_to_string(dir.path().join(".shatter").join("config.yaml")).unwrap();
         assert!(content.contains("max_iterations: 100"));
         assert!(content.contains("timeout: 60"));
+        // str-mktn: the generated config ships the ownership/precedence note so
+        // integrators can tell which file owns what without reading the docs.
+        assert!(
+            content.contains("shatter.config.json"),
+            "config.yaml header must reference the sibling scan-global config"
+        );
+        assert!(
+            content.contains("Precedence"),
+            "config.yaml header must state the override precedence"
+        );
     }
 
     #[test]

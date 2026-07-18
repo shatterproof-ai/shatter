@@ -467,6 +467,13 @@ pub const PROJECT_CONFIG_FILENAME: &str = "shatter.config.json";
 /// resource limits, and parallelism. Per-function settings (iterations,
 /// timeouts, mocks, genetic, generators, setup) belong in
 /// `.shatter/config.yaml` — see [`DefaultsConfig`] and [`FunctionConfig`].
+///
+/// The two files do not overlap. When a setting could be sourced from more than
+/// one place, precedence is (highest first): CLI flags > `--set` overrides >
+/// `.shatter/config.yaml` (nearest to the target file wins) > this file
+/// (`shatter.config.json`) > built-in defaults. `shatter doctor` reports which
+/// files are present, and `README.md` ("Project Configuration") is the
+/// canonical reference.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectConfig {
