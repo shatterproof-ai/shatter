@@ -177,3 +177,9 @@ shatter-go/bin/
 .beads-credential-key
 .beads/backup/
 .beads/interactions.jsonl
+
+# >>> shatter generated paths (managed by `shatter init`)
+.shatter-cache/
+.shatter/seeds/
+shatter-artifacts/
+# <<< shatter generated paths
