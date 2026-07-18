@@ -23,6 +23,11 @@ jobs:
     # variable in-test, so setting it here does not mask a regression.
     env:
       SHATTER_ALLOW_HOST_WRITES: "1"
+      # The repo .cargo/config.toml caps parallelism for the shared dev
+      # machine (str-35vtk.5); CI runners own their cores, so size cargo to
+      # the runner instead (env wins over the config file). The Go caps
+      # (-p=4 / GOMAXPROCS=8) already fit a 4-core runner.
+      CARGO_BUILD_JOBS: "4"
 
     steps:
       - uses: actions/checkout@v4

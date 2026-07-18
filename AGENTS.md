@@ -416,6 +416,31 @@ When running shell commands, **always prefix with `rtk`**. This reduces context
 usage by 60-90% with zero behavior change. If rtk has no filter for a command,
 it passes through unchanged — so it is always safe to use.
 
+## Shared-Machine Resource Etiquette (str-35vtk.5)
+
+Many agents build and test concurrently on one machine. Governance is wired
+into the repo — do not work around it:
+
+- **Heavyweight gates take a machine-wide slot.** `check`, `check-fast`,
+  `e2e*`, `conformance`, `parity`/golden, `walkthrough`, `gauntlet`, and
+  `core:test-ignored` run through `scripts/gate-wrapper.sh`: a counting
+  semaphore of `SHATTER_HEAVY_SLOTS` flock slots (default `nproc/8`, min 1)
+  under `${XDG_RUNTIME_DIR:-/tmp}/shatter-heavy-slots/`, plus `nice`/`ionice`.
+  A queued gate prints "waiting for a heavyweight slot" — that is normal;
+  do not kill it and do not bypass the wrapper by running the underlying
+  `cargo test --test e2e_*` / harness commands bare when an equivalent task
+  exists.
+- **Parallelism budgets.** `.cargo/config.toml` caps cargo at `jobs = 8` and
+  test threads at 4 (`force = false` — a pre-set `RUST_TEST_THREADS` wins);
+  the root Taskfile defaults `GOFLAGS=-p=4` and `GOMAXPROCS=8`. Solo humans
+  and CI reclaim the machine by exporting `CARGO_BUILD_JOBS`,
+  `RUST_TEST_THREADS`, `GOFLAGS`, `GOMAXPROCS`, or `SHATTER_HEAVY_SLOTS`.
+- **Gate timings are recorded** to `~/.cache/shatter/gate-times.csv`
+  (timestamp, worktree, gate, wall seconds, exit code, loadavg, slot) —
+  budgets live in `docs/perf/gate-budgets.md`.
+- Slow builds under load are contention, not code failure: re-run before
+  debugging (see docs/perf/gate-budgets.md for the baseline flake analysis).
+
 ## Key Commands
 ```bash
 # Git (59-80% savings)
