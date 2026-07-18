@@ -48,7 +48,7 @@ use crate::strategy::{
 };
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
-use crate::types::{ComplexKind, ParamInfo};
+use crate::types::{ComplexKind, ParamInfo, TypeInfo};
 
 /// Parsed frontend capabilities from the handshake response.
 ///
@@ -1039,8 +1039,9 @@ fn stalled_loop_candidate_inputs(
 
     match solver::solve_constraints(&constraints, solver_timeout_ms, param_infos).ok()? {
         SolveResult::Sat(values) => {
+            let param_types = param_types_of(param_infos);
             let mut candidate_inputs =
-                overlay_solved_values(&frontier.best_prefix, &values, param_names);
+                overlay_solved_values(&frontier.best_prefix, &values, param_names, &param_types);
             adjust_loop_bound_candidate(
                 &mut candidate_inputs,
                 &bounded_template,
@@ -1111,19 +1112,28 @@ pub(crate) fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
     }
 }
 
+/// Collect the parameter types in positional order, for passing to
+/// [`overlay_solved_values`] alongside the parameter names.
+pub(crate) fn param_types_of(param_infos: &[ParamInfo]) -> Vec<TypeInfo> {
+    param_infos.iter().map(|p| p.typ.clone()).collect()
+}
+
 /// Build a new input vector by overlaying Z3-solved values onto existing inputs.
 ///
 /// The solver returns variable names like "x", "config.timeout" etc. We match
-/// these against parameter names in `base_inputs` (positionally). For now we
-/// support simple flat parameters — if the variable name matches the parameter
-/// index convention (param_0, param_1, …) or the base is a single param, we
-/// update it directly.
+/// these against parameter names in `base_inputs` (positionally). For nested
+/// object paths, each raw field segment is resolved to its declared JSON key
+/// using the matching parameter's [`TypeInfo`] tree (`param_types`, positionally
+/// aligned with `param_names`) — see [`resolve_field_path`]. This keeps Rust
+/// serde structs working regardless of `#[serde(rename_all = "…")]`, and is a
+/// no-op for frontends whose source field names already equal their JSON keys.
 #[requires(base_inputs.len() == param_names.len(), "base_inputs and param_names must be positionally aligned")]
 #[contracts::ensures(ret.len() == base_inputs.len(), "overlay must preserve input vector length")]
 pub(crate) fn overlay_solved_values(
     base_inputs: &[serde_json::Value],
     solved: &std::collections::HashMap<String, ConcreteValue>,
     param_names: &[String],
+    param_types: &[TypeInfo],
 ) -> Vec<serde_json::Value> {
     let mut result = base_inputs.to_vec();
 
@@ -1138,7 +1148,15 @@ pub(crate) fn overlay_solved_values(
             && idx < result.len()
             && !path.is_empty()
         {
-            overlay_json_path(&mut result[idx], &path, concrete_to_json(value));
+            // The solver's field segments are the RAW source identifiers
+            // (the instrumentor lowers `w.unit_price` verbatim). Resolve them
+            // to the JSON keys the executor's deserializer expects, honoring
+            // serde renames declared in the parameter's type metadata.
+            let resolved = match param_types.get(idx) {
+                Some(typ) => resolve_field_path(&path, typ),
+                None => path,
+            };
+            overlay_json_path(&mut result[idx], &resolved, concrete_to_json(value));
         } else if param_names.len() == 1 && base_inputs.len() == 1 && !var_name.contains('.') {
             // Single-param function with a simple (non-derived) variable name:
             // the solver variable likely refers to the param. Skip derived names
@@ -1156,16 +1174,10 @@ fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
     if param.is_empty() {
         return None;
     }
-    // Preserve the raw source-level field name as the JSON overlay key. The
-    // segment is the field identifier exactly as written in the analyzed source
-    // (e.g. `unit_price` for a Rust struct, `unitPrice` for a TS property), and
-    // for every frontend the JSON key the executor reconstructs the value under
-    // matches that source spelling: Rust serde-derive structs default to
-    // snake_case keys, TS object properties are the literal identifiers, and Go
-    // struct field names carry no underscores. Any transformation here only ever
-    // mutates snake_case names — which corrupts the one frontend (Rust) that
-    // actually uses them, producing `missing field <name>` deserialize failures
-    // (str-wp6cf). Keep the segment verbatim.
+    // Segments are the field identifiers exactly as written in the analyzed
+    // source (the instrumentor lowers a field access chain by its raw idents).
+    // Rename resolution to JSON keys happens later in `resolve_field_path`,
+    // which needs the parameter's type metadata; keep the raw names here.
     let path: Vec<String> = parts
         .filter(|part| !part.is_empty())
         .filter(|part| !part.contains('(') && !part.contains(')'))
@@ -1176,6 +1188,106 @@ fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
     } else {
         Some((param, path))
     }
+}
+
+/// Resolve a chain of raw source-level field names to the JSON keys the target
+/// frontend's deserializer expects, walking `root`'s [`TypeInfo`] tree one level
+/// per segment.
+///
+/// The solver records field segments as the RAW Rust source identifiers (e.g.
+/// `unit_price`), while [`TypeInfo::Object`] fields carry the serde-resolved
+/// JSON keys (e.g. `unitPrice` under `#[serde(rename_all = "camelCase")]`). For
+/// each segment we look up the matching declared field (see
+/// [`resolve_field_key`]) and descend into its type. Once a level is not an
+/// object (opaque/partial metadata, or a genuinely dynamic map), the remaining
+/// segments are kept verbatim — the safe default that matches serde structs
+/// without renames and every non-Rust frontend.
+fn resolve_field_path(raw_path: &[String], root: &TypeInfo) -> Vec<String> {
+    let mut out = Vec::with_capacity(raw_path.len());
+    let mut current: Option<&TypeInfo> = Some(root);
+    for segment in raw_path {
+        match current.and_then(object_fields) {
+            Some(fields) => {
+                let key = resolve_field_key(segment, fields);
+                current = fields
+                    .iter()
+                    .find(|(declared, _)| *declared == key)
+                    .map(|(_, typ)| typ);
+                out.push(key);
+            }
+            None => {
+                out.push(segment.clone());
+                current = None;
+            }
+        }
+    }
+    out
+}
+
+/// Borrow the field list of an object type, transparently unwrapping a single
+/// `Nullable` layer (`Option<Struct>` still overlays into the inner struct).
+fn object_fields(typ: &TypeInfo) -> Option<&[(String, TypeInfo)]> {
+    match typ {
+        TypeInfo::Object { fields } => Some(fields),
+        TypeInfo::Nullable { inner } => object_fields(inner),
+        _ => None,
+    }
+}
+
+/// Map one raw source field name to its declared JSON key within `fields`.
+///
+/// The segment is a snake_case Rust identifier; the declared keys are serde's
+/// output. We match in three tiers: (1) exact — the common default-serde case
+/// where the JSON key equals the source name; (2) serde `rename_all` — apply
+/// each rename rule to the snake_case segment and use the variant that matches a
+/// declared key; (3) fall back to the raw segment when nothing matches.
+///
+/// Not handled: per-field `#[serde(rename = "arbitrary")]`, whose JSON key is
+/// not derivable from the source name — recovering it would require the protocol
+/// `TypeInfo` to also carry each field's source identifier (str-wp6cf follow-up).
+fn resolve_field_key(segment: &str, fields: &[(String, TypeInfo)]) -> String {
+    let declares = |candidate: &str| fields.iter().any(|(declared, _)| declared == candidate);
+
+    if declares(segment) {
+        return segment.to_string();
+    }
+    for variant in serde_rename_variants(segment) {
+        if declares(&variant) {
+            return variant;
+        }
+    }
+    segment.to_string()
+}
+
+/// Produce the serde `rename_all` renderings of a snake_case identifier, ordered
+/// most-common first. Mirrors serde's `RenameRule` set so a raw source field
+/// name can be matched against a struct's declared JSON keys.
+fn serde_rename_variants(snake: &str) -> Vec<String> {
+    let words: Vec<&str> = snake.split('_').filter(|w| !w.is_empty()).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let capitalize = |w: &str| {
+        let mut chars = w.chars();
+        chars.next().map_or_else(String::new, |first| {
+            first.to_uppercase().collect::<String>() + chars.as_str()
+        })
+    };
+    let pascal: String = words.iter().map(|w| capitalize(w)).collect();
+    let camel: String = words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| if i == 0 { (*w).to_string() } else { capitalize(w) })
+        .collect();
+    vec![
+        camel,                       // camelCase
+        pascal,                      // PascalCase
+        words.join("-"),             // kebab-case
+        snake.to_uppercase(),        // SCREAMING_SNAKE_CASE
+        words.join("-").to_uppercase(), // SCREAMING-KEBAB-CASE
+        words.concat(),              // lowercase
+        words.concat().to_uppercase(), // UPPERCASE
+    ]
 }
 
 fn overlay_json_path(target: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
@@ -1718,8 +1830,13 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
             &input.param_infos,
         ) {
             Ok(SolveResult::Sat(values)) => {
-                let new_inputs =
-                    overlay_solved_values(&input.obs.inputs, &values, &input.param_names);
+                let param_types = param_types_of(&input.param_infos);
+                let new_inputs = overlay_solved_values(
+                    &input.obs.inputs,
+                    &values,
+                    &input.param_names,
+                    &param_types,
+                );
                 output.candidates.push(WorklistEntry {
                     inputs: new_inputs,
                     source: InputSource::Z3Solved,
@@ -2973,8 +3090,13 @@ pub async fn explore_with_oracle(
                                 param_infos,
                             ) {
                                 Ok(SolveResult::Sat(values)) => {
-                                    let new_inputs =
-                                        overlay_solved_values(&obs.inputs, &values, &param_names);
+                                    let param_types = param_types_of(param_infos);
+                                    let new_inputs = overlay_solved_values(
+                                        &obs.inputs,
+                                        &values,
+                                        &param_names,
+                                        &param_types,
+                                    );
                                     supplementary.push(WorklistEntry {
                                         inputs: new_inputs,
                                         source: InputSource::McdcTarget,
@@ -3825,7 +3947,7 @@ mod tests {
         solved.insert("x".to_string(), ConcreteValue::Int(42));
         let param_names = vec!["x".to_string(), "name".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(result[0], serde_json::json!(42));
         assert_eq!(result[1], serde_json::json!("hello"));
     }
@@ -3837,7 +3959,7 @@ mod tests {
         solved.insert("some_var".to_string(), ConcreteValue::Int(99));
         let param_names = vec!["x".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(result[0], serde_json::json!(99));
     }
 
@@ -3848,7 +3970,7 @@ mod tests {
         solved.insert("unknown_var".to_string(), ConcreteValue::Int(99));
         let param_names = vec!["a".to_string(), "b".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(result, base);
     }
 
@@ -3862,7 +3984,7 @@ mod tests {
         );
         let param_names = vec!["payload".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(
             result,
             vec![serde_json::json!({
@@ -3889,7 +4011,7 @@ mod tests {
         );
         let param_names = vec!["payload".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(
             result,
             vec![serde_json::json!({
@@ -3897,6 +4019,102 @@ mod tests {
                 "owner_person_id": "person-id",
             })]
         );
+    }
+
+    fn bare_int() -> TypeInfo {
+        TypeInfo::Int {
+            int_width: None,
+            int_signed: None,
+        }
+    }
+
+    /// A struct declared `#[serde(rename_all = "camelCase")]` exposes the JSON
+    /// key `unitPrice`, but the solver records the RAW Rust source field
+    /// `unit_price`. The overlay must resolve the raw segment to the declared
+    /// camelCase key using the parameter's `TypeInfo::Object` metadata — a
+    /// blanket "keep raw" would emit `unit_price`, which serde rejects as
+    /// `missing field unitPrice` (str-wp6cf review follow-up). The declared-key
+    /// resolution is what closes the rename_all gap end-to-end.
+    #[test]
+    fn overlay_resolves_serde_rename_all_camel_case_field() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("order . unit_price".to_string(), ConcreteValue::Int(4242));
+        let param_names = vec!["order".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            // Declared JSON key is the serde-resolved camelCase form.
+            fields: vec![("unitPrice".to_string(), bare_int())],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!({ "unitPrice": 4242 })]);
+    }
+
+    /// Nested object paths resolve each segment against its own level of the
+    /// type tree, honoring renames independently. Here the outer field uses a
+    /// per-field `#[serde(rename)]`-style declared key while the inner uses
+    /// `rename_all = "camelCase"`; both raw source segments must map to their
+    /// declared JSON keys.
+    #[test]
+    fn overlay_resolves_nested_renamed_fields_per_level() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert(
+            "cfg . line_item . unit_price".to_string(),
+            ConcreteValue::Int(7),
+        );
+        let param_names = vec!["cfg".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![(
+                // `line_item` is not renamed at this level (exact match).
+                "line_item".to_string(),
+                TypeInfo::Object {
+                    fields: vec![("unitPrice".to_string(), bare_int())],
+                },
+            )],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(
+            result,
+            vec![serde_json::json!({ "line_item": { "unitPrice": 7 } })]
+        );
+    }
+
+    /// Default serde (no rename): the raw segment already equals the declared
+    /// key, so it is preserved verbatim — the case the original str-wp6cf fix
+    /// targeted, now exercised with real type metadata present.
+    #[test]
+    fn overlay_preserves_snake_case_when_declared_key_matches() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("w . unit_price".to_string(), ConcreteValue::Int(9));
+        let param_names = vec!["w".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![("unit_price".to_string(), bare_int())],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!({ "unit_price": 9 })]);
+    }
+
+    #[test]
+    fn serde_rename_variants_cover_serde_rules() {
+        let variants = serde_rename_variants("unit_price");
+        for expected in [
+            "unitPrice",   // camelCase
+            "UnitPrice",   // PascalCase
+            "unit-price",  // kebab-case
+            "UNIT_PRICE",  // SCREAMING_SNAKE_CASE
+            "UNIT-PRICE",  // SCREAMING-KEBAB-CASE
+            "unitprice",   // lowercase
+            "UNITPRICE",   // UPPERCASE
+        ] {
+            assert!(
+                variants.iter().any(|v| v == expected),
+                "expected variant {expected:?} in {variants:?}"
+            );
+        }
     }
 
     // -- WorklistEntry ordering tests --
@@ -6199,7 +6417,7 @@ mod tests {
                     (0..len).map(|i| format!("p{i}")).collect();
                 // Empty solved map — output must equal input length.
                 let solved = std::collections::HashMap::new();
-                let result = overlay_solved_values(&base, &solved, &names);
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
                 prop_assert_eq!(
                     base.len(),
                     result.len(),
@@ -6216,7 +6434,7 @@ mod tests {
                     (0..len).map(|i| format!("p{i}")).collect();
                 let mut solved = std::collections::HashMap::new();
                 solved.insert(format!("p{idx}"), ConcreteValue::Int(999));
-                let result = overlay_solved_values(&base, &solved, &names);
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
                 prop_assert_eq!(result.len(), base.len());
                 prop_assert_eq!(&result[idx], &serde_json::json!(999));
             }
@@ -6232,17 +6450,17 @@ mod tests {
                 // Exception: single-param heuristic fires for non-dotted names,
                 // so use a dotted name to avoid that path.
                 solved.insert("unknown.derived".to_string(), ConcreteValue::Int(42));
-                let result = overlay_solved_values(&base, &solved, &names);
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
                 prop_assert_eq!(result.len(), 1);
                 prop_assert_eq!(&result[0], &base_val);
             }
 
-            /// A solved object-path variable overlays its value under the RAW
-            /// field name — no camelCase (or any other) transformation of the
-            /// segment (str-wp6cf). Rust serde-derive structs default to
-            /// snake_case JSON keys, so mutating the segment produces a key
-            /// serde rejects. Generate arbitrary snake_case field identifiers
-            /// and assert the overlaid object carries that exact key.
+            /// With NO type metadata (empty `param_types`), a solved object-path
+            /// variable overlays its value under the RAW field segment — the
+            /// safe fallback that keeps default-serde snake_case structs and
+            /// every non-Rust frontend working when the parameter's declared
+            /// shape is unavailable (str-wp6cf). Generate arbitrary snake_case
+            /// identifiers and assert the overlaid object carries the exact key.
             #[test]
             fn overlay_object_path_preserves_raw_field_name(
                 field in "[a-z][a-z0-9]{0,4}(_[a-z0-9]{1,4}){0,3}",
@@ -6251,7 +6469,7 @@ mod tests {
                 let names = vec!["p".to_string()];
                 let mut solved = std::collections::HashMap::new();
                 solved.insert(format!("p.{field}"), ConcreteValue::Int(7));
-                let result = overlay_solved_values(&base, &solved, &names);
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
                 let obj = result[0]
                     .as_object()
                     .expect("overlay target must be an object");
@@ -6261,6 +6479,42 @@ mod tests {
                     obj.keys().collect::<Vec<_>>()
                 );
                 prop_assert_eq!(&obj[&field], &serde_json::json!(7));
+            }
+
+            /// When the parameter's type declares a serde-renamed key, the raw
+            /// snake_case segment resolves to that declared key. For any snake
+            /// field, a struct whose only declared key is the camelCase form
+            /// must overlay the value under the camelCase key, never the raw
+            /// snake one (str-wp6cf rename_all resolution).
+            #[test]
+            fn overlay_resolves_to_declared_camel_case_key(
+                field in "[a-z]{1,5}(_[a-z]{1,5}){1,3}",
+            ) {
+                let camel = serde_rename_variants(&field)
+                    .into_iter()
+                    .next()
+                    .expect("multi-word snake name yields a camelCase variant");
+                prop_assume!(camel != field);
+                let base = vec![serde_json::json!({})];
+                let names = vec!["p".to_string()];
+                let param_types = vec![TypeInfo::Object {
+                    fields: vec![(camel.clone(), bare_int())],
+                }];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{field}"), ConcreteValue::Int(7));
+                let result = overlay_solved_values(&base, &solved, &names, &param_types);
+                let obj = result[0]
+                    .as_object()
+                    .expect("overlay target must be an object");
+                prop_assert!(
+                    obj.contains_key(&camel),
+                    "overlay must resolve to declared key {camel:?}; got keys {:?}",
+                    obj.keys().collect::<Vec<_>>()
+                );
+                prop_assert!(
+                    !obj.contains_key(&field),
+                    "overlay must not emit the raw snake key {field:?}"
+                );
             }
 
             /// Worklist dequeues entries in non-increasing InputSource priority.
@@ -6628,7 +6882,7 @@ mod kani_proofs {
         }
 
         let solved = std::collections::HashMap::new();
-        let result = overlay_solved_values(&base_inputs, &solved, &param_names);
+        let result = overlay_solved_values(&base_inputs, &solved, &param_names, &[]);
         assert_eq!(
             result.len(),
             base_inputs.len(),
@@ -6647,7 +6901,7 @@ mod kani_proofs {
         let mut solved = std::collections::HashMap::new();
         solved.insert(String::from("x"), ConcreteValue::Int(42));
 
-        let result = overlay_solved_values(&base_inputs, &solved, &param_names);
+        let result = overlay_solved_values(&base_inputs, &solved, &param_names, &[]);
         assert_eq!(result.len(), 1, "overlay must preserve input vector length");
         assert_eq!(result[0], serde_json::json!(42));
     }
