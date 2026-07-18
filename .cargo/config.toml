@@ -1,0 +1,13 @@
+# Resource governance for many concurrent agents on one machine
+# (str-35vtk.5; see docs/perf/efficiency-plan.md WS-C).
+#
+# Caps apply to every cargo invocation in this checkout, task-mediated or
+# not. CI and solo humans reclaim full parallelism via env: CARGO_BUILD_JOBS
+# overrides [build] jobs; RUST_TEST_THREADS here is force = false, so a
+# pre-set environment value wins.
+
+[build]
+jobs = 8
+
+[env]
+RUST_TEST_THREADS = { value = "4", force = false }
