@@ -28,7 +28,11 @@ tasks:
       - ../protocol/registry.yaml
       - ../shatter-core/src/protocol.rs
     cmds:
-      - go test ./...
+      # 30m > Go's 10m default: under the shared-machine caps (GOFLAGS=-p=4,
+      # str-35vtk.5) the compile-heavy e2e packages can exceed 10m when other
+      # suites run concurrently. Governance trades speed for machine
+      # usability; the timeout must not turn that into a failure.
+      - go test -timeout 30m ./...
 
   vet:
     desc: Run go vet
