@@ -323,6 +323,9 @@ tasks:
     cmds:
       # One wrapper = one machine-wide heavyweight slot for the whole check;
       # nested wrapped tasks pass through via SHATTER_GATE_LOCK_HELD.
+      # Note: the sh -c indirection means `task --force check` does NOT
+      # propagate --force into the stages; force a stage directly
+      # (e.g. `task --force check-unit`) when you need a re-run.
       - bash scripts/gate-wrapper.sh check sh -c "task check-static && task check-unit && task check-integration"
 
   check-static:
