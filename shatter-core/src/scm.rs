@@ -55,11 +55,11 @@ impl ScmProvider for GitProvider {
         let repo_root = repo_root(root)?;
 
         // Staged + unstaged changes vs HEAD
-        let output = run_git_paths(root, &["diff", "--name-only", "HEAD"])?;
+        let output = run_git(root, &["diff", "--name-only", "HEAD"])?;
         let mut files = parse_file_list(&output, &repo_root);
 
         // Also include staged-only changes (new files that are staged but not yet committed)
-        let staged_output = run_git_paths(root, &["diff", "--name-only", "--cached"])?;
+        let staged_output = run_git(root, &["diff", "--name-only", "--cached"])?;
         let staged_files = parse_file_list(&staged_output, &repo_root);
         for f in staged_files {
             if !files.contains(&f) {
@@ -71,7 +71,7 @@ impl ScmProvider for GitProvider {
             // --full-name: ls-files prints cwd-relative paths by default,
             // unlike `git diff --name-only` which is repo-root-relative. The
             // scan root may be a repo subdirectory (str-g9i4v).
-            let untracked_output = run_git_paths(
+            let untracked_output = run_git(
                 root,
                 &["ls-files", "--others", "--exclude-standard", "--full-name"],
             )?;
@@ -93,7 +93,7 @@ impl ScmProvider for GitProvider {
 
         // Three-dot diff: changes between merge-base(base_ref, HEAD) and HEAD
         let range = format!("{base_ref}...HEAD");
-        let output = run_git_paths(root, &["diff", "--name-only", &range])?;
+        let output = run_git(root, &["diff", "--name-only", &range])?;
         let mut files = parse_file_list(&output, &repo_root);
         files.sort();
         files.dedup();
@@ -108,7 +108,7 @@ impl ScmProvider for GitProvider {
     ) -> Result<Vec<PathBuf>, ScmError> {
         let repo_root = repo_root(root)?;
         let range = format!("{since_ref}...{until_ref}");
-        let output = run_git_paths(root, &["diff", "--name-only", &range])?;
+        let output = run_git(root, &["diff", "--name-only", &range])?;
         let mut files = parse_file_list(&output, &repo_root);
         files.sort();
         files.dedup();
@@ -208,8 +208,19 @@ pub fn working_tree_dirty(root: &Path) -> Result<bool, ScmError> {
 }
 
 /// Run a git command in the given directory and return stdout as a string.
+///
+/// Always prepends `-c core.quotepath=false` so git never C-quotes
+/// (octal-escapes) non-ASCII bytes in the pathnames it prints. With the default
+/// `core.quotepath=true`, a path like `文.ts` is emitted as the literal
+/// `"\346\226\207.ts"`, which `parse_file_list` would join verbatim into a
+/// nonexistent path — silently dropping such files from `--changed`/`--since`
+/// (str-jz13q). Setting it here rather than at individual path-listing call
+/// sites means future callers can't forget it (str-k6e61); the flag is inert
+/// for commands that don't print pathnames (e.g. `rev-parse`, `hash-object`).
+/// The config flag must precede the git subcommand.
 pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     let output = Command::new("git")
+        .args(["-c", "core.quotepath=false"])
         .args(args)
         .current_dir(root)
         .env_remove("GIT_DIR")
@@ -230,20 +241,6 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Run a git command that emits a pathname list, then return stdout.
-///
-/// Prepends `-c core.quotepath=false` so git does not C-quote (octal-escape)
-/// non-ASCII bytes in pathnames. With the default `core.quotepath=true`, a path
-/// like `文.ts` is printed as the literal `"\346\226\207.ts"`, which
-/// `parse_file_list` would join verbatim into a nonexistent path — silently
-/// dropping such files from `--changed`/`--since` (str-jz13q). The config flag
-/// must precede the git subcommand.
-fn run_git_paths(root: &Path, args: &[&str]) -> Result<String, ScmError> {
-    let mut full: Vec<&str> = vec!["-c", "core.quotepath=false"];
-    full.extend_from_slice(args);
-    run_git(root, &full)
 }
 
 fn repo_root(root: &Path) -> Result<PathBuf, ScmError> {
@@ -281,6 +278,37 @@ mod tests {
             .status()
             .expect("git command should run");
         assert!(status.success(), "git {:?} failed", args);
+    }
+
+    /// Create a temp git repo with user identity configured. The returned
+    /// `TempDir` owns the repo directory — keep it in scope for the repo's
+    /// lifetime and use `.path()` for the repo root.
+    ///
+    /// Sets repo-local `core.quotepath=true` (git's own default) so path-listing
+    /// tests exercise the C-quoting hazard regardless of ambient global config:
+    /// on a machine with `core.quotepath=false` set globally the fix would
+    /// otherwise pass trivially even if it regressed (str-k6e61).
+    fn init_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        git_ok(repo, &["init", "-q"]);
+        git_ok(repo, &["config", "user.email", "t@example.com"]);
+        git_ok(repo, &["config", "user.name", "t"]);
+        git_ok(repo, &["config", "core.quotepath", "true"]);
+        dir
+    }
+
+    /// Assert that `files` contains `want` after canonicalizing both sides.
+    /// Canonicalizing tolerates symlinked temp dirs and, because it resolves
+    /// against the real filesystem, also proves `want` actually exists — a
+    /// C-quoted literal path would fail to canonicalize and never match.
+    fn assert_contains_canonicalized(files: &[PathBuf], want: &Path) {
+        let canon: Vec<PathBuf> = files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+        let want_canon = want.canonicalize().expect("canonicalize expected path");
+        assert!(
+            canon.contains(&want_canon),
+            "expected file missing or mis-resolved: want={want:?} got={files:?}"
+        );
     }
 
     #[test]
@@ -364,11 +392,8 @@ mod tests {
         // `git diff --name-only` prints repo-root-relative paths. When the
         // scan root is a repo subdirectory, untracked files must still resolve
         // to their true absolute paths.
-        let dir = tempfile::tempdir().expect("create temp dir");
+        let dir = init_repo();
         let repo = dir.path();
-        git_ok(repo, &["init", "-q"]);
-        git_ok(repo, &["config", "user.email", "t@example.com"]);
-        git_ok(repo, &["config", "user.name", "t"]);
         git_ok(repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
 
         let subdir = repo.join("src");
@@ -387,21 +412,8 @@ mod tests {
             .changed_files(&subdir, true)
             .expect("changed_files should succeed");
 
-        // Canonicalize to tolerate symlinked temp dirs.
-        let canon: Vec<PathBuf> = files
-            .iter()
-            .filter_map(|f| f.canonicalize().ok())
-            .collect();
-        let tracked_canon = tracked.canonicalize().expect("canonicalize tracked");
-        let untracked_canon = untracked.canonicalize().expect("canonicalize untracked");
-        assert!(
-            canon.contains(&tracked_canon),
-            "tracked modified file missing: {files:?}"
-        );
-        assert!(
-            canon.contains(&untracked_canon),
-            "untracked file missing or mis-resolved: {files:?}"
-        );
+        assert_contains_canonicalized(&files, &tracked);
+        assert_contains_canonicalized(&files, &untracked);
     }
 
     #[test]
@@ -409,12 +421,10 @@ mod tests {
         // str-jz13q: with default core.quotepath=true, git C-quotes non-ASCII
         // filenames in `diff --name-only` output (e.g. "\346\226\207.ts").
         // parse_file_list must see the real UTF-8 path, not the quoted literal,
-        // otherwise --changed silently drops such files.
-        let dir = tempfile::tempdir().expect("create temp dir");
+        // otherwise --changed silently drops such files. init_repo() pins
+        // core.quotepath=true so the hazard is present regardless of ambient config.
+        let dir = init_repo();
         let repo = dir.path();
-        git_ok(repo, &["init", "-q"]);
-        git_ok(repo, &["config", "user.email", "t@example.com"]);
-        git_ok(repo, &["config", "user.name", "t"]);
 
         let file = repo.join("文.ts");
         fs::write(&file, "export const a = 1;\n").expect("write file");
@@ -427,28 +437,16 @@ mod tests {
             .changed_files(repo, false)
             .expect("changed_files should succeed");
 
-        // Canonicalize to tolerate symlinked temp dirs and to confirm the path
-        // actually exists (a C-quoted literal would fail to canonicalize).
-        let canon: Vec<PathBuf> = files
-            .iter()
-            .filter_map(|f| f.canonicalize().ok())
-            .collect();
-        let want = file.canonicalize().expect("canonicalize non-ASCII file");
-        assert!(
-            canon.contains(&want),
-            "non-ASCII changed file missing or mis-resolved: {files:?}"
-        );
+        assert_contains_canonicalized(&files, &file);
     }
 
     #[test]
     fn test_diff_files_non_ascii_path() {
         // str-jz13q: same C-quoting hazard for the `diff --name-only <range>`
-        // path used by --since.
-        let dir = tempfile::tempdir().expect("create temp dir");
+        // path used by --since. init_repo() pins core.quotepath=true so the
+        // hazard is present regardless of ambient config.
+        let dir = init_repo();
         let repo = dir.path();
-        git_ok(repo, &["init", "-q"]);
-        git_ok(repo, &["config", "user.email", "t@example.com"]);
-        git_ok(repo, &["config", "user.name", "t"]);
 
         let file = repo.join("变.go");
         fs::write(&file, "package main\n").expect("write file");
@@ -462,15 +460,7 @@ mod tests {
             .diff_files(repo, "HEAD~1")
             .expect("diff_files should succeed");
 
-        let canon: Vec<PathBuf> = files
-            .iter()
-            .filter_map(|f| f.canonicalize().ok())
-            .collect();
-        let want = file.canonicalize().expect("canonicalize non-ASCII file");
-        assert!(
-            canon.contains(&want),
-            "non-ASCII diffed file missing or mis-resolved: {files:?}"
-        );
+        assert_contains_canonicalized(&files, &file);
     }
 
     #[test]
@@ -494,14 +484,10 @@ mod tests {
 
     #[test]
     fn test_diff_files_from_nested_root_returns_repo_root_paths() {
-        let dir = tempfile::tempdir().expect("create temp dir");
+        let dir = init_repo();
         let repo = dir.path();
         let nested = repo.join("examples/standalone/ts");
         let changed = nested.join("22-opaque-predicate.ts");
-
-        git_ok(repo, &["init"]);
-        git_ok(repo, &["config", "user.name", "Test User"]);
-        git_ok(repo, &["config", "user.email", "test@example.com"]);
 
         fs::create_dir_all(&nested).expect("create nested dir");
         fs::write(&changed, "export const classify = () => 1;\n").expect("write initial file");
