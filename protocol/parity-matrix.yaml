@@ -994,3 +994,89 @@ allowed_divergences:
       (str-1qd5i) and audit/fix the Rust axum adapter (str-3eki5). Remove this
       entry once all invocation-owned adapters across frontends report
       non-empty coverage.
+
+  - id: rust-execute-response-fields-partial
+    description: >
+      The Rust frontend Response (shatter-rust/src/protocol.rs) flattens the
+      execute result and carries return_value, thrown_error, branch_path,
+      lines_executed, calls_to_external, path_constraints, side_effects,
+      loop_body_states, performance, and outcome, but omits five ExecuteResult
+      fields the core defines (shatter-core/src/protocol.rs ExecuteResult):
+      scope_events (scope-annotated trace enabling scope-aware path collapsing),
+      capture_truncation (TruncationInfo metadata for captured side effects),
+      discovered_dependencies (dependencies observed at execution time that
+      static analysis missed), connection_failures (drives the core's LiveFirst
+      fallback), and runtime_crypto_boundaries (runtime-intercepted encrypt/
+      decrypt APIs for boundary splitting). These are genuine capability gaps,
+      not wire bugs: the Rust execute path never produces these signals, and the
+      core deserializes each via `#[serde(default)]` / omit-when-empty so the
+      Rust frontend's absence is tolerated. TypeScript and Go emit the subset
+      each supports. Recorded here (rather than silently dropped) so the matrix
+      stays the authoritative gap record.
+    affected_frontends: [rust]
+    affected_commands: [execute]
+    status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-924ca
+    resolution_condition: >
+      The Rust execute/instrument path produces and emits scope_events,
+      capture_truncation, discovered_dependencies, connection_failures, and
+      runtime_crypto_boundaries where the language allows, matching the TS/Go
+      capture behavior; e2e_concolic_rust covers at least scope_events.
+    resolution: >
+      Implement per-field capture in the Rust frontend (str-924ca): scope-
+      annotated tracing, side-effect truncation accounting, runtime dependency
+      discovery, connection-failure signaling, and runtime crypto-boundary
+      interception. Remove this entry once the Rust frontend emits the fields it
+      can support and this matrix names any that stay permanently unsupported.
+
+  - id: rust-protocol-enum-vocabulary-narrower
+    description: >
+      Three Rust frontend protocol enums (shatter-rust/src/protocol.rs) are
+      narrower than their shatter-core counterparts, so the Rust analyzer can
+      never emit the missing variants: ConstValue lacks Undefined and Complex
+      (core sym_expr.rs ConstValue); BranchType lacks Select (core protocol.rs
+      BranchType); TypeInfo::Opaque carries only `label`, omitting the optional
+      static_opacity (StaticOpacityReason) discriminator. These are emit-only
+      limitations — the Rust frontend produces these types in its analyze output
+      and never deserializes them from the core, so the narrower vocabulary is a
+      capability gap rather than a wire-compat bug. The related medium_opacity
+      Opaque field is tracked separately as `medium-opacity-analyze-partial`.
+    affected_frontends: [rust]
+    affected_commands: [analyze]
+    status: tracked
+    owner: Ketan Gangatirkar
+    tracking_issue: str-dcelm
+    resolution_condition: >
+      Rust ConstValue/BranchType/TypeInfo::Opaque are widened to match the core
+      vocabularies and the Rust analyzer emits the variants where applicable
+      (select branches, static-opacity reasons, undefined/complex constants),
+      with round-trip coverage.
+    resolution: >
+      Widen the Rust enums and add emission in the Rust analyzer (str-dcelm).
+      Remove this entry once the vocabularies match and the analyzer emits the
+      new variants where the language allows.
+
+  - id: rust-error-details-not-emitted
+    description: >
+      The core Error response variant (shatter-core/src/protocol.rs
+      ResponseResult::Error) carries an optional `details` field for structured
+      enrichment (stack trace, source location). The Rust frontend Response
+      (shatter-rust/src/protocol.rs) emits only `code` and `message` on error
+      responses and never populates `details`. The field is optional on the
+      core wire contract (`Option<serde_json::Value>`), so its absence is
+      tolerated; this is an accepted enrichment gap, not a wire bug. TypeScript
+      and Go likewise treat `details` as best-effort.
+    affected_frontends: [rust]
+    affected_commands: [analyze, instrument, execute, setup, generate]
+    status: accepted
+    owner: Ketan Gangatirkar
+    tracking_issue: none
+    resolution_condition: >
+      Accepted while the Rust frontend surfaces errors as code + message only.
+      If the Rust frontend gains structured error enrichment, it should populate
+      `details` and this entry should be removed.
+    resolution: >
+      Intentional divergence for the current Rust frontend. Error responses
+      remain code + message; structured `details` (stack/source location) is an
+      optional enrichment not produced by the Rust frontend today.

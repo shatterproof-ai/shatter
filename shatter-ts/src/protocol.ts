@@ -46,8 +46,6 @@ export const FRONTEND_LANGUAGE = "typescript";
 // Request: Core → Frontend
 // ---------------------------------------------------------------------------
 
-export type SetupMode = "per_function" | "per_execution";
-
 export interface SetupContextEntry {
   level: SetupLevel;
   context: unknown;
