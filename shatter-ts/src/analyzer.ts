@@ -71,18 +71,27 @@ function matchStubForType(type: ts.Type): string | null {
  * `convertType` emits a param type of `{kind:"opaque", label:"<sentinel>key"}`
  * for a registry-covered handle because it lacks the parameter index. This pass
  * runs at the single top-level choke point (the worker, over the fully-merged
- * result set): it records a binding for any top-level param carrying a sentinel
- * and rewrites every sentinel (top-level or nested) to a plain empty object so
- * the core no longer skips the function and nothing sentinel-shaped reaches the
- * wire. Mutates `functions` in place; returns the collected bindings.
+ * result set): it records a binding for any param whose *whole value* can be a
+ * single handle stub — the handle either directly (`page: Page`) or wrapped in
+ * nullable/union (`page: Page | undefined`, `p: Page | Other`) — and rewrites
+ * every sentinel (bound or not, at any depth) to a plain empty object so the
+ * core no longer skips the function and nothing sentinel-shaped reaches the wire.
+ *
+ * A handle nested inside an `array`/`object`/`complex` (`Locator[]`,
+ * `{ page: Page }`) is NOT bound: the execute-time overlay replaces the whole
+ * positional argument with one stub, which cannot stand in for an array element
+ * or object field. Those sentinels are still scrubbed to an empty object (the
+ * safe, tested fallback — no crash, no stub), and full element/field-level
+ * stubbing is tracked as a follow-up (str-syj9b nested-type support). Mutates
+ * `functions` in place; returns the collected bindings.
  */
 export function extractStubParams(functions: FunctionAnalysis[]): StubParamRecord[] {
   const records: StubParamRecord[] = [];
   for (const fn of functions) {
     fn.params.forEach((param, index) => {
-      const topKey = sentinelKeyOf(param.type);
-      if (topKey !== null) {
-        records.push({ functionName: fn.name, paramIndex: index, stubKey: topKey });
+      const stubKey = bindableStubKey(param.type);
+      if (stubKey !== null) {
+        records.push({ functionName: fn.name, paramIndex: index, stubKey });
       }
       param.type = scrubStubSentinels(param.type);
     });
@@ -90,10 +99,31 @@ export function extractStubParams(functions: FunctionAnalysis[]): StubParamRecor
   return records;
 }
 
-/** The registry key of a top-level sentinel opaque type, or null. */
+/** The registry key of a sentinel opaque leaf, or null. */
 function sentinelKeyOf(type: TypeInfo): string | null {
   if (type.kind === "opaque" && type.label.startsWith(STUB_SENTINEL_LABEL_PREFIX)) {
     return type.label.slice(STUB_SENTINEL_LABEL_PREFIX.length);
+  }
+  return null;
+}
+
+/**
+ * Registry key to bind a whole parameter to, unwrapping only the wrappers under
+ * which a single stub is a valid substitute for the entire argument: the leaf
+ * sentinel itself, `nullable` (a stub is a valid non-null value), and `union`
+ * (the first handle variant wins — a stub satisfies that arm). Returns null for
+ * `array`/`object`/`complex` wrappers, which need element/field-level stubbing
+ * the whole-argument overlay cannot provide.
+ */
+function bindableStubKey(type: TypeInfo): string | null {
+  const leaf = sentinelKeyOf(type);
+  if (leaf !== null) return leaf;
+  if (type.kind === "nullable") return bindableStubKey(type.inner);
+  if (type.kind === "union") {
+    for (const variant of type.variants) {
+      const key = bindableStubKey(variant);
+      if (key !== null) return key;
+    }
   }
   return null;
 }

@@ -302,7 +302,14 @@ Flow (three seams; keep them in step):
    `extractStubParams` (run once in `src/worker.ts`, the single top-level choke
    point) rewrites every sentinel to `{kind:"object", fields:[]}` — so the core
    no longer skips the function — and collects `{functionName, paramIndex, stubKey}`
-   bindings. The sentinel never reaches the wire.
+   bindings. The sentinel never reaches the wire. **Binding scope:** a param binds
+   when a single stub can stand in for its *whole value* — the handle directly, or
+   wrapped in `nullable`/`union` (`page: Page | undefined`, `p: Page | Widget`),
+   which `bindableStubKey` unwraps. A handle nested in an `array`/`object`/`complex`
+   (`Locator[]`, `{ page: Page }`) is scrubbed to the safe empty-object fallback but
+   **not** bound — the execute-time overlay replaces the whole positional argument
+   and cannot substitute one stub for an array element or object field. Full
+   element/field-level stubbing is a tracked follow-up.
 2. **Worker→main**: bindings ride `AnalyzeWorkerResponse.stubParams` (internal
    `worker-protocol.ts` channel only) → cached in `handlers.ts`
    `stubParamsByFunction`, keyed identically to `cachedAnalyses`.
