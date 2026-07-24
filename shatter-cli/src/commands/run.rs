@@ -131,6 +131,126 @@ impl CoverageBudgetGateOverrides {
 use crate::commands::scan::{print_summary_report, write_analysis_report};
 use crate::helpers::*;
 
+/// Explore a single function through the concolic (Z3-backed) orchestrator,
+/// returning the same [`explorer::ObservationOutput`] shape as the random
+/// [`explorer::explore_function`] path so the downstream `run` report logic is
+/// identical regardless of explorer (str-yhsp).
+///
+/// Mirrors the `observe --concolic` wiring: instrument, prepare the harness once
+/// when the frontend supports it, then drive `orchestrator::explore`. The
+/// orchestrator error variants are mapped onto `explorer::ExploreError` so the
+/// caller's failure handling stays uniform across both explorers.
+async fn explore_function_concolic(
+    frontend: &mut Frontend,
+    func: &shatter_core::protocol::FunctionAnalysis,
+    file: &str,
+    project_root: Option<String>,
+    max_iterations: u32,
+    solver_timeout: Option<u64>,
+) -> Result<explorer::ObservationOutput, explorer::ExploreError> {
+    let seed_inputs = shatter_core::boundary_dict::generate_boundary_inputs(&func.params);
+    let concolic_config = shatter_core::orchestrator::ExploreConfig {
+        max_iterations: Some(max_iterations as usize),
+        max_executions: Some((max_iterations as usize) * 5),
+        plateau_threshold: 20,
+        mocks: vec![],
+        mock_params: vec![],
+        solver_timeout_ms: solver_timeout.map(|s| s.saturating_mul(1000)),
+        seed: None,
+        solver_offload: true,
+        timeout_explore: None,
+        branch_profile: None,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        execution_profile: None,
+        refine_budget: None,
+        shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
+        mcdc: false,
+        fuzz: shatter_core::config::FuzzConfig::default(),
+        planner: None,
+        default_execute_plan: None,
+        // `run` does not resolve custom generators; all slots are built-in, so
+        // no pinning is required (str-6cdp).
+        value_sources: vec![],
+    };
+
+    // Instrument the function so the frontend has the source ready for prepare.
+    if let Err(e) = frontend
+        .send(ProtoCommand::Instrument {
+            file: file.to_string(),
+            function: func.name.clone(),
+            mocks: vec![],
+            project_root: project_root.clone(),
+            execution_profile: None,
+        })
+        .await
+    {
+        log::debug!("instrument failed for concolic path: {e}");
+    }
+
+    // Prepare the harness once if the frontend supports it.
+    let caps = shatter_core::orchestrator::FrontendCapabilities::from_raw(frontend.capabilities());
+    let prepare_id: Option<String> = if caps.commands.contains("prepare") {
+        match frontend
+            .send(ProtoCommand::Prepare {
+                file: file.to_string(),
+                function: func.name.clone(),
+                mocks: vec![],
+                project_root: project_root.clone(),
+                execution_profile: None,
+                plan: None,
+            })
+            .await
+        {
+            Ok(resp) => match resp.result {
+                ResponseResult::Prepare { prepare_id } => Some(prepare_id),
+                other => {
+                    log::debug!("concolic prepare unexpected response: {other:?}");
+                    None
+                }
+            },
+            Err(e) => {
+                log::debug!("concolic prepare failed, falling back: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    match shatter_core::orchestrator::explore(
+        frontend,
+        &func.name,
+        seed_inputs,
+        vec![],
+        &func.params,
+        &concolic_config,
+        None,
+        prepare_id,
+        func.loops.clone(),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok((mut concolic_result, _resume_state)) => {
+            concolic_result.total_lines = func.end_line.saturating_sub(func.start_line) + 1;
+            Ok(concolic_result.into())
+        }
+        Err(shatter_core::orchestrator::ExploreError::Frontend(fe)) => {
+            Err(explorer::ExploreError::Frontend(fe))
+        }
+        Err(shatter_core::orchestrator::ExploreError::SolverFeedback(message)) => {
+            Err(explorer::ExploreError::UnexpectedResponse(message))
+        }
+        Err(shatter_core::orchestrator::ExploreError::Planner(err)) => {
+            Err(explorer::ExploreError::Planner(err))
+        }
+        Err(shatter_core::orchestrator::ExploreError::Unsupported(reason)) => {
+            Err(explorer::ExploreError::Unsupported(reason))
+        }
+    }
+}
+
 /// Run the run command: discover, analyze, build call graph, explore, and report.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_run(
@@ -139,10 +259,12 @@ pub(crate) async fn run_run(
     max_iterations: u32,
     timeout: u64,
     analyze_only: bool,
+    concolic: bool,
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
     release: bool,
+    solver_timeout: Option<u64>,
     log_level: LogLevel,
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
@@ -530,9 +652,22 @@ pub(crate) async fn run_run(
             prepare_id_override: None,
             };
 
-            match explorer::explore_function(frontend, &func_analysis, &explore_config, None, None)
+            let explore_outcome = if concolic {
+                explore_function_concolic(
+                    frontend,
+                    &func_analysis,
+                    &entry.file_path.to_string_lossy(),
+                    project_root_str.clone(),
+                    max_iterations,
+                    solver_timeout,
+                )
                 .await
-            {
+            } else {
+                explorer::explore_function(frontend, &func_analysis, &explore_config, None, None)
+                    .await
+            };
+
+            match explore_outcome {
                 Ok(result) => {
                     log::debug!(
                         "{}: {} path(s), {}/{} lines",
