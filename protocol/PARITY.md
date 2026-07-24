@@ -215,6 +215,26 @@ While a `resolved` entry sits inside its 30-day grace window the validator only 
 
 ---
 
+### `ts-opaque-param-stub-registry`
+
+**Description:** The TypeScript frontend carries a typed opaque-param stub registry (str-syj9b) — the TS analogue of Go's `runtimeval` registry / `go_runtime_values` config. A parameter whose declared type matches a registry entry (built-in `@playwright/test:Page` / `:Locator`, or a project `ts_runtime_values` entry in `.shatter/config.yaml`) is analyzed as `{kind: "object", fields: []}` instead of `{kind: "opaque"}`, so the Rust core no longer skips the function as unexecutable; at execute time the frontend overlays the generated argument with a structurally-valid recording proxy (per-type override map rotates the return values of branch-gating calls such as `locator().count()`). Entirely frontend-local: no wire schema change, no new protocol field — stub bindings travel analyzer→executor on the internal worker channel only. The only observable analyze-output change is for registry-covered handle params (object instead of opaque); no shared conformance fixture exercises such a type. Go has `runtimeval`; Rust has native-replay generators; neither reads `ts_runtime_values`.
+
+**Affected frontends:** go, rust
+
+**Affected commands:** analyze, execute
+
+**Status:** accepted
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-syj9b
+
+**Resolution condition:** Permanent by design — the config key is language-neutral (`type key + language-specific factory payload`) so Go/Rust/other frontends could adopt the same `*_runtime_values` shape, but each frontend supplies its own per-language stub/expression mechanism. No cross-frontend wire contract is implied.
+
+**Resolution:** If another frontend needs handle-param stubbing, mirror this design in that frontend: analyzer stops emitting bare opaque for registry-covered types and the execution shim supplies a structurally-valid value, keeping the config schema language-neutral.
+
+---
+
 ### `medium-opacity-analyze-partial`
 
 **Description:** The `medium_opacity` field on `TypeInfo` opaque variants is an optional advisory field. TypeScript and Go frontends emit it when medium-confidence heuristics fire. The Rust frontend performs static analysis but does not yet implement this medium-opacity heuristic, so it never emits `medium_opacity`. The field is intentionally non-skip-causing in the Rust core.

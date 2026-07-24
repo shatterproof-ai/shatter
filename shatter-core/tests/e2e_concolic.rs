@@ -2817,3 +2817,137 @@ async fn e2e_ts_enum_value_domain_reaches_all_arms() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test: typed opaque-param stub registry (str-syj9b), TypeScript, concolic path.
+//
+// `go(page: Page, n: number)` takes a framework "handle" (`Page`) whose methods
+// the body calls (`page.goto`, `page.locator(sel).count()`). Before str-syj9b the
+// analyzer marked `page` as `kind:"opaque"` and the core skipped the whole
+// function. With a `ts_runtime_values` entry registering `Page`, the analyzer now
+// emits a plain empty object for the param and the frontend overlays a
+// structurally-valid recording stub at execute time. This proves end-to-end that:
+//   1. the function is NOT skipped — its `page` param analyzes as a plain object,
+//   2. it executes past the first `page.*` call (no "is not a function" error),
+//   3. the stub's `locator(...).count()` override rotates {0,2} across executions,
+//      so the `count > 0` branch reaches BOTH the "present" and "absent" arms.
+// The `n > 5` branch is solver-driven and guarantees multiple executions, over
+// which the stub rotation advances.
+// ---------------------------------------------------------------------------
+
+const TS_STUB_FIXTURE: &str = r##"
+interface Locator {
+  count(): Promise<number>;
+  isVisible(): Promise<boolean>;
+}
+interface Page {
+  locator(selector: string): Locator;
+  goto(url: string): Promise<void>;
+}
+export async function go(page: Page, n: number): Promise<string> {
+  await page.goto("/");
+  const c = await page.locator("#target").count();
+  const has = c > 0 ? "present" : "absent";
+  const size = n > 5 ? "big" : "small";
+  return `${has}:${size}`;
+}
+"##;
+
+const TS_STUB_CONFIG: &str = r#"
+ts_runtime_values:
+  Page:
+    stub: proxy
+    overrides:
+      "locator.count": [0, 2]
+"#;
+
+#[tokio::test]
+async fn e2e_ts_opaque_param_stub_registry_explores_both_branches() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("handler.ts"), TS_STUB_FIXTURE).expect("write stub fixture");
+    let shatter_dir = root.join(".shatter");
+    std::fs::create_dir_all(&shatter_dir).expect("create .shatter dir");
+    std::fs::write(shatter_dir.join("config.yaml"), TS_STUB_CONFIG).expect("write config");
+    // Preflight requires a node_modules/ directory to exist under project_root.
+    std::fs::create_dir_all(root.join("node_modules")).expect("create node_modules");
+
+    let file_str = root.join("handler.ts").to_string_lossy().to_string();
+    let root_str = root.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis =
+        analyze_function_with_profile(&mut frontend, &file_str, "go", Some(&root_str), None).await;
+    assert_eq!(analysis.params.len(), 2, "go takes 2 params");
+    // The handle param must no longer be opaque — it analyzes as a plain object,
+    // which is what keeps the core from skipping the function.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert!(
+                fields.is_empty(),
+                "stubbed Page param should be an empty object; got fields {fields:?}"
+            );
+        }
+        other => panic!("stubbed Page param should analyze as an empty object; got {other:?}"),
+    }
+
+    instrument_function_with_profile(&mut frontend, &file_str, "go", Some(&root_str), None).await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 30,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!({}), serde_json::json!(0)],
+        vec![serde_json::json!({}), serde_json::json!(9)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "go",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    // No execution should have failed because the stub was missing a method —
+    // that is the exact "page.locator is not a function" cluster str-syj9b fixes.
+    for (_, _, exec) in &result.raw_results {
+        if let Some(err) = &exec.thrown_error {
+            assert!(
+                !err.message.contains("is not a function"),
+                "stub should supply every called method; got thrown_error: {}",
+                err.message
+            );
+        }
+    }
+
+    let mut return_values: HashSet<String> = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            return_values.insert(v.to_string());
+        }
+    }
+
+    let has_present = return_values.iter().any(|v| v.contains("present"));
+    let has_absent = return_values.iter().any(|v| v.contains("absent"));
+    assert!(
+        has_present && has_absent,
+        "stub locator().count() rotation should drive the count>0 branch to BOTH \
+         arms; got return values: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

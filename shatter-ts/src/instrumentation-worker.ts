@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { Worker } from "node:worker_threads";
 import type { FunctionAnalysis, TimingPhaseSummary } from "./protocol.js";
 import type { InstrumentResult } from "./instrumentor.js";
+import type { StubParamRecord } from "./opaque-stub-registry.js";
 import type {
   WorkerRequest,
   WorkerResponse,
@@ -23,6 +24,8 @@ interface PendingRequest {
 
 export interface AnalyzeResult {
   readonly functions: FunctionAnalysis[];
+  /** Opaque-param stub bindings (str-syj9b); frontend-internal, never on the wire. */
+  readonly stubParams?: StubParamRecord[];
   readonly timingPhases?: TimingPhaseSummary[];
 }
 
@@ -84,6 +87,7 @@ export class InstrumentationWorker {
     }
     return {
       functions: response.functions,
+      stubParams: response.stubParams,
       timingPhases: response.timingPhases,
     };
   }

@@ -7,6 +7,11 @@
  */
 
 import logger from "./logger.js";
+import {
+  buildStubValue,
+  STUB_INPUT_TAG,
+  type StubOverrides,
+} from "./opaque-stub-registry.js";
 
 /**
  * Recursively reconstruct native JS values from __complex_type tagged JSON.
@@ -31,6 +36,14 @@ export function reconstructValue(value: unknown): unknown {
   }
 
   switch (tag) {
+    case STUB_INPUT_TAG:
+      // Opaque-param stub overlay (str-syj9b): build a structurally-valid
+      // recording proxy from the overrides resolved at overlay time.
+      return buildStubValue(
+        obj["stub_key"] as string,
+        (obj["overrides"] as StubOverrides | undefined) ?? {},
+      );
+
     case "date":
     case "date_time":
       return new Date(obj["value"] as number);
