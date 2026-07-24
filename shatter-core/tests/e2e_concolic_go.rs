@@ -438,6 +438,104 @@ async fn e2e_go_service_compute_discovers_branches() {
 }
 
 // ---------------------------------------------------------------------------
+// Test: errors.Is sentinel mining (str-kvzh7).
+//
+// RunErrorMessage(err error) string -- 3 arms:
+//   1. errors.Is(err, nl.ErrQuestionRequired) -> "question"
+//   2. errors.Is(err, nl.ErrAnswerRequired)   -> "answer"
+//   3. otherwise                              -> "default"
+//
+// A synthesized error can only be nil or errors.New(message); neither satisfies
+// the sentinel-identity comparisons, so pre-str-kvzh7 only the default arm was
+// reachable. The analyzer mines the two imported sentinels, the planner emits a
+// {"__complex_type":"error","sentinel":N} Literal seed per sentinel, and the
+// wrapper's baked []error table resolves each to the sentinel var so all three
+// arms are covered through the concolic seed path. This is the kapow
+// runErrorMessage shape.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_error_sentinel_discovers_all_arms() {
+    let file = repo_examples_go_dir()
+        .join("error-sentinel")
+        .join("service.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("error-sentinel").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "RunErrorMessage").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "RunErrorMessage takes 1 error param"
+    );
+
+    instrument_function(&mut frontend, &file_str, "RunErrorMessage").await;
+
+    // The planner must satisfy the error param (no unsatisfied requirement) and
+    // materialize sentinel-selector seeds for both mined sentinels.
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    assert!(
+        bundle.unsatisfied.is_empty(),
+        "error param should be satisfiable; unsatisfied={:?}",
+        bundle.unsatisfied
+    );
+    let seed_json: Vec<String> = bundle
+        .seeds
+        .iter()
+        .map(|s| serde_json::to_string(s).unwrap_or_default())
+        .collect();
+    for want in [r#""sentinel":0"#, r#""sentinel":1"#] {
+        assert!(
+            seed_json.iter().any(|s| s.contains(want)),
+            "planner seeds should include a {want} selector; seeds={seed_json:?}"
+        );
+    }
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        &analysis.name,
+        bundle.seeds,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"question\"", "\"answer\"", "\"default\""] {
+        assert!(
+            return_values.contains(expected),
+            "should discover sentinel arm returning {expected}; found: {return_values:?}"
+        );
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
 // Test: configured receiver recipe.
 //
 // (*Service).Classify(n int) string -- the same package exposes NewService(),

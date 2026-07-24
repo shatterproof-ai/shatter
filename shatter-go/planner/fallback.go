@@ -2,6 +2,7 @@ package planner
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
@@ -60,6 +61,68 @@ func PlanFallback(targetID string, paramIndex int, p protocol.ParamInfo, maxPlan
 	default:
 		return nil, nil
 	}
+}
+
+// isErrorParam reports whether p is a bare builtin `error` parameter. It mirrors
+// classifyFallback's error detection but is consulted from PlanParam before the
+// primitive/aggregate/fallback cascade so error params take the tagged-error
+// Literal planning path (str-kvzh7) instead of the runtime_value fallback (which
+// the core materializes as null).
+func isErrorParam(p protocol.ParamInfo) bool {
+	if fallbackTypeName(p) == errorTypeHint {
+		return true
+	}
+	return p.Type.Kind == "complex" && p.Type.ComplexKind == "error"
+}
+
+// planErrorParam builds the Literal ValuePlan slice for a bare `error`
+// parameter (str-kvzh7). Candidates, in priority order:
+//
+//  1. nil (JSON null) — the error-absent branch; also covers default arms.
+//  2. one `{"__complex_type":"error","sentinel":N}` selector per mined
+//     errors.Is/errors.As sentinel target, which the wrapper's baked sentinel
+//     table resolves to the actual sentinel variable so `errors.Is(err, pkg.ErrX)`
+//     branches become reachable.
+//  3. errors.New("shatter") via the tagged `{"__complex_type":"error",...}`
+//     shape — a generic non-nil error for `err != nil` arms.
+//
+// Sentinels rank ahead of the generic errors.New candidate: they are exact
+// known-answer values, whereas the default/`err != nil` arm the errors.New
+// candidate covers is also reachable via nil, so errors.New is the expendable
+// one under the invocation-plan-level cap.
+//
+// sentinelCount is the number of sentinels mined for this param (wrapper table
+// length); indices [0, sentinelCount) align with that table. The per-parameter
+// cap is raised to fit every candidate because sentinels are exact known-answer
+// values that must not be evicted; the invocation-plan-level cap still bounds
+// the emitted plan-set size.
+func planErrorParam(paramIndex int, p protocol.ParamInfo, sentinelCount, maxPlans int) []protocol.ValuePlan {
+	if sentinelCount < 0 {
+		sentinelCount = 0
+	}
+	needed := 2 + sentinelCount
+	if maxPlans < needed {
+		maxPlans = needed
+	}
+	plans := make([]protocol.ValuePlan, 0, needed)
+	add := func(literal json.RawMessage) {
+		if len(plans) >= maxPlans {
+			return
+		}
+		plans = append(plans, protocol.ValuePlan{
+			ParamIndex: paramIndex,
+			ParamName:  p.Name,
+			Kind:       protocol.ValuePlanKindLiteral,
+			Literal:    literal,
+			TypeHint:   errorTypeHint,
+		})
+	}
+	add(json.RawMessage("null"))
+	for n := range sentinelCount {
+		add(json.RawMessage(fmt.Sprintf(`{"__complex_type":"error","sentinel":%d}`, n)))
+	}
+	add(json.RawMessage(`{"__complex_type":"error","message":"shatter"}`))
+	return plans
 }
 
 type fallbackKind int

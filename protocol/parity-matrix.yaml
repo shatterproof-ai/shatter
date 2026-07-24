@@ -646,6 +646,26 @@ feature_capabilities:
       behavior — TypeScript/Rust have no planner — and does not change any
       frontend's analyze output (`enum_values` is already emitted identically by
       all three). Integer/unsigned enums remain out of scope on this path.
+
+      str-kvzh7: a bare `error` parameter is now planned as tagged-error
+      `literal` argument plans — a nil (JSON `null`) candidate, one
+      `{"__complex_type":"error","sentinel":N}` selector per mined
+      errors.Is/errors.As sentinel target, and an
+      `{"__complex_type":"error","message":"shatter"}` (errors.New) candidate —
+      instead of the previous `runtime_value` fallback (which the Rust core
+      materializes as `null`, collapsing every candidate to a nil error). The
+      Go wrapper bakes the mined sentinels into a `[]error{...}` table and
+      resolves the `sentinel` index to the actual sentinel var, so
+      `errors.Is(err, pkg.ErrX)` branches — which need pointer identity and can
+      never be matched by errors.New — become reachable through the concolic
+      seed path. No new field or ValuePlanKind: the candidates ride the existing
+      `literal` kind, and the sentinel input shape is a closed loop between the
+      Go planner (seed) and the Go wrapper (decode). This is a Go-planner/
+      wrapper-only behavior — TypeScript/Rust have no planner — and does not
+      change any frontend's analyze output. The random-explorer path (the Rust
+      core's `generate_error` emitting sentinel selectors, which needs the
+      sentinel count carried on `TypeInfo::Complex.metadata`) is the follow-up
+      str-3lsgf and IS protocol-visible when picked up.
     frontends:
       typescript: not_supported
       go: supported

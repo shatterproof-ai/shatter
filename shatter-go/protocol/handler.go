@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/types"
 	"io"
 	"log/slog"
 	"os"
@@ -1953,6 +1954,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 	target := BuildDiscoveredTarget(pkg.Fset, fn, pkg.TypesInfo, pkg.PkgPath, pkg.Name, file)
 	ctx.Target = &target
 	ctx.StringLiteralsByParam = stringLiteralCandidatesByParam(fn, pkg.TypesInfo, analysis.Params)
+	ctx.ErrorSentinelCountsByParam = errorSentinelCountsByParam(fn, pkg.TypesInfo, pkg.PkgPath, analysis.Params)
 
 	if target.Receiver != nil && target.Receiver.TypeName != "" {
 		all := ScanConstructors(pkg)
@@ -2304,6 +2306,52 @@ func findFuncDeclByBareName(pkg *packages.Package, name string) *ast.FuncDecl {
 		}
 	}
 	return nil
+}
+
+// errorSentinelCountsByParam mines errors.Is/errors.As sentinel targets for the
+// target's bare `error` parameters and returns the count per parameter name
+// (str-kvzh7). The planner uses these counts to emit one
+// `{"__complex_type":"error","sentinel":N}` Literal candidate per index. The
+// mining runs through the same wrapper.MineErrorSentinels traversal the wrapper
+// uses to bake its sentinel table, so the sentinel indices stay aligned across
+// the analyze and build phases. Returns nil when no error param has sentinels.
+func errorSentinelCountsByParam(fn *ast.FuncDecl, info *types.Info, pkgPath string, params []ParamInfo) map[string]int {
+	if fn == nil || fn.Body == nil {
+		return nil
+	}
+	errorParamNames := make(map[string]bool)
+	for _, p := range params {
+		if p.Name != "" && isErrorTypedParam(p) {
+			errorParamNames[p.Name] = true
+		}
+	}
+	if len(errorParamNames) == 0 {
+		return nil
+	}
+	sentinelsByParam := wrapper.MineErrorSentinels(fn.Body, info, pkgPath, errorParamNames)
+	if len(sentinelsByParam) == 0 {
+		return nil
+	}
+	counts := make(map[string]int, len(sentinelsByParam))
+	for name, sentinels := range sentinelsByParam {
+		if len(sentinels) > 0 {
+			counts[name] = len(sentinels)
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	return counts
+}
+
+// isErrorTypedParam reports whether p is a bare builtin `error` parameter,
+// matching the classification the wrapper (GoType == "error") and the planner
+// fallback (ComplexKind "error") use.
+func isErrorTypedParam(p ParamInfo) bool {
+	if p.TypeName != nil && strings.TrimSpace(*p.TypeName) == "error" {
+		return true
+	}
+	return p.Type.Kind == "complex" && p.Type.ComplexKind == "error"
 }
 
 func bareSymbolFromTargetID(targetID string) string {

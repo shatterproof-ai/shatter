@@ -197,6 +197,9 @@ func planOne(
 	if len(ctx.StringLiteralsByParam) > 0 {
 		paramOpts.StringLiteralsByParam = ctx.StringLiteralsByParam
 	}
+	if len(ctx.ErrorSentinelCountsByParam) > 0 {
+		paramOpts.ErrorSentinelCountsByParam = ctx.ErrorSentinelCountsByParam
+	}
 	return planWithGenericArgs(req, ctx, nil, false, paramOpts, opts)
 }
 
@@ -250,6 +253,9 @@ func planMethod(
 	}
 	if len(ctx.StringLiteralsByParam) > 0 {
 		paramOpts.StringLiteralsByParam = ctx.StringLiteralsByParam
+	}
+	if len(ctx.ErrorSentinelCountsByParam) > 0 {
+		paramOpts.ErrorSentinelCountsByParam = ctx.ErrorSentinelCountsByParam
 	}
 	return planWithGenericArgs(req, ctx, receiverPlans, true, paramOpts, opts)
 }

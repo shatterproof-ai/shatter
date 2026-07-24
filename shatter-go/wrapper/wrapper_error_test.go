@@ -63,6 +63,166 @@ func TestWrapper_ErrorParamRuntimeValueSkipsErrorsImport(t *testing.T) {
 	}
 }
 
+// TestWrapper_ErrorParamSentinel is the str-kvzh7 regression. A bare `error`
+// param carrying mined sentinels must (a) generate a baked `[]error{...}`
+// sentinel table plus a `sentinel` decode branch, (b) compile against the
+// target module, and (c) at run time resolve `{"__complex_type":"error",
+// "sentinel":N}` to the Nth sentinel var so `errors.Is(err, ErrN)` matches —
+// which errors.New could never satisfy — while still handling nil and the
+// message form.
+func TestWrapper_ErrorParamSentinel(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go binary not found")
+	}
+
+	modDir := t.TempDir()
+	wrapperDir := t.TempDir()
+
+	// Two same-package exported sentinels; RunErrorMessage switches on identity.
+	const targetSrc = `package errortarget
+
+import "errors"
+
+var ErrOne = errors.New("one")
+var ErrTwo = errors.New("two")
+
+func RunErrorMessage(err error) string {
+	if errors.Is(err, ErrOne) {
+		return "one"
+	}
+	if errors.Is(err, ErrTwo) {
+		return "two"
+	}
+	return "default"
+}
+`
+	if err := os.WriteFile(filepath.Join(modDir, "errortarget.go"), []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write errortarget.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module example.com/errortarget\n\ngo 1.23.0\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	// Same-package sentinels reference the vars by bare name with no import.
+	targets := []wrapper.WrapperTarget{
+		{
+			ID:         "example.com/errortarget:RunErrorMessage",
+			SymbolName: "RunErrorMessage",
+			Kind:       wrapper.TargetKindFunction,
+			Parameters: []wrapper.WrapperParam{
+				{
+					Name:   "err",
+					GoType: "error",
+					ErrorSentinels: []wrapper.ErrorSentinel{
+						{Expr: "ErrOne"},
+						{Expr: "ErrTwo"},
+					},
+				},
+			},
+			HasResult:    true,
+			ResultGoType: "string",
+			ResultCount:  1,
+		},
+	}
+
+	src := wrapper.GenerateWrapper("errortarget", targets, nil)
+
+	mustContain := []string{
+		"Sentinel    *int    `json:\"sentinel\"`",             // struct field
+		"_shatterErrSentinels_err := []error{ErrOne, ErrTwo}", // baked table
+		"if _shatterErr.Sentinel != nil {",                    // sentinel branch
+		"err = _shatterErrSentinels_err[_si]",                 // index assignment
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated wrapper missing %q\nsource:\n%s", want, src)
+		}
+	}
+
+	wrapperPath, _, err := wrapper.WriteWrapperFile(wrapperDir, "errortarget", targets, nil)
+	if err != nil {
+		t.Fatalf("WriteWrapperFile: %v", err)
+	}
+	hash := wrapper.DiscoveryHash(targets, nil)
+	inTreePath := filepath.Join(modDir, wrapper.WrapperFilename(hash))
+	manifest := map[string]map[string]string{"Replace": {inTreePath: wrapperPath}}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal overlay: %v", err)
+	}
+	manifestPath := filepath.Join(wrapperDir, "overlay.json")
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatalf("write overlay: %v", err)
+	}
+
+	const runnerSrc = `package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	errortarget "example.com/errortarget"
+)
+
+func main() {
+	inputs := []json.RawMessage{
+		json.RawMessage("null"),                                            // nil -> default
+		json.RawMessage(` + "`" + `{"__complex_type":"error","sentinel":0}` + "`" + `),   // ErrOne
+		json.RawMessage(` + "`" + `{"__complex_type":"error","sentinel":1}` + "`" + `),   // ErrTwo
+		json.RawMessage(` + "`" + `{"__complex_type":"error","message":"x"}` + "`" + `),  // errors.New -> default
+	}
+	want := []string{"default", "one", "two", "default"}
+	for i, in := range inputs {
+		got, err := errortarget.ShatterInvoke(errortarget.PlanDescriptor{TargetID: "example.com/errortarget:RunErrorMessage"}, []json.RawMessage{in})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "case %d: ShatterInvoke error: %v\n", i, err)
+			os.Exit(1)
+		}
+		g, ok := got.(string)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "case %d: result type %T, want string\n", i, got)
+			os.Exit(1)
+		}
+		if g != want[i] {
+			fmt.Fprintf(os.Stderr, "case %d: got %q, want %q\n", i, g, want[i])
+			os.Exit(1)
+		}
+	}
+	fmt.Println("ok")
+}
+`
+	runnerDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(runnerDir, "main.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	runnerMod := "module example.com/errorrunner\n\ngo 1.23.0\n\nrequire example.com/errortarget v0.0.0\n\nreplace example.com/errortarget => " + modDir + "\n"
+	if err := os.WriteFile(filepath.Join(runnerDir, "go.mod"), []byte(runnerMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	binPath := filepath.Join(runnerDir, "runner.bin")
+	build := exec.Command("go", "build", "-buildvcs=false", "-overlay", manifestPath, "-o", binPath, ".")
+	build.Dir = runnerDir
+	build.Env = append(os.Environ(), "GOFLAGS=")
+	var buildErr bytes.Buffer
+	build.Stderr = &buildErr
+	if err := build.Run(); err != nil {
+		got, _ := os.ReadFile(wrapperPath)
+		t.Fatalf("runner build failed: %v\nstderr: %s\nwrapper:\n%s", err, buildErr.String(), got)
+	}
+	run := exec.Command(binPath)
+	var runOut, runErr bytes.Buffer
+	run.Stdout = &runOut
+	run.Stderr = &runErr
+	if err := run.Run(); err != nil {
+		t.Fatalf("runner failed: %v\nstdout: %s\nstderr: %s", err, runOut.String(), runErr.String())
+	}
+	if got := strings.TrimSpace(runOut.String()); got != "ok" {
+		t.Errorf("runner stdout = %q, want %q\nstderr: %s", got, "ok", runErr.String())
+	}
+}
+
 // TestWrapper_ErrorParam is the str-jn9r0 regression. A bare builtin `error`
 // parameter must (a) generate the dedicated decode block that accepts both a
 // JSON `null` (nil error) and the cross-frontend
