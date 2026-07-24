@@ -11,6 +11,13 @@ import { refineIntegerParams } from "./integer-heuristic.js";
 import { refineParamShapesFromBody } from "./param-shape-inference.js";
 import { recognizeBrowserGlobals } from "./browser-globals-recognizer.js";
 import { recognizeReactHooks, REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
+import {
+  getStubRegistry,
+  matchStubKey,
+  STUB_SENTINEL_LABEL_PREFIX,
+  type StubParamRecord,
+  type StubTypeEntry,
+} from "./opaque-stub-registry.js";
 import logger from "./logger.js";
 import type {
   FunctionAnalysis,
@@ -31,6 +38,121 @@ import type {
   BoundOp,
 } from "./protocol.js";
 import type { TimingCollector } from "./timing.js";
+
+/**
+ * Merged stub registry (built-in ∪ project `ts_runtime_values`) for the current
+ * `analyzeFile` invocation. Worker-thread-local: analyze requests are processed
+ * serially, and `getStubRegistry` is projectRoot-keyed and cached, so setting
+ * this at each `analyzeFile` entry (including barrel recursion) is idempotent.
+ * `convertType` reads it to recognise a registry-covered param type (str-syj9b).
+ */
+let activeStubRegistry: ReadonlyMap<string, StubTypeEntry> = new Map();
+
+/**
+ * If `type` resolves to a registry-covered handle, return its registry key.
+ * Mirrors `isOpaqueType`: keyed on the type's symbol name plus the module its
+ * declaration lives in (or a bare type-name fallback for config entries).
+ */
+function matchStubForType(type: ts.Type): string | null {
+  if (activeStubRegistry.size === 0) return null;
+  const symbol = type.getSymbol() ?? type.aliasSymbol;
+  if (!symbol) return null;
+  const name = symbol.getName();
+  if (!name) return null;
+  const decls = symbol.getDeclarations() ?? [];
+  const declPaths = decls.map((d) => d.getSourceFile().fileName);
+  return matchStubKey(name, declPaths, activeStubRegistry);
+}
+
+/**
+ * Scrub analyzer-internal stub sentinels from analyzed functions and collect the
+ * {function, param index, key} bindings the executor needs.
+ *
+ * `convertType` emits a param type of `{kind:"opaque", label:"<sentinel>key"}`
+ * for a registry-covered handle because it lacks the parameter index. This pass
+ * runs at the single top-level choke point (the worker, over the fully-merged
+ * result set): it records a binding for any param whose *whole value* can be a
+ * single handle stub — the handle either directly (`page: Page`) or wrapped in
+ * nullable/union (`page: Page | undefined`, `p: Page | Other`) — and rewrites
+ * every sentinel (bound or not, at any depth) to a plain empty object so the
+ * core no longer skips the function and nothing sentinel-shaped reaches the wire.
+ *
+ * A handle nested inside an `array`/`object`/`complex` (`Locator[]`,
+ * `{ page: Page }`) is NOT bound: the execute-time overlay replaces the whole
+ * positional argument with one stub, which cannot stand in for an array element
+ * or object field. Those sentinels are still scrubbed to an empty object (the
+ * safe, tested fallback — no crash, no stub), and full element/field-level
+ * stubbing is tracked as a follow-up (str-syj9b nested-type support). Mutates
+ * `functions` in place; returns the collected bindings.
+ */
+export function extractStubParams(functions: FunctionAnalysis[]): StubParamRecord[] {
+  const records: StubParamRecord[] = [];
+  for (const fn of functions) {
+    fn.params.forEach((param, index) => {
+      const stubKey = bindableStubKey(param.type);
+      if (stubKey !== null) {
+        records.push({ functionName: fn.name, paramIndex: index, stubKey });
+      }
+      param.type = scrubStubSentinels(param.type);
+    });
+  }
+  return records;
+}
+
+/** The registry key of a sentinel opaque leaf, or null. */
+function sentinelKeyOf(type: TypeInfo): string | null {
+  if (type.kind === "opaque" && type.label.startsWith(STUB_SENTINEL_LABEL_PREFIX)) {
+    return type.label.slice(STUB_SENTINEL_LABEL_PREFIX.length);
+  }
+  return null;
+}
+
+/**
+ * Registry key to bind a whole parameter to, unwrapping only the wrappers under
+ * which a single stub is a valid substitute for the entire argument: the leaf
+ * sentinel itself, `nullable` (a stub is a valid non-null value), and `union`
+ * (the first handle variant wins — a stub satisfies that arm). Returns null for
+ * `array`/`object`/`complex` wrappers, which need element/field-level stubbing
+ * the whole-argument overlay cannot provide.
+ */
+function bindableStubKey(type: TypeInfo): string | null {
+  const leaf = sentinelKeyOf(type);
+  if (leaf !== null) return leaf;
+  if (type.kind === "nullable") return bindableStubKey(type.inner);
+  if (type.kind === "union") {
+    for (const variant of type.variants) {
+      const key = bindableStubKey(variant);
+      if (key !== null) return key;
+    }
+  }
+  return null;
+}
+
+/** Recursively replace any sentinel opaque node with a plain empty object. */
+function scrubStubSentinels(type: TypeInfo): TypeInfo {
+  if (sentinelKeyOf(type) !== null) {
+    return { kind: "object", fields: [] };
+  }
+  switch (type.kind) {
+    case "array":
+      return { kind: "array", element: scrubStubSentinels(type.element) };
+    case "object":
+      return {
+        kind: "object",
+        fields: type.fields.map(([n, t]) => [n, scrubStubSentinels(t)]),
+      };
+    case "union":
+      return { ...type, variants: type.variants.map(scrubStubSentinels) };
+    case "nullable":
+      return { kind: "nullable", inner: scrubStubSentinels(type.inner) };
+    case "complex":
+      return type.inner
+        ? { ...type, inner: scrubStubSentinels(type.inner) }
+        : type;
+    default:
+      return type;
+  }
+}
 
 function hasExportModifier(node: ts.Node): boolean {
   const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
@@ -224,6 +346,9 @@ export function analyzeFile(
   timing?: TimingCollector,
 ): FunctionAnalysis[] {
   const absolutePath = path.resolve(filePath);
+  // Resolve the stub registry for this project so `convertType` can recognise
+  // registry-covered handle params (str-syj9b). Cached per project root.
+  activeStubRegistry = getStubRegistry(projectRoot ?? null);
   const compilerOptions = loadCompilerOptions(absolutePath, projectRoot ?? undefined);
   const program = timing
     ? timing.sync("analyze.ast", () => ts.createProgram([absolutePath], compilerOptions))
@@ -978,6 +1103,16 @@ export function convertType(
 
   // Check for well-known complex types by symbol name
   if (flags & ts.TypeFlags.Object) {
+    // Registry-covered handle types (e.g. Playwright Page/Locator) short-circuit
+    // to a stub sentinel (str-syj9b), which `extractStubParams` later rewrites to
+    // a plain object + a stub binding. This precedes opaque detection so a handle
+    // that would otherwise be skipped as opaque is instead stubbed and explored.
+    const stubKey = matchStubForType(type);
+    if (stubKey) {
+      seen.delete(type);
+      return { kind: "opaque", label: `${STUB_SENTINEL_LABEL_PREFIX}${stubKey}` };
+    }
+
     // Check for Node.js opaque resource types first
     const opaqueLabel = isOpaqueType(type, checker);
     if (opaqueLabel) {

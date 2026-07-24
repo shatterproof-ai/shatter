@@ -7,7 +7,7 @@
  */
 
 import { parentPort } from "node:worker_threads";
-import { analyzeFile } from "./analyzer.js";
+import { analyzeFile, extractStubParams } from "./analyzer.js";
 import { instrumentFunction } from "./instrumentor.js";
 import { TimingCollector } from "./timing.js";
 import type { WorkerRequest, WorkerResponse } from "./worker-protocol.js";
@@ -26,11 +26,15 @@ port.on("message", (msg: WorkerRequest) => {
         const functions = timing.sync("analyze.total", () =>
           analyzeFile(msg.file, msg.functionName, msg.projectRoot, timing),
         );
+        // Scrub stub sentinels and collect stub-param bindings (str-syj9b)
+        // before serialising the analysis back to the main thread.
+        const stubParams = extractStubParams(functions);
         const summary = timing.toSummary();
         const response: WorkerResponse = {
           id: msg.id,
           type: "analyze",
           functions,
+          stubParams: stubParams.length > 0 ? stubParams : undefined,
           timingPhases: summary?.phases,
         };
         port.postMessage(response);

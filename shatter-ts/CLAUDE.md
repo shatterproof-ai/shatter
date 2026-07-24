@@ -280,6 +280,59 @@ Tests: `src/analyzer.test.ts` +
 `result.executions`: TS `switch` records case *lines* but emits no `branch_path`
 decisions, so path-dedup collapses switch executions to one entry.
 
+## Opaque-Param Stub Registry Contract (str-syj9b)
+
+Framework "handle" params (Playwright `Page`/`Locator`, and any type registered
+via config) are supplied a structurally-valid **stub** instead of being skipped
+as `kind:"opaque"`. The TS analogue of Go's `runtimeval` / `go_runtime_values`.
+Entirely frontend-local — **no wire schema change**, no new protocol field.
+
+Registry: `src/opaque-stub-registry.ts`. Built-in keys `@playwright/test:Page`
+and `@playwright/test:Locator`; user-extensible via `.shatter/config.yaml`
+`ts_runtime_values` (keyed `<module>:<Type>` for precision, or a bare `<Type>`
+that matches by type name — the escape hatch for project-local types). Each entry
+carries an `overrides` map: dotted call paths (`"locator.count"`) or bare method
+names rotate through a scalar list for calls whose **return value gates a branch**
+(e.g. `count()` → `{0,1,3}`, `isVisible()` → `{true,false}`).
+
+Flow (three seams; keep them in step):
+
+1. **Analyze** (`convertType` in `src/analyzer.ts`): a registry-covered param type
+   short-circuits to an internal sentinel opaque label (`STUB_SENTINEL_LABEL_PREFIX`).
+   `extractStubParams` (run once in `src/worker.ts`, the single top-level choke
+   point) rewrites every sentinel to `{kind:"object", fields:[]}` — so the core
+   no longer skips the function — and collects `{functionName, paramIndex, stubKey}`
+   bindings. The sentinel never reaches the wire. **Binding scope:** a param binds
+   when a single stub can stand in for its *whole value* — the handle directly, or
+   wrapped in `nullable`/`union` (`page: Page | undefined`, `p: Page | Widget`),
+   which `bindableStubKey` unwraps. A handle nested in an `array`/`object`/`complex`
+   (`Locator[]`, `{ page: Page }`) is scrubbed to the safe empty-object fallback but
+   **not** bound — the execute-time overlay replaces the whole positional argument
+   and cannot substitute one stub for an array element or object field. Full
+   element/field-level stubbing is a tracked follow-up.
+2. **Worker→main**: bindings ride `AnalyzeWorkerResponse.stubParams` (internal
+   `worker-protocol.ts` channel only) → cached in `handlers.ts`
+   `stubParamsByFunction`, keyed identically to `cachedAnalyses`.
+3. **Execute** (`handlers.ts`): `overlayStubInputs` replaces the generated argument
+   at each bound index with a tagged input (`STUB_INPUT_TAG`); `reconstructValue`
+   (`src/reconstruct.ts`) turns it into a recording proxy via `buildStubValue`. The
+   proxy is chainable and deliberately **not thenable**, so both sync
+   (`page.locator(x)`) and async (`await page.goto(x)`) calls work without the proxy
+   knowing which methods return promises. Override rotation cursors are module-level
+   (process-lifetime), so repeated executions of the same input explore both sides
+   of a stub-gated branch.
+
+Both the analyzer (worker bundle) and executor (main bundle) load the merged
+registry independently via `getStubRegistry(projectRoot)` (fs-read of
+`.shatter/config.yaml`, cached per root) — keep them consistent.
+
+Parity: TS-only capability `ts-opaque-param-stub-registry` in
+`protocol/parity-matrix.yaml` (config schema is language-neutral; Go/Rust supply
+their own per-language mechanisms). Tests: `src/opaque-stub-registry.test.ts`,
+`src/opaque-stub-analyzer.test.ts`, `src/reconstruct.test.ts`, and
+`e2e_ts_opaque_param_stub_registry_explores_both_branches` in
+`shatter-core/tests/e2e_concolic.rs`.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.
