@@ -583,6 +583,14 @@ pub struct Request {
     /// `"bin_only"` (default) uses the standalone/crate-backed dispatch harness.
     /// `"crate_bridge"` injects a feature-gated wrapper module into the library crate
     /// and routes execution through it, enabling calls to crate-private functions.
+    ///
+    /// Consumed by this frontend (see `handler.rs`/`executor.rs`) as an explicit
+    /// override, but no producer currently sets it on the wire: the core never
+    /// emits `harness_mode`, and the frontend auto-selects `crate_bridge` as a
+    /// fallback when the default harness reports the target non-executable
+    /// (`executor.rs`, `NonExecutable if harness_mode.is_none()`). The field is
+    /// therefore a forward-looking override retained for when a producer needs
+    /// to force a specific harness; it is not dead. (str-nryo audit.)
     #[serde(default)]
     pub harness_mode: Option<String>,
     /// Stack of active setup contexts from enclosing Setup commands, if any.

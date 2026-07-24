@@ -215,6 +215,12 @@ type Response struct {
 	Capabilities    []string `json:"capabilities,omitempty"`
 
 	// Analyze
+	// NB: intentionally NOT omitempty. Analyze responses must always carry
+	// functions (as [] when empty) — see TestAnalyzeEmptyFileJSONIncludesFunctionsField.
+	// The side effect is that non-analyze responses emit "functions": null,
+	// a parity gap with TS/Rust tracked as str-tw7tx (needs a pointer-typed
+	// field, not a blanket omitempty, to omit on non-analyze while keeping
+	// empty-analyze []). Recorded as a conformance known_drift.
 	Functions []FunctionAnalysis `json:"functions"`
 
 	// Instrument

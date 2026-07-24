@@ -11,10 +11,14 @@
 # protocol/parity-matrix.yaml in the `reason` text so a future reader can
 # find the owning bd issue and resolution condition (str-1hlk.12).
 known_drifts:
-  # Go handler includes a "functions" field in responses where other
-  # frontends do not. Tracked for future alignment.
+  # Go emits "functions": null on non-analyze responses where TS/Rust omit the
+  # field. A blanket omitempty is not viable — it would also drop functions from
+  # empty-analyze responses (TestAnalyzeEmptyFileJSONIncludesFunctionsField
+  # requires functions:[] there). Proper fix (pointer-typed field) tracked as
+  # str-tw7tx. Harmless today: status-tagged deserialization routes non-analyze
+  # responses to variants that ignore the stray field.
   - pattern: ".functions: missing in"
-    reason: "Go handler includes extra 'functions' field in all responses"
+    reason: "Go emits functions:null on non-analyze responses; see str-tw7tx"
 
   # Side effect capture divergences across frontends.
   # See protocol/parity-matrix.yaml side_effect_capabilities for the full matrix.
