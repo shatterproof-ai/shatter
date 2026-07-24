@@ -113,13 +113,17 @@ need "libclang (libclang1-18 or libclang-dev)" "dpkg -l libclang1-18 || dpkg -l 
 # --- Configure bindgen (GCC headers for z3-sys) ------------------------------
 step "Bindgen configuration"
 
-if [ -f "$REPO_ROOT/.cargo/config.toml" ]; then
-    info ".cargo/config.toml already exists"
-elif dpkg -l libclang-dev &>/dev/null 2>&1; then
+# The repo's .cargo/config.toml is tracked (shared-machine caps,
+# str-35vtk.5); the bindgen workaround lives in a marked block in the
+# machine-level ${CARGO_HOME:-~/.cargo}/config.toml, managed by
+# configure-bindgen.sh.
+if dpkg -l libclang-dev &>/dev/null 2>&1; then
     info "libclang-dev installed — no bindgen workaround needed"
+elif grep -qF "shatter bindgen workaround" "${CARGO_HOME:-$HOME/.cargo}/config.toml" 2>/dev/null; then
+    info "bindgen workaround present in ${CARGO_HOME:-$HOME/.cargo}/config.toml"
 else
     if $CHECK_ONLY; then
-        miss ".cargo/config.toml missing (run scripts/configure-bindgen.sh)"
+        miss "bindgen workaround missing (run scripts/configure-bindgen.sh)"
         MISSING=$((MISSING + 1))
     else
         warn "Running configure-bindgen.sh..."

@@ -436,8 +436,8 @@ into the repo — do not work around it:
   and CI reclaim the machine by exporting `CARGO_BUILD_JOBS`,
   `RUST_TEST_THREADS`, `GOFLAGS`, `GOMAXPROCS`, or `SHATTER_HEAVY_SLOTS`.
 - **Gate timings are recorded** to `~/.cache/shatter/gate-times.csv`
-  (timestamp, worktree, gate, wall seconds, exit code, loadavg, slot) —
-  budgets live in `docs/perf/gate-budgets.md`.
+  (timestamp, worktree, gate, wall seconds, exit code, loadavg, slot,
+  seconds waited for a slot) — budgets live in `docs/perf/gate-budgets.md`.
 - Slow builds under load are contention, not code failure: re-run before
   debugging (see docs/perf/gate-budgets.md for the baseline flake analysis).
 

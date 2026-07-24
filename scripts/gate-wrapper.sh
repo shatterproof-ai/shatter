@@ -7,10 +7,12 @@
 #    shared by every worktree on the machine;
 #  - nice/ionice so gates yield to interactive work;
 #  - timing CSV appended to ~/.cache/shatter/gate-times.csv:
-#    timestamp,worktree,label,wall_seconds,exit_code,loadavg_1min,slot
+#    timestamp,worktree,label,wall_seconds,exit_code,loadavg_1min,slot,wait_seconds
 #
 # Re-entrancy: nested wrapped tasks (check -> conformance) pass through via
-# SHATTER_GATE_LOCK_HELD so composition cannot deadlock.
+# SHATTER_GATE_LOCK_HELD so composition cannot deadlock. If the semaphore
+# cannot operate (no flock, unusable lock dir), the gate still runs —
+# governance degrades to a warning, never to a refusal.
 set -u
 
 label="${1:?usage: gate-wrapper.sh <label> <cmd...>}"
@@ -20,53 +22,98 @@ if [ "${SHATTER_GATE_LOCK_HELD:-}" = "1" ]; then
   exec "$@"
 fi
 
-slots="${SHATTER_HEAVY_SLOTS:-}"
-if [ -z "$slots" ]; then
-  ncpu=$(nproc 2>/dev/null || echo 8)
-  slots=$(( ncpu / 8 )); [ "$slots" -ge 1 ] || slots=1
+run_governed() {
+  # $1 = slot label for the CSV ("-" when ungoverned), $2 = wait seconds,
+  # rest = the gate command
+  local slot="$1" waited="$2" start end rc load csv tmp
+  shift 2
+  start=$(date +%s)
+  load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)
+  export SHATTER_GATE_LOCK_HELD=1
+  if command -v ionice >/dev/null 2>&1; then
+    nice -n 10 ionice -c2 -n7 "$@" &
+  else
+    nice -n 10 "$@" &
+  fi
+  local child=$!
+  # Forward termination to the gate and still write the CSV row (review I3).
+  trap 'kill -TERM "$child" 2>/dev/null' TERM INT
+  wait "$child"
+  rc=$?
+  trap - TERM INT
+  end=$(date +%s)
+
+  csv="${HOME}/.cache/shatter/gate-times.csv"
+  mkdir -p "$(dirname "$csv")" 2>/dev/null || true
+  echo "$(date -Is),$PWD,$label,$((end - start)),$rc,$load,$slot,$waited" >> "$csv" 2>/dev/null || true
+  # Trim to a low watermark so the rewrite doesn't happen on every run
+  # (review M1); mktemp avoids concurrent-truncation clobber.
+  if [ "$(wc -l < "$csv" 2>/dev/null || echo 0)" -gt 10000 ]; then
+    tmp=$(mktemp "$csv.XXXXXX" 2>/dev/null) || tmp=""
+    if [ -n "$tmp" ]; then
+      tail -n 8000 "$csv" > "$tmp" && mv "$tmp" "$csv"
+    fi
+  fi
+  return "$rc"
+}
+
+# Degrade to ungoverned execution when the semaphore cannot work (review I2/M3).
+if ! command -v flock >/dev/null 2>&1; then
+  echo "[gate-wrapper] $label: flock unavailable; running ungoverned" >&2
+  run_governed "-" 0 "$@"
+  exit $?
 fi
+
+slots="${SHATTER_HEAVY_SLOTS:-}"
+case "$slots" in
+  ''|*[!0-9]*)
+    if [ -n "$slots" ]; then
+      echo "[gate-wrapper] $label: SHATTER_HEAVY_SLOTS='$slots' is not a number; using default" >&2
+    fi
+    ncpu=$(nproc 2>/dev/null || echo 8)
+    slots=$(( ncpu / 8 )); [ "$slots" -ge 1 ] || slots=1
+    ;;
+esac
 
 lockdir="${XDG_RUNTIME_DIR:-/tmp}/shatter-heavy-slots"
-mkdir -p "$lockdir" 2>/dev/null || true
+if ! mkdir -p "$lockdir" 2>/dev/null || [ ! -w "$lockdir" ]; then
+  echo "[gate-wrapper] $label: lock dir $lockdir unusable; running ungoverned" >&2
+  run_governed "-" 0 "$@"
+  exit $?
+fi
 
-# Try each slot non-blocking; if all busy, block on slot 1 with periodic
-# progress messages so a queued gate is never a silent hang.
-acquired=""
-for i in $(seq 1 "$slots"); do
-  eval "exec $((8 + i))>\"$lockdir/slot-$i\"" 2>/dev/null || continue
-  if flock -n $((8 + i)); then
-    acquired=$i
-    break
-  fi
-  eval "exec $((8 + i))>&-"
-done
-if [ -z "$acquired" ]; then
-  echo "[gate-wrapper] $label: all $slots heavyweight slots busy; waiting for slot 1..." >&2
-  exec 9>"$lockdir/slot-1"
-  while ! flock -w 60 9; do
-    echo "[gate-wrapper] $label: still waiting for a heavyweight slot ($(date +%H:%M:%S))" >&2
+# Non-blocking sweep over all slots using bash automatic fd allocation
+# (review C1: a hand-rolled `eval exec N>` sweep with 2>/dev/null clobbers
+# fd 10 via bash's stderr save/restore, permanently disabling slot 2).
+try_slots() {
+  acquired=""
+  local i
+  for i in $(seq 1 "$slots"); do
+    exec {fd}>"$lockdir/slot-$i" || continue
+    if flock -n "$fd"; then
+      acquired=$i
+      lockfd=$fd
+      return 0
+    fi
+    exec {fd}>&-
   done
-  acquired=1
-fi
+  return 1
+}
 
-export SHATTER_GATE_LOCK_HELD=1
+wait_start=$(date +%s)
+until try_slots; do
+  # Re-sweep every few seconds rather than pinning slot 1 (review I1:
+  # blocking on one slot convoys all waiters behind its holder while other
+  # slots free up).
+  now=$(date +%s)
+  if [ $(( (now - wait_start) % 60 )) -lt 3 ] && [ $((now - wait_start)) -ge 3 ]; then
+    echo "[gate-wrapper] $label: waiting for a heavyweight slot ($((now - wait_start))s, $slots slots)" >&2
+  fi
+  sleep 3
+done
+waited=$(( $(date +%s) - wait_start ))
 
-start=$(date +%s)
-load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)
-if command -v ionice >/dev/null 2>&1; then
-  nice -n 10 ionice -c2 -n7 "$@"
-else
-  nice -n 10 "$@"
-fi
+run_governed "$acquired" "$waited" "$@"
 rc=$?
-end=$(date +%s)
-
-csv="${HOME}/.cache/shatter/gate-times.csv"
-mkdir -p "$(dirname "$csv")" 2>/dev/null || true
-echo "$(date -Is),$PWD,$label,$((end - start)),$rc,$load,$acquired" >> "$csv" 2>/dev/null || true
-# Keep the log bounded.
-if [ "$(wc -l < "$csv" 2>/dev/null || echo 0)" -gt 10000 ]; then
-  tail -n 10000 "$csv" > "$csv.tmp" && mv "$csv.tmp" "$csv"
-fi
-
+exec {lockfd}>&-
 exit "$rc"
