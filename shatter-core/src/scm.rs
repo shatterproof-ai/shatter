@@ -192,6 +192,10 @@ impl DiffHunk {
 
         if self.new_count == 0 {
             // Deletion-only hunks anchor to the surrounding new-side line.
+            // Git emits new_start=0 for a deletion at the very top of the
+            // file (no preceding line exists); anchor that case to line 1
+            // so a function starting at the top of the file still matches.
+            let start = start.max(1);
             start >= function.start_line && start <= function.end_line
         } else {
             start <= function.end_line && end >= function.start_line
@@ -730,6 +734,30 @@ index 1111111..2222222 100644
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].name, "changed");
+    }
+
+    #[test]
+    fn deletion_only_hunk_at_top_of_file_maps_to_leading_function() {
+        // Git emits new_start=0 for a deletion-only hunk with no preceding
+        // line (i.e. the deleted lines were at the very top of the file).
+        let diff = "\
+diff --git a/src/app.ts b/src/app.ts
+index 1111111..2222222 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,2 +0,0 @@
+-  const x = 1;
+-  return x;
+";
+        let parsed = parse_diff_hunks(diff, Path::new("/repo"));
+        assert_eq!(parsed.hunks[0].new_start, 0);
+        assert_eq!(parsed.hunks[0].new_count, 0);
+
+        let registry = registry(vec![entry("/repo/src/app.ts", "leading", 1, 5)]);
+        let selected = functions_for_diff_hunks(&registry, &parsed.hunks);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].name, "leading");
     }
 
     #[test]
