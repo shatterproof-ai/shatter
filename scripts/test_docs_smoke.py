@@ -54,6 +54,7 @@ def make_spec() -> "docs_smoke.CliSpec":
     }
     spec.global_long = {"--log-level", "--verbose", "--quiet", "--color", "--set"}
     spec.global_short = {"-v", "-q"}
+    spec.global_value_long = {"--log-level", "--color", "--set"}
     return spec
 
 
@@ -98,6 +99,18 @@ class ShatterInvocationTest(unittest.TestCase):
 
     def test_global_flag_allowed_on_subcommand(self) -> None:
         self.assertEqual(self._check("shatter --log-level debug scan src/"), [])
+
+    def test_leading_global_flag_still_resolves_subcommand_flags(self) -> None:
+        # Regression: a value-taking global flag before the subcommand must
+        # not block subcommand-path resolution — otherwise a valid
+        # subcommand flag (--concolic) is misjudged as unknown for `shatter`.
+        self.assertEqual(
+            self._check("shatter --log-level debug explore --concolic foo.ts:bar"), [])
+
+    def test_leading_global_bare_flag_still_resolves_subcommand_flags(self) -> None:
+        # Same, but with a non-value-taking global flag (-v/--verbose-style).
+        self.assertEqual(
+            self._check("shatter --quiet scan --include '**/*.ts' src/"), [])
 
     def test_short_flag_valid(self) -> None:
         self.assertEqual(self._check("shatter list-targets --format json -o targets.json ."), [])
@@ -333,13 +346,17 @@ class HelpParsingTest(unittest.TestCase):
     )
 
     def test_parse_flags(self) -> None:
-        longs, shorts = docs_smoke._parse_help_flags(self.SAMPLE_HELP)
+        longs, shorts, value_longs = docs_smoke._parse_help_flags(self.SAMPLE_HELP)
         self.assertIn("--concolic", longs)
         self.assertIn("--output", longs)
         self.assertIn("--timeout-explore", longs)
         self.assertIn("-o", shorts)
         # Must NOT invent --timeout from --timeout-explore.
         self.assertNotIn("--timeout", longs)
+        # Only flags with a <PLACEHOLDER> take a value.
+        self.assertIn("--output", value_longs)
+        self.assertIn("--timeout-explore", value_longs)
+        self.assertNotIn("--concolic", value_longs)
 
     def test_parse_subcommands(self) -> None:
         root = (

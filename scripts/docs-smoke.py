@@ -252,15 +252,21 @@ class CliSpec:
     short_flags: dict[tuple[str, ...], set[str]] = field(default_factory=dict)
     global_long: set[str] = field(default_factory=set)
     global_short: set[str] = field(default_factory=set)
+    global_value_long: set[str] = field(default_factory=set)
 
     def top_level(self) -> set[str]:
         return {p[0] for p in self.command_paths if len(p) == 1}
 
 
-def _parse_help_flags(help_text: str) -> tuple[set[str], set[str]]:
-    """Extract (long, short) flags from the Options: section of a --help dump."""
+def _parse_help_flags(help_text: str) -> tuple[set[str], set[str], set[str]]:
+    """Extract (long, short, value_long) flags from the Options: section of a
+    --help dump. `value_long` is the subset of long flags that take an
+    argument (their flag_col has a `<PLACEHOLDER>`), needed to know how many
+    tokens to skip when a flag appears ahead of a subcommand.
+    """
     longs: set[str] = set()
     shorts: set[str] = set()
+    value_longs: set[str] = set()
     idx = help_text.find("Options:")
     section = help_text[idx:] if idx != -1 else help_text
     for line in section.splitlines():
@@ -268,11 +274,13 @@ def _parse_help_flags(help_text: str) -> tuple[set[str], set[str]]:
             continue
         # The flag column is everything before the 2+ space gap to the desc.
         flag_col = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
-        for lm in re.findall(r"--([a-zA-Z][a-zA-Z0-9-]*)", flag_col):
-            longs.add("--" + lm)
+        line_longs = ["--" + lm for lm in re.findall(r"--([a-zA-Z][a-zA-Z0-9-]*)", flag_col)]
+        longs.update(line_longs)
+        if "<" in flag_col:
+            value_longs.update(line_longs)
         for sm in re.findall(r"(?:^|[\s,])(-[a-zA-Z])(?:[\s,]|$)", flag_col):
             shorts.add(sm)
-    return (longs, shorts)
+    return (longs, shorts, value_longs)
 
 
 def _parse_help_subcommands(help_text: str) -> list[str]:
@@ -313,7 +321,7 @@ def build_cli_spec(bin_path: str, verbose: bool = False) -> CliSpec:
     root_help = _run_help(bin_path, ())
     if root_help is None:
         raise RuntimeError(f"could not run '{bin_path} --help'")
-    spec.global_long, spec.global_short = _parse_help_flags(root_help)
+    spec.global_long, spec.global_short, spec.global_value_long = _parse_help_flags(root_help)
 
     # BFS over the subcommand tree.
     frontier: list[tuple[str, ...]] = [(name,) for name in _parse_help_subcommands(root_help)]
@@ -327,7 +335,7 @@ def build_cli_spec(bin_path: str, verbose: bool = False) -> CliSpec:
         if help_text is None:
             continue
         spec.command_paths.add(path)
-        longs, shorts = _parse_help_flags(help_text)
+        longs, shorts, _value_longs = _parse_help_flags(help_text)
         spec.long_flags[path] = longs
         spec.short_flags[path] = shorts
         for child in _parse_help_subcommands(help_text):
@@ -348,9 +356,36 @@ def check_shatter_invocation(tokens: list[str], spec: CliSpec) -> list[str]:
     if not tokens:
         return errors
 
-    # Resolve the longest known command path from tokens[1:].
+    # Resolve the longest known command path from tokens[1:]. First, skip
+    # over any global flags (and their value, when known to take one) that
+    # precede the *first* subcommand token — e.g. `shatter --log-level debug
+    # explore ...`. Once a subcommand is found, fall back to the strict
+    # contiguous-token resolution for further nesting (e.g. `cache clear`);
+    # a flag encountered there ends path resolution, same as before, so it
+    # is left for the flag-validation pass below rather than swallowed here.
     path: tuple[str, ...] = ()
     i = 1
+    while i < len(tokens) and path == ():
+        tok = tokens[i]
+        if tok == "--":
+            break
+        if tok.startswith("-"):
+            name = tok.split("=", 1)[0]
+            i += 1
+            if (
+                name in spec.global_value_long
+                and "=" not in tok
+                and i < len(tokens)
+                and not tokens[i].startswith("-")
+            ):
+                i += 1
+            continue
+        cand = (tok,)
+        if cand in spec.command_paths:
+            path = cand
+            i += 1
+        else:
+            break
     while i < len(tokens) and not tokens[i].startswith("-"):
         cand = path + (tokens[i],)
         if cand in spec.command_paths:
