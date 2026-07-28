@@ -822,6 +822,7 @@ scan completes instead.
 
 **Progress event format** (one JSON object per line on stderr):
 
+<!-- docs-smoke: skip reason="NDJSON stream — one JSON object per line, not a single JSON document" -->
 ```json
 {"type":"progress","status":"started","function":"calculateShipping","current":1,"total":12,"elapsed_ms":42}
 {"type":"progress","status":"completed","function":"calculateShipping","current":1,"total":12,"elapsed_ms":1503}

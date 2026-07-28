@@ -110,6 +110,41 @@ Run the gauntlet (broad CLI coverage):
 ./demo/gauntlet.sh --auto
 ```
 
+## Documentation examples smoke gate
+
+`task docs-smoke` (part of `task check`) extracts fenced code blocks from the
+user-facing docs — `README.md`, `QUICKSTART.md`, `SPEC.md`, and `docs/INDEX.md`
+(configured in `scripts/docs-smoke.yaml`) — and validates them against the
+**built CLI**:
+
+- **Shell blocks** (` ```bash ` / `sh` / `shell` / `console`): every
+  `shatter ...` invocation is checked against the real command surface. An
+  unknown subcommand or flag fails the gate — this is what catches a
+  reintroduced stale flag such as `shatter explore --timeout` (the real flag is
+  `--timeout-explore`).
+- **`json` / `yaml` blocks**: parsed for syntax; invalid snippets fail.
+- **`smoke_commands`** from the config are executed in a throwaway temp
+  directory to prove the surface is live.
+
+This is a maintained allowlist, not blind execution of every block. Blocks in
+other languages (`ts`, `markdown`, untagged) are not validated.
+
+**Marking a non-runnable example.** When a block is intentionally illustrative
+(pseudo-JSON, an NDJSON stream, sample output, a planned-but-unimplemented
+command), exempt it with a directive on the line **immediately above** the
+opening fence. A reason is **required** — a bare `skip` fails the gate:
+
+```text
+<!-- docs-smoke: skip reason="NDJSON stream — one object per line, not a single JSON document" -->
+​```json
+{"a":1}
+{"a":2}
+​```
+```
+
+Prefer fixing a stale example over exempting it. Reserve `skip` for blocks that
+genuinely cannot be validated, and keep the reason specific.
+
 ## Contributor Notes
 
 - Keep user-facing documentation in user-facing files. Do not put beads workflow or internal contributor setup into `README.md`.
