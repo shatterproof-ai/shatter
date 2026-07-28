@@ -207,6 +207,39 @@ func F(err error) bool {
 	}
 }
 
+func TestMineErrorSentinels_ErrorsAs_ExportedPackageVarTarget_Mined(t *testing.T) {
+	// errors.As's second argument is conventionally a pointer to a *local*
+	// capture var, which TestMineErrorSentinels_ErrorsAs_AddressOfLocal_Rejected
+	// covers. This test exercises the rarer but syntactically legal case where
+	// the target is the address of an exported package-level error variable —
+	// package-level vars are addressable, so `errors.As(err, &ErrLocal)` type
+	// checks and is intentionally minable: it lets a synthetic error satisfy
+	// the branch by matching ErrLocal's concrete type, the same way
+	// errors.Is(err, ErrLocal) does for identity comparison.
+	const src = `package targets
+
+import "errors"
+
+type notFoundError struct{}
+
+func (notFoundError) Error() string { return "not found" }
+
+var ErrLocal notFoundError
+
+func F(err error) bool {
+	return errors.As(err, &ErrLocal)
+}
+`
+	got := mineFrom(t, src, "F", "err")
+	sentinels := got["err"]
+	if len(sentinels) != 1 {
+		t.Fatalf("len(sentinels) = %d, want 1: %+v", len(sentinels), sentinels)
+	}
+	if sentinels[0].Expr != "ErrLocal" {
+		t.Errorf("Expr = %q, want ErrLocal", sentinels[0].Expr)
+	}
+}
+
 func TestMineErrorSentinels_FirstArgMustBeErrorParam(t *testing.T) {
 	// errors.Is whose first arg is a different (non-param) error is not keyed to
 	// the param, so nothing is mined for "err".

@@ -39,6 +39,13 @@ type ErrorSentinel struct {
 // (body, info, pkgPath, paramNames) so the wrapper's baked table and the
 // planner's candidate count derive identical sentinel indices from the same
 // input. Returns nil when nothing is mined.
+//
+// Scope limit: only direct `errors.Is(paramIdent, X)` / `errors.As(paramIdent,
+// &X)` call sites are matched — errorParamArgName requires the first argument
+// to be a bare identifier naming the parameter itself. A wrapped error
+// (`wrapped := fmt.Errorf("...: %w", err); errors.Is(wrapped, X)`) is not
+// traced back to err, even though errors.Is would match it at runtime via the
+// Unwrap() chain. Such branches mine no sentinel for the underlying param.
 func MineErrorSentinels(
 	body *ast.BlockStmt,
 	info *types.Info,
