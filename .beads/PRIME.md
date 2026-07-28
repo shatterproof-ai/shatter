@@ -6,7 +6,8 @@ Create/claim the issue before writing code; mark it `in_progress` when starting.
 ## Session close
 
 Before saying "done": `git status` → `git add <files>` → `bd dolt pull` →
-`git commit`. This is an ephemeral branch; merge to main locally (no push).
+`git commit` → `git push`. Merge to `main` only through the landing flow in
+`AGENTS.md`.
 
 ## Core commands
 
@@ -16,6 +17,8 @@ Before saying "done": `git status` → `git add <files>` → `bd dolt pull` →
 - `bd update <id> --claim` — claim work
 - `bd close <id1> <id2> …` — close completed issues
 - `bd dep add <issue> <depends-on>` — ordering constraint
-- `bd remember "insight"` / `bd memories <keyword>` — persistent knowledge
+- `bd remember "insight"` / `bd memories <keyword>` — persistent knowledge;
+  run `bd memories <keyword>` when stored project memory is needed
 
-Full command reference: `bd prime --export`. Shatter-specific extensions: `AGENTS.md`.
+Full command reference: `bd prime --full`. Shatter-specific extensions:
+`AGENTS.md`.
