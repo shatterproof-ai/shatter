@@ -1409,10 +1409,14 @@ pub fn prefetch_failures_for_all_generators(
 ///
 /// Returns `None` when there is nothing to attribute. Failures whose generator
 /// name is named in `reason` (the common case: the extractor type that has a
-/// generator bound to it) are preferred; when none match, every failure is
-/// listed, since a function that binds a generator should never report a bare
-/// "unsupported extractor types" error without saying why the generator
-/// produced no value.
+/// generator bound to it) are preferred. When none match by name, every
+/// failure is listed, but ONLY when `reason` itself looks like an
+/// extractor/param-construction rejection (contains "extractor",
+/// case-insensitive) — otherwise a function with an unrelated `Unsupported`
+/// cause (e.g. an opaque type elsewhere in the function) would get a
+/// misleading prefetch-failure preamble that had nothing to do with it,
+/// reintroducing the same class of misattribution this function exists to
+/// fix (str-303gg review finding on str-mt78j).
 #[must_use]
 pub fn attribute_prefetch_failure(reason: &str, failures: &[PrefetchFailure]) -> Option<String> {
     if failures.is_empty() {
@@ -1423,6 +1427,9 @@ pub fn attribute_prefetch_failure(reason: &str, failures: &[PrefetchFailure]) ->
         .filter(|f| reason.contains(f.generator_name.as_str()))
         .collect();
     let attributed: Vec<&PrefetchFailure> = if named.is_empty() {
+        if !reason.to_ascii_lowercase().contains("extractor") {
+            return None;
+        }
         failures.iter().collect()
     } else {
         named
@@ -4847,16 +4854,37 @@ done
     }
 
     #[test]
-    fn attribute_prefetch_failure_lists_all_failures_when_none_are_named() {
+    fn attribute_prefetch_failure_lists_all_failures_when_none_are_named_but_reason_is_extractor_shaped() {
         let failures = vec![PrefetchFailure {
             generator_name: "Db".into(),
             generator_file: "/gen/db.rs".into(),
             message: "connection refused".into(),
         }];
 
-        let attributed = attribute_prefetch_failure("execution produced no coverage", &failures)
-            .expect("an unmatched failure still qualifies the reason");
+        let attributed = attribute_prefetch_failure(
+            "gin handler has unsupported EXTRACTOR types: Session",
+            &failures,
+        )
+        .expect("an unmatched failure still qualifies an extractor-shaped reason");
         assert!(attributed.contains("custom generator prefetch failed for Db"));
+    }
+
+    #[test]
+    fn attribute_prefetch_failure_leaves_unrelated_reason_alone_when_none_are_named() {
+        // Regression: an Unsupported reason that has nothing to do with
+        // extractors (e.g. an opaque type elsewhere in the function) must not
+        // be blamed on an unrelated generator's prefetch failure just because
+        // the function happens to bind one.
+        let failures = vec![PrefetchFailure {
+            generator_name: "Db".into(),
+            generator_file: "/gen/db.rs".into(),
+            message: "connection refused".into(),
+        }];
+
+        assert!(
+            attribute_prefetch_failure("execution produced no coverage", &failures).is_none(),
+            "an unrelated reason must not be misattributed to a prefetch failure"
+        );
     }
 
     #[test]
