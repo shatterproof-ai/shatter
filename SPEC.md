@@ -150,7 +150,7 @@ Every command accepts the [global options](#210-global-options) in §2.10.
 | `--invariants` | false | Enable Daikon-style invariant detection. |
 | `--mcdc` | false | Enable MC/DC analysis (decomposes compound boolean decisions; raises iteration/execution budgets). |
 | `--no-adaptive` | false | Disable adaptive strategy scoring (use round-robin). Tune with `--score-window`, `--cold-start`, `--strategy-floor`, `--strategy-weights`. |
-| `--planner NAME` | — | Select a frontend invocation planner (e.g. `go`) via `get_invocation_plan` so method targets dispatch through a real constructor. |
+| `--planner NAME` | auto | Select a frontend invocation planner (e.g. `go`) explicitly. Not normally needed: the planner is consulted automatically for any frontend that advertises the `get_invocation_plan` capability, so configured `.shatter/config.yaml` `defaults`/`generators` apply and method targets dispatch through a real constructor without this flag. |
 | `--solver-timeout SECS` | none | Z3 solver timeout per query. |
 
 *Output & spec*
