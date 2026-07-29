@@ -1,0 +1,144 @@
+name: Drift Patrol
+
+# Recurring governance sweep (str-u394l.1).
+#
+# Drift checks used to depend on somebody remembering to run a broad audit,
+# which is how stale SPEC content, expired parity warnings, and abandoned
+# in_progress issues lingered for weeks. This workflow gives the bounded
+# subset of those checks a schedule and an audience: a red run in the Actions
+# tab, plus a paste-ready report in the run summary.
+#
+# Entry point: `python3 scripts/drift-patrol.py` (locally: `task drift-patrol`).
+# Cadence, audience, and failure handling: docs/DRIFT-PATROL.md.
+
+on:
+  schedule:
+    # Weekly, Monday 09:00 UTC — offset from CI (push/PR), Perf CI, and the
+    # 07:00 Parity Expiry Watch so the runners do not contend.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: "Flag in_progress issues untouched for more than this many days"
+        required: false
+        default: "14"
+        type: string
+      strict_pending:
+        description: "Treat not-yet-implemented placeholder checks as failures"
+        required: false
+        default: false
+        type: boolean
+  # Keep the patrol itself from rotting. Only the self-test runs on PRs: the
+  # patrol reports real repository drift, so gating unrelated PRs on it would
+  # make every branch red for someone else's stale issue.
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/drift-patrol.py"
+      - "scripts/test_drift_patrol.py"
+      - ".github/workflows/drift-patrol.yml"
+
+jobs:
+  self-test:
+    name: Patrol self-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run patrol unit tests
+        run: python3 -m unittest scripts.test_drift_patrol
+
+  patrol:
+    name: Drift patrol
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Quoted-through-env rather than interpolated into `run:` directly.
+      STALE_DAYS: ${{ inputs.stale_days || '14' }}
+      STRICT_PENDING: ${{ inputs.strict_pending && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: shatter-ts/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python protocol tooling
+        run: python3 -m pip install --user jsonschema pyyaml
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: drift-patrol-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            drift-patrol-cargo-
+            ci-cargo-
+
+      # Build the frontends so the conformance check runs for real rather than
+      # degrading to a hollow pass on missing build artifacts.
+      - name: Build frontends
+        run: task ts:build go:build rust-fe:build
+
+      - name: Run drift patrol
+        id: patrol
+        run: |
+          args=(--require-conformance --stale-days "$STALE_DAYS")
+          if [ "$STRICT_PENDING" = "yes" ]; then
+            args+=(--strict-pending)
+          fi
+          python3 scripts/drift-patrol.py "${args[@]}" \
+            --report "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain a red run
+        if: failure() && steps.patrol.outcome == 'failure'
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+
+          ## Drift patrol failed — action needed
+
+          The report above lists each failing check with its responsible issue
+          and remediation path. It is written to be pasted into a Beads issue
+          verbatim:
+
+          ```
+          bd create "Drift patrol findings YYYY-MM-DD" --parent str-u394l --label drift --priority 2
+          ```
+
+          See docs/DRIFT-PATROL.md for cadence, owner, and triage rules.
+          SUMMARY

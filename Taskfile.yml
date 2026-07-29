@@ -168,6 +168,20 @@ tasks:
         fi
       - python3 protocol/conformance/run_golden_tests.py
 
+  drift-patrol:
+    desc: "Bounded drift patrol (protocol registry/codegen, conformance, parity expiry, tracker hygiene). See docs/DRIFT-PATROL.md."
+    # Build the frontends first so the conformance check runs for real instead
+    # of degrading to a hollow pass — that is why --require-conformance is safe
+    # here but not for a bare `python3 scripts/drift-patrol.py`.
+    deps: [ts:build, go:build, rust-fe:build]
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    cmds:
+      - python3 scripts/drift-patrol.py --require-conformance
+
   protocol-codegen-check:
     desc: "Verify generated protocol artifacts are in sync with protocol/registry.yaml"
     preconditions:
@@ -259,8 +273,11 @@ tasks:
       - scripts/test_package_npm_release.py
       - scripts/retention_continuous_releases.py
       - scripts/test_retention_continuous_releases.py
+      - scripts/drift-patrol.py
+      - scripts/test_drift_patrol.py
     cmds:
       - bash -n install.sh
+      - python3 -m unittest scripts.test_drift_patrol
       - python3 -m unittest scripts.test_release_workflow
       - python3 -m unittest scripts.test_install_manifest
       - python3 -m unittest scripts.test_package_npm_release
