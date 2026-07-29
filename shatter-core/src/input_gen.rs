@@ -1334,6 +1334,105 @@ pub struct GeneratedEntry {
 pub struct PrefetchedValues {
     /// Map from (generator file path as string, generator name) to queued entries.
     entries: std::collections::HashMap<(String, String), Vec<GeneratedEntry>>,
+    /// Generators whose prefetch produced no value (str-mt78j). Recorded so a
+    /// downstream failure caused by a missing generator value can name the real
+    /// cause instead of the symptom.
+    failures: Vec<PrefetchFailure>,
+}
+
+/// A custom generator whose prefetch failed (str-mt78j).
+///
+/// Prefetch degrades rather than aborts: a generator that errors (e.g. a DB pool
+/// timeout under scan concurrency) leaves its slot empty and exploration
+/// continues with built-in values. Those built-in values then routinely fail
+/// downstream adapter checks with a message that blames the *extractor type*
+/// ("axum handler has unsupported extractor types: CurrentAccount") rather than
+/// the generator. Recording the failure lets the failure reason name the cause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefetchFailure {
+    /// Generator name — the type name or parameter name it is bound to.
+    pub generator_name: String,
+    /// Generator file path, as a display string.
+    pub generator_file: String,
+    /// Error message reported by the frontend (or the transport).
+    pub message: String,
+}
+
+impl std::fmt::Display for PrefetchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "custom generator prefetch failed for {} ({}): {}",
+            self.generator_name, self.generator_file, self.message
+        )
+    }
+}
+
+/// Build one [`PrefetchFailure`] per configured custom generator.
+///
+/// Used when prefetch fails at the transport level (spawn failure, timeout,
+/// broken pipe), where the error is not attributable to a single generator but
+/// every configured generator is left without values.
+#[must_use]
+pub fn prefetch_failures_for_all_generators(
+    sources: &[ValueSource],
+    message: &str,
+) -> Vec<PrefetchFailure> {
+    let mut failures: Vec<PrefetchFailure> = Vec::new();
+    for source in sources {
+        let ValueSource::CustomGenerator {
+            generator_name,
+            generator_file,
+            ..
+        } = source
+        else {
+            continue;
+        };
+        let generator_file = generator_file.display().to_string();
+        if failures
+            .iter()
+            .any(|f| f.generator_name == *generator_name && f.generator_file == generator_file)
+        {
+            continue;
+        }
+        failures.push(PrefetchFailure {
+            generator_name: generator_name.clone(),
+            generator_file,
+            message: message.to_string(),
+        });
+    }
+    failures
+}
+
+/// Qualify a function failure reason with the generator prefetch failures that
+/// explain it (str-mt78j).
+///
+/// Returns `None` when there is nothing to attribute. Failures whose generator
+/// name is named in `reason` (the common case: the extractor type that has a
+/// generator bound to it) are preferred; when none match, every failure is
+/// listed, since a function that binds a generator should never report a bare
+/// "unsupported extractor types" error without saying why the generator
+/// produced no value.
+#[must_use]
+pub fn attribute_prefetch_failure(reason: &str, failures: &[PrefetchFailure]) -> Option<String> {
+    if failures.is_empty() {
+        return None;
+    }
+    let named: Vec<&PrefetchFailure> = failures
+        .iter()
+        .filter(|f| reason.contains(f.generator_name.as_str()))
+        .collect();
+    let attributed: Vec<&PrefetchFailure> = if named.is_empty() {
+        failures.iter().collect()
+    } else {
+        named
+    };
+    let joined = attributed
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!("{joined}; reported as: {reason}"))
 }
 
 impl PrefetchedValues {
@@ -1342,6 +1441,7 @@ impl PrefetchedValues {
     pub fn new() -> Self {
         Self {
             entries: std::collections::HashMap::new(),
+            failures: Vec::new(),
         }
     }
 
@@ -1406,6 +1506,44 @@ impl PrefetchedValues {
         self.entries
             .get(&(file.to_string(), name.to_string()))
             .is_some_and(|q| !q.is_empty())
+    }
+
+    /// Create an empty prefetch store that carries the given failures.
+    ///
+    /// Used when prefetch failed at the transport level: no values were
+    /// produced, but the reason is worth carrying downstream (str-mt78j).
+    #[must_use]
+    pub fn with_failures(failures: Vec<PrefetchFailure>) -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            failures,
+        }
+    }
+
+    /// Record a generator whose prefetch produced no value (str-mt78j).
+    ///
+    /// Only the first failure per `(file, name)` is kept — a prefetch loop of
+    /// `count` iterations against a broken generator otherwise records the same
+    /// error dozens of times.
+    pub fn record_failure(&mut self, file: String, name: String, message: String) {
+        if self
+            .failures
+            .iter()
+            .any(|f| f.generator_file == file && f.generator_name == name)
+        {
+            return;
+        }
+        self.failures.push(PrefetchFailure {
+            generator_name: name,
+            generator_file: file,
+            message,
+        });
+    }
+
+    /// Generators whose prefetch produced no value.
+    #[must_use]
+    pub fn failures(&self) -> &[PrefetchFailure] {
+        &self.failures
     }
 
     /// Count remaining queued values for a generator.
@@ -1618,11 +1756,19 @@ pub async fn prefetch_custom_values(
                 }
                 crate::protocol::ResponseResult::Error { message, .. } => {
                     // Log but don't fail -- we'll fall back to built-in generation.
+                    // The failure is recorded so a downstream failure caused by
+                    // the missing value can name this error (str-mt78j).
                     log::warn!("generator error for {name} ({file}): {message}");
+                    store.record_failure(file.clone(), name.clone(), message);
                 }
-                _ => {
+                other => {
                     // Unexpected response type -- skip this generator.
                     log::warn!("unexpected response for generator {name}");
+                    store.record_failure(
+                        file.clone(),
+                        name.clone(),
+                        format!("unexpected generate response: {other:?}"),
+                    );
                 }
             }
         }
@@ -4608,6 +4754,145 @@ echo '{{"protocol_version":"0.1.0","id":3,"status":"shutdown_ack"}}'
             serde_json::from_str(raw_request.trim()).expect("parse generate request");
         assert_eq!(request["command"], "generate");
         assert_eq!(request["project_root"], project_root.display().to_string());
+    }
+
+    #[tokio::test]
+    async fn prefetch_custom_values_records_generator_error_as_failure() {
+        use crate::frontend::{Frontend, FrontendConfig};
+        use std::io::Write;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("failing-generate.sh");
+        let mut script = std::fs::File::create(&script_path).expect("create script");
+        writeln!(
+            script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+IFS= read -r handshake
+echo '{{"protocol_version":"0.1.0","id":1,"status":"handshake","frontend_version":"0.1.0","language":"failing","capabilities":["generate"]}}'
+while IFS= read -r line; do
+  id=$(echo "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  echo "{{\"protocol_version\":\"0.1.0\",\"id\":$id,\"status\":\"error\",\"code\":\"internal_error\",\"message\":\"PoolTimedOut: timed out acquiring a database connection\",\"details\":null}}"
+done
+"#
+        )
+        .expect("write script");
+
+        let mut config = FrontendConfig::new(std::path::PathBuf::from("bash"));
+        config.args = vec![script_path.display().to_string()];
+        config.request_timeout = Duration::from_secs(5);
+
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn frontend");
+        let sources = vec![ValueSource::CustomGenerator {
+            generator_name: "CurrentAccount".into(),
+            param_name: None,
+            generator_file: "/gen/current_account.rs".into(),
+            kind: crate::protocol::GeneratorKind::TypeName,
+        }];
+
+        // Three prefetch attempts against one broken generator must record one
+        // failure, not three.
+        let store = prefetch_custom_values(&sources, &mut frontend, 3, None)
+            .await
+            .expect("generator errors degrade rather than abort prefetch");
+
+        assert_eq!(
+            store.failures().len(),
+            1,
+            "repeated failures for one generator collapse to a single record"
+        );
+        let failure = &store.failures()[0];
+        assert_eq!(failure.generator_name, "CurrentAccount");
+        assert_eq!(failure.generator_file, "/gen/current_account.rs");
+        assert!(
+            failure.message.contains("PoolTimedOut"),
+            "failure must carry the frontend's message; got {}",
+            failure.message
+        );
+    }
+
+    #[test]
+    fn attribute_prefetch_failure_prefers_the_generator_named_in_the_reason() {
+        let failures = vec![
+            PrefetchFailure {
+                generator_name: "CurrentAccount".into(),
+                generator_file: "/gen/current_account.rs".into(),
+                message: "PoolTimedOut".into(),
+            },
+            PrefetchFailure {
+                generator_name: "Db".into(),
+                generator_file: "/gen/db.rs".into(),
+                message: "connection refused".into(),
+            },
+        ];
+
+        let attributed = attribute_prefetch_failure(
+            "axum handler has unsupported extractor types: CurrentAccount",
+            &failures,
+        )
+        .expect("a bound generator failure must qualify the reason");
+
+        assert!(attributed.contains(
+            "custom generator prefetch failed for CurrentAccount (/gen/current_account.rs): PoolTimedOut"
+        ));
+        assert!(
+            !attributed.contains("connection refused"),
+            "unrelated generator failures must not be blamed; got {attributed}"
+        );
+        assert!(
+            attributed.contains("reported as: axum handler has unsupported extractor types"),
+            "the original reason must be preserved; got {attributed}"
+        );
+    }
+
+    #[test]
+    fn attribute_prefetch_failure_lists_all_failures_when_none_are_named() {
+        let failures = vec![PrefetchFailure {
+            generator_name: "Db".into(),
+            generator_file: "/gen/db.rs".into(),
+            message: "connection refused".into(),
+        }];
+
+        let attributed = attribute_prefetch_failure("execution produced no coverage", &failures)
+            .expect("an unmatched failure still qualifies the reason");
+        assert!(attributed.contains("custom generator prefetch failed for Db"));
+    }
+
+    #[test]
+    fn attribute_prefetch_failure_is_none_without_failures() {
+        assert!(
+            attribute_prefetch_failure(
+                "axum handler has unsupported extractor types: CurrentAccount",
+                &[]
+            )
+            .is_none(),
+            "a genuine capability gap must keep its own message"
+        );
+    }
+
+    #[test]
+    fn prefetch_failures_for_all_generators_covers_each_generator_once() {
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "CurrentAccount".into(),
+                param_name: None,
+                generator_file: "/gen/current_account.rs".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::CustomGenerator {
+                generator_name: "CurrentAccount".into(),
+                param_name: None,
+                generator_file: "/gen/current_account.rs".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+        ];
+
+        let failures = prefetch_failures_for_all_generators(&sources, "frontend spawn failed");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].generator_name, "CurrentAccount");
+        assert_eq!(failures[0].message, "frontend spawn failed");
     }
 
     #[tokio::test]

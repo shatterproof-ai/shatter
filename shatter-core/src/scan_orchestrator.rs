@@ -3038,7 +3038,7 @@ async fn explore_with_scan_mode(
         .iter()
         .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
     let max_executions = concolic_scan_max_executions(max_iterations, has_custom_generators);
-    let generated_inputs = prefetch_concolic_generator_inputs(
+    let (generated_inputs, prefetch_failures) = prefetch_concolic_generator_inputs(
         frontend,
         analysis,
         explore_config,
@@ -3074,7 +3074,7 @@ async fn explore_with_scan_mode(
         // Pin custom-generator/extractor slots through the concolic loop (str-6cdp).
         value_sources: explore_config.value_sources.clone(),
     };
-    let (mut result, _state) = crate::orchestrator::explore(
+    let explored = crate::orchestrator::explore(
         frontend,
         &analysis.name,
         seed_inputs,
@@ -3087,7 +3087,19 @@ async fn explore_with_scan_mode(
         None,
         None,
     )
-    .await?;
+    .await;
+    let (mut result, _state) = match explored {
+        Ok(explored) => explored,
+        // str-mt78j: a generator whose prefetch failed leaves its extractor slot
+        // filled by a built-in value, which the frontend then rejects as an
+        // unsupported extractor type. Name the prefetch failure instead.
+        Err(crate::orchestrator::ExploreError::Unsupported(reason)) => {
+            let reason = crate::input_gen::attribute_prefetch_failure(&reason, &prefetch_failures)
+                .unwrap_or(reason);
+            return Err(crate::orchestrator::ExploreError::Unsupported(reason).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     result.total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
     Ok(result.into())
 }
@@ -3117,14 +3129,17 @@ async fn prefetch_concolic_generator_inputs(
     explore_config: &ExploreConfig,
     capabilities: &crate::orchestrator::FrontendCapabilities,
     max_iterations: usize,
-) -> Vec<Vec<serde_json::Value>> {
+) -> (
+    Vec<Vec<serde_json::Value>>,
+    Vec<crate::input_gen::PrefetchFailure>,
+) {
     let has_generators = explore_config
         .value_sources
         .iter()
         .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
 
     if !has_generators || !capabilities.commands.contains("generate") {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let mut prefetched = match crate::input_gen::prefetch_custom_values(
@@ -3137,22 +3152,30 @@ async fn prefetch_concolic_generator_inputs(
     {
         Ok(prefetched) => prefetched,
         Err(err) => {
-            log::debug!(
+            log::warn!(
                 "scan concolic generator prefetch failed for {}: {err}",
                 analysis.name
             );
-            PrefetchedValues::new()
+            // str-mt78j: a transport-level failure starves every configured
+            // generator; record one failure each so the function's failure
+            // reason can name the cause.
+            PrefetchedValues::with_failures(crate::input_gen::prefetch_failures_for_all_generators(
+                &explore_config.value_sources,
+                &err.to_string(),
+            ))
         }
     };
 
-    concolic_generator_inputs_from_prefetch(
+    let failures = prefetched.failures().to_vec();
+    let inputs = concolic_generator_inputs_from_prefetch(
         analysis,
         &explore_config.value_sources,
         capabilities,
         explore_config.seed,
         max_iterations,
         &mut prefetched,
-    )
+    );
+    (inputs, failures)
 }
 
 fn concolic_generator_inputs_from_prefetch(
@@ -10379,6 +10402,102 @@ defaults:
         assert_eq!(
             inputs[0][1],
             serde_json::json!({"__shatter_native": true, "handle": "current-1"})
+        );
+    }
+
+    /// str-mt78j: parallel-path parity — the concolic scan path prefetches
+    /// generators separately from the random explorer, and must attribute a
+    /// starved extractor to the prefetch failure just the same.
+    #[tokio::test]
+    async fn concolic_scan_attributes_unsupported_extractor_to_generator_prefetch_failure() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = manifest_dir.join("../protocol/failing-generator-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![script.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        let mut frontend = Frontend::spawn(&fe_config)
+            .await
+            .expect("spawn failing generator frontend");
+
+        let analysis = FunctionAnalysis {
+            name: "list_tags".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "current".into(),
+                typ: TypeInfo::Unknown,
+                type_name: Some("CurrentAccount".into()),
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        };
+
+        let explore_config = ExploreConfig {
+            file: "handlers/tags.rs".into(),
+            max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: crate::protocol::SetupLevel::Function,
+            value_sources: vec![ValueSource::CustomGenerator {
+                generator_name: "CurrentAccount".into(),
+                param_name: None,
+                generator_file: PathBuf::from("/gen/current_account.rs"),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            }],
+            capabilities: crate::orchestrator::FrontendCapabilities::from_raw(
+                frontend.capabilities(),
+            ),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: explorer::LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+
+        let error = explore_with_scan_mode(&mut frontend, &analysis, true, &explore_config)
+            .await
+            .expect_err("all-not_supported concolic exploration should classify Unsupported");
+        let _ = frontend.shutdown().await;
+
+        let reason = error.to_string();
+        assert!(
+            reason.contains("custom generator prefetch failed for CurrentAccount"),
+            "concolic path must name the generator prefetch failure; got {reason}"
+        );
+        assert!(
+            reason.contains("PoolTimedOut"),
+            "concolic path must carry the generator's own error; got {reason}"
+        );
+        assert!(
+            reason.contains("axum handler has unsupported extractor types"),
+            "the original frontend message must be preserved as context; got {reason}"
         );
     }
 

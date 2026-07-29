@@ -1089,13 +1089,15 @@ pub async fn explore_function(
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
     let (mut prefetched, use_generators) =
         prefetch_custom_values_for_explore(config, frontend, use_generators).await;
+    // str-mt78j: kept for the finalize-time failure reason, where a missing
+    // generator value otherwise surfaces as a bare unsupported-extractor error.
+    let prefetch_failures = prefetched.failures().to_vec();
 
     // str-6cdp: capture a reusable native-replay marker per custom-generator
     // slot from the prefetch store. Re-applied at the execute funnel on every
     // iteration so the extractor param never reaches the frontend as a generated
     // or mutated scalar, even after the prefetch queue is drained.
-    let native_pins =
-        crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
+    let native_pins = crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
     let native_pins_arg = if native_pins.is_empty() {
         None
     } else {
@@ -1872,9 +1874,15 @@ pub async fn explore_function(
     // str-303gg review fix: reclassify Unsupported only when no successful
     // observation was aggregated. A function that observed any coverage keeps it,
     // even if some iterations returned not_supported.
-    if let Some(reason) =
-        crate::observe::aggregate_unsupported_reason(unsupported_reason, aggregator.iterations() > 0)
-    {
+    if let Some(reason) = crate::observe::aggregate_unsupported_reason(
+        unsupported_reason,
+        aggregator.iterations() > 0,
+    ) {
+        // str-mt78j: a generator whose prefetch failed leaves its extractor slot
+        // filled by a built-in value, which the frontend then rejects as an
+        // unsupported extractor type. Name the prefetch failure instead.
+        let reason = crate::input_gen::attribute_prefetch_failure(&reason, &prefetch_failures)
+            .unwrap_or(reason);
         return Err(ExploreError::Unsupported(reason));
     }
 
@@ -2068,7 +2076,16 @@ async fn prefetch_custom_values_for_explore(
         }
         Err(e) => {
             log::debug!("prefetch failed, falling back to built-in: {e}");
-            (PrefetchedValues::new(), false)
+            // A transport-level prefetch failure leaves every configured
+            // generator without values; record one failure each so a downstream
+            // unsupported-extractor failure can name the cause (str-mt78j).
+            let store = PrefetchedValues::with_failures(
+                crate::input_gen::prefetch_failures_for_all_generators(
+                    &config.value_sources,
+                    &e.to_string(),
+                ),
+            );
+            (store, false)
         }
     }
 }
@@ -2196,11 +2213,13 @@ async fn explore_function_with_observer_pool(
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
     let (mut prefetched, use_generators) =
         prefetch_custom_values_for_explore(config, frontend, use_generators).await;
+    // str-mt78j: see explore_function — prefetch failures qualify the
+    // finalize-time Unsupported reason.
+    let prefetch_failures = prefetched.failures().to_vec();
 
     // str-6cdp: reusable native-replay markers for custom-generator slots, applied
     // at the execute funnel every iteration (see explore_function for rationale).
-    let native_pins =
-        crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
+    let native_pins = crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
     let native_pins_arg = if native_pins.is_empty() {
         None
     } else {
@@ -2481,9 +2500,13 @@ async fn explore_function_with_observer_pool(
     // str-303gg review fix: reclassify Unsupported only when no successful
     // observation was aggregated. A function that observed any coverage keeps it,
     // even if some iterations returned not_supported.
-    if let Some(reason) =
-        crate::observe::aggregate_unsupported_reason(unsupported_reason, aggregator.iterations() > 0)
-    {
+    if let Some(reason) = crate::observe::aggregate_unsupported_reason(
+        unsupported_reason,
+        aggregator.iterations() > 0,
+    ) {
+        // str-mt78j: see explore_function.
+        let reason = crate::input_gen::attribute_prefetch_failure(&reason, &prefetch_failures)
+            .unwrap_or(reason);
         return Err(ExploreError::Unsupported(reason));
     }
 
@@ -5186,6 +5209,149 @@ for line in sys.stdin:
         assert_eq!(custom_generator_prefetch_budget(&sources, Some(5)), 10);
         assert_eq!(custom_generator_prefetch_budget(&sources, None), 2);
         assert_eq!(custom_generator_prefetch_budget(&[], Some(5)), 1);
+    }
+
+    /// Frontend that fails every `generate` and rejects every `execute` as an
+    /// unsupported extractor type — the shape of a config-bound generator whose
+    /// prefetch dies under DB pressure (str-mt78j).
+    fn failing_generator_frontend_config() -> crate::frontend::FrontendConfig {
+        use crate::frontend::FrontendConfig;
+        use std::path::{Path, PathBuf};
+        use std::time::Duration;
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = manifest_dir.join("../protocol/failing-generator-frontend.sh");
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![script.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+        config
+    }
+
+    fn prefetch_failure_explore_config(observer_pool: usize) -> ExploreConfig {
+        let mut capabilities = FrontendCapabilities::default();
+        capabilities.commands.insert("generate".to_string());
+        capabilities.commands.insert("execute".to_string());
+        capabilities.commands.insert("instrument".to_string());
+
+        ExploreConfig {
+            file: "handlers.rs".into(),
+            max_iterations: Some(2),
+            observer_pool,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![ValueSource::CustomGenerator {
+                generator_name: "CurrentAccount".into(),
+                param_name: None,
+                generator_file: PathBuf::from("/gen/current_account.rs"),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            }],
+            capabilities,
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        }
+    }
+
+    fn extractor_analysis() -> FunctionAnalysis {
+        use crate::types::{ParamInfo, TypeInfo};
+        let mut analysis = stub_analysis();
+        analysis.name = "list_tags".into();
+        analysis.params = vec![ParamInfo {
+            name: "current".into(),
+            typ: TypeInfo::Unknown,
+            type_name: Some("CurrentAccount".into()),
+        }];
+        analysis
+    }
+
+    /// str-mt78j: the random explorer path must blame the generator prefetch
+    /// failure, not the extractor type it starved.
+    #[tokio::test]
+    async fn random_explore_attributes_unsupported_extractor_to_generator_prefetch_failure() {
+        let config = failing_generator_frontend_config();
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("spawn failing generator frontend");
+
+        let error = explore_function(
+            &mut frontend,
+            &extractor_analysis(),
+            &prefetch_failure_explore_config(1),
+            None,
+            None,
+        )
+        .await
+        .expect_err("all-not_supported exploration should classify Unsupported");
+        let _ = frontend.shutdown().await;
+
+        let ExploreError::Unsupported(reason) = error else {
+            panic!("expected ExploreError::Unsupported, got {error:?}");
+        };
+        assert!(
+            reason.contains("custom generator prefetch failed for CurrentAccount"),
+            "failure reason must name the generator prefetch failure; got {reason}"
+        );
+        assert!(
+            reason.contains("PoolTimedOut"),
+            "failure reason must carry the generator's own error; got {reason}"
+        );
+        assert!(
+            reason.contains("axum handler has unsupported extractor types"),
+            "the original frontend message must be preserved as context; got {reason}"
+        );
+    }
+
+    /// str-mt78j: parallel-path parity — the pooled observer path prefetches
+    /// through the same helper and must attribute identically.
+    #[tokio::test]
+    async fn pooled_explore_attributes_unsupported_extractor_to_generator_prefetch_failure() {
+        let config = failing_generator_frontend_config();
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("spawn failing generator frontend");
+
+        let mut explore_config = prefetch_failure_explore_config(2);
+        explore_config.observer_frontend_config = Some(config.clone());
+
+        let error = explore_function(
+            &mut frontend,
+            &extractor_analysis(),
+            &explore_config,
+            None,
+            None,
+        )
+        .await
+        .expect_err("all-not_supported exploration should classify Unsupported");
+        let _ = frontend.shutdown().await;
+
+        let ExploreError::Unsupported(reason) = error else {
+            panic!("expected ExploreError::Unsupported, got {error:?}");
+        };
+        assert!(
+            reason.contains("custom generator prefetch failed for CurrentAccount"),
+            "pooled path must attribute prefetch failures too; got {reason}"
+        );
     }
 
     #[test]
