@@ -486,11 +486,13 @@ pub(crate) struct ExploreArgs {
     #[arg(long)]
     pub(crate) strategy_weights: Option<String>,
 
-    /// Select a frontend-provided invocation planner by name. When set to
-    /// `go`, consults the Go frontend's invocation planner
-    /// (get_invocation_plan) before exploring each target. The returned
-    /// InvocationPlan is fed as seeds and attached to every Execute request
-    /// so method targets dispatch into a real constructor.
+    /// Select a frontend-provided invocation planner by name. The invocation
+    /// planner (get_invocation_plan) is consulted automatically whenever the
+    /// frontend advertises that capability, so this flag is not required to
+    /// pick up `.shatter/config.yaml` `defaults`/`generators`; set it to `go`
+    /// only to force consultation explicitly. The returned InvocationPlan is
+    /// fed as seeds and attached to every Execute request so method targets
+    /// dispatch into a real constructor.
     #[arg(long)]
     pub(crate) planner: Option<String>,
 
