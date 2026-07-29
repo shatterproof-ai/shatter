@@ -5487,6 +5487,46 @@ mod tests {
     // str-4mmd: failed function entries carry error metadata
     // -----------------------------------------------------------------
 
+    /// str-mt78j: a function starved by a failed custom-generator prefetch must
+    /// carry the prefetch failure in the scan report JSON, not only in a
+    /// transient warn-level log line.
+    #[test]
+    fn scan_report_json_carries_generator_prefetch_failure_reason() {
+        let reason = "unsupported: custom generator prefetch failed for CurrentAccount \
+             (/gen/current_account.rs): PoolTimedOut: timed out acquiring a database connection; \
+             reported as: axum handler has unsupported extractor types: CurrentAccount";
+        let parallel_result = ParallelScanResult {
+            function_results: vec![],
+            test_order: vec![],
+            skipped: vec![SkippedFunction {
+                function_name: "src/handlers/tags.rs::list_tags".to_string(),
+                reason: reason.to_string(),
+                category: crate::scan_orchestrator::SkipCategory::Unsupported,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        let mut file_map = HashMap::new();
+        file_map.insert(
+            "src/handlers/tags.rs::list_tags".to_string(),
+            "src/handlers/tags.rs".to_string(),
+        );
+
+        let report = generate_report(&parallel_result, &file_map, None);
+        let json = serde_json::to_string(&report).expect("serialize report");
+
+        assert!(
+            json.contains("custom generator prefetch failed for CurrentAccount"),
+            "scan report JSON must name the generator prefetch failure; got {json}"
+        );
+        assert!(
+            json.contains("PoolTimedOut"),
+            "scan report JSON must carry the generator's own error; got {json}"
+        );
+    }
+
     /// str-4mmd regression: every failed function entry in scan JSON
     /// must have non-null `language`, `status`, `error_type`,
     /// `error_message`, and `failed_at`. Covers the three main failure
