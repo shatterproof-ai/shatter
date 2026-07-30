@@ -976,9 +976,23 @@ async fn fetch_planner_extra_seeds(
     Vec<Vec<serde_json::Value>>,
     Option<shatter_core::protocol::InvocationPlan>,
 ) {
-    let Some(_planner_name) = explore_config.planner.as_deref() else {
+    // str-79t9: consult the planner whenever the frontend advertises the
+    // capability, not only when `--planner` was passed. `scan` has always
+    // auto-detected this (see scan_orchestrator's
+    // `fetch_default_execute_plan_for_method`); explore's flag-only gate meant
+    // configured `.shatter/config.yaml` `defaults`/`generators` were silently
+    // ignored on the default `shatter explore` invocation, leaving the whole
+    // configured-input lever dead unless the operator knew to add
+    // `--planner go`. `--planner` remains accepted (and still forces
+    // consultation) for explicit selection and backward compatibility.
+    if explore_config.planner.is_none()
+        && !task_frontend
+            .capabilities()
+            .iter()
+            .any(|cap| cap == "get_invocation_plan")
+    {
         return (Vec::new(), None);
-    };
+    }
 
     // Prime the task frontend's analysis cache so get_invocation_plan can
     // resolve the target_id via its analyzed-by-name lookup.
