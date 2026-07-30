@@ -72,6 +72,13 @@ type ParamPlanOptions struct {
 	// from target-local control flow. Matching string parameters receive these
 	// candidates before generic primitive-family defaults.
 	StringLiteralsByParam map[string][]string
+	// ErrorSentinelCountsByParam maps a bare `error` parameter name to the
+	// number of errors.Is/errors.As sentinel targets mined from the target body
+	// (str-kvzh7). PlanParam emits one `{"__complex_type":"error","sentinel":N}`
+	// Literal candidate per index in [0, count), which the wrapper's baked
+	// sentinel table resolves to the corresponding sentinel variable. Zero or
+	// missing means the error param gets only the nil / errors.New candidates.
+	ErrorSentinelCountsByParam map[string]int
 	// MaxPlansPerParam caps each parameter's ValuePlan slice. Zero means
 	// DefaultMaxParamValuePlans.
 	MaxPlansPerParam int
@@ -155,6 +162,16 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 	// fuzzing. Non-string enums (int/uint) stay out of scope and fall through.
 	if values, ok := enumStringValues(p); ok {
 		return planEnumStringParam(paramIndex, p, values, opts, maxPlans), nil
+	}
+
+	// str-kvzh7: a bare `error` parameter is planned as tagged-error Literal
+	// candidates — nil, errors.New("shatter"), and one sentinel selector per
+	// mined errors.Is/errors.As target — so the concolic seed path can reach
+	// sentinel-comparison branches. These are Literal (not runtime_value) plans
+	// because the core materializes runtime_value plans as null (planner_consumer
+	// materialize_value), which would collapse every candidate to a nil error.
+	if isErrorParam(p) {
+		return planErrorParam(paramIndex, p, opts.ErrorSentinelCountsByParam[p.Name], maxPlans), nil
 	}
 
 	family, ok := classifyParamFamily(p)

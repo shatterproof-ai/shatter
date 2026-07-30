@@ -72,6 +72,15 @@ type TargetContext struct {
 	// equality comparisons. This is Go-internal planner context used to seed
 	// enum-like string inputs without adding wire-protocol fields.
 	StringLiteralsByParam map[string][]string
+
+	// ErrorSentinelCountsByParam maps a bare `error` parameter name to the
+	// number of errors.Is/errors.As sentinel targets mined from the target body
+	// (str-kvzh7). The planner emits one `{"__complex_type":"error","sentinel":N}`
+	// Literal candidate per index in [0, count). The count is derived from the
+	// same deterministic wrapper.MineErrorSentinels traversal the wrapper uses to
+	// bake its sentinel table, so the indices stay aligned. Go-internal planner
+	// context; no wire-protocol field.
+	ErrorSentinelCountsByParam map[string]int
 }
 
 // InterfaceParamCandidate names a concrete type that implements a parameter's

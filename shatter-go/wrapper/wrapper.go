@@ -50,6 +50,15 @@ type WrapperParam struct {
 	// import paths are added to the owning WrapperTarget.Imports list.
 	// Empty for parameters that follow the JSON-input path.
 	RuntimeValueExpr string
+	// ErrorSentinels carries the mined errors.Is/errors.As sentinel targets
+	// for a bare `error` parameter (str-kvzh7). When non-empty, the wrapper
+	// bakes a `[]error{...}` table and lets an
+	// `{"__complex_type":"error","sentinel":N}` input select a sentinel by
+	// index, so a synthesized error value can satisfy sentinel-comparison
+	// branches (errors.Is(err, pkg.ErrX)) that errors.New can never match.
+	// The sentinels' import paths are added to WrapperTarget.Imports. Nil for
+	// non-error params and error params with no mined sentinels.
+	ErrorSentinels []ErrorSentinel
 }
 
 // TypeParamInfo describes one generic type parameter declared by a wrapper target.
@@ -602,7 +611,7 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 		return
 	}
 	if p.GoType == "error" {
-		writeErrorParamDeserialization(b, p.Name, inputIndex, indent)
+		writeErrorParamDeserialization(b, p.Name, inputIndex, indent, p.ErrorSentinels)
 		return
 	}
 	fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
@@ -1368,7 +1377,58 @@ func writeDurationParamDeserialization(b *strings.Builder, name string, idx int,
 // intentionally ignored — no typed-error reconstruction yet, str-kvzh7).
 // Any other shape preserves the original plain-decode error so the failure
 // message stays specific.
-func writeErrorParamDeserialization(b *strings.Builder, name string, idx int, indent string) {
+//
+// str-kvzh7: when sentinels is non-empty the tagged object may also carry a
+// `sentinel` index, in which case the parameter is assigned the corresponding
+// baked sentinel variable (`err = _shatterErrSentinels_<name>[N]`). This lets a
+// synthesized error satisfy `errors.Is(err, pkg.ErrX)` branches — which require
+// pointer identity with the sentinel var and can never be matched by
+// errors.New. The `class` field is still ignored (no typed reconstruction).
+func writeErrorParamDeserialization(b *strings.Builder, name string, idx int, indent string, sentinels []ErrorSentinel) {
+	if len(sentinels) == 0 {
+		writeErrorParamPlainDeserialization(b, name, idx, indent)
+		return
+	}
+	fmt.Fprintf(b, "%svar %s error\n", indent, name)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, idx)
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, idx, name)
+	fmt.Fprintf(b, "%s\t\tvar _shatterErr struct {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tComplexType string  `json:\"__complex_type\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tMessage     *string `json:\"message\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tSentinel    *int    `json:\"sentinel\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\tif _e2 := json.Unmarshal(_shatterInputs[%d], &_shatterErr); _e2 != nil || _shatterErr.ComplexType != \"error\" {\n", indent, idx)
+	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	sentinelVar := "_shatterErrSentinels_" + name
+	fmt.Fprintf(b, "%s\t\tif _shatterErr.Sentinel != nil {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\t%s := []error{", indent, sentinelVar)
+	for i, s := range sentinels {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(s.Expr)
+	}
+	b.WriteString("}\n")
+	fmt.Fprintf(b, "%s\t\t\tif _si := *_shatterErr.Sentinel; _si >= 0 && _si < len(%s) {\n", indent, sentinelVar)
+	fmt.Fprintf(b, "%s\t\t\t\t%s = %s[_si]\n", indent, name, sentinelVar)
+	fmt.Fprintf(b, "%s\t\t\t} else {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\t\treturn nil, fmt.Errorf(\"param %s: sentinel index %%d out of range\", *_shatterErr.Sentinel)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\t} else if _shatterErr.Message != nil {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\t%s = errors.New(*_shatterErr.Message)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t} else {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+// writeErrorParamPlainDeserialization emits the original error decode block for
+// an error parameter with no mined sentinels (str-jn9r0). Kept byte-identical to
+// the pre-str-kvzh7 output so wrappers for sentinel-free error params are
+// unchanged.
+func writeErrorParamPlainDeserialization(b *strings.Builder, name string, idx int, indent string) {
 	fmt.Fprintf(b, "%svar %s error\n", indent, name)
 	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, idx)
 	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, idx, name)
@@ -1656,6 +1716,7 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package, originalSourceF
 	// value (`nil`), panicking on first use.
 	applyRuntimeValueBindingsForPackage(params, importSet, configuredRuntimeValuesForFunc(fn, pkg, originalSourceFile), pkg.Name)
 	applyImportedConstructorBindingsForPackage(fn, pkg, params, importSet, pkgTypesPath)
+	applyErrorSentinelBindings(fn, pkg, params, importSet, pkgTypesPath)
 	typeParams := extractWrapperTypeParams(fn)
 
 	hasResult := false
@@ -1828,6 +1889,49 @@ func applyRuntimeValueBindingsForPackage(
 		for _, imp := range candidates[0].Imports {
 			if imp != "" {
 				importSet[imp] = struct{}{}
+			}
+		}
+	}
+}
+
+// applyErrorSentinelBindings mines errors.Is/errors.As sentinel targets for the
+// target's bare `error` parameters and records them on the matching WrapperParam
+// so writeErrorParamDeserialization can bake a sentinel table. Each sentinel's
+// import path is threaded into importSet so the generated file can reference the
+// sentinel variable (str-kvzh7). No-op when the target has no error params or no
+// mineable sentinels.
+func applyErrorSentinelBindings(
+	fn *ast.FuncDecl,
+	pkg *packages.Package,
+	params []WrapperParam,
+	importSet map[string]struct{},
+	pkgPath string,
+) {
+	if fn == nil || fn.Body == nil || pkg == nil {
+		return
+	}
+	errorParamNames := make(map[string]bool)
+	for i := range params {
+		if params[i].GoType == "error" && !params[i].IsVariadic {
+			errorParamNames[params[i].Name] = true
+		}
+	}
+	if len(errorParamNames) == 0 {
+		return
+	}
+	sentinelsByParam := MineErrorSentinels(fn.Body, pkg.TypesInfo, pkgPath, errorParamNames)
+	if len(sentinelsByParam) == 0 {
+		return
+	}
+	for i := range params {
+		sentinels := sentinelsByParam[params[i].Name]
+		if len(sentinels) == 0 {
+			continue
+		}
+		params[i].ErrorSentinels = sentinels
+		for _, s := range sentinels {
+			if s.ImportPath != "" {
+				importSet[s.ImportPath] = struct{}{}
 			}
 		}
 	}
