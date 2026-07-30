@@ -4519,8 +4519,7 @@ pub async fn parallel_scan_with_progress(
                 // Each task decrements this counter after returning its worker so that
                 // `maybe_grow` can detect tasks still blocked on `checkout()`.
                 let tasks_remaining = Arc::new(AtomicUsize::new(expanded_tasks.len()));
-                let build_timeout_retry_claimed =
-                    Arc::new(AtomicUsize::new(BUILD_TIMEOUT_RETRY_UNCLAIMED));
+                let build_timeout_retry_claimed = Arc::new(AtomicBool::new(false));
                 let write_success_artifact = config.workers_per_fn <= 1;
 
                 // Each task checks out a worker, explores, then returns the worker.
@@ -4622,10 +4621,7 @@ pub async fn parallel_scan_with_progress(
 
                             if matches!(result, PhasedOutcome::BuildTimedOut(_))
                                 && !retried_build_timeout
-                                && claim_build_timeout_retry(
-                                    &build_timeout_retry_claimed,
-                                    progress_index,
-                                )
+                                && claim_build_timeout_retry(&build_timeout_retry_claimed)
                             {
                                 retried_build_timeout = true;
                                 phase_build_timeout = build_timeout_retry_budget(build_timeout);
@@ -4807,15 +4803,9 @@ pub async fn parallel_scan_with_progress(
                 while !pending_handles.is_empty() {
                     let (function_name, progress_index, lease, mut handle) =
                         pending_handles.remove(0);
-                    let task_limit = task_join_limit(
-                        task_watchdog,
-                        config.build_timeout,
-                        &build_timeout_retry_claimed,
-                        progress_index,
-                    );
                     let join_limit = total_deadline_remaining(scan_deadline)
-                        .map(|remaining| remaining.min(task_limit))
-                        .unwrap_or(task_limit);
+                        .map(|remaining| remaining.min(task_watchdog))
+                        .unwrap_or(task_watchdog);
                     let join_result = match tokio::time::timeout(join_limit, &mut handle).await {
                         Ok(result) => result,
                         Err(_) => {
@@ -4829,7 +4819,7 @@ pub async fn parallel_scan_with_progress(
                                     function_name: function_name.clone(),
                                 }
                             } else {
-                                let reason = phase_timeout_reason("task", task_limit);
+                                let reason = phase_timeout_reason("task", task_watchdog);
                                 write_failed_scan_artifact(
                                     artifact_root.as_deref(),
                                     progress_index,
@@ -4847,7 +4837,7 @@ pub async fn parallel_scan_with_progress(
                                 );
                                 FunctionOutcome::Timeout {
                                     function_name: function_name.clone(),
-                                    limit: task_limit,
+                                    limit: task_watchdog,
                                     phase: "task",
                                 }
                             };
@@ -5442,54 +5432,10 @@ fn remaining_build_budget(build_timeout: Duration, started: Instant) -> Option<D
     }
 }
 
-/// Sentinel for "no task has claimed the layer's cold-build retry yet".
-const BUILD_TIMEOUT_RETRY_UNCLAIMED: usize = usize::MAX;
-
-/// Claim the layer's single cold-build retry for `progress_index`.
-///
-/// The claimant's identity is recorded (rather than a bare flag) so the joiner
-/// can extend the watchdog for exactly the one task that is actually running a
-/// second, longer build — see [`build_timeout_retry_claimant`] (str-slnr).
-fn claim_build_timeout_retry(retry_claimed: &AtomicUsize, progress_index: usize) -> bool {
+fn claim_build_timeout_retry(retry_claimed: &AtomicBool) -> bool {
     retry_claimed
-        .compare_exchange(
-            BUILD_TIMEOUT_RETRY_UNCLAIMED,
-            progress_index,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
-}
-
-/// The `progress_index` of the task holding the layer's cold-build retry, if any.
-fn build_timeout_retry_claimant(retry_claimed: &AtomicUsize) -> Option<usize> {
-    match retry_claimed.load(Ordering::Acquire) {
-        BUILD_TIMEOUT_RETRY_UNCLAIMED => None,
-        index => Some(index),
-    }
-}
-
-/// Join watchdog for one task, extended only for the task that actually
-/// claimed the layer's cold-build retry (str-slnr).
-///
-/// The retry deliberately grants a doubled build budget so one task can warm
-/// the launcher cache for the rest of the layer (str-cir6, str-kuc0). But the
-/// base watchdog is sized for a *single* build attempt, so the retrying task
-/// was always cut off mid-rebuild: its accurate `build` timeout was replaced by
-/// an opaque `task` timeout and the cache-warm never completed. Extending the
-/// limit for the single claimant keeps the speculative budget off every other
-/// task, which is what str-cir6 and str-kuc0 required.
-fn task_join_limit(
-    base_watchdog: Duration,
-    build_timeout: Duration,
-    retry_claimed: &AtomicUsize,
-    progress_index: usize,
-) -> Duration {
-    if build_timeout_retry_claimant(retry_claimed) == Some(progress_index) {
-        base_watchdog.saturating_add(build_timeout_retry_budget(build_timeout))
-    } else {
-        base_watchdog
-    }
 }
 
 fn shared_pool_task_watchdog(build_timeout: Duration, timeout_per_fn: Duration) -> Duration {
@@ -6687,49 +6633,10 @@ mod tests {
     /// task watchdog interval at a time.
     #[test]
     fn build_timeout_retry_claim_is_single_use() {
-        let retry_claimed = AtomicUsize::new(BUILD_TIMEOUT_RETRY_UNCLAIMED);
+        let retry_claimed = AtomicBool::new(false);
 
-        assert!(claim_build_timeout_retry(&retry_claimed, 3));
-        assert!(!claim_build_timeout_retry(&retry_claimed, 7));
-        assert_eq!(build_timeout_retry_claimant(&retry_claimed), Some(3));
-    }
-
-    /// str-slnr: the cold-build retry doubles the build budget so one task can
-    /// warm the launcher cache for the layer. The base join watchdog only
-    /// covers a single build attempt, so before this fix the retrying task was
-    /// always aborted mid-rebuild and its accurate "timed out during build"
-    /// reason was replaced by an opaque "timed out during task" one. The
-    /// claimant — and only the claimant — gets the extra budget.
-    #[test]
-    fn task_join_limit_extends_only_for_the_retry_claimant() {
-        let build_timeout = Duration::from_secs(30);
-        let base = shared_pool_task_watchdog(build_timeout, Duration::from_secs(10));
-        let retry_claimed = AtomicUsize::new(BUILD_TIMEOUT_RETRY_UNCLAIMED);
-
-        // Nobody has claimed the retry: every task keeps the base watchdog.
-        assert_eq!(
-            task_join_limit(base, build_timeout, &retry_claimed, 0),
-            base,
-            "unclaimed retry must not extend any task's watchdog (str-cir6)"
-        );
-
-        assert!(claim_build_timeout_retry(&retry_claimed, 4));
-
-        let claimant = task_join_limit(base, build_timeout, &retry_claimed, 4);
-        assert_eq!(claimant, base + build_timeout_retry_budget(build_timeout));
-        assert!(
-            claimant > base + build_timeout,
-            "claimant {claimant:?} must outlast its doubled build budget"
-        );
-
-        // Every other task in the layer is unaffected (str-kuc0).
-        for other in [0_usize, 3, 5, 99] {
-            assert_eq!(
-                task_join_limit(base, build_timeout, &retry_claimed, other),
-                base,
-                "non-claimant {other} must not reserve speculative retry budget"
-            );
-        }
+        assert!(claim_build_timeout_retry(&retry_claimed));
+        assert!(!claim_build_timeout_retry(&retry_claimed));
     }
 
     /// str-slnr: the planner preamble and Prepare share one build budget, so
