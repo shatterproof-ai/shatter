@@ -5419,6 +5419,19 @@ fn build_timeout_retry_budget(build_timeout: Duration) -> Duration {
     build_timeout.saturating_mul(BUILD_TIMEOUT_RETRY_FACTOR)
 }
 
+/// Remaining slice of the build-phase budget after the planner preamble
+/// (str-slnr). `None` means the preamble already consumed the whole budget, so
+/// the caller should report a build timeout rather than start a Prepare with a
+/// zero-length deadline.
+fn remaining_build_budget(build_timeout: Duration, started: Instant) -> Option<Duration> {
+    let elapsed = started.elapsed();
+    if elapsed >= build_timeout {
+        None
+    } else {
+        Some(build_timeout - elapsed)
+    }
+}
+
 fn claim_build_timeout_retry(retry_claimed: &AtomicBool) -> bool {
     retry_claimed
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -5504,12 +5517,43 @@ async fn run_phased(
     explore_timeout: Duration,
 ) -> PhasedOutcome {
     let mut effective = explore_config.clone();
-    attach_default_execute_plan_for_method(frontend, analysis, &mut effective).await;
+
+    // str-slnr: the planner preamble is part of the build phase, so it must
+    // share the build budget with Prepare rather than run unbudgeted.
+    //
+    // `attach_default_execute_plan_for_method` issues frontend round-trips
+    // (Analyze + get_invocation_plan) and only does so for *method* targets.
+    // Left untimed its only bounds were the frontend's own request_timeout and
+    // the outer join watchdog, which is sized as
+    // `build_timeout + explore_timeout + grace`. A slow package load in the
+    // preamble therefore pushed the task past that watchdog and the failure
+    // surfaced as an opaque `task` timeout instead of the honest `build`
+    // attribution str-ubp1 added — and only ever for method targets, which is
+    // why a single file's methods time out as a cluster while its free
+    // functions report accurate build timeouts.
+    //
+    // Charging both steps to one shared deadline also restores the invariant
+    // the join watchdog already assumes: the pre-explore phase never exceeds
+    // `build_timeout`.
+    let build_phase_start = Instant::now();
+    if tokio::time::timeout(
+        build_timeout,
+        attach_default_execute_plan_for_method(frontend, analysis, &mut effective),
+    )
+    .await
+    .is_err()
+    {
+        return PhasedOutcome::BuildTimedOut(build_timeout);
+    }
+
     if effective.prepare_id_override.is_none()
         && explorer::frontend_supports(&effective.capabilities, "prepare")
     {
+        let Some(prepare_budget) = remaining_build_budget(build_timeout, build_phase_start) else {
+            return PhasedOutcome::BuildTimedOut(build_timeout);
+        };
         let prep = tokio::time::timeout(
-            build_timeout,
+            prepare_budget,
             frontend.send(crate::protocol::Command::Prepare {
                 file: effective.file.clone(),
                 function: analysis.name.clone(),
@@ -6593,6 +6637,32 @@ mod tests {
 
         assert!(claim_build_timeout_retry(&retry_claimed));
         assert!(!claim_build_timeout_retry(&retry_claimed));
+    }
+
+    /// str-slnr: the planner preamble and Prepare share one build budget, so
+    /// the pre-explore phase can never exceed `build_timeout` — the invariant
+    /// the join watchdog's arithmetic already assumed.
+    #[test]
+    fn remaining_build_budget_shrinks_by_preamble_cost() {
+        let build_timeout = Duration::from_secs(30);
+
+        let fresh = remaining_build_budget(build_timeout, Instant::now())
+            .expect("an unspent budget must leave time for Prepare");
+        assert!(
+            fresh <= build_timeout && fresh > build_timeout - Duration::from_secs(1),
+            "unspent budget should be ~build_timeout, got {fresh:?}"
+        );
+
+        // A preamble that already outran the budget leaves nothing for Prepare,
+        // rather than starting a build under a zero-length deadline.
+        let exhausted = Instant::now() - (build_timeout + Duration::from_secs(1));
+        assert_eq!(remaining_build_budget(build_timeout, exhausted), None);
+
+        // Boundary: exactly spent is also exhausted.
+        assert_eq!(
+            remaining_build_budget(build_timeout, Instant::now() - build_timeout),
+            None
+        );
     }
 
     #[test]
