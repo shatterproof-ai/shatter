@@ -1183,6 +1183,12 @@ pub struct Z3SolverStrategy {
     pending: VecDeque<Vec<Value>>,
     /// Canonical loop metadata from static analysis, used to collapse backedge constraints.
     loops: Vec<crate::protocol::LoopInfo>,
+    /// Wire values already tried per closed-domain enum var, accumulated
+    /// across `feedback()` calls (str-mambd). A single call's own constraints
+    /// only ever carry ONE observation per Rust match-arm var, so excluding
+    /// just that isn't enough to avoid the solver oscillating between two
+    /// variants forever — see `solver::assert_enum_param_domains`'s doc.
+    enum_history: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Z3SolverStrategy {
@@ -1196,6 +1202,7 @@ impl Z3SolverStrategy {
             param_infos,
             pending: VecDeque::new(),
             loops,
+            enum_history: std::collections::HashMap::new(),
         }
     }
 }
@@ -1221,17 +1228,29 @@ impl InputStrategy for Z3SolverStrategy {
             return;
         }
 
+        // Record this execution's enum-var observations before solving, so the
+        // very negation that targets this decision already excludes the value
+        // it's negating (str-mambd).
+        for (var_name, value) in solver::extract_enum_observations(&solvable, &self.param_infos) {
+            let seen = self.enum_history.entry(var_name).or_default();
+            if !seen.contains(&value) {
+                seen.push(value);
+            }
+        }
+
         let param_names: Vec<String> = self.param_infos.iter().map(|p| p.name.clone()).collect();
 
         for solve_idx in 0..solvable.len() {
             // solve_for_new_path may fail (unsupported expressions, type mismatches,
             // or constraint/param misalignment). Treat all failures as "no solution".
+            let enum_history = &self.enum_history;
             let solve_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                solver::solve_for_new_path(
+                solver::solve_for_new_path_with_enum_history(
                     &solvable,
                     solve_idx,
                     self.solver_timeout_ms,
                     &self.param_infos,
+                    enum_history,
                 )
             }));
 
