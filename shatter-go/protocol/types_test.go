@@ -1100,3 +1100,125 @@ func TestRequestExecuteWithoutPlanOmitsField(t *testing.T) {
 		t.Errorf("plan should be omitted when nil: %s", data)
 	}
 }
+
+// TestResponseFunctionsPresenceByStatus locks in the presence rule for the
+// "functions" key (str-tw7tx): analyze responses always carry it, including
+// as [] when there are no functions, while every other response omits it
+// entirely rather than emitting the null that a plain non-omitempty slice
+// field produced. TS and Rust omit it, so this is a cross-frontend parity
+// requirement, not just tidiness.
+func TestResponseFunctionsPresenceByStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		resp      Response
+		wantKey   bool
+		wantValue string
+	}{
+		{
+			name:      "empty analyze emits empty array",
+			resp:      Response{ProtocolVersion: ProtocolVersion, ID: 1, Status: "analyze", Functions: []FunctionAnalysis{}},
+			wantKey:   true,
+			wantValue: `"functions":[]`,
+		},
+		{
+			name: "populated analyze emits array",
+			resp: Response{ProtocolVersion: ProtocolVersion, ID: 2, Status: "analyze",
+				Functions: []FunctionAnalysis{{Name: "Foo"}}},
+			wantKey:   true,
+			wantValue: `"name":"Foo"`,
+		},
+		{
+			name:    "handshake omits functions",
+			resp:    Response{ProtocolVersion: ProtocolVersion, ID: 3, Status: "handshake", Language: "go"},
+			wantKey: false,
+		},
+		{
+			name:    "error omits functions",
+			resp:    Response{ProtocolVersion: ProtocolVersion, ID: 4, Status: "error", Code: "internal_error"},
+			wantKey: false,
+		},
+		{
+			name:    "execute omits functions",
+			resp:    Response{ProtocolVersion: ProtocolVersion, ID: 5, Status: "execute"},
+			wantKey: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.resp)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal(data, &obj); err != nil {
+				t.Fatalf("unmarshal to map: %v", err)
+			}
+			_, gotKey := obj["functions"]
+			if gotKey != tt.wantKey {
+				t.Fatalf("functions key present = %v, want %v: %s", gotKey, tt.wantKey, data)
+			}
+			if strings.Contains(string(data), `"functions":null`) {
+				t.Errorf("functions must never serialize as null: %s", data)
+			}
+			if tt.wantValue != "" && !strings.Contains(string(data), tt.wantValue) {
+				t.Errorf("missing %s in %s", tt.wantValue, data)
+			}
+
+			// The nil / non-nil distinction must survive a round trip so a
+			// decoded response re-encodes with the same key presence.
+			var decoded Response
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("round-trip unmarshal: %v", err)
+			}
+			if (decoded.Functions != nil) != tt.wantKey {
+				t.Errorf("decoded Functions non-nil = %v, want %v", decoded.Functions != nil, tt.wantKey)
+			}
+			if len(decoded.Functions) != len(tt.resp.Functions) {
+				t.Errorf("decoded functions len = %d, want %d", len(decoded.Functions), len(tt.resp.Functions))
+			}
+		})
+	}
+}
+
+// TestResponseRoundTripPreservesOtherFields guards the custom
+// Marshal/UnmarshalJSON pair on Response against dropping unrelated fields,
+// since both encode through a shadowed alias struct.
+func TestResponseRoundTripPreservesOtherFields(t *testing.T) {
+	instrumented := true
+	out := "out.go"
+	resp := Response{
+		ProtocolVersion:         ProtocolVersion,
+		ID:                      7,
+		Status:                  "instrument",
+		Instrumented:            &instrumented,
+		OutputFile:              &out,
+		Capabilities:            []string{"analyze", "execute"},
+		PrepareID:               "abc",
+		LinesExecuted:           []int{1, 2, 3},
+		UnsatisfiedRequirements: []UnsatisfiedRequirement{},
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded Response
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.ID != resp.ID || decoded.Status != resp.Status || decoded.PrepareID != resp.PrepareID {
+		t.Errorf("scalar fields lost: %+v", decoded)
+	}
+	if decoded.Instrumented == nil || !*decoded.Instrumented {
+		t.Errorf("Instrumented lost: %+v", decoded.Instrumented)
+	}
+	if decoded.OutputFile == nil || *decoded.OutputFile != out {
+		t.Errorf("OutputFile lost: %+v", decoded.OutputFile)
+	}
+	if len(decoded.Capabilities) != 2 || len(decoded.LinesExecuted) != 3 {
+		t.Errorf("slice fields lost: %+v", decoded)
+	}
+	if decoded.Functions != nil {
+		t.Errorf("Functions should stay nil for non-analyze: %+v", decoded.Functions)
+	}
+}

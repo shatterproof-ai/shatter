@@ -284,3 +284,9 @@ Regression coverage: `shatter-go/wrapper/wrapper_error_test.go` (static-source g
 ## Workspace GOCACHE Binding (str-hy9b.B2)
 
 Every `go build` invoked from shatter-go pins `GOCACHE` to `<workspace>/cache/build` via `Workspace.GoEnv()`. Wiring lives in `instrument.applyGoBuildEnv` (for `instrument/` build sites) and `instrument.WorkspaceGoEnv()` (consumed by `setup/loader.go`). The handler installs the provider from its workspace handle in `newHandler()`; tests that construct a handler without a workspace fall back to the legacy `SHATTER_HARNESS_CACHE`-based cache hierarchy.
+
+## Response `functions` Field Presence (str-tw7tx)
+
+`Response.Functions` is tagged `json:"-"` and encoded by the hand-written `Response.MarshalJSON` / `UnmarshalJSON` pair in `shatter-go/protocol/types.go`. Presence on the wire is driven by nil-ness, not emptiness: analyze responses assign a non-nil slice (both `handleAnalyze` and `finalizeAnalyzeFromCache` normalize nil to `[]FunctionAnalysis{}`) and therefore always emit `"functions"` — as `[]` for a file with no functions — while every other command leaves the field nil and the key is omitted entirely, matching the TypeScript and Rust frontends.
+
+A plain `json:"functions"` tag emitted `"functions": null` on every non-analyze response (the former conformance `known_drift` `.functions: missing in`); a blanket `omitempty` is not a valid substitute because it would also drop the key from empty-analyze responses. When adding a new analyze-producing path, set `Functions` to a non-nil slice. Regression coverage: `protocol/types_test.go::TestResponseFunctionsPresenceByStatus` (per-status key presence + round trip), `TestResponseRoundTripPreservesOtherFields` (guards the custom codec against dropping unrelated fields), and `protocol/handler_test.go::TestAnalyzeEmptyFileJSONIncludesFunctionsField`.

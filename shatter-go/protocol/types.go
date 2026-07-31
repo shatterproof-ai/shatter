@@ -215,13 +215,14 @@ type Response struct {
 	Capabilities    []string `json:"capabilities,omitempty"`
 
 	// Analyze
-	// NB: intentionally NOT omitempty. Analyze responses must always carry
-	// functions (as [] when empty) — see TestAnalyzeEmptyFileJSONIncludesFunctionsField.
-	// The side effect is that non-analyze responses emit "functions": null,
-	// a parity gap with TS/Rust tracked as str-tw7tx (needs a pointer-typed
-	// field, not a blanket omitempty, to omit on non-analyze while keeping
-	// empty-analyze []). Recorded as a conformance known_drift.
-	Functions []FunctionAnalysis `json:"functions"`
+	// Tagged json:"-" and handled by Response.MarshalJSON/UnmarshalJSON so
+	// presence is driven by nil-ness rather than emptiness: analyze responses
+	// set a non-nil slice and always emit "functions" (as [] when empty, see
+	// TestAnalyzeEmptyFileJSONIncludesFunctionsField), while non-analyze
+	// responses leave it nil and omit the key entirely, matching TS/Rust.
+	// A blanket omitempty would wrongly drop the key from empty-analyze
+	// responses (str-tw7tx).
+	Functions []FunctionAnalysis `json:"-"`
 
 	// Instrument
 	Instrumented            *bool   `json:"instrumented,omitempty"`
@@ -263,6 +264,40 @@ type Response struct {
 	Code    string           `json:"code,omitempty"`
 	Message string           `json:"message,omitempty"`
 	Details *json.RawMessage `json:"details,omitempty"`
+}
+
+// MarshalJSON emits "functions" only when Response.Functions is non-nil.
+// Analyze responses set the slice (possibly empty) and so always carry the
+// key as [] or a populated array; every other command leaves it nil and the
+// key is omitted, matching the TypeScript and Rust frontends (str-tw7tx).
+func (r Response) MarshalJSON() ([]byte, error) {
+	type responseAlias Response // strips MarshalJSON to avoid recursion
+	if r.Functions == nil {
+		return json.Marshal(responseAlias(r))
+	}
+	// Functions sits at depth 0 so it shadows the embedded alias's json:"-"
+	// field for both Go selectors and encoding/json field resolution.
+	return json.Marshal(struct {
+		responseAlias
+		Functions []FunctionAnalysis `json:"functions"`
+	}{responseAlias(r), r.Functions})
+}
+
+// UnmarshalJSON restores Functions from the wire key, preserving the
+// absent (nil) versus present-but-empty ([]) distinction that MarshalJSON
+// encodes.
+func (r *Response) UnmarshalJSON(data []byte) error {
+	type responseAlias Response // strips UnmarshalJSON to avoid recursion
+	var aux struct {
+		responseAlias
+		Functions []FunctionAnalysis `json:"functions"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*r = Response(aux.responseAlias)
+	r.Functions = aux.Functions
+	return nil
 }
 
 // ObjectField is a name-type pair for object fields.
