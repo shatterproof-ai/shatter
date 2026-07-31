@@ -1746,7 +1746,8 @@ pub async fn scan(
 
         let explore_started = Instant::now();
         let exploration =
-            explore_with_scan_mode(frontend, analysis, config.concolic, &explore_config).await?;
+            explore_with_scan_mode(frontend, analysis, config.concolic, &explore_config, None)
+                .await?;
 
         // Harvest interesting inputs into the cross-function pool.
         interesting_pool::harvest_from_exploration(
@@ -2971,11 +2972,19 @@ fn compute_uncovered_branch_strings(
         .collect()
 }
 
-async fn explore_with_scan_mode(
+/// Explore one function in either random or concolic mode, returning a uniform
+/// [`crate::explorer::ObservationOutput`] regardless of explorer. This is the
+/// single source of truth for the instrument → prepare → `orchestrator::explore`
+/// concolic-dispatch sequence; `scan`, and the CLI `run` command, all funnel
+/// through here so the concolic path is wired identically everywhere (CLAUDE.md
+/// parallel-path rule). `solver_timeout_ms` bounds each Z3 query on the concolic
+/// path (`None` = no limit); it is ignored in random mode.
+pub async fn explore_with_scan_mode(
     frontend: &mut Frontend,
     analysis: &FunctionAnalysis,
     concolic: bool,
     explore_config: &ExploreConfig,
+    solver_timeout_ms: Option<u64>,
 ) -> Result<crate::explorer::ObservationOutput, ScanError> {
     if !concolic {
         return Ok(
@@ -3058,7 +3067,7 @@ async fn explore_with_scan_mode(
         plateau_threshold: 20,
         mocks: explore_config.mocks.clone(),
         mock_params: explore_config.mock_params.clone(),
-        solver_timeout_ms: None,
+        solver_timeout_ms,
         seed: explore_config.seed,
         solver_offload: true,
         timeout_explore: explore_config.timeout_explore,
@@ -5671,7 +5680,8 @@ async fn explore_single_function(
     }
     let explore_config = &effective_config;
     let explore_started = Instant::now();
-    let exploration = explore_with_scan_mode(frontend, analysis, concolic, explore_config).await?;
+    let exploration =
+        explore_with_scan_mode(frontend, analysis, concolic, explore_config, None).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
     let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
@@ -10551,7 +10561,7 @@ defaults:
             prepare_id_override: None,
         };
 
-        let error = explore_with_scan_mode(&mut frontend, &analysis, true, &explore_config)
+        let error = explore_with_scan_mode(&mut frontend, &analysis, true, &explore_config, None)
             .await
             .expect_err("all-not_supported concolic exploration should classify Unsupported");
         let _ = frontend.shutdown().await;

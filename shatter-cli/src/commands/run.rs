@@ -139,10 +139,12 @@ pub(crate) async fn run_run(
     max_iterations: u32,
     timeout: u64,
     analyze_only: bool,
+    concolic: bool,
     request_timeout: u64,
     exec_timeout: u64,
     build_timeout: u64,
     release: bool,
+    solver_timeout: Option<u64>,
     log_level: LogLevel,
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
@@ -530,9 +532,22 @@ pub(crate) async fn run_run(
             prepare_id_override: None,
             };
 
-            match explorer::explore_function(frontend, &func_analysis, &explore_config, None, None)
-                .await
-            {
+            // Dispatch through the shared core helper so `run` uses the exact
+            // same random/concolic explorer wiring as `scan` — one source of
+            // truth for the concolic instrument → prepare → orchestrator
+            // sequence (str-yhsp; CLAUDE.md parallel-path rule). `--concolic`
+            // false keeps the default random path byte-identical; when set,
+            // `--solver-timeout` (seconds) bounds each Z3 query.
+            let explore_outcome = shatter_core::scan_orchestrator::explore_with_scan_mode(
+                frontend,
+                &func_analysis,
+                concolic,
+                &explore_config,
+                solver_timeout.map(|s| s.saturating_mul(1000)),
+            )
+            .await;
+
+            match explore_outcome {
                 Ok(result) => {
                     log::debug!(
                         "{}: {} path(s), {}/{} lines",

@@ -343,17 +343,29 @@ project config is the sole source of scope.
 | `--max-iterations N` | 50 | Iterations per function. |
 | `--timeout SECS` | 300 | Overall timeout. |
 | `--analyze-only` | false | Only discover and analyze. |
+| `--concolic` | false | Use the concolic (Z3-backed) explorer instead of the random explorer. |
 | `--request-timeout SECS` | 30 | Per-request timeout. |
 | `--exec-timeout SECS` | 10 | Per-execution timeout. |
 | `--build-timeout SECS` | 30 | Build timeout. |
 | `--release` | false | Compile harnesses in release mode. |
-| `--solver-timeout SECS` | none | Z3 solver timeout per query. |
+| `--solver-timeout SECS` | none | Z3 solver timeout per query (concolic only). |
 | `--memory-limit MB` | — | Frontend memory cap. |
+
+`--concolic` routes every discovered function through the concolic orchestrator
+— the same path as `explore --concolic` and `scan --concolic` — instead of the
+random explorer, and `--solver-timeout` bounds each Z3 query on that path.
 
 `run` also accepts a coverage-budget gate group (`--min-source-representation-percent`,
 `--max-failed-span-percent`, `--max-unsupported-span-percent`,
 `--fail-on-stale-source-set`, `--fail-on-missing-artifacts`,
 `--fail-on-low-report-validity`) for CI thresholds.
+
+**Property discovery is intentionally not wired into `run`.** `run` produces a
+repo-wide markdown coverage summary; invariant/property discovery is a distinct
+output (a YAML property spec) served by the dedicated `properties` command and
+by `explore`/`analyze --invariants`. There is no `--properties`/`--invariants`
+flag on `run` — use `shatter properties <targets>` when you want the property
+spec.
 
 ### 2.5 `shatter properties`
 

@@ -1220,6 +1220,13 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         analyze_only: bool,
 
+        /// Use the concolic (Z3-backed) explorer instead of the random explorer.
+        /// Routes every function through the concolic orchestrator (the same
+        /// path as `explore --concolic` / `scan --concolic`); pair with
+        /// `--solver-timeout` to bound per-query Z3 time.
+        #[arg(long)]
+        concolic: bool,
+
         /// Per-request timeout in seconds (how long to wait for a single frontend response).
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
@@ -3282,6 +3289,42 @@ mod tests {
                 assert!(analyze_only);
                 assert_eq!(request_timeout, 30);
             }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_run_with_concolic_flag() {
+        // str-yhsp: `--concolic` (and its companion `--solver-timeout`) must be
+        // accepted on `run` and routed to the concolic orchestrator path.
+        let cli = Cli::parse_from([
+            "shatter",
+            "run",
+            "--concolic",
+            "--solver-timeout",
+            "7",
+            ".",
+        ]);
+        match cli.command {
+            CliCommand::Run {
+                path,
+                concolic,
+                solver_timeout,
+                ..
+            } => {
+                assert_eq!(path, ".");
+                assert!(concolic);
+                assert_eq!(solver_timeout, Some(7));
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_run_concolic_defaults_off() {
+        let cli = Cli::parse_from(["shatter", "run", "."]);
+        match cli.command {
+            CliCommand::Run { concolic, .. } => assert!(!concolic),
             _ => panic!("expected Run command"),
         }
     }
