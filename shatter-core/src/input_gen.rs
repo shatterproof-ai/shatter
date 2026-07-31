@@ -1913,7 +1913,10 @@ pub fn mutate_value(
         TypeInfo::Str => mutate_string(value, dictionary, rng),
         TypeInfo::Array { element } => mutate_array(value, element, dictionary, rng),
         TypeInfo::Object { fields } => mutate_object(value, fields, dictionary, rng),
-        TypeInfo::Union { variants, .. } => mutate_union(value, variants, dictionary, rng),
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => mutate_union(value, variants, enum_values, dictionary, rng),
         TypeInfo::Nullable { inner } => mutate_nullable(value, inner, dictionary, rng),
         TypeInfo::Complex {
             kind: ComplexKind::Buffer,
@@ -2404,13 +2407,25 @@ fn mutate_object(
     }
 }
 
-/// Mutate a union value by applying mutation with a random variant's type.
+/// Mutate a union value. When `enum_values` carries a closed value domain
+/// (str-2nfoe), mostly draw a member from it so mutation stays deserializable
+/// — the same policy `generate_union` uses for fresh values — occasionally
+/// falling through to generic per-variant mutation so off-domain rejection
+/// paths stay covered. When the domain is empty this is a plain type union:
+/// mutate with a random variant's type.
 fn mutate_union(
     value: &Value,
     variants: &[TypeInfo],
+    enum_values: &[Value],
     dictionary: &[&str],
     rng: &mut impl Rng,
 ) -> Value {
+    if !enum_values.is_empty()
+        && (variants.is_empty() || rng.random_range(0..100) >= ENUM_INVALID_PROBE_PERCENT)
+    {
+        let idx = rng.random_range(0..enum_values.len());
+        return enum_values[idx].clone();
+    }
     if variants.is_empty() {
         return value.clone();
     }

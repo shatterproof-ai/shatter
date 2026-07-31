@@ -1700,3 +1700,192 @@ async fn e2e_rust_enum_value_domain_reaches_all_arms() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test: concolic-solver enum-domain negation on a NESTED, cross-file enum
+// field (str-mambd), as opposed to `classify_color`'s top-level, same-file,
+// 3-variant case above.
+//
+// `describe_purpose(t: Trip)` matches on `t.purpose: TripPurpose`, a
+// fieldless enum with 5 members defined in a DIFFERENT file from the struct
+// and the match. This combination exercises two concolic-only failure modes
+// that `classify_color` cannot, because it never has to cross either gap:
+//
+// - The match constraint's `Param` name comes from
+//   `syn::to_token_stream().to_string()` (`instrument.rs`), which spaces
+//   every token — `t.purpose` becomes the literal `"t . purpose"`, not the
+//   clean `"t.purpose"` domain lookup expects from `(name, path)`.
+// - The match constraint's constant is the raw arm-pattern text (e.g.
+//   `"TripPurpose :: Personal"`), not the wire value `"personal"` — so
+//   negating it excludes nothing unless the solver resolves the raw text
+//   back to a domain member first.
+//
+// Before the corresponding fixes, Z3 could solve this field to an
+// out-of-domain string ("unknown variant ``"), and even once kept in-domain,
+// deterministically re-derived the value each arm's own single-constraint
+// observation had just excluded — oscillating between two arms instead of
+// covering the rest. A single seed ("personal") must reach at least 3 of the
+// 5 arms for this to pass.
+// ---------------------------------------------------------------------------
+
+fn write_temp_enum_field_crate(dir: &Path) -> PathBuf {
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"shatter_mambd_fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+         [lib]\npath = \"src/lib.rs\"\n\n\
+         [dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(
+        src_dir.join("lib.rs"),
+        "pub mod purpose;\npub mod domain;\npub mod logic;\n",
+    )
+    .expect("write lib.rs");
+    std::fs::write(
+        src_dir.join("purpose.rs"),
+        "use serde::Deserialize;\n\n\
+         #[derive(Deserialize)]\n#[serde(rename_all = \"lowercase\")]\n\
+         pub enum TripPurpose {\n    Personal,\n    Business,\n    Medical,\n    Family,\n    Other,\n}\n",
+    )
+    .expect("write purpose.rs");
+    std::fs::write(
+        src_dir.join("domain.rs"),
+        "use serde::Deserialize;\nuse crate::purpose::TripPurpose;\n\n\
+         #[derive(Deserialize)]\npub struct Trip {\n    pub purpose: TripPurpose,\n}\n",
+    )
+    .expect("write domain.rs");
+    let logic = src_dir.join("logic.rs");
+    std::fs::write(
+        &logic,
+        "use crate::domain::Trip;\nuse crate::purpose::TripPurpose;\n\n\
+         /// Each match arm is a distinct branch, reachable only when the\n\
+         /// synthesized `purpose` value is one of the enum's REAL wire names\n\
+         /// (str-mambd). An arbitrary string fails to deserialize `TripPurpose`,\n\
+         /// so a non-error return proves generation drew a valid variant.\n\
+         pub fn describe_purpose(t: Trip) -> &'static str {\n\
+         \x20   match t.purpose {\n\
+         \x20       TripPurpose::Personal => \"personal-trip\",\n\
+         \x20       TripPurpose::Business => \"business-trip\",\n\
+         \x20       TripPurpose::Medical => \"medical-trip\",\n\
+         \x20       TripPurpose::Family => \"family-trip\",\n\
+         \x20       TripPurpose::Other => \"other-trip\",\n    }\n}\n",
+    )
+    .expect("write logic.rs");
+    logic
+}
+
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_nested_enum_field_domain_reaches_several_arms() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let lib = write_temp_enum_field_crate(tmp.path());
+    let file_str = lib.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "describe_purpose").await;
+    assert_eq!(analysis.params.len(), 1, "describe_purpose takes 1 param");
+    // `Trip` must synthesize to an Object whose `purpose` field carries the
+    // enum's real wire names as an `enum_values` domain (str-2nfoe), not a
+    // plain per-variant union of unknowns.
+    let expected_values: Vec<serde_json::Value> = ["personal", "business", "medical", "family", "other"]
+        .iter()
+        .map(|v| serde_json::json!(v))
+        .collect();
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            let purpose = fields
+                .iter()
+                .find(|(n, _)| n == "purpose")
+                .map(|(_, t)| t)
+                .expect("Trip.purpose field must be present");
+            match purpose {
+                shatter_core::types::TypeInfo::Union {
+                    variants,
+                    enum_values,
+                } => {
+                    assert_eq!(
+                        variants.len(),
+                        1,
+                        "TripPurpose union should have a single str base variant"
+                    );
+                    assert_eq!(
+                        enum_values, &expected_values,
+                        "Trip.purpose must carry the enum's lowercase wire names as its value domain"
+                    );
+                }
+                other => panic!("Trip.purpose must synthesize to a Union; got {other:?}"),
+            }
+        }
+        other => panic!("Trip param must synthesize to Object, got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "describe_purpose").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 30,
+        ..Default::default()
+    };
+
+    // Seed ONLY the `personal` arm. Every other reached arm must come from
+    // generator-produced inputs drawing valid variant names.
+    let seed_inputs = vec![vec![serde_json::json!({ "purpose": "personal" })]];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "describe_purpose",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_nested_enum_field_domain: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    let return_values = return_value_set(&result);
+    // `ENUM_INVALID_PROBE_PERCENT` deliberately mixes in some off-domain
+    // values (in both fresh generation and mutation) so decoder-rejection
+    // paths stay covered — an occasional "unknown variant" here is BY
+    // DESIGN, not a regression. What must not happen is the domain/negation
+    // machinery going out of domain on every attempt: check arm diversity
+    // below instead of asserting zero deserialize failures.
+    let arm_returns = [
+        "\"personal-trip\"",
+        "\"business-trip\"",
+        "\"medical-trip\"",
+        "\"family-trip\"",
+        "\"other-trip\"",
+    ];
+    let reached: Vec<&&str> = arm_returns
+        .iter()
+        .filter(|arm| return_values.contains(**arm))
+        .collect();
+    assert!(
+        reached.len() >= 3,
+        "generation must draw varied valid variants: expected \u{2265}3 distinct match \
+         arms reached (1 seeded + \u{2265}2 generated), got {reached:?} from {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
