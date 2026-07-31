@@ -836,6 +836,10 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		return resp
 	}
 
+	// Stamp the mock provenance so a later execute naming this prepare_id
+	// explicitly can detect that `.shatter/config.yaml` mocks changed
+	// underneath it and rebuild (str-hr40t).
+	harness.preparedProvenance = h.mockProvenance(file, execMocks)
 	h.preparedHarnesses[prepareID] = harness
 	h.preparedTargets[targetKey] = prepareID
 	resp.Status = "prepare"
@@ -900,6 +904,33 @@ func (h *Handler) resolveExecMocks(file, function string, wireMocks []MockConfig
 	}
 	execMocks = append(execMocks, h.configMockConfigs(file, function)...)
 	return instrument.DedupeMocks(execMocks)
+}
+
+// mockProvenance captures the mock inputs a harness is being built under so a
+// later execute can detect that they changed (str-hr40t). The config path is
+// read from the memoized directory walk, so this costs no extra syscalls on
+// the prepare path beyond the ones resolveExecMocks already made.
+func (h *Handler) mockProvenance(file string, mocks []instrument.MockConfig) preparedProvenance {
+	prov := preparedProvenance{mockFingerprint: instrument.MockFingerprint(mocks)}
+	if h.policyConfigLoader == nil {
+		if path, ok := h.resolveConfigPath(file); ok {
+			prov.configPath = path
+		}
+	}
+	return prov
+}
+
+// forgetPreparedHarness drops prepareID from the harness cache along with any
+// target registration still pointing at it, so a subsequent lookup rebuilds
+// instead of resurrecting a dangling id. Callers are responsible for calling
+// Cleanup() on the harness first.
+func (h *Handler) forgetPreparedHarness(prepareID string) {
+	delete(h.preparedHarnesses, prepareID)
+	for targetKey, id := range h.preparedTargets {
+		if id == prepareID {
+			delete(h.preparedTargets, targetKey)
+		}
+	}
 }
 
 // warnAdapterMocksInactiveOnce emits the "config mocks inactive for
@@ -1222,12 +1253,34 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
-		preparedExec, _ = h.preparedHarnesses[*req.PrepareID]
+		preparedExec = h.preparedHarnesses[*req.PrepareID]
 		if preparedExec != nil && !preparedExec.IsValid() {
 			h.log.Warn("prepared harness artifacts missing, rebuilding", "prepare_id", *req.PrepareID)
 			preparedExec.Cleanup()
-			delete(h.preparedHarnesses, *req.PrepareID)
+			h.forgetPreparedHarness(*req.PrepareID)
 			preparedExec = nil
+		}
+		// An explicit prepare_id bypasses computePrepareID, which is the only
+		// thing that normally keys a harness on its mock fingerprint. Without
+		// this check, editing `.shatter/config.yaml` mocks between prepare and
+		// a later execute in the same session would silently keep the old
+		// substitutions active (str-hr40t). Compare against the fingerprint
+		// recorded at prepare time and rebuild on mismatch, mirroring the
+		// IsValid() artifact check above. The comparison reuses the mock set
+		// resolveExecMocks already resolved for this request, so the hot path
+		// pays one hash over the mock list and no extra config parse.
+		if preparedExec != nil {
+			prov := preparedExec.Provenance()
+			if current := instrument.MockFingerprint(execMocks); prov.mockFingerprint != current {
+				// The fingerprints themselves are raw mock expressions joined
+				// by control characters — unfit for a log line; the config
+				// path plus the current mock count is what an operator acts on.
+				h.log.Info("mock configuration changed since prepare, rebuilding harness",
+					"prepare_id", *req.PrepareID, "config", prov.configPath, "mocks", len(execMocks))
+				preparedExec.Cleanup()
+				h.forgetPreparedHarness(*req.PrepareID)
+				preparedExec = nil
+			}
 		}
 		if preparedExec == nil {
 			h.log.Debug("stale prepare_id, rebuilding", "prepare_id", *req.PrepareID)

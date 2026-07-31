@@ -45,10 +45,37 @@ func executionWorkDir(sb sandbox.Runner, targetModuleDir string) string {
 	return targetModuleDir
 }
 
+// preparedProvenance records the configuration inputs a prepared harness was
+// built under, so an execute that names the harness by an explicit prepare_id
+// can tell that those inputs have since changed (str-hr40t).
+//
+// mockFingerprint is instrument.MockFingerprint of the effective mock set
+// (wire mocks + `.shatter/config.yaml` mocks) resolved at prepare time. It is
+// the same value computePrepareID keys on, which is why a driver that
+// re-prepares always gets a fresh harness; the explicit prepare_id path
+// bypasses that derivation and must compare the fingerprint itself.
+//
+// configPath is the `.shatter/config.yaml` the mocks were resolved from ("" if
+// none). It is diagnostic only — the fingerprint is the authority, because
+// loadMockConfig already revalidates the parsed config by mtime + size, so a
+// content change is reflected in the fingerprint without a second stat.
+type preparedProvenance struct {
+	mockFingerprint string
+	configPath      string
+}
+
+// Provenance satisfies preparedExecution for any type embedding
+// preparedProvenance.
+func (p preparedProvenance) Provenance() preparedProvenance { return p }
+
 type preparedExecution interface {
 	IsValid() bool
 	Cleanup()
 	KillProc()
+	// Provenance reports the configuration inputs this harness was built
+	// under. handleExecute compares it against the current inputs before
+	// reusing a harness named by an explicit prepare_id.
+	Provenance() preparedProvenance
 	// Invoke runs the prepared target with the implementation's default
 	// receiver_kind (free-function path: "" baked in at prepare time).
 	Invoke(inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error)
@@ -61,6 +88,11 @@ type preparedExecution interface {
 }
 
 type preparedLauncher struct {
+	// preparedProvenance is stamped by handlePrepare after the harness is
+	// built; a zero value means "unknown provenance" (one-shot execute
+	// harnesses, which are never cached).
+	preparedProvenance
+
 	ArtifactDir string
 	BinaryPath  string
 	ProjectRoot string
