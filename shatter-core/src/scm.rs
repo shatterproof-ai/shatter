@@ -28,9 +28,11 @@ pub enum ScmError {
 
 /// Trait for querying changed files from source control.
 pub trait ScmProvider {
-    /// Files with uncommitted changes (staged + unstaged vs HEAD).
-    /// If `include_untracked` is true, also includes untracked files
-    /// (excluding gitignored ones).
+    /// Files with uncommitted changes (staged + unstaged vs HEAD) under
+    /// `root`. If `include_untracked` is true, also includes untracked files
+    /// (excluding gitignored ones). Results are scoped to `root`: changes
+    /// elsewhere in the repository are not reported, whether tracked or not
+    /// (str-a2wkn).
     fn changed_files(&self, root: &Path, include_untracked: bool)
         -> Result<Vec<PathBuf>, ScmError>;
 
@@ -57,6 +59,22 @@ pub trait ScmProvider {
 pub struct GitProvider;
 
 impl ScmProvider for GitProvider {
+    /// Scoping contract: **subdir-scoped**. Every returned path is under
+    /// `root`; changes elsewhere in the repository are not reported.
+    ///
+    /// This is what callers already assume. `shatter scan --changed` feeds the
+    /// result to `discovery::filter_file_list(&root, ...)`, which drops paths
+    /// outside `root`; `shatter test` strips `project_root` and silently
+    /// discards non-matches; the sibling `--until` path in `scan` treats a path
+    /// outside `root` as a hard error. Nothing consumes repo-wide results.
+    ///
+    /// Enforcing it here rather than downstream keeps the two halves of this
+    /// function consistent (str-a2wkn): `git diff --name-only` ignores cwd and
+    /// reports repo-wide, while `git ls-files --others` only ever lists files
+    /// under cwd. Without the explicit `-- .` pathspec on the diff calls, a
+    /// tracked change outside the scan root came back but an untracked one did
+    /// not. Paths are still printed repo-root-relative, so they are joined onto
+    /// `repo_root`, not `root`.
     fn changed_files(
         &self,
         root: &Path,
@@ -64,12 +82,12 @@ impl ScmProvider for GitProvider {
     ) -> Result<Vec<PathBuf>, ScmError> {
         let repo_root = repo_root(root)?;
 
-        // Staged + unstaged changes vs HEAD
-        let output = run_git(root, &["diff", "--name-only", "HEAD"])?;
+        // Staged + unstaged changes vs HEAD, scoped to `root` via `-- .`.
+        let output = run_git(root, &["diff", "--name-only", "HEAD", "--", "."])?;
         let mut files = parse_file_list(&output, &repo_root);
 
         // Also include staged-only changes (new files that are staged but not yet committed)
-        let staged_output = run_git(root, &["diff", "--name-only", "--cached"])?;
+        let staged_output = run_git(root, &["diff", "--name-only", "--cached", "--", "."])?;
         let staged_files = parse_file_list(&staged_output, &repo_root);
         for f in staged_files {
             if !files.contains(&f) {
@@ -938,6 +956,92 @@ index 1111111..2222222 100644
 
         assert_contains_canonicalized(&files, &tracked);
         assert_contains_canonicalized(&files, &untracked);
+    }
+
+    #[test]
+    fn test_changed_files_scoping_is_symmetric_for_subdir_root() {
+        // str-a2wkn: `git diff --name-only HEAD` ignores cwd and reports
+        // repo-wide, while `git ls-files --others` only lists files under cwd.
+        // changed_files must apply one consistent scope: everything under the
+        // scan root is reported, everything outside it is not — regardless of
+        // whether the change is tracked or untracked.
+        let dir = init_repo();
+        let repo = dir.path();
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+
+        let tracked_inside = inside.join("tracked.ts");
+        let tracked_outside = outside.join("tracked.ts");
+        fs::write(&tracked_inside, "export const a = 1;\n").expect("write");
+        fs::write(&tracked_outside, "export const b = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "init"]);
+
+        // Tracked modification on both sides of the scan-root boundary.
+        fs::write(&tracked_inside, "export const a = 2;\n").expect("modify");
+        fs::write(&tracked_outside, "export const b = 2;\n").expect("modify");
+
+        // Untracked file on both sides of the scan-root boundary.
+        let untracked_inside = inside.join("untracked.ts");
+        let untracked_outside = outside.join("untracked.ts");
+        fs::write(&untracked_inside, "export const c = 1;\n").expect("write");
+        fs::write(&untracked_outside, "export const d = 1;\n").expect("write");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(&inside, true)
+            .expect("changed_files should succeed");
+
+        // Both in-scope changes are reported...
+        assert_contains_canonicalized(&files, &tracked_inside);
+        assert_contains_canonicalized(&files, &untracked_inside);
+
+        // ...and neither out-of-scope change is, tracked or untracked.
+        let canon: Vec<PathBuf> = files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+        for unwanted in [&tracked_outside, &untracked_outside] {
+            let unwanted_canon = unwanted.canonicalize().expect("canonicalize");
+            assert!(
+                !canon.contains(&unwanted_canon),
+                "file outside scan root should not be reported: {unwanted:?} got={files:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_changed_files_staged_changes_are_subdir_scoped() {
+        // The `--cached` call inside changed_files needs the same pathspec as
+        // the working-tree call; without it a staged change outside the scan
+        // root would leak back in through the staged-only merge step.
+        let dir = init_repo();
+        let repo = dir.path();
+        git_ok(repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+
+        let staged_inside = inside.join("new.ts");
+        let staged_outside = outside.join("new.ts");
+        fs::write(&staged_inside, "export const a = 1;\n").expect("write");
+        fs::write(&staged_outside, "export const b = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(&inside, false)
+            .expect("changed_files should succeed");
+
+        assert_contains_canonicalized(&files, &staged_inside);
+        let canon: Vec<PathBuf> = files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+        let unwanted = staged_outside.canonicalize().expect("canonicalize");
+        assert!(
+            !canon.contains(&unwanted),
+            "staged file outside scan root should not be reported: got={files:?}"
+        );
     }
 
     #[test]
