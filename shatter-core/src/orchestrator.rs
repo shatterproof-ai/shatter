@@ -1315,33 +1315,118 @@ fn serde_rename_variants(snake: &str) -> Vec<String> {
     ]
 }
 
-fn overlay_json_path(target: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
-    if path.is_empty() {
-        *target = value;
+/// Largest array index [`overlay_json_path`] will materialize for a numeric path
+/// segment. Positional indices come from tuple-field access (`p.0`), whose
+/// arities are tiny; a larger number is either a genuine map key that happens to
+/// look numeric or a malformed constraint, and padding an array out to it would
+/// burn memory for nothing. Segments above the cap stay object keys.
+const MAX_OVERLAY_ARRAY_INDEX: usize = 63;
+
+/// Interpret one overlay path segment as an array index.
+///
+/// The instrumentor lowers tuple-index access (`p.0`) to the numeric segment
+/// `"0"` (`field_chain_param_json` in `shatter-rust/src/instrument.rs`), and a
+/// tuple deserializes from a JSON ARRAY, not from an object with `"0"` keys. So
+/// a purely-numeric segment addresses a position, not a field name. Leading
+/// zeros are rejected (`"01"` is not an index the lowering can emit) as are
+/// values above [`MAX_OVERLAY_ARRAY_INDEX`]; those fall back to object keys.
+fn array_index_segment(segment: &str) -> Option<usize> {
+    if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if segment.len() > 1 && segment.starts_with('0') {
+        return None;
+    }
+    segment
+        .parse::<usize>()
+        .ok()
+        .filter(|index| *index <= MAX_OVERLAY_ARRAY_INDEX)
+}
+
+/// Coerce `slot` into a JSON array so a numeric segment can index into it.
+///
+/// An object whose keys are ALL numeric is promoted element-wise rather than
+/// discarded: `TypeInfo` has no tuple variant (the Rust analyzer maps a tuple to
+/// `Object { fields: [("0", …), ("1", …)] }`), so the generator seeds tuple
+/// params as `{"0":1,"1":2}`. Promoting preserves the sibling elements the
+/// solver did not constrain, which is what makes the overlaid row actually
+/// deserialize into the tuple. Any other shape is replaced with a fresh array.
+fn normalize_to_array(slot: &mut serde_json::Value) {
+    if slot.is_array() {
         return;
     }
-    if !target.is_object() {
-        *target = serde_json::json!({});
+    let promoted = slot.as_object().and_then(numeric_keyed_object_as_array);
+    *slot = promoted.unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+}
+
+/// Rebuild a fully numeric-keyed JSON object as an array, placing each value at
+/// its key's index and filling gaps with null. Returns `None` when any key is
+/// not an index (a real map — leave it alone).
+fn numeric_keyed_object_as_array(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut entries = Vec::with_capacity(map.len());
+    for (key, value) in map {
+        entries.push((array_index_segment(key)?, value.clone()));
     }
+    let len = entries.iter().map(|(index, _)| index + 1).max().unwrap_or(0);
+    let mut out = vec![serde_json::Value::Null; len];
+    for (index, value) in entries {
+        out[index] = value;
+    }
+    Some(serde_json::Value::Array(out))
+}
+
+/// Ensure `slot` holds an array long enough to address `index`, then hand back
+/// the element slot.
+fn array_slot_at(slot: &mut serde_json::Value, index: usize) -> &mut serde_json::Value {
+    normalize_to_array(slot);
+    let array = slot.as_array_mut().expect("slot was normalized to array");
+    if array.len() <= index {
+        array.resize(index + 1, serde_json::Value::Null);
+    }
+    &mut array[index]
+}
+
+/// Write `value` into `target` at `path`, materializing missing containers.
+///
+/// Each segment picks its container kind: a numeric segment addresses an ARRAY
+/// index (tuple positions — see [`array_index_segment`]), anything else an
+/// object key. Mixing both in one path works, so `p.0.width` overlays into
+/// `[{"width": …}]`.
+fn overlay_json_path(target: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
+    let Some((last, parents)) = path.split_last() else {
+        *target = value;
+        return;
+    };
     let mut current = target;
-    for segment in &path[..path.len() - 1] {
-        if !current.is_object() {
-            *current = serde_json::json!({});
+    for segment in parents {
+        current = match array_index_segment(segment) {
+            Some(index) => array_slot_at(current, index),
+            None => {
+                if !current.is_object() {
+                    *current = serde_json::json!({});
+                }
+                current
+                    .as_object_mut()
+                    .expect("target was normalized to object")
+                    .entry(segment.clone())
+                    .or_insert_with(|| serde_json::json!({}))
+            }
+        };
+    }
+    match array_index_segment(last) {
+        Some(index) => *array_slot_at(current, index) = value,
+        None => {
+            if !current.is_object() {
+                *current = serde_json::json!({});
+            }
+            current
+                .as_object_mut()
+                .expect("target was normalized to object")
+                .insert(last.clone(), value);
         }
-        let object = current
-            .as_object_mut()
-            .expect("target was normalized to object");
-        current = object
-            .entry(segment.clone())
-            .or_insert_with(|| serde_json::json!({}));
     }
-    if !current.is_object() {
-        *current = serde_json::json!({});
-    }
-    let object = current
-        .as_object_mut()
-        .expect("target was normalized to object");
-    object.insert(path[path.len() - 1].clone(), value);
 }
 
 /// Result of trying to observe a single worklist entry.
@@ -4123,6 +4208,75 @@ mod tests {
         assert_eq!(result, vec![serde_json::json!({ "unit_price": 9 })]);
     }
 
+    /// A tuple param constrained through a tuple index (`p.0`) must overlay into
+    /// a JSON ARRAY. `TypeInfo` has no tuple variant — the Rust analyzer maps
+    /// `(i32, i32)` to `Object { fields: [("0", …), ("1", …)] }` — so a
+    /// blanket object overlay emits `{"0": …}`, which serde rejects with
+    /// `invalid type: map, expected a tuple of size 2` and the solved row never
+    /// executes (str-wg4jo). The unconstrained sibling element must survive.
+    #[test]
+    fn overlay_places_tuple_index_at_array_position() {
+        let base = vec![serde_json::json!({ "0": 1, "1": 2 })];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0".to_string(), ConcreteValue::Int(42));
+        let param_names = vec!["p".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![("0".to_string(), bare_int()), ("1".to_string(), bare_int())],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!([42, 2])]);
+    }
+
+    /// A numeric index beyond the current length pads with nulls rather than
+    /// silently dropping the value, and a non-object/non-array base becomes an
+    /// array instead of an object.
+    #[test]
+    fn overlay_pads_array_for_higher_tuple_index() {
+        let base = vec![serde_json::Value::Null];
+        let mut solved = HashMap::new();
+        solved.insert("p . 2".to_string(), ConcreteValue::Int(7));
+        let param_names = vec!["p".to_string()];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        assert_eq!(result, vec![serde_json::json!([null, null, 7])]);
+    }
+
+    /// Object and array segments compose within one path: a struct field inside
+    /// a tuple element (`p.0.width`) overlays into an array of objects.
+    #[test]
+    fn overlay_mixes_tuple_index_and_field_segments() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0 . width".to_string(), ConcreteValue::Int(5));
+        let param_names = vec!["p".to_string()];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        assert_eq!(result, vec![serde_json::json!([{ "width": 5 }])]);
+    }
+
+    /// Only segments the tuple lowering can actually emit are treated as
+    /// indices. A leading-zero segment and an absurdly large one stay object
+    /// keys, so a genuine map with numeric-looking keys is not rewritten into a
+    /// giant sparse array.
+    #[test]
+    fn overlay_keeps_non_index_numeric_segments_as_object_keys() {
+        let base = vec![serde_json::json!({}), serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("a . 01".to_string(), ConcreteValue::Int(1));
+        solved.insert("b . 99999".to_string(), ConcreteValue::Int(2));
+        let param_names = vec!["a".to_string(), "b".to_string()];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        assert_eq!(
+            result,
+            vec![
+                serde_json::json!({ "01": 1 }),
+                serde_json::json!({ "99999": 2 }),
+            ]
+        );
+    }
+
     /// Independent reference implementation of `shatter-rust`'s
     /// `apply_rename_all` (`analyzer.rs`), duplicated here on purpose: it pins the
     /// exact byte-level semantics `serde_rename_variants` must reproduce, so a
@@ -6582,6 +6736,41 @@ mod tests {
                     obj.keys().collect::<Vec<_>>()
                 );
                 prop_assert_eq!(&obj[&field], &serde_json::json!(7));
+            }
+
+            /// A tuple-index segment always overlays into an ARRAY position, for
+            /// any arity and index, and leaves the sibling elements of the
+            /// generated tuple intact — the shape a serde tuple deserializes
+            /// from (str-wg4jo). The base is the numeric-keyed object the
+            /// generator produces for a tuple's `TypeInfo::Object` mapping.
+            #[test]
+            fn overlay_tuple_index_yields_array_preserving_siblings(
+                arity in 1..6usize,
+                index in 0..6usize,
+            ) {
+                prop_assume!(index < arity);
+                let base_obj: serde_json::Value = serde_json::Value::Object(
+                    (0..arity)
+                        .map(|i| (i.to_string(), serde_json::json!(i as i64)))
+                        .collect(),
+                );
+                let base = vec![base_obj];
+                let names = vec!["p".to_string()];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{index}"), ConcreteValue::Int(999));
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
+                let array = result[0]
+                    .as_array()
+                    .expect("tuple-index overlay must produce an array");
+                prop_assert_eq!(array.len(), arity);
+                for (i, element) in array.iter().enumerate() {
+                    let expected = if i == index {
+                        serde_json::json!(999)
+                    } else {
+                        serde_json::json!(i as i64)
+                    };
+                    prop_assert_eq!(element, &expected, "element {} mismatch", i);
+                }
             }
 
             /// When the parameter's type declares a serde-renamed key, the raw
