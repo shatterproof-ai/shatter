@@ -10561,7 +10561,7 @@ defaults:
             prepare_id_override: None,
         };
 
-        let error = explore_with_scan_mode(&mut frontend, &analysis, true, &explore_config)
+        let error = explore_with_scan_mode(&mut frontend, &analysis, true, &explore_config, None)
             .await
             .expect_err("all-not_supported concolic exploration should classify Unsupported");
         let _ = frontend.shutdown().await;
