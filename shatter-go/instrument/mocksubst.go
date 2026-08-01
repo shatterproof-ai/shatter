@@ -9,8 +9,6 @@ import (
 	"os"
 	"strings"
 	"unicode"
-
-	"golang.org/x/tools/go/ast/astutil"
 )
 
 // MockSubstitution describes a single execute-time call-site replacement:
@@ -377,62 +375,27 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 	}
 	boundByFunc[""] = packageScopeFuncLitBoundNames(file)
 
-	// Track the enclosing top-level function key as Apply descends. Function
-	// literals inherit the nearest named function's key (they cannot be named
-	// targets and their local bindings are already folded into that function's
-	// bound-name set).
-	var funcStack []string
-	currentFunc := func() string {
-		if len(funcStack) == 0 {
-			return ""
-		}
-		return funcStack[len(funcStack)-1]
-	}
-
+	// Call-site recognition and enclosing-function tracking live in the shared
+	// walker, so this rewriter and the type-resolution pass that produced
+	// AllowedFuncs can never disagree about which sites exist.
 	count := 0
-	pre := func(c *astutil.Cursor) bool {
-		switch n := c.Node().(type) {
-		case *ast.FuncDecl:
-			funcStack = append(funcStack, funcKey(n))
-		case *ast.FuncLit:
-			funcStack = append(funcStack, currentFunc())
-		case *ast.CallExpr:
-			sel, ok := n.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			sub, ok := byKey[ident.Name+"."+sel.Sel.Name]
-			if !ok {
-				return true
-			}
-			if !mockCallSiteAllowed(sub, currentFunc(), ident.Name, imports, boundByFunc) {
-				return true
-			}
-			// Parse a fresh expression per call site so replaced nodes never
-			// share AST identity (which would confuse the printer).
-			repl, err := parser.ParseExpr(sub.Expression)
-			if err != nil {
-				return true
-			}
-			c.Replace(repl)
-			count++
+	WalkQualifiedCalls(file, func(site QualifiedCallSite) ast.Expr {
+		sub, ok := byKey[site.QualifiedName()]
+		if !ok {
+			return nil
 		}
-		return true
-	}
-	post := func(c *astutil.Cursor) bool {
-		switch c.Node().(type) {
-		case *ast.FuncDecl, *ast.FuncLit:
-			if len(funcStack) > 0 {
-				funcStack = funcStack[:len(funcStack)-1]
-			}
+		if !mockCallSiteAllowed(sub, site.EnclosingFunc, site.Qualifier, imports, boundByFunc) {
+			return nil
 		}
-		return true
-	}
-	astutil.Apply(file, pre, post)
+		// Parse a fresh expression per call site so replaced nodes never
+		// share AST identity (which would confuse the printer).
+		repl, err := parser.ParseExpr(sub.Expression)
+		if err != nil {
+			return nil
+		}
+		count++
+		return repl
+	})
 
 	if len(parseErrs) > 0 {
 		return count, fmt.Errorf("mock substitution: %s", strings.Join(parseErrs, "; "))
