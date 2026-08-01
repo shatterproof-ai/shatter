@@ -327,7 +327,10 @@ func packageScopeFuncLitBoundNames(file *ast.File) map[string]bool {
 
 // RewriteMockCallSites replaces, in file, every genuine package-qualified call
 // matching a substitution's QualifiedFunction with that substitution's parsed
-// Expression, and returns the number of call sites rewritten.
+// Expression, and returns the number of call sites rewritten. Call sites are
+// enumerated by the shared WalkQualifiedCalls traversal — the same one the
+// type-resolution pass uses to build AllowedFuncs — so plain selector calls and
+// generic instantiations (`pkg.Func[T](...)`) are handled identically by both.
 //
 // Type-resolved substitutions (TypeResolved == true) rewrite only inside the
 // enclosing functions listed in AllowedFuncs (plus package scope when
