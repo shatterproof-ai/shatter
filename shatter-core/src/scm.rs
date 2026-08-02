@@ -28,9 +28,11 @@ pub enum ScmError {
 
 /// Trait for querying changed files from source control.
 pub trait ScmProvider {
-    /// Files with uncommitted changes (staged + unstaged vs HEAD).
-    /// If `include_untracked` is true, also includes untracked files
-    /// (excluding gitignored ones).
+    /// Files with uncommitted changes (staged + unstaged vs HEAD) under
+    /// `root`. If `include_untracked` is true, also includes untracked files
+    /// (excluding gitignored ones). Results are scoped to `root`: changes
+    /// elsewhere in the repository are not reported, whether tracked or not
+    /// (str-a2wkn).
     fn changed_files(&self, root: &Path, include_untracked: bool)
         -> Result<Vec<PathBuf>, ScmError>;
 
@@ -57,6 +59,44 @@ pub trait ScmProvider {
 pub struct GitProvider;
 
 impl ScmProvider for GitProvider {
+    /// Scoping contract: **subdir-scoped**. Every returned path is under
+    /// `root`; changes elsewhere in the repository are not reported.
+    ///
+    /// This is what callers already assume. `shatter scan --changed` feeds the
+    /// result to `discovery::filter_file_list(&root, ...)`, which drops paths
+    /// outside `root`; `shatter test` strips `project_root` and silently
+    /// discards non-matches; the sibling `--until` path in `scan` treats a path
+    /// outside `root` as a hard error. Nothing consumes repo-wide results.
+    ///
+    /// Enforcing it here rather than downstream keeps the two halves of this
+    /// function consistent (str-a2wkn): `git diff --name-only` ignores cwd and
+    /// reports repo-wide, while `git ls-files --others` only ever lists files
+    /// under cwd. Without the explicit `-- .` pathspec on the diff calls, a
+    /// tracked change outside the scan root came back but an untracked one did
+    /// not. Paths are still printed repo-root-relative, so they are joined onto
+    /// `repo_root`, not `root`.
+    ///
+    /// Existence contract: **only paths that exist on disk are returned**, so
+    /// deletions are not reported. This is the second half of the same symmetry
+    /// (str-a2wkn): `ls-files --others` structurally cannot name a file that
+    /// isn't there, while `git diff` happily reports the old path of anything
+    /// removed. The `-- .` pathspec makes that gap load-bearing — a pathspec
+    /// suppresses git's rename pairing, so `git mv src/a.ts other/a.ts` viewed
+    /// from `src` reports the vanished `src/a.ts` rather than collapsing to the
+    /// new path the way an unscoped diff does. Plain deletions have the same
+    /// shape and always did. Filtering on existence covers both, and matters
+    /// because `discovery::filter_file_list` does not stat its input: a
+    /// nonexistent `.ts` path flows straight through to a frontend as a scan
+    /// target. Note `--no-renames` does *not* help here — with or without it,
+    /// git reports the old path once a pathspec is in play.
+    ///
+    /// Excluding deletions is a deliberate trade-off. Test-impact analysis
+    /// would arguably want a deleted source file so it can still select the
+    /// tests that covered it, but no such caller exists yet (str-cl53,
+    /// coverage-based selective test execution, is still backlog), and handing
+    /// a scanner a path it cannot open is strictly worse than omitting it. If
+    /// str-cl53 lands and needs deletions, it should special-case them at its
+    /// own call site, where it knows what it wants from them.
     fn changed_files(
         &self,
         root: &Path,
@@ -64,12 +104,12 @@ impl ScmProvider for GitProvider {
     ) -> Result<Vec<PathBuf>, ScmError> {
         let repo_root = repo_root(root)?;
 
-        // Staged + unstaged changes vs HEAD
-        let output = run_git(root, &["diff", "--name-only", "HEAD"])?;
+        // Staged + unstaged changes vs HEAD, scoped to `root` via `-- .`.
+        let output = run_git(root, &["diff", "--name-only", "HEAD", "--", "."])?;
         let mut files = parse_file_list(&output, &repo_root);
 
         // Also include staged-only changes (new files that are staged but not yet committed)
-        let staged_output = run_git(root, &["diff", "--name-only", "--cached"])?;
+        let staged_output = run_git(root, &["diff", "--name-only", "--cached", "--", "."])?;
         let staged_files = parse_file_list(&staged_output, &repo_root);
         for f in staged_files {
             if !files.contains(&f) {
@@ -92,6 +132,11 @@ impl ScmProvider for GitProvider {
                 }
             }
         }
+
+        // Drop paths git named that no longer exist (deletions, and the old
+        // side of a rename that crossed the scan-root boundary). See the
+        // existence contract above.
+        files.retain(|path| path.exists());
 
         files.sort();
         files.dedup();
@@ -938,6 +983,214 @@ index 1111111..2222222 100644
 
         assert_contains_canonicalized(&files, &tracked);
         assert_contains_canonicalized(&files, &untracked);
+    }
+
+    #[test]
+    fn test_changed_files_scoping_is_symmetric_for_subdir_root() {
+        // str-a2wkn: `git diff --name-only HEAD` ignores cwd and reports
+        // repo-wide, while `git ls-files --others` only lists files under cwd.
+        // changed_files must apply one consistent scope: everything under the
+        // scan root is reported, everything outside it is not — regardless of
+        // whether the change is tracked or untracked.
+        let dir = init_repo();
+        let repo = dir.path();
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+
+        let tracked_inside = inside.join("tracked.ts");
+        let tracked_outside = outside.join("tracked.ts");
+        fs::write(&tracked_inside, "export const a = 1;\n").expect("write");
+        fs::write(&tracked_outside, "export const b = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "init"]);
+
+        // Tracked modification on both sides of the scan-root boundary.
+        fs::write(&tracked_inside, "export const a = 2;\n").expect("modify");
+        fs::write(&tracked_outside, "export const b = 2;\n").expect("modify");
+
+        // Untracked file on both sides of the scan-root boundary.
+        let untracked_inside = inside.join("untracked.ts");
+        let untracked_outside = outside.join("untracked.ts");
+        fs::write(&untracked_inside, "export const c = 1;\n").expect("write");
+        fs::write(&untracked_outside, "export const d = 1;\n").expect("write");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(&inside, true)
+            .expect("changed_files should succeed");
+
+        // Both in-scope changes are reported...
+        assert_contains_canonicalized(&files, &tracked_inside);
+        assert_contains_canonicalized(&files, &untracked_inside);
+
+        // ...and neither out-of-scope change is, tracked or untracked.
+        let canon: Vec<PathBuf> = files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+        for unwanted in [&tracked_outside, &untracked_outside] {
+            let unwanted_canon = unwanted.canonicalize().expect("canonicalize");
+            assert!(
+                !canon.contains(&unwanted_canon),
+                "file outside scan root should not be reported: {unwanted:?} got={files:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_changed_files_staged_changes_are_subdir_scoped() {
+        // The `--cached` call inside changed_files needs the same pathspec as
+        // the working-tree call; without it a staged change outside the scan
+        // root would leak back in through the staged-only merge step.
+        let dir = init_repo();
+        let repo = dir.path();
+        git_ok(repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+
+        let staged_inside = inside.join("new.ts");
+        let staged_outside = outside.join("new.ts");
+        fs::write(&staged_inside, "export const a = 1;\n").expect("write");
+        fs::write(&staged_outside, "export const b = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(&inside, false)
+            .expect("changed_files should succeed");
+
+        assert_contains_canonicalized(&files, &staged_inside);
+        let canon: Vec<PathBuf> = files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+        let unwanted = staged_outside.canonicalize().expect("canonicalize");
+        assert!(
+            !canon.contains(&unwanted),
+            "staged file outside scan root should not be reported: got={files:?}"
+        );
+    }
+
+    /// Assert no returned path canonicalizes to `unwanted`, and — for paths
+    /// that no longer exist and therefore cannot canonicalize — that none is
+    /// literally equal to it either.
+    fn assert_not_reported(files: &[PathBuf], unwanted: &Path) {
+        let canon: Vec<PathBuf> = files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+        if let Ok(unwanted_canon) = unwanted.canonicalize() {
+            assert!(
+                !canon.contains(&unwanted_canon),
+                "path should not be reported: want-absent={unwanted:?} got={files:?}"
+            );
+        }
+        assert!(
+            !files.contains(&unwanted.to_path_buf()),
+            "path should not be reported: want-absent={unwanted:?} got={files:?}"
+        );
+    }
+
+    #[test]
+    fn test_changed_files_rename_out_of_root_omits_vanished_path() {
+        // str-a2wkn review: a pathspec suppresses git's rename pairing, so a
+        // file renamed OUT of the scan root is reported at its old path, which
+        // no longer exists. `filter_file_list` does not stat its input, so such
+        // a path would reach a frontend as a scan target. Note `--no-renames`
+        // does not change this — git reports the old path either way.
+        let dir = init_repo();
+        let repo = dir.path();
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+        let original = inside.join("moved.ts");
+        fs::write(&original, "export const a = 1;\n").expect("write");
+        // A second in-root change so the result is non-empty for the right reason.
+        let untouched = inside.join("stays.ts");
+        fs::write(&untouched, "export const b = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "init"]);
+
+        git_ok(repo, &["mv", "src/moved.ts", "other/moved.ts"]);
+        fs::write(&untouched, "export const b = 2;\n").expect("modify");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(&inside, true)
+            .expect("changed_files should succeed");
+
+        // The genuine in-root change is still reported.
+        assert_contains_canonicalized(&files, &untouched);
+        // The vanished old path is not.
+        assert!(!original.exists(), "precondition: old path is gone");
+        assert_not_reported(&files, &original);
+        // Nor is the new path, which now lives outside the scan root.
+        assert_not_reported(&files, &outside.join("moved.ts"));
+        // Every reported path must be openable by a downstream consumer.
+        for f in &files {
+            assert!(f.exists(), "reported a nonexistent path: {f:?} in {files:?}");
+        }
+    }
+
+    #[test]
+    fn test_changed_files_rename_into_root_reports_new_path() {
+        // The mirror direction: a file renamed INTO the scan root is reported
+        // at its new path, which exists, and its old path outside the root is
+        // not reported.
+        let dir = init_repo();
+        let repo = dir.path();
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+        let original = outside.join("moved.ts");
+        fs::write(&original, "export const a = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "init"]);
+
+        git_ok(repo, &["mv", "other/moved.ts", "src/moved.ts"]);
+        let destination = inside.join("moved.ts");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(&inside, true)
+            .expect("changed_files should succeed");
+
+        assert_contains_canonicalized(&files, &destination);
+        assert_not_reported(&files, &original);
+        for f in &files {
+            assert!(f.exists(), "reported a nonexistent path: {f:?} in {files:?}");
+        }
+    }
+
+    #[test]
+    fn test_changed_files_omits_plain_deletions() {
+        // Same shape as the rename-out case without any rename: `git diff`
+        // names the deleted path, which cannot be scanned. Holds at the repo
+        // root, where no pathspec scoping is involved at all.
+        let dir = init_repo();
+        let repo = dir.path();
+
+        let deleted = repo.join("gone.ts");
+        let kept = repo.join("kept.ts");
+        fs::write(&deleted, "export const a = 1;\n").expect("write");
+        fs::write(&kept, "export const b = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "init"]);
+
+        git_ok(repo, &["rm", "-q", "gone.ts"]);
+        fs::write(&kept, "export const b = 2;\n").expect("modify");
+
+        let provider = GitProvider;
+        let files = provider
+            .changed_files(repo, true)
+            .expect("changed_files should succeed");
+
+        assert_contains_canonicalized(&files, &kept);
+        assert_not_reported(&files, &deleted);
+        for f in &files {
+            assert!(f.exists(), "reported a nonexistent path: {f:?} in {files:?}");
+        }
     }
 
     #[test]
