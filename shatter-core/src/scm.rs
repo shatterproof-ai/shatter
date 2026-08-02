@@ -89,6 +89,14 @@ impl ScmProvider for GitProvider {
     /// nonexistent `.ts` path flows straight through to a frontend as a scan
     /// target. Note `--no-renames` does *not* help here — with or without it,
     /// git reports the old path once a pathspec is in play.
+    ///
+    /// Excluding deletions is a deliberate trade-off. Test-impact analysis
+    /// would arguably want a deleted source file so it can still select the
+    /// tests that covered it, but no such caller exists yet (str-cl53,
+    /// coverage-based selective test execution, is still backlog), and handing
+    /// a scanner a path it cannot open is strictly worse than omitting it. If
+    /// str-cl53 lands and needs deletions, it should special-case them at its
+    /// own call site, where it knows what it wants from them.
     fn changed_files(
         &self,
         root: &Path,
