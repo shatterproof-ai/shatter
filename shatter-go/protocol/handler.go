@@ -781,7 +781,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	}
 
 	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind, genericTypeArgs...)
-	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
+	targetKey := preparedTargetKey(file, *req.Function, receiverKind, genericTypeArgs)
 
 	if cachedAnalysis := h.cachedAnalysisForPolicy(file, *req.Function, timing); cachedAnalysis != nil && !isAdapterOwned(cachedAnalysis) {
 		if decision, applied := h.evaluateExecutePolicy(file, *req.Function, cachedAnalysis); applied && !decision.Allow {
@@ -797,9 +797,8 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		h.log.Debug("invalidating stale prepared harness", "old_prepare_id", oldID, "new_prepare_id", prepareID)
 		if oldHarness, ok := h.preparedHarnesses[oldID]; ok {
 			oldHarness.Cleanup()
-			delete(h.preparedHarnesses, oldID)
 		}
-		delete(h.preparedTargets, targetKey)
+		h.forgetPreparedHarness(oldID)
 	}
 
 	// Idempotent: return immediately if already prepared and still valid.
@@ -811,8 +810,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 			return finalizeResponse(resp, timing)
 		}
 		existing.Cleanup()
-		delete(h.preparedHarnesses, prepareID)
-		delete(h.preparedTargets, targetKey)
+		h.forgetPreparedHarness(prepareID)
 	}
 
 	h.prunePreparedHarnessesBeforeNewPrepare(prepareID)
@@ -918,6 +916,14 @@ func (h *Handler) mockProvenance(file string, mocks []instrument.MockConfig) pre
 		}
 	}
 	return prov
+}
+
+// preparedTargetKey builds the `preparedTargets` key for one target shape.
+// Every site that reads or writes that map MUST go through this helper — the
+// key was previously spelled out by hand at each call site, so a change to its
+// shape could silently desynchronize registration from lookup.
+func preparedTargetKey(file, function, receiverKind string, genericTypeArgs []string) string {
+	return file + "\x00" + function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
 }
 
 // forgetPreparedHarness drops prepareID from the harness cache along with any
@@ -1207,6 +1213,10 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		err          error
 		oneShot      *preparedLauncher
 		preparedExec preparedExecution
+		// recacheAfterMockChange marks that an explicit prepare_id was
+		// invalidated by a config-mock change (str-hr40t), so the rebuilt
+		// harness must be re-registered instead of torn down as a one-shot.
+		recacheAfterMockChange bool
 	)
 
 	// When the request carries a non-nil Plan (str-hy9b.H5), thread the
@@ -1269,6 +1279,11 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		// IsValid() artifact check above. The comparison reuses the mock set
 		// resolveExecMocks already resolved for this request, so the hot path
 		// pays one hash over the mock list and no extra config parse.
+		//
+		// Neither side of the comparison can fail: execMocks is already
+		// resolved upstream (config load errors were logged and degraded to
+		// "no mocks" there) and MockFingerprint is a pure hash, so there is
+		// no error path to thread through here.
 		if preparedExec != nil {
 			prov := preparedExec.Provenance()
 			if current := instrument.MockFingerprint(execMocks); prov.mockFingerprint != current {
@@ -1280,6 +1295,12 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 				preparedExec.Cleanup()
 				h.forgetPreparedHarness(*req.PrepareID)
 				preparedExec = nil
+				// The driver holds a prepare_id and will keep sending it, so
+				// the rebuild below must repopulate the cache under the new
+				// fingerprint. Without this the fallback build is treated as
+				// one-shot and torn down after a single invoke, making EVERY
+				// subsequent execute rebuild from scratch.
+				recacheAfterMockChange = true
 			}
 		}
 		if preparedExec == nil {
@@ -1297,6 +1318,22 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute", requestReceiverKind, requestGenericTypeArgs)
 		if err == nil {
 			preparedExec = oneShot
+			if recacheAfterMockChange {
+				// Re-register under the NEW fingerprint and hand ownership to
+				// the cache (oneShot cleared so the tear-down below skips it),
+				// so a config edit costs one rebuild per prepare_id rather
+				// than one rebuild per execute for the rest of the session
+				// (str-hr40t review). The driver's next execute still names
+				// the OLD prepare_id, which now misses; it falls through to
+				// lookupPreparedHarness, which recomputes the same new id and
+				// hits this entry.
+				newID := computePrepareID(file, *req.Function, execMocks, requestReceiverKind, requestGenericTypeArgs...)
+				oneShot.preparedProvenance = h.mockProvenance(file, execMocks)
+				h.preparedHarnesses[newID] = oneShot
+				h.preparedTargets[preparedTargetKey(file, *req.Function, requestReceiverKind, requestGenericTypeArgs)] = newID
+				h.log.Debug("re-registered rebuilt harness after mock change", "prepare_id", newID)
+				oneShot = nil
+			}
 		}
 	}
 	if err == nil {
@@ -1689,11 +1726,7 @@ func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrumen
 	if !harness.IsValid() {
 		h.log.Warn("pruning prepared harness with missing artifacts", "prepare_id", prepareID)
 		harness.Cleanup()
-		delete(h.preparedHarnesses, prepareID)
-		targetKey := file + "\x00" + function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
-		if h.preparedTargets[targetKey] == prepareID {
-			delete(h.preparedTargets, targetKey)
-		}
+		h.forgetPreparedHarness(prepareID)
 		return nil
 	}
 	return harness

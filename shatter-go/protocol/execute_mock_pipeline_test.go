@@ -224,6 +224,41 @@ func main() {}
 			t.Errorf("stale harness launcher session must be closed by Cleanup")
 		}
 	}
+
+	// The rebuild must be re-registered under the new fingerprint, not torn
+	// down as a one-shot: otherwise every subsequent execute on this prepare_id
+	// rebuilds from scratch for the rest of the session (str-hr40t review).
+	if len(h.preparedHarnesses) != 1 {
+		t.Fatalf("expected exactly one cached harness after the rebuild, got %d", len(h.preparedHarnesses))
+	}
+	var rebuilt preparedExecution
+	for _, harness := range h.preparedHarnesses {
+		rebuilt = harness
+	}
+
+	// A THIRD execute with the same (now-stale) prepare_id must reuse the
+	// rebuilt harness rather than build again.
+	if got := returned(execWithPrepareID(4)); got != 77 {
+		t.Fatalf("second execute after config edit = %d, want 77", got)
+	}
+	if len(h.preparedHarnesses) != 1 {
+		t.Fatalf("second post-edit execute changed the cache size to %d", len(h.preparedHarnesses))
+	}
+	for _, harness := range h.preparedHarnesses {
+		if harness != rebuilt {
+			t.Errorf("second post-edit execute rebuilt the harness instead of reusing the cached one")
+		}
+	}
+	// A rebuilt-then-discarded harness would have been Cleanup()'d, closing its
+	// session; a genuinely reused one still holds its launcher session open.
+	if pl, ok := rebuilt.(*preparedLauncher); ok {
+		pl.mu.Lock()
+		session := pl.session
+		pl.mu.Unlock()
+		if session == nil {
+			t.Errorf("rebuilt harness session was torn down; it was treated as one-shot, not re-cached")
+		}
+	}
 }
 
 func writeFile(t *testing.T, path, content string) {
