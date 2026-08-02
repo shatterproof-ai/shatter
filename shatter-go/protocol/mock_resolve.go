@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/types"
 
-	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/packages"
 
 	"github.com/shatter-dev/shatter/shatter-go/instrument"
@@ -47,56 +46,28 @@ func resolveMockSubstitutionScopes(
 		idx[subs[i].QualifiedFunction] = i
 	}
 
+	// The traversal (call-site recognition, enclosing-function keys) is shared
+	// with instrument.RewriteMockCallSites via WalkQualifiedCalls: the
+	// allow-lists recorded here are only meaningful if the rewriter recognizes
+	// exactly the same call sites. Returning nil keeps this pass read-only.
 	for _, file := range pkg.Syntax {
-		var funcStack []string
-		current := func() string {
-			if len(funcStack) == 0 {
-				return ""
+		instrument.WalkQualifiedCalls(file, func(site instrument.QualifiedCallSite) ast.Expr {
+			si, ok := idx[site.QualifiedName()]
+			if !ok {
+				return nil
 			}
-			return funcStack[len(funcStack)-1]
-		}
-		pre := func(c *astutil.Cursor) bool {
-			switch n := c.Node().(type) {
-			case *ast.FuncDecl:
-				funcStack = append(funcStack, instrument.FuncKeyForDecl(n))
-			case *ast.FuncLit:
-				funcStack = append(funcStack, current())
-			case *ast.CallExpr:
-				sel, ok := n.Fun.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				ident, ok := sel.X.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				si, ok := idx[ident.Name+"."+sel.Sel.Name]
-				if !ok {
-					return true
-				}
-				// The qualifier must resolve to an imported package, not a
-				// local variable / field / parameter of the same name.
-				if _, isPkg := pkg.TypesInfo.Uses[ident].(*types.PkgName); !isPkg {
-					return true
-				}
-				if enc := current(); enc == "" {
-					subs[si].AllowPackageScope = true
-				} else {
-					subs[si].AllowedFuncs[enc] = true
-				}
+			// The qualifier must resolve to an imported package, not a
+			// local variable / field / parameter of the same name.
+			if _, isPkg := pkg.TypesInfo.Uses[site.QualifierIdent].(*types.PkgName); !isPkg {
+				return nil
 			}
-			return true
-		}
-		post := func(c *astutil.Cursor) bool {
-			switch c.Node().(type) {
-			case *ast.FuncDecl, *ast.FuncLit:
-				if len(funcStack) > 0 {
-					funcStack = funcStack[:len(funcStack)-1]
-				}
+			if site.EnclosingFunc == "" {
+				subs[si].AllowPackageScope = true
+			} else {
+				subs[si].AllowedFuncs[site.EnclosingFunc] = true
 			}
-			return true
-		}
-		astutil.Apply(file, pre, post)
+			return nil
+		})
 	}
 
 	if logf != nil {
