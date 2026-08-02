@@ -426,6 +426,7 @@ frontends:
       - buffer
       - error
       - symbol
+      - closure
     default_exec_timeout_s: 15
 
   go:

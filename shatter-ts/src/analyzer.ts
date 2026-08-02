@@ -977,6 +977,68 @@ export function convertTypeWithNode(
   if (elementNode) {
     return { kind: "array", element: convertElementNode(elementNode, checker, sourceFile, seen) };
   }
+  // Residual recovery sites the direct match above cannot reach (str-ya5dx —
+  // each still degrades to `{}` and crashes target `.map`/`for..of` code):
+  //
+  // Union members: `Widget[] | null | undefined`. Recover when the node is a
+  // union with exactly one non-nullish member that is syntactically an array;
+  // convert that member and preserve nullability.
+  let node: ts.TypeNode = typeNode;
+  if (ts.isParenthesizedTypeNode(node)) {
+    node = node.type;
+  }
+  if (ts.isUnionTypeNode(node)) {
+    const isNullish = (m: ts.TypeNode) =>
+      m.kind === ts.SyntaxKind.NullKeyword ||
+      m.kind === ts.SyntaxKind.UndefinedKeyword ||
+      (ts.isLiteralTypeNode(m) && m.literal.kind === ts.SyntaxKind.NullKeyword);
+    const nonNullish = node.types.filter((m) => !isNullish(m));
+    const hadNullish = nonNullish.length < node.types.length;
+    if (nonNullish.length === 1) {
+      const memberElement = arrayElementTypeNode(nonNullish[0]!);
+      if (memberElement) {
+        const arr: TypeInfo = {
+          kind: "array",
+          element: convertElementNode(memberElement, checker, sourceFile, seen),
+        };
+        return hadNullish ? { kind: "nullable", inner: arr } : arr;
+      }
+    }
+  }
+  // Function-typed params: `(x: number) => string`. Lib-less, the checker
+  // yields `unknown` (no `Function` global to anchor the call signature), so
+  // the call-signature detection in `convertType` never fires. Recover from
+  // the syntactic function/constructor node → `closure` so callback params
+  // (e.g. `props.onClose`) generate a callable stub instead of a primitive.
+  if (ts.isFunctionTypeNode(node) || ts.isConstructorTypeNode(node)) {
+    return { kind: "complex", complex_kind: "closure" };
+  }
+  // Array-typed aliases: `type Widgets = Widget[]`. The reference node hides
+  // the array syntax behind the alias; follow one level of alias declaration.
+  if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+    const aliasSymbol = checker.getSymbolAtLocation(node.typeName);
+    const aliasDecl = aliasSymbol?.declarations?.find(ts.isTypeAliasDeclaration);
+    if (aliasDecl) {
+      const aliasElement = arrayElementTypeNode(aliasDecl.type);
+      if (aliasElement) {
+        return {
+          kind: "array",
+          element: convertElementNode(aliasElement, checker, sourceFile, seen),
+        };
+      }
+    }
+    // Built-in class/interface references (`Date`, `RegExp`, `URL`, `Error`,
+    // typed-array/`Buffer`) collapse to `unknown` lib-less because the global
+    // symbol is absent. Recover the ComplexKind from the reference name so the
+    // core instantiates a real `Date`/`RegExp`/etc. (reconstruct.ts) instead of
+    // a shape-mock whose methods are non-callable (`d.getFullYear is not a
+    // function`). Only fires on the degraded path — with lib present the
+    // symbol-name branch in `convertType` already returned the ComplexKind.
+    const builtinKind = complexKindFromSymbol(node.typeName.text);
+    if (builtinKind) {
+      return { kind: "complex", complex_kind: builtinKind };
+    }
+  }
   return converted;
 }
 
@@ -1128,6 +1190,19 @@ export function convertType(
         seen.delete(type);
         return { kind: "complex", complex_kind: complexKind };
       }
+    }
+
+    // Callable types → `closure` (str-ya5dx). A param typed `(x) => y` or an
+    // object method field (`Response.text`, `props.onClose`) resolves to an
+    // object type carrying call signatures; without this it degrades to
+    // `unknown`/`{}` and the generated value is a non-callable primitive, so
+    // target code doing `cb()` / `response.text()` crashes with
+    // `x is not a function`. Emit `closure` so the core generates a callable
+    // envelope (reconstruct.ts builds a recording stub). Applies at every
+    // recursion depth, so method fields inside object shapes are covered too.
+    if (type.getCallSignatures().length > 0) {
+      seen.delete(type);
+      return { kind: "complex", complex_kind: "closure" };
     }
 
     // Static analysis heuristics for user-defined types
@@ -2121,12 +2196,9 @@ function convertObjectType(
   sourceFile?: ts.SourceFile | null,
   seen: Set<ts.Type> = new Set(),
 ): TypeInfo {
-  // Skip callable signatures (function types)
-  const callSignatures = type.getCallSignatures();
-  if (callSignatures.length > 0) {
-    return { kind: "unknown" };
-  }
-
+  // Callable object types (function types) are handled by convertType's own
+  // call-signature short-circuit (str-ya5dx) before it ever calls here — this
+  // is the only call site, so that check is not repeated here.
   const properties = type.getProperties();
 
   // Array-like shapes: numeric index signature, with at most a `length`
@@ -2159,15 +2231,19 @@ function convertObjectType(
     const propType = checker.getTypeOfSymbol(prop);
     const isOptional = (prop.flags & ts.SymbolFlags.Optional) !== 0;
 
-    // Per-field callable check: function-typed fields cannot be generated by the
-    // solver, so treat them as unknown. Optional callable fields become nullable so
-    // input_gen can omit them (~30% of the time), allowing the engine to reach the
-    // real transformation logic instead of only TypeError paths.
+    // Per-field callable check: function-typed fields (`Response.text`,
+    // `props.onClose`) resolve to `closure` so the core generates a callable
+    // stub (reconstruct.ts) — target code invoking the field no longer crashes
+    // with `x is not a function` (str-ya5dx supersedes the earlier `unknown`
+    // treatment). Optional callable fields stay nullable so input_gen can still
+    // omit them (~30% of the time), reaching real transformation logic instead
+    // of only the callback path.
     if (propType.getCallSignatures().length > 0) {
+      const closure: TypeInfo = { kind: "complex", complex_kind: "closure" };
       if (isOptional) {
-        return [prop.name, { kind: "nullable" as const, inner: { kind: "unknown" as const } }];
+        return [prop.name, { kind: "nullable" as const, inner: closure }];
       }
-      return [prop.name, { kind: "unknown" as const }];
+      return [prop.name, closure];
     }
 
     // Do not pass sourceFile into field types to avoid false positives on

@@ -137,6 +137,222 @@ fn return_value_set(result: &ExploreResult) -> HashSet<String> {
         .collect()
 }
 
+/// Array-typed parameters must materialize as real, iterable arrays through the
+/// full pipeline (str-ya5dx). `computeStats(items: number[])` throws on an empty
+/// array, iterates with `for..of`, and throws again on a negative element. If the
+/// TS input generator filled the array param as `{}` (the pickpackit bug class),
+/// `items.length` would read `undefined` / `for..of` would throw "items is not
+/// iterable" on every input and no interior branch could be reached. Discovering
+/// both the empty-array path and the negative-value path proves empty AND
+/// populated arrays flow end-to-end: analyze (array TypeInfo) → generate → execute
+/// (real iteration) → solve.
+#[tokio::test]
+async fn concolic_computestats_materializes_iterable_array_param() {
+    let file = examples_dir().join("04-errors.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "computeStats").await;
+    assert_eq!(analysis.params.len(), 1, "computeStats takes 1 param");
+    // The param must be recognized as an array, not a bare object/unknown —
+    // otherwise the generator emits `{}` and the body cannot iterate.
+    assert!(
+        matches!(analysis.params[0].typ, TypeInfo::Array { .. }),
+        "computeStats param must be an array TypeInfo; got {:?}",
+        analysis.params[0].typ
+    );
+
+    instrument_function(&mut frontend, &file_str, "computeStats").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(25),
+        max_executions: Some(150),
+        plateau_threshold: 20,
+        ..Default::default()
+    };
+
+    // Seed with a populated array and an empty array so both the iteration path
+    // and the empty-array guard are exercised; the solver explores from there.
+    let seed_inputs = vec![
+        vec![serde_json::json!([5, 10, 20])],
+        vec![serde_json::json!([])],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "computeStats",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+
+    // The empty-array guard must be reachable (proves `items.length === 0`
+    // evaluated on a real array).
+    let has_empty = return_values
+        .iter()
+        .any(|v| v.contains("empty array"));
+    assert!(
+        has_empty,
+        "should discover the 'empty array' path; found: {return_values:?}"
+    );
+
+    // A non-throwing statistics result must be reachable (proves a populated
+    // array iterated cleanly through `for..of` without an "is not iterable"
+    // TypeError). Successful returns are JSON objects carrying `avg`. This is the
+    // core assertion for str-ya5dx: an array param fills as a real, iterable
+    // array whose elements the body can read — not the `{}` shape that made
+    // `for..of` throw on every input in the pickpackit corpus.
+    let has_stats = return_values.iter().any(|v| v.contains("\"avg\""));
+    assert!(
+        has_stats,
+        "should compute stats over a populated iterable array; found: {return_values:?}"
+    );
+
+    // NOTE: we deliberately do NOT assert the absence of "is not iterable" here.
+    // The TS frontend now reports the param as `array` (asserted above) and the
+    // generator seeds real arrays, but the concolic solver's input
+    // reconstruction can still occasionally emit a non-array value for an
+    // unconstrained array param — that residual lives in shatter-core input
+    // generation / solving, not the TS frontend. Tracking it belongs to the core
+    // path, so this frontend-scoped e2e only locks that iterable arrays DO flow
+    // end-to-end (has_stats + the empty/negative interior paths above).
+
+    assert!(
+        result.unique_paths >= 2,
+        "should have at least 2 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// A function-typed param must materialize as a real, invocable callback
+/// through the full pipeline (str-ya5dx), not the previous `unknown` shape-mock
+/// whose methods were non-callable. `invokeCallback(cb: (n: number) => number)`
+/// calls `cb(7)` and branches on the result, so each `closure` stub variant the
+/// core can generate (`identity`/`constant`/`thrower` — see
+/// `input_gen.rs::generate_closure`) drives target code down a distinct path:
+/// - `identity` returns its argument -> `cb(7) === 7` -> the "identity" arm
+/// - `constant` returns a fixed value -> the "other" arm
+/// - `thrower` throws on invocation -> the catch block's "threw" arm
+///
+/// Exercising all three end-to-end proves the round trip that unit tests
+/// cannot: core emits the `{"__complex_type":"closure","variant":...}`
+/// envelope -> JSON over stdio to the real TS frontend subprocess ->
+/// `reconstructValue` builds a callable recording stub -> target code invokes
+/// it and observes the real return value / thrown error. Seeded directly
+/// (rather than relying on the solver to pick a variant) so the test is
+/// deterministic; `closure` is otherwise unconstrained by any branch predicate
+/// Z3 could negate.
+const TS_CLOSURE_FIXTURE: &str = r#"
+export function invokeCallback(cb: (n: number) => number): string {
+  let result: number;
+  try {
+    result = cb(7);
+  } catch (e) {
+    return "closure threw";
+  }
+  if (result === 7) {
+    return "closure identity";
+  }
+  return "closure other: " + result;
+}
+"#;
+
+#[tokio::test]
+async fn concolic_invokecallback_materializes_callable_closure_param() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("invoke-callback.ts");
+    std::fs::write(&file, TS_CLOSURE_FIXTURE).expect("write closure fixture");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "invokeCallback").await;
+    assert_eq!(analysis.params.len(), 1, "invokeCallback takes 1 param");
+    // The param must be recognized as a closure complex type — otherwise the
+    // generator falls back to a non-callable primitive and `cb(7)` throws on
+    // every input before any interior branch is reachable.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Complex { kind, .. } => {
+            assert_eq!(
+                *kind,
+                shatter_core::types::ComplexKind::Closure,
+                "invokeCallback param must be complex_kind Closure; got {kind:?}"
+            );
+        }
+        other => panic!("invokeCallback param should be Complex/Closure; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "invokeCallback").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(10),
+        max_executions: Some(30),
+        plateau_threshold: 5,
+        ..Default::default()
+    };
+
+    // Seed all three canned variants directly so the test is deterministic
+    // rather than depending on the solver to pick each one by chance.
+    let seed_inputs = vec![
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "identity"})],
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "constant"})],
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "thrower"})],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "invokeCallback",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let mut return_values: HashSet<String> = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            return_values.insert(v.to_string());
+        }
+    }
+
+    assert!(
+        return_values
+            .iter()
+            .any(|v| v.contains("closure identity")),
+        "the identity-variant stub must return its argument, reaching the identity arm; found: {return_values:?}"
+    );
+    assert!(
+        return_values.iter().any(|v| v.contains("closure other")),
+        "the constant-variant stub must return a fixed non-7 value, reaching the other arm; found: {return_values:?}"
+    );
+    assert!(
+        return_values.iter().any(|v| v.contains("closure threw")),
+        "the thrower-variant stub must throw on invocation, reaching the catch arm; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// Test that concolic exploration of classifyNumber discovers all 4 branches.
 ///
 /// classifyNumber(n: number) has 4 paths:

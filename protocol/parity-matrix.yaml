@@ -343,7 +343,10 @@ complex_type_capabilities:
     status: optional
     language_affinity: [typescript, rust]
     frontends:
-      typescript: not_supported
+      # str-ya5dx: TS analyzer maps function-typed params/fields to `closure`;
+      # reconstruct.ts materializes the `{__complex_type:closure,variant}`
+      # envelope into a callable recording stub so callbacks are invocable.
+      typescript: supported
       go: not_supported
       rust: not_supported
 
