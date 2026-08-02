@@ -2196,14 +2196,9 @@ function convertObjectType(
   sourceFile?: ts.SourceFile | null,
   seen: Set<ts.Type> = new Set(),
 ): TypeInfo {
-  // Callable object types (function types) → `closure` (str-ya5dx). `convertType`
-  // now short-circuits these before calling here, so this is defensive: keep the
-  // two paths agreeing rather than emitting a non-callable `unknown`.
-  const callSignatures = type.getCallSignatures();
-  if (callSignatures.length > 0) {
-    return { kind: "complex", complex_kind: "closure" };
-  }
-
+  // Callable object types (function types) are handled by convertType's own
+  // call-signature short-circuit (str-ya5dx) before it ever calls here — this
+  // is the only call site, so that check is not repeated here.
   const properties = type.getProperties();
 
   // Array-like shapes: numeric index signature, with at most a `length`

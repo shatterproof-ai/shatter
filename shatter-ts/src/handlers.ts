@@ -59,12 +59,12 @@ const SUPPORTED_CAPABILITIES = [
   "complex_type:reg_exp", "complex_type:url", "complex_type:big_int",
   "complex_type:buffer", "complex_type:error", "complex_type:symbol",
   // str-ya5dx: the analyzer now maps function-typed params/fields to `closure`
-  // and the reconstructor materializes `closure`/`iterator` envelopes into a
-  // callable stub / real array. These MUST be advertised — the core only
-  // generates a complex value for kinds the frontend supports (input_gen.rs),
-  // otherwise it falls back to a random primitive and the callback/iterable
-  // param crashes with `x is not a function` / `is not iterable`.
-  "complex_type:closure", "complex_type:iterator",
+  // and the reconstructor materializes the envelope into a callable stub.
+  // MUST be advertised — the core only generates a complex value for kinds
+  // the frontend supports (input_gen.rs), otherwise it falls back to a
+  // random primitive and the callback param crashes with `x is not a
+  // function`.
+  "complex_type:closure",
 ];
 
 // ---------------------------------------------------------------------------

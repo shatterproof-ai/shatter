@@ -29,11 +29,10 @@ describe("reconstructValue — opaque-param stub tag (str-syj9b)", () => {
   });
 });
 
-// str-ya5dx: the input generator now emits `closure` / `iterator` complex
-// values for callable and iterable params. reconstructValue must turn those
-// wire envelopes into a callable stub / a real array so target code doing
-// `cb()` / `for..of` executes instead of crashing with `x is not a function`
-// / `x is not iterable`.
+// str-ya5dx: the input generator now emits `closure` complex values for
+// callable params. reconstructValue must turn that wire envelope into a
+// callable stub so target code doing `cb()` executes instead of crashing
+// with `x is not a function`.
 describe("reconstructValue closure stubs (str-ya5dx)", () => {
   it("builds a callable stub for a closure value", () => {
     const fn = reconstructValue({ __complex_type: "closure", variant: "identity" });
@@ -81,28 +80,5 @@ describe("reconstructValue closure stubs (str-ya5dx)", () => {
       variant: "identity",
     }) as (x: number) => number;
     expect([1, 2, 3].map(cb)).toEqual([1, 2, 3]);
-  });
-});
-
-describe("reconstructValue iterator (str-ya5dx)", () => {
-  it("turns an iterator envelope into a real array", () => {
-    const it = reconstructValue({
-      __complex_type: "iterator",
-      values: [1, 2, 3],
-    });
-    expect(Array.isArray(it)).toBe(true);
-    expect([...(it as number[])]).toEqual([1, 2, 3]);
-  });
-
-  it("reconstructs nested complex values inside an iterator", () => {
-    const it = reconstructValue({
-      __complex_type: "iterator",
-      values: [{ __complex_type: "big_int", value: "5" }],
-    }) as unknown[];
-    expect(it[0]).toBe(5n);
-  });
-
-  it("defaults an absent values field to an empty array", () => {
-    expect(reconstructValue({ __complex_type: "iterator" })).toEqual([]);
   });
 });

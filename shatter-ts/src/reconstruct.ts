@@ -128,13 +128,6 @@ export function reconstructValue(value: unknown): unknown {
     case "closure":
       return reconstructClosure(obj["variant"] as string | undefined);
 
-    case "iterator": {
-      // The core emits `{values: [...]}`; hand back a real array so target code
-      // doing `for..of` / spread over the param iterates instead of throwing.
-      const values = obj["values"];
-      return Array.isArray(values) ? values.map(reconstructValue) : [];
-    }
-
     case "symbol":
       return Symbol((obj["description"] as string) ?? "");
 

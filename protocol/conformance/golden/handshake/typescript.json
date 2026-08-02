@@ -8,7 +8,6 @@
     "complex_type:date_time",
     "complex_type:duration",
     "complex_type:error",
-    "complex_type:iterator",
     "complex_type:reg_exp",
     "complex_type:symbol",
     "complex_type:url",

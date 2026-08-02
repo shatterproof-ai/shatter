@@ -354,10 +354,7 @@ complex_type_capabilities:
     status: optional
     language_affinity: [typescript, rust]
     frontends:
-      # str-ya5dx: TS reconstruct.ts materializes the
-      # `{__complex_type:iterator,values}` envelope into a real array so
-      # `for..of`/spread over the param iterates instead of throwing.
-      typescript: supported
+      typescript: not_supported
       go: not_supported
       rust: not_supported
 

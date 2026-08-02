@@ -237,6 +237,122 @@ async fn concolic_computestats_materializes_iterable_array_param() {
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
+/// A function-typed param must materialize as a real, invocable callback
+/// through the full pipeline (str-ya5dx), not the previous `unknown` shape-mock
+/// whose methods were non-callable. `invokeCallback(cb: (n: number) => number)`
+/// calls `cb(7)` and branches on the result, so each `closure` stub variant the
+/// core can generate (`identity`/`constant`/`thrower` — see
+/// `input_gen.rs::generate_closure`) drives target code down a distinct path:
+/// - `identity` returns its argument -> `cb(7) === 7` -> the "identity" arm
+/// - `constant` returns a fixed value -> the "other" arm
+/// - `thrower` throws on invocation -> the catch block's "threw" arm
+///
+/// Exercising all three end-to-end proves the round trip that unit tests
+/// cannot: core emits the `{"__complex_type":"closure","variant":...}`
+/// envelope -> JSON over stdio to the real TS frontend subprocess ->
+/// `reconstructValue` builds a callable recording stub -> target code invokes
+/// it and observes the real return value / thrown error. Seeded directly
+/// (rather than relying on the solver to pick a variant) so the test is
+/// deterministic; `closure` is otherwise unconstrained by any branch predicate
+/// Z3 could negate.
+const TS_CLOSURE_FIXTURE: &str = r#"
+export function invokeCallback(cb: (n: number) => number): string {
+  let result: number;
+  try {
+    result = cb(7);
+  } catch (e) {
+    return "closure threw";
+  }
+  if (result === 7) {
+    return "closure identity";
+  }
+  return "closure other: " + result;
+}
+"#;
+
+#[tokio::test]
+async fn concolic_invokecallback_materializes_callable_closure_param() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("invoke-callback.ts");
+    std::fs::write(&file, TS_CLOSURE_FIXTURE).expect("write closure fixture");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "invokeCallback").await;
+    assert_eq!(analysis.params.len(), 1, "invokeCallback takes 1 param");
+    // The param must be recognized as a closure complex type — otherwise the
+    // generator falls back to a non-callable primitive and `cb(7)` throws on
+    // every input before any interior branch is reachable.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Complex { kind, .. } => {
+            assert_eq!(
+                *kind,
+                shatter_core::types::ComplexKind::Closure,
+                "invokeCallback param must be complex_kind Closure; got {kind:?}"
+            );
+        }
+        other => panic!("invokeCallback param should be Complex/Closure; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "invokeCallback").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(10),
+        max_executions: Some(30),
+        plateau_threshold: 5,
+        ..Default::default()
+    };
+
+    // Seed all three canned variants directly so the test is deterministic
+    // rather than depending on the solver to pick each one by chance.
+    let seed_inputs = vec![
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "identity"})],
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "constant"})],
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "thrower"})],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "invokeCallback",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let mut return_values: HashSet<String> = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            return_values.insert(v.to_string());
+        }
+    }
+
+    assert!(
+        return_values
+            .iter()
+            .any(|v| v.contains("closure identity")),
+        "the identity-variant stub must return its argument, reaching the identity arm; found: {return_values:?}"
+    );
+    assert!(
+        return_values.iter().any(|v| v.contains("closure other")),
+        "the constant-variant stub must return a fixed non-7 value, reaching the other arm; found: {return_values:?}"
+    );
+    assert!(
+        return_values.iter().any(|v| v.contains("closure threw")),
+        "the thrower-variant stub must throw on invocation, reaching the catch arm; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// Test that concolic exploration of classifyNumber discovers all 4 branches.
 ///
 /// classifyNumber(n: number) has 4 paths:

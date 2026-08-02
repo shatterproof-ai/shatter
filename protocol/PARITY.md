@@ -58,7 +58,6 @@ All complex type capabilities are **optional**. Frontends advertise which types 
 | `error` | ✅ |
 | `symbol` | ✅ |
 | `closure` | ✅ |
-| `iterator` | ✅ |
 
 ### Go
 

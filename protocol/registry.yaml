@@ -427,7 +427,6 @@ frontends:
       - error
       - symbol
       - closure
-      - iterator
     default_exec_timeout_s: 15
 
   go:
