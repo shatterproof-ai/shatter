@@ -1154,7 +1154,12 @@ pub(crate) fn overlay_solved_values(
             // serde renames declared in the parameter's type metadata.
             let resolved = match param_types.get(idx) {
                 Some(typ) => resolve_field_path(&path, typ),
-                None => path,
+                // No declared type for this parameter: every segment stays an
+                // object key, the behavior that predates positional overlay
+                // support. Choosing an array here would have to guess from the
+                // segment text alone, and a numeric-looking key is a legitimate
+                // object key in the TS and Go frontends.
+                None => path.into_iter().map(PathSegment::Key).collect(),
             };
             overlay_json_path(&mut result[idx], &resolved, concrete_to_json(value));
         } else if param_names.len() == 1 && base_inputs.len() == 1 && !var_name.contains('.') {
@@ -1190,34 +1195,76 @@ fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
     }
 }
 
-/// Resolve a chain of raw source-level field names to the JSON keys the target
-/// frontend's deserializer expects, walking `root`'s [`TypeInfo`] tree one level
-/// per segment.
+/// One resolved step of an overlay path: an object key or an array position.
+///
+/// Which one a raw segment becomes is decided from the parameter's declared
+/// [`TypeInfo`], never from the segment's spelling — `"0"` is a positional index
+/// in a Rust tuple and an ordinary key in a TS/Go object, and only the type
+/// tells the two apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathSegment {
+    Key(String),
+    Index(usize),
+}
+
+/// Resolve a chain of raw source-level field names into the JSON keys and array
+/// positions the target frontend's deserializer expects, walking `root`'s
+/// [`TypeInfo`] tree one level per segment.
 ///
 /// The solver records field segments as the RAW Rust source identifiers (e.g.
 /// `unit_price`), while [`TypeInfo::Object`] fields carry the serde-resolved
 /// JSON keys (e.g. `unitPrice` under `#[serde(rename_all = "camelCase")]`). For
 /// each segment we look up the matching declared field (see
-/// [`resolve_field_key`]) and descend into its type. Once a level is not an
-/// object (`Opaque`/`Complex` from partial metadata, a genuinely dynamic map, or
-/// a `Union`/enum-variant type whose fields we don't model here), the remaining
-/// segments are kept verbatim — the safe default that matches serde structs
-/// without renames and every non-Rust frontend.
-fn resolve_field_path(raw_path: &[String], root: &TypeInfo) -> Vec<String> {
+/// [`resolve_field_key`]) and descend into its type.
+///
+/// A segment becomes a [`PathSegment::Index`] only where the declared type is
+/// genuinely positional — an [`TypeInfo::Array`], or the positional object a
+/// Rust tuple maps to (see [`positional_object_arity`]). Everything else stays a
+/// key. Once a level's type is unknown (`Opaque`/`Complex` from partial
+/// metadata, a genuinely dynamic map, or a `Union`/enum-variant type whose
+/// fields we don't model here), the remaining segments are kept verbatim as
+/// keys — the safe default that matches serde structs without renames and every
+/// non-Rust frontend.
+fn resolve_field_path(raw_path: &[String], root: &TypeInfo) -> Vec<PathSegment> {
     let mut out = Vec::with_capacity(raw_path.len());
     let mut current: Option<&TypeInfo> = Some(root);
     for segment in raw_path {
-        match current.and_then(object_fields) {
-            Some(fields) => {
-                let key = resolve_field_key(segment, fields);
-                current = fields
-                    .iter()
-                    .find(|(declared, _)| *declared == key)
-                    .map(|(_, typ)| typ);
-                out.push(key);
+        match current.map(peel_nullable) {
+            // Declared array: a numeric segment is a position into it.
+            Some(TypeInfo::Array { element }) => match array_index_segment(segment) {
+                Some(index) => {
+                    out.push(PathSegment::Index(index));
+                    current = Some(element);
+                }
+                None => {
+                    out.push(PathSegment::Key(segment.clone()));
+                    current = None;
+                }
+            },
+            Some(TypeInfo::Object { fields }) => {
+                let arity = positional_object_arity(fields);
+                match array_index_segment(segment).filter(|index| *index < arity) {
+                    // Positional object (a tuple): index into the array the
+                    // frontend's deserializer actually expects.
+                    Some(index) => {
+                        out.push(PathSegment::Index(index));
+                        current = fields
+                            .iter()
+                            .find(|(declared, _)| declared == segment)
+                            .map(|(_, typ)| typ);
+                    }
+                    None => {
+                        let key = resolve_field_key(segment, fields);
+                        current = fields
+                            .iter()
+                            .find(|(declared, _)| *declared == key)
+                            .map(|(_, typ)| typ);
+                        out.push(PathSegment::Key(key));
+                    }
+                }
             }
-            None => {
-                out.push(segment.clone());
+            _ => {
+                out.push(PathSegment::Key(segment.clone()));
                 current = None;
             }
         }
@@ -1225,14 +1272,38 @@ fn resolve_field_path(raw_path: &[String], root: &TypeInfo) -> Vec<String> {
     out
 }
 
-/// Borrow the field list of an object type, transparently unwrapping any number
-/// of nested `Nullable` layers (`Option<Option<Struct>>` still overlays into the
-/// inner struct). Non-object, non-nullable types yield `None`.
-fn object_fields(typ: &TypeInfo) -> Option<&[(String, TypeInfo)]> {
+/// Strip any number of nested `Nullable` layers (`Option<Option<Struct>>` still
+/// overlays into the inner struct).
+fn peel_nullable(typ: &TypeInfo) -> &TypeInfo {
     match typ {
-        TypeInfo::Object { fields } => Some(fields),
-        TypeInfo::Nullable { inner } => object_fields(inner),
-        _ => None,
+        TypeInfo::Nullable { inner } => peel_nullable(inner),
+        other => other,
+    }
+}
+
+/// Arity of a POSITIONAL object — one whose declared field names are exactly the
+/// indices `0..n`, which is how the Rust analyzer models a tuple (`convert_tuple`
+/// in `shatter-rust/src/analyzer.rs` emits `Object { fields: [("0", …), ("1", …)] }`;
+/// `TypeInfo` has no tuple variant). Such a value deserializes from a JSON ARRAY,
+/// so overlays into it must address positions.
+///
+/// Returns 0 for every other object, including one that merely happens to
+/// declare a numeric-looking key (`{"0": …, "label": …}`) — those stay objects.
+fn positional_object_arity(fields: &[(String, TypeInfo)]) -> usize {
+    if fields.is_empty() {
+        return 0;
+    }
+    let mut seen = vec![false; fields.len()];
+    for (declared, _) in fields {
+        match array_index_segment(declared).filter(|index| *index < fields.len()) {
+            Some(index) => seen[index] = true,
+            None => return 0,
+        }
+    }
+    if seen.iter().all(|present| *present) {
+        fields.len()
+    } else {
+        0
     }
 }
 
@@ -1315,21 +1386,26 @@ fn serde_rename_variants(snake: &str) -> Vec<String> {
     ]
 }
 
-/// Largest array index [`overlay_json_path`] will materialize for a numeric path
-/// segment. Positional indices come from tuple-field access (`p.0`), whose
-/// arities are tiny; a larger number is either a genuine map key that happens to
-/// look numeric or a malformed constraint, and padding an array out to it would
-/// burn memory for nothing. Segments above the cap stay object keys.
+/// Allocation bound on a single overlay position: writing index `n` materializes
+/// `n + 1` elements, so an unbounded index would let one malformed constraint
+/// allocate without limit. The number is a local safety valve chosen here, NOT a
+/// language or analyzer limit — no `MAX_TUPLE_ARITY` exists in shatter-rust or
+/// shatter-core — and it is deliberately far above the arities the tuple lowering
+/// produces in practice. A segment above the cap is not treated as positional:
+/// it stays an object key, and a declared type whose own field names exceed it
+/// is not recognized as positional (see [`positional_object_arity`]).
 const MAX_OVERLAY_ARRAY_INDEX: usize = 63;
 
-/// Interpret one overlay path segment as an array index.
+/// Parse one raw path segment as a candidate array index.
 ///
 /// The instrumentor lowers tuple-index access (`p.0`) to the numeric segment
-/// `"0"` (`field_chain_param_json` in `shatter-rust/src/instrument.rs`), and a
-/// tuple deserializes from a JSON ARRAY, not from an object with `"0"` keys. So
-/// a purely-numeric segment addresses a position, not a field name. Leading
+/// `"0"` (`field_chain_param_json` in `shatter-rust/src/instrument.rs`). Leading
 /// zeros are rejected (`"01"` is not an index the lowering can emit) as are
-/// values above [`MAX_OVERLAY_ARRAY_INDEX`]; those fall back to object keys.
+/// values above [`MAX_OVERLAY_ARRAY_INDEX`].
+///
+/// Parsing alone does NOT make a segment positional — a numeric-looking key is a
+/// perfectly ordinary object key in the TS and Go frontends. Only
+/// [`resolve_field_path`], which has the declared [`TypeInfo`], decides that.
 fn array_index_segment(segment: &str) -> Option<usize> {
     if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -1343,23 +1419,41 @@ fn array_index_segment(segment: &str) -> Option<usize> {
         .filter(|index| *index <= MAX_OVERLAY_ARRAY_INDEX)
 }
 
-/// Coerce `slot` into a JSON array so a numeric segment can index into it.
+/// Try to coerce `slot` into a JSON array so a position can be written into it.
+/// Returns `false` — leaving `slot` untouched — when that would DISCARD data, so
+/// the caller can fall back to an object key instead of losing the value.
 ///
-/// An object whose keys are ALL numeric is promoted element-wise rather than
-/// discarded: `TypeInfo` has no tuple variant (the Rust analyzer maps a tuple to
+/// An object whose keys are all indices is promoted element-wise rather than
+/// rebuilt: `TypeInfo` has no tuple variant (the Rust analyzer maps a tuple to
 /// `Object { fields: [("0", …), ("1", …)] }`), so the generator seeds tuple
 /// params as `{"0":1,"1":2}`. Promoting preserves the sibling elements the
 /// solver did not constrain, which is what makes the overlaid row actually
-/// deserialize into the tuple. Any other shape is replaced with a fresh array.
-fn normalize_to_array(slot: &mut serde_json::Value) {
+/// deserialize into the tuple.
+///
+/// A null or scalar slot carries nothing worth keeping under a positional type,
+/// so it becomes a fresh array. An object with any non-index key is refused: the
+/// declared type says positional but the value disagrees, and preserving the
+/// value beats silently dropping its fields.
+fn coerce_slot_to_array(slot: &mut serde_json::Value) -> bool {
     if slot.is_array() {
-        return;
+        return true;
     }
-    let promoted = slot.as_object().and_then(numeric_keyed_object_as_array);
-    *slot = promoted.unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    match slot.as_object() {
+        Some(map) => match numeric_keyed_object_as_array(map) {
+            Some(promoted) => {
+                *slot = promoted;
+                true
+            }
+            None => false,
+        },
+        None => {
+            *slot = serde_json::Value::Array(Vec::new());
+            true
+        }
+    }
 }
 
-/// Rebuild a fully numeric-keyed JSON object as an array, placing each value at
+/// Rebuild a fully index-keyed JSON object as an array, placing each value at
 /// its key's index and filling gaps with null. Returns `None` when any key is
 /// not an index (a real map — leave it alone).
 fn numeric_keyed_object_as_array(
@@ -1377,54 +1471,74 @@ fn numeric_keyed_object_as_array(
     Some(serde_json::Value::Array(out))
 }
 
-/// Ensure `slot` holds an array long enough to address `index`, then hand back
-/// the element slot.
-fn array_slot_at(slot: &mut serde_json::Value, index: usize) -> &mut serde_json::Value {
-    normalize_to_array(slot);
-    let array = slot.as_array_mut().expect("slot was normalized to array");
+/// Hand back the element slot at `index`, padding with nulls to reach it.
+///
+/// Caller must have coerced `slot` to an array first ([`coerce_slot_to_array`]);
+/// the two steps are separate so the coercion's borrow ends before the element
+/// is borrowed, which is what lets the caller fall back to an object key.
+fn array_element_at(slot: &mut serde_json::Value, index: usize) -> &mut serde_json::Value {
+    let array = slot.as_array_mut().expect("slot was coerced to array");
     if array.len() <= index {
         array.resize(index + 1, serde_json::Value::Null);
     }
     &mut array[index]
 }
 
+/// Ensure `slot` holds an object, then hand back the entry for `key`, inserting
+/// an empty object when absent. A non-object slot is replaced — a scalar or
+/// array carries nothing addressable by a key.
+fn object_slot_at<'a>(slot: &'a mut serde_json::Value, key: &str) -> &'a mut serde_json::Value {
+    if !slot.is_object() {
+        *slot = serde_json::json!({});
+    }
+    slot.as_object_mut()
+        .expect("slot was normalized to object")
+        .entry(key.to_string())
+        .or_insert_with(|| serde_json::json!({}))
+}
+
 /// Write `value` into `target` at `path`, materializing missing containers.
 ///
-/// Each segment picks its container kind: a numeric segment addresses an ARRAY
-/// index (tuple positions — see [`array_index_segment`]), anything else an
-/// object key. Mixing both in one path works, so `p.0.width` overlays into
-/// `[{"width": …}]`.
-fn overlay_json_path(target: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
+/// Each segment carries its own container kind, decided from the parameter's
+/// declared type by [`resolve_field_path`]: a [`PathSegment::Index`] addresses an
+/// array position, a [`PathSegment::Key`] an object key. Both mix in one path, so
+/// a struct field inside a tuple element overlays into `[{"width": …}]`.
+///
+/// An `Index` whose slot cannot become an array without discarding data degrades
+/// to the index's decimal spelling as an object key — the pre-positional
+/// behavior, which is wrong for the deserializer but never loses the value.
+fn overlay_json_path(
+    target: &mut serde_json::Value,
+    path: &[PathSegment],
+    value: serde_json::Value,
+) {
     let Some((last, parents)) = path.split_last() else {
         *target = value;
         return;
     };
     let mut current = target;
     for segment in parents {
-        current = match array_index_segment(segment) {
-            Some(index) => array_slot_at(current, index),
-            None => {
-                if !current.is_object() {
-                    *current = serde_json::json!({});
-                }
-                current
-                    .as_object_mut()
-                    .expect("target was normalized to object")
-                    .entry(segment.clone())
-                    .or_insert_with(|| serde_json::json!({}))
-            }
-        };
+        current = descend_one(current, segment);
     }
-    match array_index_segment(last) {
-        Some(index) => *array_slot_at(current, index) = value,
-        None => {
-            if !current.is_object() {
-                *current = serde_json::json!({});
+    *descend_one(current, last) = value;
+}
+
+/// Borrow (materializing if absent) the slot one `segment` deeper than `slot`.
+///
+/// A missing container is created as an empty object; a later `Index` step
+/// turns it into an array, and a later `Key` step keeps it an object.
+fn descend_one<'a>(slot: &'a mut serde_json::Value, segment: &PathSegment) -> &'a mut serde_json::Value {
+    match segment {
+        PathSegment::Key(key) => object_slot_at(slot, key),
+        PathSegment::Index(index) => {
+            if coerce_slot_to_array(slot) {
+                array_element_at(slot, *index)
+            } else {
+                // The declared type is positional but the value is an object
+                // carrying non-index keys. Degrade to the index's decimal
+                // spelling as a key rather than discard those keys.
+                object_slot_at(slot, &index.to_string())
             }
-            current
-                .as_object_mut()
-                .expect("target was normalized to object")
-                .insert(last.clone(), value);
         }
     }
 }
@@ -4138,6 +4252,15 @@ mod tests {
         }
     }
 
+    /// The `TypeInfo` the Rust analyzer emits for an `arity`-element tuple:
+    /// an object whose declared field names are the indices `0..arity`
+    /// (`convert_tuple` in `shatter-rust/src/analyzer.rs`).
+    fn tuple_type(arity: usize) -> TypeInfo {
+        TypeInfo::Object {
+            fields: (0..arity).map(|i| (i.to_string(), bare_int())).collect(),
+        }
+    }
+
     /// A struct declared `#[serde(rename_all = "camelCase")]` exposes the JSON
     /// key `unitPrice`, but the solver records the RAW Rust source field
     /// `unit_price`. The overlay must resolve the raw segment to the declared
@@ -4228,17 +4351,18 @@ mod tests {
         assert_eq!(result, vec![serde_json::json!([42, 2])]);
     }
 
-    /// A numeric index beyond the current length pads with nulls rather than
-    /// silently dropping the value, and a non-object/non-array base becomes an
-    /// array instead of an object.
+    /// A tuple `TypeInfo` of N elements: an index beyond what the base value
+    /// holds pads with nulls rather than dropping the solved value, and a base
+    /// carrying nothing (null) becomes an array, not an object.
     #[test]
     fn overlay_pads_array_for_higher_tuple_index() {
         let base = vec![serde_json::Value::Null];
         let mut solved = HashMap::new();
         solved.insert("p . 2".to_string(), ConcreteValue::Int(7));
         let param_names = vec!["p".to_string()];
+        let param_types = vec![tuple_type(3)];
 
-        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
         assert_eq!(result, vec![serde_json::json!([null, null, 7])]);
     }
 
@@ -4250,15 +4374,97 @@ mod tests {
         let mut solved = HashMap::new();
         solved.insert("p . 0 . width".to_string(), ConcreteValue::Int(5));
         let param_names = vec!["p".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![(
+                "0".to_string(),
+                TypeInfo::Object {
+                    fields: vec![("width".to_string(), bare_int())],
+                },
+            )],
+        }];
 
-        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
         assert_eq!(result, vec![serde_json::json!([{ "width": 5 }])]);
     }
 
+    /// A declared `TypeInfo::Array` (e.g. a `Vec` element constraint) also takes
+    /// the positional path — positional handling keys off the declared type, not
+    /// off the tuple lowering specifically.
+    #[test]
+    fn overlay_indexes_declared_array_type() {
+        let base = vec![serde_json::json!([1, 2, 3])];
+        let mut solved = HashMap::new();
+        solved.insert("v . 1".to_string(), ConcreteValue::Int(88));
+        let param_names = vec!["v".to_string()];
+        let param_types = vec![TypeInfo::Array {
+            element: Box::new(bare_int()),
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!([1, 88, 3])]);
+    }
+
+    /// REGRESSION (review of str-wg4jo): the array/object choice must come from
+    /// the declared type, never from the segment's spelling. A TS or Go object
+    /// that legitimately declares a numeric-looking key is NOT positional — the
+    /// declared field set is not `0..n` — so `obj.0` must stay an object key and
+    /// the sibling key must survive. Deciding from segment text alone silently
+    /// converted these frontends' objects into arrays.
+    #[test]
+    fn overlay_keeps_numeric_key_on_non_positional_object() {
+        let base = vec![serde_json::json!({ "0": 1, "label": "keep" })];
+        let mut solved = HashMap::new();
+        solved.insert("obj . 0".to_string(), ConcreteValue::Int(5));
+        let param_names = vec!["obj".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![
+                ("0".to_string(), bare_int()),
+                ("label".to_string(), TypeInfo::Str),
+            ],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(
+            result,
+            vec![serde_json::json!({ "0": 5, "label": "keep" })]
+        );
+    }
+
+    /// With NO declared type for the parameter, a numeric segment stays an
+    /// object key — the pre-positional behavior. Guessing "array" from the
+    /// segment text would change TS/Go overlays that this issue never intended
+    /// to touch.
+    #[test]
+    fn overlay_without_type_metadata_keeps_numeric_segment_as_key() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0".to_string(), ConcreteValue::Int(3));
+        let param_names = vec!["p".to_string()];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        assert_eq!(result, vec![serde_json::json!({ "0": 3 })]);
+    }
+
+    /// A positional TYPE whose base VALUE is an object with non-index keys must
+    /// not have that value thrown away: the overlay degrades to an object key
+    /// so the sibling data survives. Losing fields silently is worse than an
+    /// overlay the deserializer will reject.
+    #[test]
+    fn overlay_preserves_mixed_key_object_under_positional_type() {
+        let base = vec![serde_json::json!({ "0": 1, "note": "keep" })];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0".to_string(), ConcreteValue::Int(9));
+        let param_names = vec!["p".to_string()];
+        let param_types = vec![tuple_type(2)];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!({ "0": 9, "note": "keep" })]);
+    }
+
     /// Only segments the tuple lowering can actually emit are treated as
-    /// indices. A leading-zero segment and an absurdly large one stay object
-    /// keys, so a genuine map with numeric-looking keys is not rewritten into a
-    /// giant sparse array.
+    /// indices. A leading-zero segment and one past
+    /// `MAX_OVERLAY_ARRAY_INDEX` stay object keys even under a positional type,
+    /// so no malformed constraint can force a giant sparse array.
     #[test]
     fn overlay_keeps_non_index_numeric_segments_as_object_keys() {
         let base = vec![serde_json::json!({}), serde_json::json!({})];
@@ -4266,8 +4472,9 @@ mod tests {
         solved.insert("a . 01".to_string(), ConcreteValue::Int(1));
         solved.insert("b . 99999".to_string(), ConcreteValue::Int(2));
         let param_names = vec!["a".to_string(), "b".to_string()];
+        let param_types = vec![tuple_type(2), tuple_type(2)];
 
-        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
         assert_eq!(
             result,
             vec![
@@ -4275,6 +4482,28 @@ mod tests {
                 serde_json::json!({ "99999": 2 }),
             ]
         );
+    }
+
+    /// `positional_object_arity` recognizes exactly the tuple shape: field names
+    /// covering `0..n`. Gaps, duplicates, extra non-index keys, and an empty
+    /// field list are all non-positional.
+    #[test]
+    fn positional_object_arity_recognizes_only_full_index_sets() {
+        let fields = |names: &[&str]| -> Vec<(String, TypeInfo)> {
+            names
+                .iter()
+                .map(|n| ((*n).to_string(), bare_int()))
+                .collect()
+        };
+        assert_eq!(positional_object_arity(&fields(&["0", "1", "2"])), 3);
+        // Declaration order does not matter, only the set of indices.
+        assert_eq!(positional_object_arity(&fields(&["1", "0"])), 2);
+        assert_eq!(positional_object_arity(&fields(&[])), 0);
+        // Gap: "0","2" over two fields leaves index 1 unclaimed.
+        assert_eq!(positional_object_arity(&fields(&["0", "2"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["0", "0"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["0", "label"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["01"])), 0);
     }
 
     /// Independent reference implementation of `shatter-rust`'s
@@ -6738,11 +6967,11 @@ mod tests {
                 prop_assert_eq!(&obj[&field], &serde_json::json!(7));
             }
 
-            /// A tuple-index segment always overlays into an ARRAY position, for
-            /// any arity and index, and leaves the sibling elements of the
-            /// generated tuple intact — the shape a serde tuple deserializes
-            /// from (str-wg4jo). The base is the numeric-keyed object the
-            /// generator produces for a tuple's `TypeInfo::Object` mapping.
+            /// Under a tuple `TypeInfo`, an index segment always overlays into an
+            /// ARRAY position, for any arity and index, and leaves the sibling
+            /// elements of the generated tuple intact — the shape a serde tuple
+            /// deserializes from (str-wg4jo). The base is the numeric-keyed
+            /// object the generator produces for a tuple's `Object` mapping.
             #[test]
             fn overlay_tuple_index_yields_array_preserving_siblings(
                 arity in 1..6usize,
@@ -6756,9 +6985,10 @@ mod tests {
                 );
                 let base = vec![base_obj];
                 let names = vec!["p".to_string()];
+                let param_types = vec![tuple_type(arity)];
                 let mut solved = std::collections::HashMap::new();
                 solved.insert(format!("p.{index}"), ConcreteValue::Int(999));
-                let result = overlay_solved_values(&base, &solved, &names, &[]);
+                let result = overlay_solved_values(&base, &solved, &names, &param_types);
                 let array = result[0]
                     .as_array()
                     .expect("tuple-index overlay must produce an array");
@@ -6770,6 +7000,46 @@ mod tests {
                         serde_json::json!(i as i64)
                     };
                     prop_assert_eq!(element, &expected, "element {} mismatch", i);
+                }
+            }
+
+            /// Overlaying under a positional type NEVER drops data the base
+            /// already carried (review of str-wg4jo, Important 2). When the base
+            /// object holds a key that is not an index, the array promotion
+            /// would have to discard it, so the overlay stays an object and every
+            /// original key survives alongside the solved value.
+            #[test]
+            fn overlay_positional_type_never_drops_base_keys(
+                extra in "[a-z]{1,5}",
+                arity in 1..4usize,
+                index in 0..4usize,
+            ) {
+                prop_assume!(index < arity);
+                // A digits-only "extra" key would make the base promotable.
+                prop_assume!(array_index_segment(&extra).is_none());
+                let mut base_map = serde_json::Map::new();
+                for i in 0..arity {
+                    base_map.insert(i.to_string(), serde_json::json!(i as i64));
+                }
+                base_map.insert(extra.clone(), serde_json::json!("keep"));
+                let base = vec![serde_json::Value::Object(base_map)];
+                let names = vec!["p".to_string()];
+                let param_types = vec![tuple_type(arity)];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{index}"), ConcreteValue::Int(999));
+
+                let result = overlay_solved_values(&base, &solved, &names, &param_types);
+                let obj = result[0]
+                    .as_object()
+                    .expect("mixed-key base must stay an object, not be discarded");
+                prop_assert_eq!(&obj[&extra], &serde_json::json!("keep"));
+                for i in 0..arity {
+                    let expected = if i == index {
+                        serde_json::json!(999)
+                    } else {
+                        serde_json::json!(i as i64)
+                    };
+                    prop_assert_eq!(&obj[&i.to_string()], &expected);
                 }
             }
 
