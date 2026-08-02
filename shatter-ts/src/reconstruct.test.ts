@@ -28,3 +28,81 @@ describe("reconstructValue — opaque-param stub tag (str-syj9b)", () => {
     expect(reconstructValue({ a: 1, b: "x" })).toEqual({ a: 1, b: "x" });
   });
 });
+
+// str-ya5dx: the input generator now emits `closure` / `iterator` complex
+// values for callable and iterable params. reconstructValue must turn those
+// wire envelopes into a callable stub / a real array so target code doing
+// `cb()` / `for..of` executes instead of crashing with `x is not a function`
+// / `x is not iterable`.
+describe("reconstructValue closure stubs (str-ya5dx)", () => {
+  it("builds a callable stub for a closure value", () => {
+    const fn = reconstructValue({ __complex_type: "closure", variant: "identity" });
+    expect(typeof fn).toBe("function");
+  });
+
+  it("identity variant returns its first argument and records calls", () => {
+    const fn = reconstructValue({
+      __complex_type: "closure",
+      variant: "identity",
+    }) as ((...a: unknown[]) => unknown) & { calls: unknown[][] };
+    expect(fn("a", "b")).toBe("a");
+    expect(fn(7)).toBe(7);
+    expect(fn.calls).toEqual([["a", "b"], [7]]);
+  });
+
+  it("constant variant returns a fixed value", () => {
+    const fn = reconstructValue({
+      __complex_type: "closure",
+      variant: "constant",
+    }) as (...a: unknown[]) => unknown;
+    expect(fn(1, 2, 3)).toBe(0);
+  });
+
+  it("thrower variant throws when invoked", () => {
+    const fn = reconstructValue({
+      __complex_type: "closure",
+      variant: "thrower",
+    }) as (...a: unknown[]) => unknown;
+    expect(() => fn()).toThrow();
+  });
+
+  it("defaults to identity for absent/unknown variants", () => {
+    const fn = reconstructValue({ __complex_type: "closure" }) as (
+      ...a: unknown[]
+    ) => unknown;
+    expect(fn("x")).toBe("x");
+  });
+
+  it("a reconstructed closure survives being called by target code", () => {
+    // Simulates a `people.map(fn)`-style call site: the param is invoked with
+    // real arguments and must not throw `is not a function`.
+    const cb = reconstructValue({
+      __complex_type: "closure",
+      variant: "identity",
+    }) as (x: number) => number;
+    expect([1, 2, 3].map(cb)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("reconstructValue iterator (str-ya5dx)", () => {
+  it("turns an iterator envelope into a real array", () => {
+    const it = reconstructValue({
+      __complex_type: "iterator",
+      values: [1, 2, 3],
+    });
+    expect(Array.isArray(it)).toBe(true);
+    expect([...(it as number[])]).toEqual([1, 2, 3]);
+  });
+
+  it("reconstructs nested complex values inside an iterator", () => {
+    const it = reconstructValue({
+      __complex_type: "iterator",
+      values: [{ __complex_type: "big_int", value: "5" }],
+    }) as unknown[];
+    expect(it[0]).toBe(5n);
+  });
+
+  it("defaults an absent values field to an empty array", () => {
+    expect(reconstructValue({ __complex_type: "iterator" })).toEqual([]);
+  });
+});

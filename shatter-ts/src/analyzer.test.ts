@@ -101,10 +101,11 @@ describe("analyzeFile", () => {
       });
     });
 
-    it("treats optional callback fields as nullable(unknown) and required string fields normally", () => {
-      // str-49k: functions with callback-typed options should not produce only TypeError paths.
-      // The optional `transform` field must become nullable(unknown) so input_gen can omit it;
-      // the required `prefix` field must keep its concrete str type.
+    it("treats optional callback fields as nullable(closure) and required string fields normally", () => {
+      // str-49k / str-ya5dx: functions with callback-typed options should not
+      // produce only TypeError paths. The optional `transform` field becomes
+      // nullable(closure) so input_gen can omit it (~30%) yet supply a callable
+      // stub when present; the required `prefix` field keeps its concrete str type.
       const results = analyzeFile(
         path.join(fixtures, "callback-options.ts"),
         "process",
@@ -113,25 +114,30 @@ describe("analyzeFile", () => {
       const fn = results[0]!;
       // param 0: input — plain string
       expect(fn.params[0]!.type).toEqual({ kind: "str" });
-      // param 1: options object — transform optional callable → nullable(unknown), prefix → str
+      // param 1: options object — transform optional callable → nullable(closure), prefix → str
       expect(fn.params[1]!.type).toEqual({
         kind: "object",
         fields: [
-          ["transform", { kind: "nullable", inner: { kind: "unknown" } }],
+          [
+            "transform",
+            { kind: "nullable", inner: { kind: "complex", complex_kind: "closure" } },
+          ],
           ["prefix", { kind: "str" }],
         ],
       });
     });
 
-    it("keeps pure function parameters as unknown (regression guard for early-return path)", () => {
-      // The early return in convertObjectType for pure callable types must stay intact.
+    it("maps pure function parameters to closure so callbacks are invocable (str-ya5dx)", () => {
+      // Function-typed params generate a callable recording stub instead of a
+      // non-callable `unknown` primitive, so target code doing `fn(...)` no
+      // longer crashes with `x is not a function`.
       const results = analyzeFile(
         path.join(fixtures, "callback-options.ts"),
         "applyFn",
       );
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.type).toEqual({ kind: "unknown" });
+      expect(fn.params[0]!.type).toEqual({ kind: "complex", complex_kind: "closure" });
       expect(fn.params[1]!.type).toEqual({ kind: "float" });
     });
   });
@@ -548,6 +554,44 @@ describe("analyzeFile", () => {
           },
         });
       });
+
+      // str-ya5dx: built-in and callable params degrade to `unknown` lib-less
+      // (no global symbol), so the core generated a random primitive and target
+      // code doing `d.getFullYear()` / `cb()` crashed with `x is not a function`.
+      it("recovers a Date param to complex/date (built-in reference recovery)", () => {
+        const t = convertEntryParamNoLib(
+          "export function entry(d: Date): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "date" });
+      });
+
+      it("recovers a RegExp param to complex/reg_exp", () => {
+        const t = convertEntryParamNoLib(
+          "export function entry(r: RegExp): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "reg_exp" });
+      });
+
+      it("recovers a function-typed param to complex/closure", () => {
+        const t = convertEntryParamNoLib(
+          "export function entry(cb: (x: number) => string): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "closure" });
+      });
+
+      it("recovers a callable field inside a props object to closure", () => {
+        const t = convertEntryParamNoLib(
+          "interface P { onClose: () => void; label: string; }\n" +
+            "export function entry(p: P): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [
+            ["onClose", { kind: "complex", complex_kind: "closure" }],
+            ["label", { kind: "str" }],
+          ],
+        });
+      });
     });
 
     // Review finding (Merge-with-fixes): the syntactic recovery in
@@ -662,6 +706,31 @@ describe("analyzeFile", () => {
         expect(t).toEqual({
           kind: "object",
           fields: [["widgets", { kind: "float" }]],
+        });
+      });
+
+      // str-ya5dx: with lib present, a standalone function param and a callable
+      // object method field both resolve to `closure` (the checker exposes the
+      // call signature), so the core generates an invocable stub instead of the
+      // old non-callable `unknown` shape-mock that crashed `response.text()`.
+      it("maps a lib-present function param to closure", () => {
+        const t = convertEntryParamWithLib(
+          "export function entry(cb: (x: number) => string): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "closure" });
+      });
+
+      it("maps a lib-present callable method field to closure", () => {
+        const t = convertEntryParamWithLib(
+          "interface Api { text: () => string; ok: boolean; }\n" +
+            "export function entry(a: Api): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [
+            ["text", { kind: "complex", complex_kind: "closure" }],
+            ["ok", { kind: "bool" }],
+          ],
         });
       });
     });

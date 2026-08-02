@@ -21,6 +21,38 @@ import {
  * Objects with a __complex_type tag are dispatched to type-specific constructors.
  * Plain objects are reconstructed field-by-field.
  */
+/**
+ * Build a recording stub function for a `closure` complex value (str-ya5dx).
+ *
+ * Function-typed params (callbacks like `onClose`, render props, `Response`
+ * methods) generate a `{"__complex_type":"closure","variant":...}` envelope.
+ * A callable stub lets target code invoke the param without `x is not a
+ * function` crashing. The stub records its invocations on `.calls` (a jest-like
+ * affordance) and follows the core's variant contract:
+ *   - `identity`  → returns its first argument
+ *   - `constant`  → returns a fixed constant (0)
+ *   - `thrower`   → throws on invocation
+ * Unknown/absent variants default to `identity` (the least disruptive).
+ */
+function reconstructClosure(variant: string | undefined): (...args: unknown[]) => unknown {
+  const calls: unknown[][] = [];
+  const stub = (...args: unknown[]): unknown => {
+    calls.push(args);
+    switch (variant) {
+      case "constant":
+        return 0;
+      case "thrower":
+        throw new Error("shatter closure stub (thrower)");
+      case "identity":
+      default:
+        return args[0];
+    }
+  };
+  // Expose the recorded calls without widening the callable signature.
+  (stub as unknown as { calls: unknown[][] }).calls = calls;
+  return stub;
+}
+
 export function reconstructValue(value: unknown): unknown {
   if (typeof value !== "object" || value === null) return value;
   if (Array.isArray(value)) return value.map(reconstructValue);
@@ -91,6 +123,16 @@ export function reconstructValue(value: unknown): unknown {
         case "EvalError": return new EvalError(message);
         default: return new Error(message);
       }
+    }
+
+    case "closure":
+      return reconstructClosure(obj["variant"] as string | undefined);
+
+    case "iterator": {
+      // The core emits `{values: [...]}`; hand back a real array so target code
+      // doing `for..of` / spread over the param iterates instead of throwing.
+      const values = obj["values"];
+      return Array.isArray(values) ? values.map(reconstructValue) : [];
     }
 
     case "symbol":

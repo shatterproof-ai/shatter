@@ -267,6 +267,11 @@ export function usesAlias(): number {
         expect(response.capabilities).toContain("analyze");
         expect(response.capabilities).toContain("execute");
         expect(response.capabilities).toContain("instrument");
+        // str-ya5dx: closure/iterator must be advertised or the core falls back
+        // to random-primitive generation (input_gen.rs gates on supports_complex),
+        // and callback/iterable params crash with `x is not a function`.
+        expect(response.capabilities).toContain("complex_type:closure");
+        expect(response.capabilities).toContain("complex_type:iterator");
       }
     });
 
