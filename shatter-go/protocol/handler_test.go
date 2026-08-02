@@ -535,6 +535,8 @@ func (h *Handler) Serve() string {
 }
 
 type fakePreparedExecution struct {
+	preparedProvenance
+
 	ArtifactDir  string
 	BinaryPath   string
 	InvokeResult *instrument.ExecuteResult
