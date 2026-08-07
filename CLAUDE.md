@@ -79,6 +79,7 @@ After any change affecting CLI output, frontend logging, or protocol formatting,
 
 - `protocol/GOVERNANCE.md` — checklist for adding/modifying protocol message types
 - `protocol/parity-matrix.yaml` — authoritative cross-frontend capability matrix
+- `docs/DRIFT-PATROL.md` — `task drift-patrol`: the weekly bounded drift sweep (cadence, checks, failure handling)
 - `AGENTS.md` — agent operational instructions, beads tracking, git workflow
 - `PLAN.md` — architecture and implementation roadmap
 - `~/dotfiles/claude/docs/nested-claude-md-loading.md` — CLAUDE.md auto-load mechanism

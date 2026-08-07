@@ -93,7 +93,19 @@ Cross-reference these documents against the actual codebase:
 
 ## Phase 5 — Issue Hygiene (~1 min)
 
-Run `bd` commands to assess issue tracker health:
+**Required first:** run the drift patrol and include its report in this phase's
+section. The audit is not complete without it — it is the mechanical baseline
+the rest of this phase builds on.
+
+```bash
+task drift-patrol   # or: python3 scripts/drift-patrol.py
+```
+
+A non-zero exit is expected when drift exists; record every `FAIL` and
+`PENDING` finding as an action item rather than re-deriving it by hand. See
+`docs/DRIFT-PATROL.md`.
+
+Then run `bd` commands to assess the remaining issue tracker health:
 
 1. `bd list --status=in_progress` — flag stale in-progress issues (check git log for recent branch activity)
 2. `bd blocked` — report blocked dependency chains
