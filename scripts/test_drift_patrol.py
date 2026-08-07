@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("drift-patrol.py")
 SPEC = importlib.util.spec_from_file_location("drift_patrol", MODULE_PATH)
@@ -195,6 +197,134 @@ class DocsStoriesTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Helpers and reporting
 # ---------------------------------------------------------------------------
+
+
+class LoadTrackerTest(unittest.TestCase):
+    """Covers load_tracker()'s bd/jsonl dual-path and failure degradation.
+
+    Flagged by independent review as safety-critical but previously
+    untested: every other test builds a Tracker(...) directly, bypassing
+    load_tracker() entirely, so a regression here would only surface as a
+    live CI failure rather than a unit-test failure.
+    """
+
+    def _write_export(self, tmp: Path, lines: list[str]) -> None:
+        beads_dir = tmp / ".beads"
+        beads_dir.mkdir(parents=True, exist_ok=True)
+        (beads_dir / "issues.jsonl").write_text("\n".join(lines) + "\n")
+
+    def test_bd_available_and_parses_uses_bd_source(self) -> None:
+        payload = '[{"id": "str-a", "status": "open"}]'
+        with (
+            mock.patch.object(drift_patrol, "_which", return_value=True),
+            mock.patch.object(
+                drift_patrol, "run_command", return_value=(0, payload)
+            ) as run_command,
+        ):
+            tracker, error = drift_patrol.load_tracker()
+        self.assertIsNone(error)
+        assert tracker is not None
+        self.assertEqual(tracker.source, "bd list --all")
+        self.assertEqual(tracker.issues, [{"id": "str-a", "status": "open"}])
+        run_command.assert_called_once()
+        self.assertEqual(run_command.call_args.args[0][0], "bd")
+
+    def test_bd_present_but_errors_falls_back_to_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            self._write_export(tmp, ['{"id": "str-b", "status": "closed"}'])
+            with (
+                mock.patch.object(drift_patrol, "_which", return_value=True),
+                mock.patch.object(
+                    drift_patrol, "run_command", return_value=(1, "bd: connection refused")
+                ),
+                mock.patch.object(drift_patrol, "REPO_ROOT", tmp),
+            ):
+                tracker, error = drift_patrol.load_tracker()
+        self.assertIsNone(error)
+        assert tracker is not None
+        self.assertEqual(tracker.source, ".beads/issues.jsonl (committed export)")
+        self.assertEqual(tracker.issues, [{"id": "str-b", "status": "closed"}])
+
+    def test_bd_returns_empty_list_falls_back_to_jsonl(self) -> None:
+        # bd exits 0 but with an empty/parseable-but-falsy payload -- same
+        # fallback path as a bd error, per load_tracker()'s `and parsed` guard.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            self._write_export(tmp, ['{"id": "str-c", "status": "open"}'])
+            with (
+                mock.patch.object(drift_patrol, "_which", return_value=True),
+                mock.patch.object(drift_patrol, "run_command", return_value=(0, "[]")),
+                mock.patch.object(drift_patrol, "REPO_ROOT", tmp),
+            ):
+                tracker, error = drift_patrol.load_tracker()
+        assert tracker is not None
+        self.assertEqual(tracker.source, ".beads/issues.jsonl (committed export)")
+
+    def test_no_bd_reads_jsonl_and_skips_malformed_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            self._write_export(
+                tmp,
+                [
+                    '{"id": "str-d", "status": "open"}',
+                    "not json at all",
+                    "",
+                    '{"id": "str-e", "status": "in_progress"}',
+                ],
+            )
+            with (
+                mock.patch.object(drift_patrol, "_which", return_value=False),
+                mock.patch.object(drift_patrol, "REPO_ROOT", tmp),
+            ):
+                tracker, error = drift_patrol.load_tracker()
+        self.assertIsNone(error)
+        assert tracker is not None
+        self.assertEqual([i["id"] for i in tracker.issues], ["str-d", "str-e"])
+
+    def test_no_bd_and_no_jsonl_returns_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            with (
+                mock.patch.object(drift_patrol, "_which", return_value=False),
+                mock.patch.object(drift_patrol, "REPO_ROOT", tmp),
+            ):
+                tracker, error = drift_patrol.load_tracker()
+        self.assertIsNone(tracker)
+        assert error is not None
+        self.assertIn("absent", error)
+
+    def test_jsonl_with_only_malformed_lines_returns_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            self._write_export(tmp, ["not json", "{broken"])
+            with (
+                mock.patch.object(drift_patrol, "_which", return_value=False),
+                mock.patch.object(drift_patrol, "REPO_ROOT", tmp),
+            ):
+                tracker, error = drift_patrol.load_tracker()
+        self.assertIsNone(tracker)
+        assert error is not None
+        self.assertIn("no issue records", error)
+
+    def test_jsonl_skips_non_issue_record_types(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            self._write_export(
+                tmp,
+                [
+                    '{"id": "str-f", "status": "open", "_type": "issue"}',
+                    '{"id": "dep-1", "_type": "dependency"}',
+                ],
+            )
+            with (
+                mock.patch.object(drift_patrol, "_which", return_value=False),
+                mock.patch.object(drift_patrol, "REPO_ROOT", tmp),
+            ):
+                tracker, error = drift_patrol.load_tracker()
+        self.assertIsNone(error)
+        assert tracker is not None
+        self.assertEqual([i["id"] for i in tracker.issues], ["str-f"])
 
 
 class HelpersTest(unittest.TestCase):

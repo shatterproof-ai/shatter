@@ -173,6 +173,10 @@ tasks:
     # Build the frontends first so the conformance check runs for real instead
     # of degrading to a hollow pass — that is why --require-conformance is safe
     # here but not for a bare `python3 scripts/drift-patrol.py`.
+    # No `sources:` (unlike parity/golden-test/docs-smoke): staleness here is
+    # date-driven (stale tracker issues, parity expiry windows), not
+    # file-content-driven, so a checksum-based skip-if-unchanged would be
+    # wrong -- the same tree can go from clean to stale with no diff.
     deps: [ts:build, go:build, rust-fe:build]
     preconditions:
       - sh: command -v python3
