@@ -756,7 +756,14 @@ feature_capabilities:
       consumers — bare expression string and struct
       ({expression, return_values, behavior}) — because the Rust CLI and the
       Go frontend parse the same file (str-7lab0); each consumer ignores the
-      other's fields. Go-only at this stage.
+      other's fields. Key matching is path-spelling independent (str-cl19s):
+      a file pattern containing "/" is anchored to the full relative path,
+      while a filename-scoped pattern (no separator) also matches the path's
+      basename — so one key resolves identically for the planner (absolute
+      SourceFile) and the execute-time bridge (repo-relative request `file`).
+      A frontend adopting this schema must match keys the same way; a
+      spelling-dependent match makes configured mocks resolve for planning
+      and silently vanish at execute time. Go-only at this stage.
     frontends:
       typescript: not_supported
       go: supported

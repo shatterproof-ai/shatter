@@ -60,6 +60,41 @@ func TestConfigMockConfigs_LoadsExpressionMocks(t *testing.T) {
 	}
 }
 
+// str-cl19s: the execute-time bridge receives the request's `file` field, which
+// the CLI sends as a clean repo-relative path ("api/graph/resolver/auth.resolvers.go"),
+// while the planner/hint path holds an absolute SourceFile. Every other test here
+// passes a t.TempDir()-absolute path, which TargetRelpath collapses to a basename —
+// so a filename-scoped key matched there and the relative-path failure went unseen.
+// The two consumers of one config key must resolve the same mocks; when they
+// diverged, `mock_symbols` appeared in the planning artifact while the harness was
+// built with no substitution at all, silently running the real dependency.
+func TestConfigMockConfigs_FilenameGlobMatchesNestedRelativeRequestPath(t *testing.T) {
+	cfg := config.File{
+		Functions: map[string]config.FunctionConfig{
+			"*.resolvers.go:*": {Mocks: map[string]config.MockValue{
+				"auth.GetAccount": {Expression: "auth.StaticAccount()"},
+			}},
+		},
+	}
+	h := NewHandlerWithLogLevel(strings.NewReader(""), io.Discard, io.Discard, "error")
+	h.policyConfigLoader = func(string) (config.File, error) { return cfg, nil }
+
+	for _, file := range []string{
+		"api/graph/resolver/auth.resolvers.go",           // what prepare/execute actually sends
+		"/abs/repo/api/graph/resolver/auth.resolvers.go", // what the planner holds
+		"auth.resolvers.go",
+	} {
+		got := h.configMockConfigs(file, "(*mutationResolver).CreateTeam")
+		if len(got) != 1 {
+			t.Errorf("file %q: got %d config mocks, want 1", file, len(got))
+			continue
+		}
+		if got[0].Symbol != "auth.GetAccount" || got[0].Expression != "auth.StaticAccount()" {
+			t.Errorf("file %q: mock = %+v", file, got[0])
+		}
+	}
+}
+
 // TestConfigMockConfigs_NoConfig returns nil cleanly when no config exists.
 func TestConfigMockConfigs_NoConfig(t *testing.T) {
 	root := t.TempDir()
@@ -151,7 +186,7 @@ func TestDedupeMocks_ConfigWinsOverWire(t *testing.T) {
 func mockOnlyConfig(symbol, expression string) config.File {
 	return config.File{
 		Functions: map[string]config.FunctionConfig{
-			"importer.go:Run": {Mocks: map[string]string{symbol: expression}},
+			"importer.go:Run": {Mocks: map[string]config.MockValue{symbol: {Expression: expression}}},
 		},
 	}
 }

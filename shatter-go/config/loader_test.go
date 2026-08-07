@@ -402,17 +402,115 @@ functions:
 		t.Fatalf("Load: %v", err)
 	}
 	absPath := "/home/user/project/internal/fixture/loader.go"
-	// The bug: the raw absolute SourceFile does not match a basename key.
-	if got := file.MatchTarget(absPath, "loadOne"); len(got.Defaults) != 0 {
-		t.Fatalf("raw absolute path unexpectedly matched (defaults=%+v)", got.Defaults)
+	// A filename-scoped key now resolves the same way whichever spelling the
+	// caller holds. The raw absolute path matches via the basename fallback in
+	// matchFileGlob (it did not before that fallback existed); the
+	// TargetRelpath-normalized form matches directly. TargetRelpath is still
+	// the required normalization — it also collapses "../"-escaping paths and
+	// is what anchored, path-scoped keys are matched against.
+	for label, spelling := range map[string]string{
+		"raw absolute":         absPath,
+		"TargetRelpath-lized":  config.TargetRelpath(absPath),
+		"repo-relative nested": "internal/fixture/loader.go",
+	} {
+		entry := file.MatchTarget(spelling, "loadOne")
+		if len(entry.Defaults) != 1 {
+			t.Fatalf("%s path failed to match defaults: %+v", label, entry.Defaults)
+		}
+		if !bytes.Equal(entry.Defaults["dir"].JSON, []byte(`"/fixtures/sample"`)) {
+			t.Errorf("%s: dir default = %s, want \"/fixtures/sample\"", label, string(entry.Defaults["dir"].JSON))
+		}
 	}
-	// The fix: normalizing the SourceFile via TargetRelpath matches.
-	entry := file.MatchTarget(config.TargetRelpath(absPath), "loadOne")
-	if len(entry.Defaults) != 1 {
-		t.Fatalf("normalized absolute path failed to match defaults: %+v", entry.Defaults)
+}
+
+// Filename-scoped globs must match a nested *relative* source path, not just an
+// absolute one. TargetRelpath collapses absolute paths to their basename, so
+// "*.resolvers.go:*" matched when the frontend happened to hold an absolute
+// SourceFile (the planner/hint path) but silently failed when it held a clean
+// repo-relative path (the prepare/execute path) — filepath.Match's "*" never
+// crosses a separator. The asymmetry made `mocks` entries resolve for planning
+// and vanish at execute time, so config mock expressions were never substituted
+// (kapow-jdb8: every gqlgen resolver kept hitting its real auth gate).
+func TestMatchTarget_FilenameGlobMatchesNestedRelativePath(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "*.resolvers.go:*":
+    mocks:
+      "auth.GetAccount": "auth.StaticAccount()"
+  "resolver.go:*":
+    mocks:
+      "auth.GetAccount": "auth.StaticAccount()"
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	if !bytes.Equal(entry.Defaults["dir"].JSON, []byte(`"/fixtures/sample"`)) {
-		t.Errorf("dir default = %s, want \"/fixtures/sample\"", string(entry.Defaults["dir"].JSON))
+	for _, relpath := range []string{
+		"api/graph/resolver/auth.resolvers.go", // filename glob, nested relative
+		"auth.resolvers.go",                    // filename glob, already a basename
+		"api/graph/resolver/resolver.go",       // exact basename literal, nested
+	} {
+		entry := file.MatchTarget(config.TargetRelpath(relpath), "CreateTeam")
+		if len(entry.Mocks) != 1 {
+			t.Errorf("relpath %q: got %d mocks, want 1", relpath, len(entry.Mocks))
+			continue
+		}
+		if got := entry.Mocks["auth.GetAccount"].Expression; got != "auth.StaticAccount()" {
+			t.Errorf("relpath %q: expression = %q, want %q", relpath, got, "auth.StaticAccount()")
+		}
+	}
+}
+
+// The basename fallback applies only to filename-scoped globs. A pattern that
+// carries a path separator stays anchored to the full relative path, so it must
+// not start matching a bare basename (or a same-named file in another
+// directory) as a side effect of the fix above.
+func TestMatchTarget_PathScopedGlobStaysAnchored(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "internal/fixture/loader.go:*":
+    defaults:
+      dir: "/fixtures/sample"
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, relpath := range []string{
+		"loader.go",
+		"internal/other/loader.go",
+	} {
+		if entry := file.MatchTarget(config.TargetRelpath(relpath), "loadOne"); len(entry.Defaults) != 0 {
+			t.Errorf("relpath %q unexpectedly matched path-scoped glob (defaults=%+v)", relpath, entry.Defaults)
+		}
+	}
+	if entry := file.MatchTarget(config.TargetRelpath("internal/fixture/loader.go"), "loadOne"); len(entry.Defaults) != 1 {
+		t.Errorf("path-scoped glob failed to match its own path: %+v", entry.Defaults)
+	}
+}
+
+// A full-path pattern is more specific than a filename glob that also matches,
+// so basename-fallback matches must not outrank anchored ones.
+func TestMatchTarget_FullPathBeatsFilenameGlob(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "*.resolvers.go:*":
+    defaults:
+      dir: "glob"
+  "api/graph/resolver/auth.resolvers.go:*":
+    defaults:
+      dir: "anchored"
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	entry := file.MatchTarget(config.TargetRelpath("api/graph/resolver/auth.resolvers.go"), "CreateTeam")
+	if !bytes.Equal(entry.Defaults["dir"].JSON, []byte(`"anchored"`)) {
+		t.Errorf("dir default = %s, want \"anchored\"", string(entry.Defaults["dir"].JSON))
 	}
 }
 

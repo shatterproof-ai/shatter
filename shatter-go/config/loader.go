@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -288,7 +289,7 @@ func matchScore(pattern, relpath, function string, exactScore int) (int, bool) {
 	if fileGlob == "" || funcGlob == "" {
 		return 0, false
 	}
-	fileOK, fileExact := globMatch(fileGlob, relpath)
+	fileOK, fileExact := matchFileGlob(fileGlob, relpath)
 	if !fileOK {
 		return 0, false
 	}
@@ -317,6 +318,33 @@ func splitPattern(pattern string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// matchFileGlob matches the file half of a config key against a source path.
+//
+// A pattern carrying a path separator is anchored: it matches only the full
+// relative path, so "internal/fixture/loader.go" never matches a bare
+// "loader.go" or a same-named file in another directory.
+//
+// A filename-scoped pattern (no separator, e.g. "*.resolvers.go" or
+// "resolver.go") falls back to matching the path's basename. filepath.Match's
+// "*" does not cross a separator, so without this fallback such a pattern
+// matched only when the caller happened to hold an absolute path — which
+// TargetRelpath collapses to a basename — and silently failed for a clean
+// nested relative path. That asymmetry split the two consumers of the same
+// config key: the planner/hint path (absolute SourceFile) resolved `mocks`
+// entries while the prepare/execute path (repo-relative `file`) did not, so
+// config mock expressions were never substituted into the built harness
+// (kapow-jdb8). Filename-scoped keys are the documented spelling, so they must
+// mean the same thing regardless of how the caller spells the path.
+func matchFileGlob(pattern, relpath string) (bool, bool) {
+	if ok, exact := globMatch(pattern, relpath); ok {
+		return ok, exact
+	}
+	if strings.ContainsRune(pattern, '/') {
+		return false, false
+	}
+	return globMatch(pattern, path.Base(relpath))
 }
 
 // globMatch reports whether target matches pattern under path.Match
