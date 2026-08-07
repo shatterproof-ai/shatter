@@ -427,10 +427,9 @@ fn extract_endpoint(
         "ipv4"
     } else if args.contains(AF_UNIX_PREFIX) {
         "unix"
-    } else if let Some(info) = socket_info {
-        info.family.as_str()
     } else {
-        return None;
+        let info = socket_info?;
+        info.family.as_str()
     };
 
     let (address, port) = if family == "unix" {

@@ -835,7 +835,7 @@ fn generate_uuid(rng: &mut impl Rng) -> Value {
                 bytes[0..4].join(""),
                 bytes[4..6].join(""),
                 &bytes[6][1..],
-                &["8", "9", "a", "b"][rng.random_range(0..4)],
+                ["8", "9", "a", "b"][rng.random_range(0..4)],
                 &bytes[7][1..],
                 bytes[8..14].join(""),
             )
