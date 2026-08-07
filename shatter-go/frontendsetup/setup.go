@@ -90,8 +90,14 @@ func translateHintConfig(entry config.FunctionConfig) planner.PerTargetHints {
 	}
 	if len(entry.Mocks) > 0 {
 		hints.Mocks = make(map[string]string, len(entry.Mocks))
-		for qualified, expression := range entry.Mocks {
-			hints.Mocks[qualified] = expression
+		for qualified, mv := range entry.Mocks {
+			// Struct-form entries without an expression (CLI-owned
+			// return_values/behavior mocks, str-7lab0) carry nothing the
+			// planner can substitute; skip them.
+			if strings.TrimSpace(mv.Expression) == "" {
+				continue
+			}
+			hints.Mocks[qualified] = mv.Expression
 		}
 	}
 	if entry.Receiver != nil && strings.TrimSpace(entry.Receiver.Expression) != "" {

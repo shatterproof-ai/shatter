@@ -266,7 +266,16 @@ fn default_for_type(typ: &TypeInfo) -> Value {
 }
 
 /// User-provided mock override from `.shatter/config.yaml`.
+///
+/// Accepts two YAML forms (str-7lab0): the struct form
+/// (`{return_values: [...], behavior: ..., expression: ...}`) and a
+/// bare-string shorthand (`symbol: "pkg.Fake()"`) equivalent to
+/// `{expression: "pkg.Fake()"}`. The expression drives the Go frontend's
+/// execute-time call-site substitution (str-c8djq); the CLI parses and
+/// preserves it so one config file satisfies both consumers, but does not
+/// act on it — substitution is frontend-owned.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(from = "MockOverrideRepr")]
 pub struct MockOverride {
     /// Pre-configured return values, replacing auto-generated defaults.
     #[serde(default)]
@@ -274,6 +283,46 @@ pub struct MockOverride {
     /// Override the default behavior.
     #[serde(default)]
     pub behavior: Option<MockBehavior>,
+    /// Frontend-owned call-site substitution expression (str-c8djq).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+}
+
+/// Wire representation for [`MockOverride`]: either the bare expression
+/// string or the full struct.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum MockOverrideRepr {
+    Expression(String),
+    Full {
+        #[serde(default)]
+        return_values: Option<Vec<Value>>,
+        #[serde(default)]
+        behavior: Option<MockBehavior>,
+        #[serde(default)]
+        expression: Option<String>,
+    },
+}
+
+impl From<MockOverrideRepr> for MockOverride {
+    fn from(repr: MockOverrideRepr) -> Self {
+        match repr {
+            MockOverrideRepr::Expression(expression) => MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some(expression),
+            },
+            MockOverrideRepr::Full {
+                return_values,
+                behavior,
+                expression,
+            } => MockOverride {
+                return_values,
+                behavior,
+                expression,
+            },
+        }
+    }
 }
 
 /// Generate auto-mocks for all dependencies of a function.
@@ -771,6 +820,7 @@ mod tests {
             MockOverride {
                 return_values: Some(vec![json!({"rows": [{"id": 1}]})]),
                 behavior: None,
+                expression: None,
             },
         );
 
@@ -816,6 +866,7 @@ mod tests {
             MockOverride {
                 return_values: Some(vec![json!({"rows": [{"id": 1, "name": "alice"}]})]),
                 behavior: None,
+                expression: None,
             },
         );
 
