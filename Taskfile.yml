@@ -55,18 +55,28 @@ tasks:
 
   test:
     desc: Run all tests (all languages)
+    # core:test races frontend builds here too (str-ahqdb, same hazard as
+    # str-6y5w8 fixed for test-standard below) -- not fixed in this task yet.
     deps: [core:test, cli:test, ts:test, go:test, rust-fe:test, rust-rt:test]
 
   test-quick:
     desc: "Quick: cargo workspace tests only"
+    # core:test races frontend builds here too (str-ahqdb, same hazard as
+    # str-6y5w8 fixed for test-standard below) -- not fixed in this task yet,
+    # despite this being the tier CLAUDE.md documents for use during
+    # development (i.e. the one most likely to hit it in a fresh checkout).
     deps: [core:test, cli:test]
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
     # core:test exercises shatter-core/tests/e2e_concolic.rs, which panics if
-    # the TS frontend isn't built yet (str-6y5w8). frontends-built and the
-    # clippy tasks don't depend on each other, so they still run in parallel;
-    # core-cli-tests only starts once frontends-built finishes.
+    # the TS frontend isn't built yet (str-6y5w8). Two internal tasks instead
+    # of one so core:test/cli:test still run in parallel with each other
+    # (as they did before this fix) rather than serializing behind a single
+    # combined dep list, which would slow every test-standard run down.
+    # frontends-built and the clippy tasks don't depend on each other, so
+    # they still run in parallel too; core-cli-tests only starts once
+    # frontends-built finishes.
     deps: [frontends-built, core:clippy, cli:clippy]
     cmds:
       - task: core-cli-tests
