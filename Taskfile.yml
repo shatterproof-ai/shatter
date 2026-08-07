@@ -63,7 +63,21 @@ tasks:
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
-    deps: [core:test, cli:test, core:clippy, cli:clippy]
+    # core:test exercises shatter-core/tests/e2e_concolic.rs, which panics if
+    # the TS frontend isn't built yet (str-6y5w8). frontends-built and the
+    # clippy tasks don't depend on each other, so they still run in parallel;
+    # core-cli-tests only starts once frontends-built finishes.
+    deps: [frontends-built, core:clippy, cli:clippy]
+    cmds:
+      - task: core-cli-tests
+
+  frontends-built:
+    internal: true
+    deps: [ts:build, go:build, rust-fe:build]
+
+  core-cli-tests:
+    internal: true
+    deps: [core:test, cli:test]
 
   lint:
     desc: Run all linters
