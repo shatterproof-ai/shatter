@@ -491,8 +491,52 @@ functions:
 	}
 }
 
-// A full-path pattern is more specific than a filename glob that also matches,
-// so basename-fallback matches must not outrank anchored ones.
+// An anchored pattern is more specific than any filename-scoped one that also
+// matches, so basename-fallback matches must never outrank — or tie — anchored
+// ones. The tie case matters most: two matches with equal scores are separated
+// by Go's randomized map iteration, which would make the same file resolve to
+// different config on different requests within one process. Each case is run
+// repeatedly for that reason; a single call can pass on luck.
+func TestMatchTarget_AnchoredBeatsBasenameFallback(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		competes string // the anchored key competing with the "loader.go" filename key
+		want     string
+	}{
+		// Exact basename vs exact full path: both score 2000 without tiering.
+		{"full path literal", `"internal/fixture/loader.go:loadOne"`, "anchored"},
+		// Exact basename (1000) vs directory-scoped glob (len ~= 20): the
+		// fallback would win on score alone despite being far less specific.
+		{"directory-scoped glob", `"internal/fixture/*.go:loadOne"`, "anchored"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			target := writeConfig(t, `
+functions:
+  "loader.go:loadOne":
+    defaults:
+      dir: "fallback"
+  `+tc.competes+`:
+    defaults:
+      dir: "anchored"
+`)
+			file, err := config.Load(target)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			for i := range 200 {
+				entry := file.MatchTarget(config.TargetRelpath("internal/fixture/loader.go"), "loadOne")
+				if !bytes.Equal(entry.Defaults["dir"].JSON, []byte(`"`+tc.want+`"`)) {
+					t.Fatalf("iteration %d: dir default = %s, want %q", i, string(entry.Defaults["dir"].JSON), tc.want)
+				}
+			}
+		})
+	}
+}
+
+// A full-path pattern is more specific than a filename glob that also matches.
 func TestMatchTarget_FullPathBeatsFilenameGlob(t *testing.T) {
 	t.Parallel()
 	target := writeConfig(t, `
@@ -511,6 +555,34 @@ functions:
 	entry := file.MatchTarget(config.TargetRelpath("api/graph/resolver/auth.resolvers.go"), "CreateTeam")
 	if !bytes.Equal(entry.Defaults["dir"].JSON, []byte(`"anchored"`)) {
 		t.Errorf("dir default = %s, want \"anchored\"", string(entry.Defaults["dir"].JSON))
+	}
+}
+
+// MatchTargetAnchored is the fail-closed lookup used by the safety-policy gate:
+// hint-key breadth must not widen which files a `policy.allow` block covers.
+func TestMatchTargetAnchored_NoBasenameFallback(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "main.go:*":
+    policy:
+      allow: [network]
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// A nested main.go is a different file; the operator scoped the root one.
+	if entry := file.MatchTargetAnchored(config.TargetRelpath("cmd/api/main.go"), "main"); entry.Policy != nil {
+		t.Errorf("anchored lookup granted policy to cmd/api/main.go: %+v", entry.Policy)
+	}
+	// The hint lookup deliberately does apply to it.
+	if entry := file.MatchTarget(config.TargetRelpath("cmd/api/main.go"), "main"); entry.Policy == nil {
+		t.Error("hint lookup should match the filename-scoped key")
+	}
+	// The file the key names still matches under both.
+	if entry := file.MatchTargetAnchored(config.TargetRelpath("main.go"), "main"); entry.Policy == nil {
+		t.Error("anchored lookup failed to match the root main.go")
 	}
 }
 

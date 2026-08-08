@@ -288,6 +288,18 @@ pub struct MockOverride {
     pub expression: Option<String>,
 }
 
+impl MockOverride {
+    /// Whether this override carries anything the CLI itself acts on.
+    ///
+    /// An expression-only entry is frontend-owned: it is preserved and passed
+    /// through, but it must not change CLI mock-generation decisions. Callers
+    /// gating behavior on "did the operator configure this symbol?" must ask
+    /// this rather than testing for key presence in the overrides map.
+    pub fn has_cli_directives(&self) -> bool {
+        self.return_values.is_some() || self.behavior.is_some()
+    }
+}
+
 /// Wire representation for [`MockOverride`]: either the bare expression
 /// string or the full struct.
 #[derive(serde::Deserialize)]
@@ -359,8 +371,20 @@ pub fn generate_auto_mocks(
 
         let category = classify_dependency(dep);
 
-        // Pure utilities default to passthrough — skip generating a mock
-        if category == IoCategory::PureUtility && !overrides.contains_key(&dep.symbol) {
+        // Pure utilities default to passthrough — skip generating a mock unless
+        // the operator supplied a CLI-actionable override. Key presence alone is
+        // not enough: since str-7lab0 the same `mocks` map also carries
+        // frontend-owned `expression` entries, and the CLI does not act on those
+        // (execute-time substitution is frontend-owned). Treating a bare
+        // expression string as "mock this" would pull pure utilities into
+        // auto-mocking with synthesized return values the operator never asked
+        // for — and that wire mock would then compete with the very expression
+        // it was derived from.
+        if category == IoCategory::PureUtility
+            && !overrides
+                .get(&dep.symbol)
+                .is_some_and(MockOverride::has_cli_directives)
+        {
             continue;
         }
 
@@ -827,6 +851,45 @@ mod tests {
         let result = generate_auto_mocks(&deps, None, &overrides, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].return_values, vec![json!({"rows": [{"id": 1}]})]);
+    }
+
+    /// str-7lab0 review: one `.shatter/config.yaml` feeds both consumers, so the
+    /// `mocks` map now also carries frontend-owned bare-expression entries. The
+    /// CLI preserves those but must not act on them — an expression-only entry
+    /// must not drag a pure utility out of passthrough into auto-mocking with
+    /// synthesized return values the operator never asked for.
+    #[test]
+    fn generate_auto_mocks_ignores_expression_only_override_for_pure_utilities() {
+        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "map".to_string(),
+            MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some("lodashFake()".to_string()),
+            },
+        );
+
+        let result = generate_auto_mocks(&deps, None, &overrides, &[]);
+        assert!(
+            result.is_empty(),
+            "expression-only override must not auto-mock a pure utility: {result:?}"
+        );
+
+        // A CLI-actionable override for the same symbol still opts it in.
+        let mut actionable = HashMap::new();
+        actionable.insert(
+            "map".to_string(),
+            MockOverride {
+                return_values: Some(vec![json!([])]),
+                behavior: None,
+                expression: Some("lodashFake()".to_string()),
+            },
+        );
+        let result = generate_auto_mocks(&deps, None, &actionable, &[]);
+        assert_eq!(result.len(), 1, "return_values override should opt the utility in");
+        assert_eq!(result[0].return_values, vec![json!([])]);
     }
 
     #[test]

@@ -763,7 +763,9 @@ feature_capabilities:
       SourceFile) and the execute-time bridge (repo-relative request `file`).
       A frontend adopting this schema must match keys the same way; a
       spelling-dependent match makes configured mocks resolve for planning
-      and silently vanish at execute time. Go-only at this stage.
+      and silently vanish at execute time. Anchored matches outrank basename
+      fallbacks as a separate tier, and the safety-policy gate opts out of the
+      fallback entirely (it fails closed). Go-only at this stage.
     frontends:
       typescript: not_supported
       go: supported

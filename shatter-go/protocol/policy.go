@@ -505,7 +505,12 @@ func (h *Handler) evaluateExecutePolicy(file, function string, fa *FunctionAnaly
 		cfg = config.File{}
 	}
 	relpath := config.TargetRelpath(file)
-	entry := cfg.MatchTarget(relpath, function)
+	// Anchored (no basename fallback): this is the side-effect gate, so it must
+	// fail closed. A filename-scoped hint key like "main.go:*" legitimately
+	// covers every main.go for planning purposes, but must not silently grant
+	// network/subprocess/filesystem allowances to cmd/api/main.go and
+	// cmd/worker/main.go just because the operator scoped one file (str-cl19s).
+	entry := cfg.MatchTargetAnchored(relpath, function)
 	var overrides []string
 	if entry.Policy != nil {
 		overrides = entry.Policy.Allow
