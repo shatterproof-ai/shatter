@@ -871,13 +871,13 @@ func (h *Handler) configMockConfigs(file, function string) []instrument.MockConf
 		return nil
 	}
 	mocks := make([]instrument.MockConfig, 0, len(entry.Mocks))
-	for qualified, expression := range entry.Mocks {
-		if strings.TrimSpace(expression) == "" {
+	for qualified, mv := range entry.Mocks {
+		if strings.TrimSpace(mv.Expression) == "" {
 			continue
 		}
 		mocks = append(mocks, instrument.MockConfig{
 			Symbol:     qualified,
-			Expression: expression,
+			Expression: mv.Expression,
 		})
 	}
 	sort.Slice(mocks, func(i, j int) bool { return mocks[i].Symbol < mocks[j].Symbol })

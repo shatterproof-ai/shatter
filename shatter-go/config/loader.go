@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -72,10 +73,10 @@ type FunctionConfig struct {
 	Defaults map[string]DefaultValue `yaml:"defaults,omitempty"`
 
 	// Mocks supplies per-target mock substitutions keyed by qualified
-	// function name (e.g. "fmt.Println"). The value is the Go source
-	// expression a code generator pastes in place of the original call
-	// (str-hy9b.G3 AC2).
-	Mocks map[string]string `yaml:"mocks,omitempty"`
+	// function name (e.g. "fmt.Println"). The value's Expression is the Go
+	// source expression pasted in place of the original call
+	// (str-hy9b.G3 AC2; execute-time substitution str-c8djq).
+	Mocks map[string]MockValue `yaml:"mocks,omitempty"`
 
 	// Generators names a runtime-value registry entry per parameter. The
 	// planner consults the named generator before falling back to primitive
@@ -87,6 +88,32 @@ type FunctionConfig struct {
 	// Receiver supplies a method receiver construction recipe for targets
 	// whose useful behavior requires initialized receiver fields.
 	Receiver *ReceiverConfig `yaml:"receiver,omitempty"`
+}
+
+// MockValue is one `mocks` entry. Two YAML forms are accepted so the same
+// config file satisfies both the Go frontend and the Rust CLI schema
+// (str-7lab0): a bare string — the call-site substitution expression — and a
+// mapping with an optional `expression` key. CLI-owned mapping keys
+// (`return_values`, `behavior`) are tolerated and ignored here; a mapping
+// without an expression parses to the empty string, which every downstream
+// consumer skips.
+type MockValue struct {
+	Expression string
+}
+
+// UnmarshalYAML implements the dual string/mapping form for MockValue.
+func (m *MockValue) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&m.Expression)
+	}
+	var full struct {
+		Expression string `yaml:"expression"`
+	}
+	if err := node.Decode(&full); err != nil {
+		return fmt.Errorf("mocks entry must be an expression string or a mapping with an `expression` key: %w", err)
+	}
+	m.Expression = full.Expression
+	return nil
 }
 
 // PolicyConfig carries the user-facing safety policy overrides.
@@ -235,40 +262,61 @@ func TargetRelpath(file string) string {
 // MatchTarget returns the most specific FunctionConfig whose glob pattern
 // matches relpath:function. Patterns use path.Match semantics on both
 // sides of the colon (e.g. "*_test.go:*" or "models/user.go:Fetch*").
-// Falls back to a zero-value FunctionConfig when no entry matches.
-// Callers should pass relpath through TargetRelpath first.
+// A filename-scoped pattern also matches the path's basename; see
+// matchFileGlob. Falls back to a zero-value FunctionConfig when no entry
+// matches. Callers should pass relpath through TargetRelpath first.
 func (f File) MatchTarget(relpath, function string) FunctionConfig {
+	return f.matchTarget(relpath, function, true)
+}
+
+// MatchTargetAnchored is MatchTarget without the basename fallback: every
+// pattern must match the full relative path as written. The safety-policy gate
+// uses this so a change to hint-key breadth can never widen which files a
+// `policy.allow` block covers — an over-broad policy match grants side-effect
+// allowances (network, subprocess, filesystem) the operator never scoped, so
+// this lookup fails closed rather than being maximally convenient.
+func (f File) MatchTargetAnchored(relpath, function string) FunctionConfig {
+	return f.matchTarget(relpath, function, false)
+}
+
+func (f File) matchTarget(relpath, function string, allowBasenameFallback bool) FunctionConfig {
 	const exactScore = 1000
 	best := FunctionConfig{}
-	bestScore := -1
+	bestTier, bestScore := -1, -1
 	for pattern, entry := range f.Functions {
-		score, matched := matchScore(pattern, relpath, function, exactScore)
+		tier, score, matched := matchScore(pattern, relpath, function, exactScore, allowBasenameFallback)
 		if !matched {
 			continue
 		}
-		if score > bestScore {
-			bestScore = score
+		// Tier dominates score: an anchored match always outranks a basename
+		// fallback, however literal the fallback's spelling. Comparing on score
+		// alone let a bare "loader.go" key tie an anchored
+		// "internal/fixture/loader.go" key (both exact, both 2000) and let Go's
+		// randomized map iteration pick the winner — the same file resolving to
+		// different mocks/defaults on different requests in one process.
+		if tier > bestTier || (tier == bestTier && score > bestScore) {
+			bestTier, bestScore = tier, score
 			best = entry
 		}
 	}
 	return best
 }
 
-// matchScore returns a match quality score for a pattern against a
-// target identifier. Higher score = more specific. Exact literal matches
-// on both sides score higher than glob matches.
-func matchScore(pattern, relpath, function string, exactScore int) (int, bool) {
+// matchScore returns a specificity tier and score for a pattern against a
+// target identifier. Higher tier wins outright; score orders patterns within a
+// tier. Exact literal matches score higher than glob matches.
+func matchScore(pattern, relpath, function string, exactScore int, allowBasenameFallback bool) (int, int, bool) {
 	fileGlob, funcGlob := splitPattern(pattern)
 	if fileGlob == "" || funcGlob == "" {
-		return 0, false
+		return 0, 0, false
 	}
-	fileOK, fileExact := globMatch(fileGlob, relpath)
+	fileOK, fileExact, anchored := matchFileGlob(fileGlob, relpath, allowBasenameFallback)
 	if !fileOK {
-		return 0, false
+		return 0, 0, false
 	}
 	funcOK, funcExact := globMatch(funcGlob, function)
 	if !funcOK {
-		return 0, false
+		return 0, 0, false
 	}
 	score := 0
 	if fileExact {
@@ -281,7 +329,11 @@ func matchScore(pattern, relpath, function string, exactScore int) (int, bool) {
 	} else {
 		score += len(funcGlob)
 	}
-	return score, true
+	tier := 0
+	if anchored {
+		tier = 1
+	}
+	return tier, score, true
 }
 
 func splitPattern(pattern string) (string, string) {
@@ -291,6 +343,47 @@ func splitPattern(pattern string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// matchFileGlob matches the file half of a config key against a source path,
+// reporting whether it matched, whether the match was an exact literal, and
+// whether it matched the path as written (anchored) rather than via the
+// basename fallback.
+//
+// A pattern carrying a path separator is anchored: it matches only the full
+// relative path, so "internal/fixture/loader.go" never matches a bare
+// "loader.go" or a same-named file in another directory.
+//
+// A filename-scoped pattern (no separator, e.g. "*.resolvers.go" or
+// "resolver.go") falls back to matching the path's basename. filepath.Match's
+// "*" does not cross a separator, so without this fallback such a pattern
+// matched only when the caller happened to hold an absolute path — which
+// TargetRelpath collapses to a basename — and silently failed for a clean
+// nested relative path. That asymmetry split the two consumers of the same
+// config key: the planner/hint path (absolute SourceFile) resolved `mocks`
+// entries while the prepare/execute path (repo-relative `file`) did not, so
+// config mock expressions were never substituted into the built harness
+// (kapow-jdb8). Filename-scoped keys are the documented spelling, so they must
+// mean the same thing regardless of how the caller spells the path.
+//
+// The anchored flag is what keeps the fallback from distorting specificity:
+// callers rank any anchored match above any fallback match, so a bare
+// "loader.go" key cannot outrank — or tie — a directory-scoped
+// "internal/fixture/*.go" or a full-path key for the same file.
+func matchFileGlob(pattern, relpath string, allowBasenameFallback bool) (matched, exact, anchored bool) {
+	if ok, exact := globMatch(pattern, relpath); ok {
+		return true, exact, true
+	}
+	if !allowBasenameFallback || strings.ContainsRune(pattern, '/') {
+		return false, false, false
+	}
+	base := path.Base(relpath)
+	if base == relpath {
+		// Already a basename; the anchored attempt above was the only one.
+		return false, false, false
+	}
+	ok, exact := globMatch(pattern, base)
+	return ok, exact, false
 }
 
 // globMatch reports whether target matches pattern under path.Match

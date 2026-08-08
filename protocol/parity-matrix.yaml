@@ -752,7 +752,20 @@ feature_capabilities:
       type-resolved package-function call sites to the configured mock
       expression (instrument/mocksubst.go), so mocked dependencies never run.
       The wire MockConfig.ReturnValues typed-decode path remains deferred
-      (str-8v66). Go-only at this stage.
+      (str-8v66). Mocks entries accept two YAML forms in BOTH config
+      consumers — bare expression string and struct
+      ({expression, return_values, behavior}) — because the Rust CLI and the
+      Go frontend parse the same file (str-7lab0); each consumer ignores the
+      other's fields. Key matching is path-spelling independent (str-cl19s):
+      a file pattern containing "/" is anchored to the full relative path,
+      while a filename-scoped pattern (no separator) also matches the path's
+      basename — so one key resolves identically for the planner (absolute
+      SourceFile) and the execute-time bridge (repo-relative request `file`).
+      A frontend adopting this schema must match keys the same way; a
+      spelling-dependent match makes configured mocks resolve for planning
+      and silently vanish at execute time. Anchored matches outrank basename
+      fallbacks as a separate tier, and the safety-policy gate opts out of the
+      fallback entirely (it fails closed). Go-only at this stage.
     frontends:
       typescript: not_supported
       go: supported

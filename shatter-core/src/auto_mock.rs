@@ -266,7 +266,16 @@ fn default_for_type(typ: &TypeInfo) -> Value {
 }
 
 /// User-provided mock override from `.shatter/config.yaml`.
+///
+/// Accepts two YAML forms (str-7lab0): the struct form
+/// (`{return_values: [...], behavior: ..., expression: ...}`) and a
+/// bare-string shorthand (`symbol: "pkg.Fake()"`) equivalent to
+/// `{expression: "pkg.Fake()"}`. The expression drives the Go frontend's
+/// execute-time call-site substitution (str-c8djq); the CLI parses and
+/// preserves it so one config file satisfies both consumers, but does not
+/// act on it — substitution is frontend-owned.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(from = "MockOverrideRepr")]
 pub struct MockOverride {
     /// Pre-configured return values, replacing auto-generated defaults.
     #[serde(default)]
@@ -274,6 +283,58 @@ pub struct MockOverride {
     /// Override the default behavior.
     #[serde(default)]
     pub behavior: Option<MockBehavior>,
+    /// Frontend-owned call-site substitution expression (str-c8djq).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+}
+
+impl MockOverride {
+    /// Whether this override carries anything the CLI itself acts on.
+    ///
+    /// An expression-only entry is frontend-owned: it is preserved and passed
+    /// through, but it must not change CLI mock-generation decisions. Callers
+    /// gating behavior on "did the operator configure this symbol?" must ask
+    /// this rather than testing for key presence in the overrides map.
+    pub fn has_cli_directives(&self) -> bool {
+        self.return_values.is_some() || self.behavior.is_some()
+    }
+}
+
+/// Wire representation for [`MockOverride`]: either the bare expression
+/// string or the full struct.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum MockOverrideRepr {
+    Expression(String),
+    Full {
+        #[serde(default)]
+        return_values: Option<Vec<Value>>,
+        #[serde(default)]
+        behavior: Option<MockBehavior>,
+        #[serde(default)]
+        expression: Option<String>,
+    },
+}
+
+impl From<MockOverrideRepr> for MockOverride {
+    fn from(repr: MockOverrideRepr) -> Self {
+        match repr {
+            MockOverrideRepr::Expression(expression) => MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some(expression),
+            },
+            MockOverrideRepr::Full {
+                return_values,
+                behavior,
+                expression,
+            } => MockOverride {
+                return_values,
+                behavior,
+                expression,
+            },
+        }
+    }
 }
 
 /// Generate auto-mocks for all dependencies of a function.
@@ -310,8 +371,20 @@ pub fn generate_auto_mocks(
 
         let category = classify_dependency(dep);
 
-        // Pure utilities default to passthrough — skip generating a mock
-        if category == IoCategory::PureUtility && !overrides.contains_key(&dep.symbol) {
+        // Pure utilities default to passthrough — skip generating a mock unless
+        // the operator supplied a CLI-actionable override. Key presence alone is
+        // not enough: since str-7lab0 the same `mocks` map also carries
+        // frontend-owned `expression` entries, and the CLI does not act on those
+        // (execute-time substitution is frontend-owned). Treating a bare
+        // expression string as "mock this" would pull pure utilities into
+        // auto-mocking with synthesized return values the operator never asked
+        // for — and that wire mock would then compete with the very expression
+        // it was derived from.
+        if category == IoCategory::PureUtility
+            && !overrides
+                .get(&dep.symbol)
+                .is_some_and(MockOverride::has_cli_directives)
+        {
             continue;
         }
 
@@ -771,12 +844,52 @@ mod tests {
             MockOverride {
                 return_values: Some(vec![json!({"rows": [{"id": 1}]})]),
                 behavior: None,
+                expression: None,
             },
         );
 
         let result = generate_auto_mocks(&deps, None, &overrides, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].return_values, vec![json!({"rows": [{"id": 1}]})]);
+    }
+
+    /// str-7lab0 review: one `.shatter/config.yaml` feeds both consumers, so the
+    /// `mocks` map now also carries frontend-owned bare-expression entries. The
+    /// CLI preserves those but must not act on them — an expression-only entry
+    /// must not drag a pure utility out of passthrough into auto-mocking with
+    /// synthesized return values the operator never asked for.
+    #[test]
+    fn generate_auto_mocks_ignores_expression_only_override_for_pure_utilities() {
+        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "map".to_string(),
+            MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some("lodashFake()".to_string()),
+            },
+        );
+
+        let result = generate_auto_mocks(&deps, None, &overrides, &[]);
+        assert!(
+            result.is_empty(),
+            "expression-only override must not auto-mock a pure utility: {result:?}"
+        );
+
+        // A CLI-actionable override for the same symbol still opts it in.
+        let mut actionable = HashMap::new();
+        actionable.insert(
+            "map".to_string(),
+            MockOverride {
+                return_values: Some(vec![json!([])]),
+                behavior: None,
+                expression: Some("lodashFake()".to_string()),
+            },
+        );
+        let result = generate_auto_mocks(&deps, None, &actionable, &[]);
+        assert_eq!(result.len(), 1, "return_values override should opt the utility in");
+        assert_eq!(result[0].return_values, vec![json!([])]);
     }
 
     #[test]
@@ -816,6 +929,7 @@ mod tests {
             MockOverride {
                 return_values: Some(vec![json!({"rows": [{"id": 1, "name": "alice"}]})]),
                 behavior: None,
+                expression: None,
             },
         );
 
