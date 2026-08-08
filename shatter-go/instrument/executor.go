@@ -321,33 +321,34 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 		return nil
 	}
 
-	// Build the mocked-import matchers from mock symbols. Shapes:
-	//   "module:export" / "module/path"   — suppress the exact import path;
-	//   "module/path.Func"                — suppress the exact import path;
-	//   "pkg.Func" (config-mock qualifier) — suppress any import whose local
-	//     name (alias, or path base; instrument.ImportLocalName) is the
-	//     qualifier. Bare qualifiers can't distinguish same-base-name modules,
-	//     so this over-suppresses when e.g. two different `auth` packages are
-	//     imported — an accepted limit of the source-qualifier spelling; use
-	//     the path-qualified form when it matters.
+	// Build the mocked-import matchers from mock symbols using the shared
+	// parsed-symbol representation (parseMockSymbol) so this suppression pass
+	// and the call-site rewriter agree on package identity (str-djcv2). Shapes:
+	//   "module/path.Func" / "module/path:Export" (path-qualified) — suppress
+	//     the exact import path only, so a same-base-name import from a
+	//     DIFFERENT module stays reported;
+	//   "pkg.Func" (bare qualifier) — suppress any import whose local name
+	//     (alias, or path base; instrument.ImportLocalName) is the qualifier.
+	//     Bare qualifiers can't distinguish same-base-name modules, so this
+	//     over-suppresses when e.g. two different `auth` packages are imported —
+	//     an accepted limit of the source-qualifier spelling; use the
+	//     path-qualified form when it matters.
 	mockedModules := make(map[string]bool)
 	mockedQualifiers := make(map[string]bool)
 	for _, m := range mocks {
 		sym := m.Symbol
-		if module, _, found := strings.Cut(sym, ":"); found {
-			mockedModules[module] = true
-			continue
-		}
-		if slash := strings.LastIndex(sym, "/"); slash >= 0 {
-			if dot := strings.Index(sym[slash:], "."); dot >= 0 {
-				mockedModules[sym[:slash+dot]] = true
+		if p, ok := parseMockSymbol(sym); ok {
+			if p.ImportPath != "" {
+				mockedModules[p.ImportPath] = true
 			} else {
-				mockedModules[sym] = true
+				mockedQualifiers[p.Base] = true
 			}
 			continue
 		}
-		if qualifier, _, found := strings.Cut(sym, "."); found {
-			mockedQualifiers[qualifier] = true
+		// Fallback for symbols that don't name a qualified function (e.g. a
+		// bare module path "module/path"): suppress that exact import path.
+		if module, _, found := strings.Cut(sym, ":"); found {
+			mockedModules[module] = true
 			continue
 		}
 		mockedModules[sym] = true
