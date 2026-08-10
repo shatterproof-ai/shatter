@@ -676,10 +676,12 @@ pub(crate) async fn run_scan(
     // deadline so discovery/analysis time is charged before the remaining
     // budget is handed to the scan orchestrator.
     let registry = {
+        let analyzer_versions = crate::frontend_versions::analyzer_versions();
         let fut = batch_analyze::batch_analyze(
             &mut frontends,
             &analyzable_files,
             analysis_cache.as_ref(),
+            &analyzer_versions,
             project_root_str.as_deref(),
         );
         if let Some(remaining) = dry_run_deadline_remaining(run_deadline) {
