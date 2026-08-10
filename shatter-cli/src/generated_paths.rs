@@ -133,10 +133,10 @@ pub(crate) fn collect_generated_ignore_entries(project_root: &Path) -> Vec<Strin
 /// generated path as un-ignored.
 pub(crate) fn unignored_generated_paths(project_root: &Path) -> Vec<String> {
     let entries = collect_generated_ignore_entries(project_root);
-    let gitignore = collect_gitignore_text(project_root);
+    let gitignores = collect_gitignore_text(project_root);
     entries
         .into_iter()
-        .filter(|entry| !gitignore_covers(&gitignore, entry))
+        .filter(|entry| !gitignore_covers(&gitignores, entry))
         .collect()
 }
 
@@ -146,15 +146,35 @@ pub(crate) fn unignored_generated_paths(project_root: &Path) -> Vec<String> {
 /// `.gitignore` files from outside the repository.
 const MAX_GIT_ROOT_ANCESTORS: usize = 32;
 
-/// Collect the combined text of `project_root`'s own `.gitignore` plus, when
-/// `project_root` is nested inside a git repository whose root lies above it,
-/// every ancestor `.gitignore` up to and including the git root.
+/// A `.gitignore` file discovered while walking from `project_root` up to the
+/// enclosing git root, paired with `project_root`'s path relative to the
+/// directory that `.gitignore` lives in.
+///
+/// Git anchors any pattern containing a `/` to the directory the `.gitignore`
+/// file lives in — a pattern like `.shatter/seeds/` in a *root* `.gitignore`
+/// does **not** cover `packages/foo/.shatter/seeds/`. `relative_prefix` lets
+/// `gitignore_covers` reconstruct, for each ancestor file, the path an entry
+/// would need to have *relative to that file's own directory* in order to be
+/// covered by one of its anchored patterns.
+struct AncestorGitignore {
+    /// `project_root`'s path relative to the directory containing this
+    /// `.gitignore`, forward-slash separated, no leading/trailing slash.
+    /// Empty when this `.gitignore` is `project_root`'s own.
+    relative_prefix: String,
+    contents: String,
+}
+
+/// Collect `project_root`'s own `.gitignore` plus, when `project_root` is
+/// nested inside a git repository whose root lies above it, every ancestor
+/// `.gitignore` up to and including the git root — each paired with the
+/// prefix needed to check its patterns against `project_root`-relative
+/// entries (see [`AncestorGitignore`]).
 ///
 /// If no `.git` directory is found within `MAX_GIT_ROOT_ANCESTORS` levels
 /// above `project_root`, only `project_root`'s own `.gitignore` is read — this
 /// keeps the check hermetic (it never wanders into unrelated ancestor
 /// directories) when `project_root` is not part of a git checkout at all.
-fn collect_gitignore_text(project_root: &Path) -> String {
+fn collect_gitignore_text(project_root: &Path) -> Vec<AncestorGitignore> {
     let mut ancestors: Vec<PathBuf> = vec![project_root.to_path_buf()];
     let mut found_git_root = project_root.join(".git").exists();
 
@@ -180,26 +200,60 @@ fn collect_gitignore_text(project_root: &Path) -> String {
         ancestors.truncate(1);
     }
 
-    let mut combined = String::new();
-    for dir in &ancestors {
+    let mut result = Vec::new();
+    let mut prefix = String::new();
+    for (i, dir) in ancestors.iter().enumerate() {
+        if i > 0 {
+            // `dir` is one level above `ancestors[i - 1]`: prepend that
+            // directory's own name onto the prefix accumulated so far.
+            let component = ancestors[i - 1]
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            prefix = if prefix.is_empty() {
+                component
+            } else {
+                format!("{component}/{prefix}")
+            };
+        }
         if let Ok(contents) = std::fs::read_to_string(dir.join(".gitignore")) {
-            combined.push_str(&contents);
-            combined.push('\n');
+            result.push(AncestorGitignore {
+                relative_prefix: prefix.clone(),
+                contents,
+            });
         }
     }
-    combined
+    result
 }
 
-/// Whether `gitignore` contents contain a pattern that covers `entry`.
+/// Whether any ancestor `.gitignore` contains a pattern that covers `entry`
+/// (a path relative to `project_root`).
+fn gitignore_covers(gitignores: &[AncestorGitignore], entry: &str) -> bool {
+    gitignores
+        .iter()
+        .any(|g| gitignore_file_covers(&g.contents, &g.relative_prefix, entry))
+}
+
+/// Whether `gitignore` (whose file lives `relative_prefix` levels above
+/// `entry`'s base, i.e. `project_root`) contains a pattern that covers
+/// `entry`.
 ///
-/// Covered means some non-comment, non-blank line matches `entry` exactly
-/// (ignoring a trailing `/` on either side) or names an ancestor directory of
-/// `entry`. Only plain path patterns are understood — negations (`!`),
+/// Covered means some non-comment, non-blank line matches the entry's path
+/// relative to the `.gitignore`'s own directory — exactly (ignoring a
+/// trailing `/` on either side) or as an ancestor directory of it — for
+/// patterns containing a `/` (git anchors these to the `.gitignore`'s
+/// directory); or matches any single path component, at any depth, for
+/// patterns with no `/` (git treats these as unanchored). Negations (`!`),
 /// anchored globs, and wildcards are treated as non-matching, which is the
-/// safe direction for a diagnostic (it may over-report, never under-report the
-/// documented defaults `init` writes).
-fn gitignore_covers(gitignore: &str, entry: &str) -> bool {
+/// safe direction for a diagnostic (it may over-report, never under-report
+/// the documented defaults `init` writes).
+fn gitignore_file_covers(gitignore: &str, relative_prefix: &str, entry: &str) -> bool {
     let target = entry.trim_end_matches('/');
+    let full_target = if relative_prefix.is_empty() {
+        target.to_string()
+    } else {
+        format!("{relative_prefix}/{target}")
+    };
     gitignore.lines().any(|line| {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
@@ -209,8 +263,14 @@ fn gitignore_covers(gitignore: &str, entry: &str) -> bool {
         if pat.is_empty() {
             return false;
         }
-        // Exact match, or `pat` is an ancestor directory of `target`.
-        target == pat || target.starts_with(&format!("{pat}/"))
+        if pat.contains('/') {
+            // Anchored to this `.gitignore`'s own directory: must match the
+            // full relative path exactly, or be an ancestor directory of it.
+            full_target == pat || full_target.starts_with(&format!("{pat}/"))
+        } else {
+            // Unanchored: matches this exact path component at any depth.
+            full_target.split('/').any(|seg| seg == pat)
+        }
     })
 }
 
@@ -478,10 +538,32 @@ mod tests {
 
     #[test]
     fn gitignore_covers_ignores_negations_and_comments() {
-        assert!(!gitignore_covers("# .shatter/seeds/\n", ".shatter/seeds/"));
-        assert!(!gitignore_covers("!.shatter/seeds/\n", ".shatter/seeds/"));
-        assert!(gitignore_covers(".shatter/seeds\n", ".shatter/seeds/"));
-        assert!(gitignore_covers(".shatter/seeds/\n", ".shatter/seeds"));
+        assert!(!gitignore_file_covers("# .shatter/seeds/\n", "", ".shatter/seeds/"));
+        assert!(!gitignore_file_covers("!.shatter/seeds/\n", "", ".shatter/seeds/"));
+        assert!(gitignore_file_covers(".shatter/seeds\n", "", ".shatter/seeds/"));
+        assert!(gitignore_file_covers(".shatter/seeds/\n", "", ".shatter/seeds"));
+    }
+
+    #[test]
+    fn gitignore_file_covers_respects_ancestor_anchoring() {
+        // A slash-containing pattern in an *ancestor* `.gitignore` is
+        // anchored to that file's own directory and must NOT cover a nested
+        // project's entry just because the trailing components match.
+        assert!(!gitignore_file_covers(
+            ".shatter/seeds/\n",
+            "packages/foo",
+            ".shatter/seeds/"
+        ));
+        // The same pattern does cover the entry once the relative prefix
+        // makes the full path match.
+        assert!(gitignore_file_covers(
+            "packages/foo/.shatter/seeds/\n",
+            "packages/foo",
+            ".shatter/seeds/"
+        ));
+        // An unanchored (no-slash) pattern matches the component at any
+        // depth, ancestor prefix included.
+        assert!(gitignore_file_covers(".shatter\n", "packages/foo", ".shatter/seeds/"));
     }
 
     // A relative path component: non-empty, no slashes/backslashes, not `.`
@@ -522,7 +604,7 @@ mod tests {
 
             for entry in &entries {
                 prop_assert!(
-                    gitignore_covers(&updated, entry),
+                    gitignore_file_covers(&updated, "", entry),
                     "entry {entry:?} not covered by\n{updated}"
                 );
             }
@@ -547,15 +629,17 @@ mod tests {
     fn unignored_finds_gitignore_at_enclosing_git_root() {
         // The monorepo layout: `.shatter/` (and this project's own
         // `shatter.config.json`) live in a package subdirectory, but the
-        // tracked `.gitignore` lives at the enclosing git root. Checking only
-        // the package directory's own (nonexistent) `.gitignore` would
-        // false-positive every generated path as un-ignored even though the
-        // root `.gitignore` already covers them (str-1fwt).
+        // tracked `.gitignore` lives at the enclosing git root using
+        // unanchored (no-slash) patterns, which git matches at any depth —
+        // so the root `.gitignore` already covers them (str-1fwt) even
+        // though checking only the package directory's own (nonexistent)
+        // `.gitignore` would false-positive every generated path as
+        // un-ignored.
         let repo = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(repo.path().join(".git")).unwrap();
         std::fs::write(
             repo.path().join(".gitignore"),
-            ".shatter-cache/\n.shatter/seeds/\n.shatter/cache/\nshatter-artifacts/\n",
+            ".shatter-cache\n.shatter\nshatter-artifacts\n",
         )
         .unwrap();
 
@@ -565,6 +649,33 @@ mod tests {
         assert!(
             unignored_generated_paths(&package_dir).is_empty(),
             "the enclosing git root's .gitignore must be consulted, not just the package dir's own"
+        );
+    }
+
+    #[test]
+    fn unignored_does_not_let_a_root_anchored_pattern_cover_a_nested_package() {
+        // The bug this regression guards against: a *slash-containing*
+        // pattern in the enclosing git root's `.gitignore` is anchored to
+        // the root and does not cover a nested package's own generated
+        // path, even though the trailing path components are identical.
+        // Reported by review of str-1fwt.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        std::fs::write(
+            repo.path().join(".gitignore"),
+            // Anchored to the repo root — covers only `<root>/.shatter/seeds/`.
+            ".shatter/seeds/\n",
+        )
+        .unwrap();
+
+        let package_dir = repo.path().join("packages/foo");
+        std::fs::create_dir_all(package_dir.join(".shatter")).unwrap();
+
+        let missing = unignored_generated_paths(&package_dir);
+        assert!(
+            missing.iter().any(|e| e == ".shatter/seeds/"),
+            "a root-anchored `.shatter/seeds/` pattern must not be treated as covering \
+             packages/foo/.shatter/seeds/, got {missing:?}"
         );
     }
 
