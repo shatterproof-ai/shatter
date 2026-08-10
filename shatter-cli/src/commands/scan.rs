@@ -120,6 +120,55 @@ fn compute_scan_id_from_file_map(file_map: &HashMap<String, String>) -> String {
     shatter_core::checkpoint::ScanCheckpoint::compute_scan_id_for_targets(&targets)
 }
 
+/// The outermost of `include_anchor`/`exclude_anchor` (the one with fewest
+/// path components, i.e. closest to the filesystem root). Both anchors, when
+/// set, are always ancestors of `root` (they come from walking up from the
+/// scan directory to find `shatter.config.json`), so they are totally
+/// ordered along the path from `root` to the filesystem root.
+fn until_outer_anchor<'a>(
+    include_anchor: Option<&'a Path>,
+    exclude_anchor: Option<&'a Path>,
+) -> Option<&'a Path> {
+    [include_anchor, exclude_anchor]
+        .into_iter()
+        .flatten()
+        .min_by_key(|a| a.components().count())
+}
+
+/// `root`'s path relative to the outermost of `include_anchor`/
+/// `exclude_anchor`, if either is set and is an ancestor of `root`.
+///
+/// Used by `run_scan`'s `--until` handling: discovery moves from `root` to a
+/// temp directory holding historical file contents, and this prefix lets
+/// that temp directory mirror the same anchor->root nesting so
+/// `until_temp_anchor` can remap the anchors to still resolve against it
+/// (str-1q12y review follow-up — an anchor pointing at the original working
+/// tree cannot `strip_prefix` a path under an unrelated temp directory).
+fn until_anchor_mirror_prefix(
+    root: &Path,
+    include_anchor: Option<&Path>,
+    exclude_anchor: Option<&Path>,
+) -> Option<PathBuf> {
+    let outer_anchor = until_outer_anchor(include_anchor, exclude_anchor)?;
+    root.strip_prefix(outer_anchor).ok().map(Path::to_path_buf)
+}
+
+/// Remap `anchor` (an ancestor of `root`, or `root` itself) into its
+/// equivalent path inside a `--until` temp directory whose root
+/// (`temp_anchor_base`) corresponds to the outermost of `include_anchor`/
+/// `exclude_anchor` (see `until_anchor_mirror_prefix`).
+fn until_temp_anchor(
+    include_anchor: Option<&Path>,
+    exclude_anchor: Option<&Path>,
+    anchor: Option<&Path>,
+    temp_anchor_base: &Path,
+) -> Option<PathBuf> {
+    let outer_anchor = until_outer_anchor(include_anchor, exclude_anchor)?;
+    let anchor = anchor?;
+    let rel = anchor.strip_prefix(outer_anchor).unwrap_or(Path::new(""));
+    Some(temp_anchor_base.join(rel))
+}
+
 /// Run the scan command: explore multiple functions in dependency order.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_scan(
@@ -247,28 +296,26 @@ pub(crate) async fn run_scan(
         log::debug!("Project root: {pr}");
     }
 
-    // Discover source files.
-    //
-    // Config-file include/exclude patterns are anchored at the config file's
-    // directory (project root) via `include_anchor`/`exclude_anchor`, so
-    // project-root patterns like `web/src/**/*.test.tsx` keep working when the
-    // scan root is a subdirectory. CLI `--include`/`--exclude` pass `None`
-    // (scan-root-relative). See str-1q12y.
-    let options = DiscoveryOptions {
-        include_patterns: include_patterns.to_vec(),
-        exclude_patterns: exclude_patterns.to_vec(),
-        include_anchor: include_anchor.map(Path::to_path_buf),
-        exclude_anchor: exclude_anchor.map(Path::to_path_buf),
-        respect_gitignore: true,
-        max_depth,
-    };
     // When --until is specified, we need to:
     // 1. Validate the ref
     // 2. Check out historical file contents into a temp directory
     // 3. Use that as the analysis root with isolated .shatter state
+    //
+    // `include_anchor`/`exclude_anchor` (when set) point at the project
+    // config's directory under the *original* working tree — an ancestor of
+    // `root`. If discovery below simply moved to a bare temp directory,
+    // `pattern_relative`'s `strip_prefix(anchor)` would always fail (the temp
+    // path shares no prefix with the original anchor), silently falling back
+    // to scan-root-relative matching and reintroducing str-1q12y's original
+    // bug for this flag combination. `anchor_mirror_prefix` is the anchor's
+    // position relative to `root`, used below to mirror that same nesting
+    // inside the temp directory so the anchors keep resolving there.
+    let anchor_mirror_prefix = until_anchor_mirror_prefix(&root, include_anchor, exclude_anchor);
     let _until_temp_dir: Option<tempfile::TempDir> = None;
-    let (effective_root, _until_temp_dir) = if let (Some(base_ref), Some(until_ref)) =
-        (since, until)
+    let (effective_root, _until_temp_dir, until_anchor_base) = if let (
+        Some(base_ref),
+        Some(until_ref),
+    ) = (since, until)
     {
         use shatter_core::scm::{ScmProvider, detect_provider, show_file_at_ref, validate_ref};
 
@@ -302,10 +349,16 @@ pub(crate) async fn run_scan(
             until_ref,
         );
 
-        // Create temp directory and extract historical file contents.
+        // Create temp directory and extract historical file contents. When
+        // an anchor sits above `root`, mirror that same nesting inside the
+        // temp directory (`temp_dir/<anchor_mirror_prefix>/<rel_path>`) so
+        // the anchor still resolves against paths under the mirrored root.
         let temp_dir = tempfile::TempDir::new()
             .map_err(|e| format!("failed to create temp directory: {e}"))?;
-        let temp_root = temp_dir.path().to_path_buf();
+        let temp_root = match &anchor_mirror_prefix {
+            Some(prefix) => temp_dir.path().join(prefix),
+            None => temp_dir.path().to_path_buf(),
+        };
 
         for file in &scm_files {
             let rel_path = file.strip_prefix(&root).map_err(|_| {
@@ -341,9 +394,39 @@ pub(crate) async fn run_scan(
         );
 
         let effective = temp_root;
-        (effective, Some(temp_dir))
+        let anchor_base = anchor_mirror_prefix.is_some().then(|| temp_dir.path().to_path_buf());
+        (effective, Some(temp_dir), anchor_base)
     } else {
-        (root.clone(), None)
+        (root.clone(), None, None)
+    };
+
+    // Remap the config-origin anchors (if set) into the temp directory's
+    // mirrored structure so `strip_prefix` keeps resolving once discovery
+    // moves to `effective_root` under `--until` (str-1q12y review follow-up).
+    let (include_anchor, exclude_anchor) = match &until_anchor_base {
+        Some(anchor_base) => (
+            until_temp_anchor(include_anchor, exclude_anchor, include_anchor, anchor_base),
+            until_temp_anchor(include_anchor, exclude_anchor, exclude_anchor, anchor_base),
+        ),
+        None => (include_anchor.map(Path::to_path_buf), exclude_anchor.map(Path::to_path_buf)),
+    };
+    let include_anchor = include_anchor.as_deref();
+    let exclude_anchor = exclude_anchor.as_deref();
+
+    // Config-file include/exclude patterns are anchored at the config file's
+    // directory (project root) via `include_anchor`/`exclude_anchor`, so
+    // project-root patterns like `web/src/**/*.test.tsx` keep working when the
+    // scan root is a subdirectory. CLI `--include`/`--exclude` pass `None`
+    // (scan-root-relative). Under `--until`, both anchors have already been
+    // remapped into the temp directory's mirrored structure above. See
+    // str-1q12y.
+    let options = DiscoveryOptions {
+        include_patterns: include_patterns.to_vec(),
+        exclude_patterns: exclude_patterns.to_vec(),
+        include_anchor: include_anchor.map(Path::to_path_buf),
+        exclude_anchor: exclude_anchor.map(Path::to_path_buf),
+        respect_gitignore: true,
+        max_depth,
     };
 
     // When using --until, isolate .shatter state so HEAD seeds/specs aren't clobbered.
@@ -1964,6 +2047,88 @@ mod tests {
         AdapterHint, BranchInfo, BranchType, ExecutionAdapter, FunctionAnalysis, InvocationModel,
     };
     use shatter_core::types::{ParamInfo, TypeInfo};
+
+    // ── str-1q12y (review follow-up): `--until` temp-dir anchor remapping ──
+
+    #[test]
+    fn until_anchor_mirror_prefix_none_when_no_anchor_set() {
+        assert_eq!(
+            until_anchor_mirror_prefix(Path::new("/project/web/src"), None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn until_anchor_mirror_prefix_is_root_relative_to_config_dir() {
+        let root = Path::new("/project/web/src");
+        let anchor = Path::new("/project");
+        assert_eq!(
+            until_anchor_mirror_prefix(root, Some(anchor), Some(anchor)),
+            Some(PathBuf::from("web/src"))
+        );
+    }
+
+    #[test]
+    fn until_anchor_mirror_prefix_empty_when_anchor_is_root() {
+        let root = Path::new("/project/web/src");
+        assert_eq!(
+            until_anchor_mirror_prefix(root, Some(root), None),
+            Some(PathBuf::new())
+        );
+    }
+
+    #[test]
+    fn until_temp_anchor_remaps_config_anchor_under_temp_base() {
+        let root = Path::new("/project/web/src");
+        let anchor = Path::new("/project");
+        let temp_base = Path::new("/tmp/until-xyz");
+        assert_eq!(
+            until_temp_anchor(Some(anchor), Some(anchor), Some(anchor), temp_base),
+            Some(temp_base.to_path_buf()),
+            "the outer anchor itself must map onto the temp base"
+        );
+
+        // Round-trip: mirroring `root` under the temp base at the mirror
+        // prefix, then remapping the anchor, must land at a real ancestor of
+        // the mirrored root — i.e. `strip_prefix` against the remapped
+        // anchor succeeds for a file under the mirrored root.
+        let mirror_prefix = until_anchor_mirror_prefix(root, Some(anchor), Some(anchor)).unwrap();
+        let mirrored_root = temp_base.join(&mirror_prefix);
+        let remapped_anchor =
+            until_temp_anchor(Some(anchor), Some(anchor), Some(anchor), temp_base).unwrap();
+        assert!(
+            mirrored_root.strip_prefix(&remapped_anchor).is_ok(),
+            "mirrored root {mirrored_root:?} must be nested under the remapped anchor {remapped_anchor:?}"
+        );
+    }
+
+    #[test]
+    fn until_temp_anchor_handles_differing_include_exclude_anchors() {
+        // include_anchor is the project root; exclude_anchor is a nested
+        // subdirectory's own config (both are valid, distinct ancestors of
+        // `root` in principle). The outer anchor (fewest components) governs
+        // the mirror; the inner one remaps to a nested path under it.
+        let outer = Path::new("/project");
+        let inner = Path::new("/project/web");
+        let temp_base = Path::new("/tmp/until-xyz");
+        assert_eq!(
+            until_temp_anchor(Some(outer), Some(inner), Some(outer), temp_base),
+            Some(temp_base.to_path_buf())
+        );
+        assert_eq!(
+            until_temp_anchor(Some(outer), Some(inner), Some(inner), temp_base),
+            Some(temp_base.join("web"))
+        );
+    }
+
+    #[test]
+    fn until_temp_anchor_none_when_anchor_unset() {
+        let temp_base = Path::new("/tmp/until-xyz");
+        assert_eq!(
+            until_temp_anchor(Some(Path::new("/project")), None, None, temp_base),
+            None
+        );
+    }
 
     // ── str-6q1i: --resume value classification ──
 

@@ -31,7 +31,8 @@ pub(crate) struct RunScope {
     pub(crate) coverage_budget_gates: shatter_core::config::CoverageBudgetGates,
 }
 
-/// Build a [`RunScope`] from the project config in `root` (if any).
+/// Build a [`RunScope`] from the project config found by walking up from
+/// `root` (if any).
 ///
 /// Falls back to defaults when `shatter.config.json` is absent or unreadable.
 /// On parse failure, logs a warning and returns defaults so `run` still
@@ -39,15 +40,19 @@ pub(crate) struct RunScope {
 /// existing `scan` wiring also degrades to defaults on parse error and we
 /// keep parity with that behavior.
 pub(crate) fn run_scope_from_project_config(root: &Path) -> RunScope {
-    let project_cfg = match shatter_config::load_project_config(root) {
-        Ok(cfg) => cfg,
+    // Walk up from `root` rather than only inspecting it directly, so `run`
+    // against a subdirectory still picks up a project-root config — the same
+    // walk-up `scan` uses (str-1q12y). `root` is already canonicalized by the
+    // caller, so the returned anchor is too.
+    let found = match shatter_config::find_project_config(root) {
+        Ok(found) => found,
         Err(e) => {
             log::warn!("Failed to load project config from {}: {e}", root.display());
             None
         }
     };
 
-    let Some(cfg) = project_cfg else {
+    let Some((cfg, project_config_dir)) = found else {
         return RunScope::default();
     };
 
@@ -55,11 +60,13 @@ pub(crate) fn run_scope_from_project_config(root: &Path) -> RunScope {
         options: DiscoveryOptions {
             include_patterns: cfg.include.clone(),
             exclude_patterns: cfg.exclude.clone(),
-            // `run` loads the config from `root` and scans `root`, so config
-            // patterns are already scan-root-relative — no separate anchor
-            // needed (str-1q12y).
-            include_anchor: None,
-            exclude_anchor: None,
+            // The config may live at `root` itself or at an ancestor when
+            // `root` is a subdirectory of the project. Anchor patterns at the
+            // directory the config was found in so project-root-anchored
+            // patterns keep matching regardless of which directory `run` was
+            // invoked against (str-1q12y).
+            include_anchor: Some(project_config_dir.clone()),
+            exclude_anchor: Some(project_config_dir),
             respect_gitignore: true,
             max_depth: cfg.max_depth,
         },
@@ -2202,6 +2209,55 @@ mod tests {
         assert!(scope.options.max_depth.is_none());
         assert!(scope.language_filter.is_none());
         assert!(scope.options.respect_gitignore);
+    }
+
+    /// `run` against a subdirectory of the project must still pick up (and
+    /// correctly anchor) a project-root `shatter.config.json`, mirroring the
+    /// `scan` fix in str-1q12y. Before this fix, `run_scope_from_project_config`
+    /// only inspected `root` itself via `load_project_config`, so a
+    /// project-root config was silently dropped entirely (not just
+    /// mis-anchored) when `run` was invoked against a subdirectory.
+    #[test]
+    fn run_scope_walks_up_to_project_root_config_for_subdir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project_root = dir.path();
+
+        // Project-root config with a root-anchored exclude pattern.
+        fs::write(
+            project_root.join("shatter.config.json"),
+            r#"{ "exclude": ["web/src/**/*.test.tsx"] }"#,
+        )
+        .expect("write config");
+
+        let scan_root = project_root.join("web/src");
+        fs::create_dir_all(&scan_root).expect("mkdir web/src");
+        fs::write(scan_root.join("app.tsx"), "export const App = () => null;\n")
+            .expect("write app.tsx");
+        fs::write(scan_root.join("app.test.tsx"), "test('x', () => {});\n")
+            .expect("write app.test.tsx");
+
+        // `run` canonicalizes its root before calling this (see `run_run`).
+        let scan_root = scan_root.canonicalize().expect("canonicalize");
+        let scope = run_scope_from_project_config(&scan_root);
+        assert_eq!(
+            scope.options.exclude_patterns,
+            vec!["web/src/**/*.test.tsx".to_string()]
+        );
+
+        let files = discovery::discover_files(&scan_root, &scope.options).expect("discover");
+        let paths: Vec<String> = files
+            .iter()
+            .map(|(p, _)| p.strip_prefix(&scan_root).unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            paths.iter().any(|p| p.ends_with("app.tsx")),
+            "expected app.tsx in discovered files, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("app.test.tsx")),
+            "root-anchored exclude from the project-root config must still prune app.test.tsx \
+             when `run` is invoked against a subdirectory, got {paths:?}"
+        );
     }
 
     /// `language` in project config restricts discovered files to the matching
