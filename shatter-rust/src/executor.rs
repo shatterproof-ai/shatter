@@ -3259,6 +3259,7 @@ fn crate_bridge_source_hash(
         Ok(files)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn hash_dir(
         hasher: &mut std::collections::hash_map::DefaultHasher,
         crate_root: &Path,
