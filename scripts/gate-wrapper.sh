@@ -45,14 +45,28 @@ run_governed() {
 
   csv="${HOME}/.cache/shatter/gate-times.csv"
   mkdir -p "$(dirname "$csv")" 2>/dev/null || true
-  echo "$(date -Is),$PWD,$label,$((end - start)),$rc,$load,$slot,$waited" >> "$csv" 2>/dev/null || true
-  # Trim to a low watermark so the rewrite doesn't happen on every run
-  # (review M1); mktemp avoids concurrent-truncation clobber.
-  if [ "$(wc -l < "$csv" 2>/dev/null || echo 0)" -gt 10000 ]; then
-    tmp=$(mktemp "$csv.XXXXXX" 2>/dev/null) || tmp=""
-    if [ -n "$tmp" ]; then
-      tail -n 8000 "$csv" > "$tmp" && mv "$tmp" "$csv"
+  # The append and the occasional trim-and-replace below must be one
+  # critical section: without a lock, another concurrent agent's `>>` append
+  # can land on the about-to-be-replaced inode in the window between the
+  # trim's temp-file snapshot and its atomic `mv`, silently losing that row
+  # (review follow-up). Reuses the same flock this script already depends
+  # on; degrades to unlocked (best-effort) writes if flock is unavailable.
+  csv_write() {
+    echo "$(date -Is),$PWD,$label,$((end - start)),$rc,$load,$slot,$waited" >> "$csv" 2>/dev/null || true
+    # Trim to a low watermark so the rewrite doesn't happen on every run
+    # (review M1); mktemp avoids concurrent-truncation clobber.
+    if [ "$(wc -l < "$csv" 2>/dev/null || echo 0)" -gt 10000 ]; then
+      tmp=$(mktemp "$csv.XXXXXX" 2>/dev/null) || tmp=""
+      if [ -n "$tmp" ]; then
+        tail -n 8000 "$csv" > "$tmp" && mv "$tmp" "$csv"
+      fi
     fi
+  }
+  if command -v flock >/dev/null 2>&1; then
+    exec {csv_lockfd}>"$csv.lock" 2>/dev/null && flock "$csv_lockfd" && csv_write
+    [ -n "${csv_lockfd:-}" ] && exec {csv_lockfd}>&-
+  else
+    csv_write
   fi
   return "$rc"
 }
@@ -74,6 +88,14 @@ case "$slots" in
     slots=$(( ncpu / 8 )); [ "$slots" -ge 1 ] || slots=1
     ;;
 esac
+# An explicit 0 (or anything below 1) would make try_slots' `seq 1 "$slots"`
+# iterate zero times, permanently failing and hanging every gate forever
+# instead of running or falling back to ungoverned execution (review
+# follow-up). Floor it the same way the computed default already is.
+[ "$slots" -ge 1 ] || {
+  echo "[gate-wrapper] $label: SHATTER_HEAVY_SLOTS='$slots' must be >= 1; using 1" >&2
+  slots=1
+}
 
 lockdir="${XDG_RUNTIME_DIR:-/tmp}/shatter-heavy-slots"
 if ! mkdir -p "$lockdir" 2>/dev/null || [ ! -w "$lockdir" ]; then

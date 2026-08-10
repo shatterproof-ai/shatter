@@ -58,16 +58,39 @@ remove_block || true
 # A TOML file may declare [env] only once; appending a fresh [env] header in
 # the marked block is safe only if the file doesn't already have one outside
 # the block. Detect and reuse an existing [env] table instead of duplicating.
-if [ -f "$CONFIG_FILE" ] && grep -qE '^\[env\]' "$CONFIG_FILE"; then
+#
+# The detection regex and the awk insertion pattern below must accept the
+# exact same set of lines as an "[env]" header — a header with trailing
+# whitespace or a CRLF line ending previously matched detection (loose
+# grep) but not insertion (exact-string awk match), so the workaround was
+# silently never written even though the script printed success and exited
+# 0 (review follow-up). Both now tolerate trailing whitespace/CR, and the
+# awk pass verifies it actually inserted the block rather than trusting the
+# detection regex blindly.
+#
+# `\t`/`\r` are gawk regex escapes but NOT POSIX ERE escapes — GNU grep -E
+# (unlike -P) treats a bare `\t`/`\r` as a literal "t"/"r", so embed the real
+# tab/CR bytes via $'...' instead of relying on grep to interpret them.
+tab=$(printf '\t')
+cr=$(printf '\r')
+env_header_re="^\\[env\\][ ${tab}]*${cr}?\$"
+if [ -f "$CONFIG_FILE" ] && grep -qE "$env_header_re" "$CONFIG_FILE"; then
     tmp="$(mktemp "$CONFIG_DIR/config.toml.XXXXXX")"
-    awk -v b="$MARK_BEGIN" -v e="$MARK_END" -v inc="$GCC_INCLUDE" '
+    if ! awk -v b="$MARK_BEGIN" -v e="$MARK_END" -v inc="$GCC_INCLUDE" '
         {print}
-        /^\[env\]$/ && !done {
+        /^\[env\][ \t]*\r?$/ && !done {
             print b
             print "BINDGEN_EXTRA_CLANG_ARGS = { value = \"-I" inc "\", force = false }"
             print e
             done=1
-        }' "$CONFIG_FILE" > "$tmp"
+        }
+        END { if (!done) exit 1 }' "$CONFIG_FILE" > "$tmp"; then
+        rm -f "$tmp"
+        echo "error: found an [env] table in $CONFIG_FILE but could not insert the bindgen workaround next to it" >&2
+        echo "  add this line under [env] manually:" >&2
+        echo "  BINDGEN_EXTRA_CLANG_ARGS = { value = \"-I${GCC_INCLUDE}\", force = false }" >&2
+        exit 1
+    fi
     mv "$tmp" "$CONFIG_FILE"
 else
     {
