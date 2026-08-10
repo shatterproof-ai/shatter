@@ -547,7 +547,7 @@ func TestDedupeMocks_SameBaseNamePackagesDoNotCollide(t *testing.T) {
 	deduped := DedupeMocks([]MockConfig{
 		{Symbol: "example.com/a/util.Do", Expression: "fakeA()"},
 		{Symbol: "example.com/b/util.Do", Expression: "fakeB()"},
-	})
+	}, nil)
 	if len(deduped) != 2 {
 		t.Fatalf("expected both same-base-name mocks preserved, got %d: %+v", len(deduped), deduped)
 	}
@@ -563,10 +563,12 @@ func TestDedupeMocks_SameBaseNamePackagesDoNotCollide(t *testing.T) {
 // contributions, not replace the wire entry wholesale.
 
 func TestDedupeMocks_PreservesWireFieldsOnUpgrade(t *testing.T) {
+	var warnings []string
+	logf := func(msg string, args ...any) { warnings = append(warnings, msg) }
 	deduped := DedupeMocks([]MockConfig{
 		{Symbol: "auth:GetAccount", ReturnValues: []any{1, 2}, ShouldTrackCalls: true, DefaultBehavior: "repeat_last"},
 		{Symbol: "auth.GetAccount", Expression: "&auth.Account{}"},
-	})
+	}, logf)
 	if len(deduped) != 1 {
 		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
 	}
@@ -583,6 +585,12 @@ func TestDedupeMocks_PreservesWireFieldsOnUpgrade(t *testing.T) {
 	if m.DefaultBehavior != "repeat_last" {
 		t.Errorf("wire DefaultBehavior discarded: %+v", m)
 	}
+	// The struct field survives the merge, but no shim is ever generated for
+	// an Expression-bearing entry (wireShimMocks), so ShouldTrackCalls has no
+	// effect here — the merge must say so instead of claiming a silent win.
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "should_track_calls has no effect") {
+		t.Errorf("expected a should_track_calls-has-no-effect warning, got %v", warnings)
+	}
 }
 
 // halves regardless of which entry (wire or config) is seen first.
@@ -591,13 +599,36 @@ func TestDedupeMocks_MergeOrderIndependent(t *testing.T) {
 	deduped := DedupeMocks([]MockConfig{
 		{Symbol: "auth.GetAccount", Expression: "&auth.Account{}"},
 		{Symbol: "auth:GetAccount", ReturnValues: []any{1}, ShouldTrackCalls: true},
-	})
+	}, nil)
 	if len(deduped) != 1 {
 		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
 	}
 	m := deduped[0]
 	if m.Expression != "&auth.Account{}" || len(m.ReturnValues) != 1 || !m.ShouldTrackCalls {
 		t.Fatalf("merge dropped a field: %+v", m)
+	}
+}
+
+// TestDedupeMocks_ConflictingReturnValuesWarnsAndKeepsFirst covers
+// mergeMockConfigs' conflict path: two entries proven to name the same
+// symbol both supply non-empty, DIFFERENT ReturnValues. The old code silently
+// kept whichever was first-seen; the merge must still keep it (order stays
+// deterministic) but must not do so silently.
+func TestDedupeMocks_ConflictingReturnValuesWarnsAndKeepsFirst(t *testing.T) {
+	var warnings []string
+	logf := func(msg string, args ...any) { warnings = append(warnings, msg) }
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "auth:GetAccount", ReturnValues: []any{1, 2}},
+		{Symbol: "auth:GetAccount", ReturnValues: []any{3, 4}},
+	}, logf)
+	if len(deduped) != 1 {
+		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
+	}
+	if len(deduped[0].ReturnValues) != 2 || deduped[0].ReturnValues[0] != 1 {
+		t.Errorf("expected first-seen ReturnValues kept, got %+v", deduped[0])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "conflicting return_values") {
+		t.Errorf("expected a conflicting-return_values warning, got %v", warnings)
 	}
 }
 
@@ -686,5 +717,34 @@ func TestRewriteMockCallSites_UnpinnedSubstitutionStillMatches(t *testing.T) {
 	out, n := rewrite(t, src, subs)
 	if n != 1 || !strings.Contains(out, `"any"`) {
 		t.Errorf("unpinned substitution should still rewrite (n=%d):\n%s", n, out)
+	}
+}
+
+// A pinned (path-qualified) candidate must always win over an unpinned
+// (bare) one at a site both match, regardless of which order they appear in
+// `candidates` — mockImportIdentityMatches passes an unpinned candidate
+// unconditionally, so without an explicit pinned-first pass the bare
+// candidate could mask the more specific pinned one whenever it happened to
+// sort first.
+func TestRewriteMockCallSites_PinnedCandidateWinsRegardlessOfOrder(t *testing.T) {
+	src := "package target\n\n" +
+		"import \"specific/auth\"\n\n" +
+		"var A = auth.GetName()\n"
+	bare := MockSubstitution{
+		QualifiedFunction: "auth.GetName", Expression: `"fromBare"`, TypeResolved: true, AllowPackageScope: true,
+	}
+	pinned := MockSubstitution{
+		QualifiedFunction: "auth.GetName", Expression: `"fromPinned"`, TypeResolved: true,
+		AllowPackageScope: true, ImportPath: "specific/auth",
+	}
+
+	outBareFirst, n := rewrite(t, src, []MockSubstitution{bare, pinned})
+	if n != 1 || !strings.Contains(outBareFirst, `"fromPinned"`) {
+		t.Errorf("bare-first order: expected pinned candidate to win (n=%d):\n%s", n, outBareFirst)
+	}
+
+	outPinnedFirst, n := rewrite(t, src, []MockSubstitution{pinned, bare})
+	if n != 1 || !strings.Contains(outPinnedFirst, `"fromPinned"`) {
+		t.Errorf("pinned-first order: expected pinned candidate to win (n=%d):\n%s", n, outPinnedFirst)
 	}
 }

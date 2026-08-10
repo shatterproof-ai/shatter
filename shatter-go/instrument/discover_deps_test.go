@@ -98,3 +98,31 @@ func F() { fetch.NewCacheOnly("") }
 		t.Fatalf("module:export symbol should suppress the import; got %v", mods)
 	}
 }
+
+// A colon-form symbol whose module segment has no slash (a single-segment
+// import path — every stdlib package: "fmt", "os", "strings") still
+// suppresses only its EXACT import path, not any import sharing that local
+// name. Regression coverage for str-djcv2 review fix: parseMockSymbol
+// deliberately classifies a slash-free colon form as bare (for
+// DedupeMocks/rewriter purposes — see parsedMockSymbol's doc comment), so
+// this suppression pass must recover the colon signal itself rather than
+// routing through parseMockSymbol directly.
+func TestDiscoverDependenciesSingleSegmentColonSymbolSuppressesExactPathOnly(t *testing.T) {
+	path := writeDepSource(t, `package target
+
+import (
+	"fmt"
+	myfmt "example.com/utils/fmt"
+)
+
+func F() { fmt.Println(""); myfmt.Println("") }
+`)
+	deps := discoverDependencies(path, []MockConfig{{Symbol: "fmt:Println"}})
+	mods := reportedModules(deps)
+	if mods["fmt"] {
+		t.Fatalf("single-segment colon symbol should suppress its exact import path; got %v", mods)
+	}
+	if !mods["example.com/utils/fmt"] {
+		t.Fatalf("an unrelated import sharing the local name must stay reported; got %v", mods)
+	}
+}

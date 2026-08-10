@@ -72,6 +72,12 @@ func resolveMockSubstitutionScopes(
 	}
 
 	matched := make([]bool, len(subs))
+	// shadowed records subs that DID match a call site's function name and
+	// package but lost to a more specific (path-qualified) sub at every site
+	// they matched — distinct from never matching at all, so the inactive-mock
+	// log below doesn't tell an operator debugging a shadowed bare mock that
+	// it "was not called" when it was, just always overridden.
+	shadowed := make([]bool, len(subs))
 	// basePaths records, per bare-mock base qualifier, the distinct import paths
 	// it matched, so an ambiguous base name (two packages, same base) warns.
 	basePaths := map[string]map[string]bool{}
@@ -121,6 +127,7 @@ func resolveMockSubstitutionScopes(
 			}
 			for _, i := range hits {
 				if pathQualified && subs[i].ImportPath == "" {
+					shadowed[i] = true
 					continue
 				}
 				base, _ := mockSymbolParts(subs[i])
@@ -154,7 +161,13 @@ func resolveMockSubstitutionScopes(
 			continue
 		}
 		obtain(subs[i].QualifiedFunction, subs[i].Expression)
-		if logf != nil {
+		if logf == nil {
+			continue
+		}
+		if shadowed[i] {
+			logf("mock substitution: bare mock is always shadowed by a path-qualified mock at every site it matched; inactive",
+				"symbol", subs[i].QualifiedFunction)
+		} else {
 			logf("mock substitution: symbol not called as a package function; inactive",
 				"symbol", subs[i].QualifiedFunction)
 		}
@@ -164,7 +177,7 @@ func resolveMockSubstitutionScopes(
 		for base, paths := range basePaths {
 			if len(paths) > 1 {
 				logf("mock substitution: bare qualifier matches multiple packages; substituting in all — use a path-qualified spelling to disambiguate",
-					"qualifier", base, "paths", sortedStrings(paths))
+					"qualifier", base, "paths", sortedStringSet(paths))
 			}
 		}
 	}
@@ -223,8 +236,8 @@ func mockSymbolParts(s instrument.MockSubstitution) (base, fn string) {
 	return s.QualifiedFunction[:dot], s.QualifiedFunction[dot+1:]
 }
 
-// sortedStrings returns the set's members in sorted order, for stable logging.
-func sortedStrings(set map[string]bool) []string {
+// sortedStringSet returns the set's members in sorted order, for stable logging.
+func sortedStringSet(set map[string]bool) []string {
 	out := make([]string, 0, len(set))
 	for s := range set {
 		out = append(out, s)

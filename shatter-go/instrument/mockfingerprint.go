@@ -39,11 +39,13 @@ func MockFingerprint(mocks []MockConfig) string {
 // SubstitutionsFingerprint returns a deterministic, order-independent
 // canonical string for a resolved substitution set. The launcher binary bakes
 // in which call sites were rewritten, and that is a function of the resolution
-// OUTCOME (TypeResolved, AllowedFuncs, AllowPackageScope), not just of the
-// mock config: a transient type-load failure flips the whole set to the
-// syntactic fallback, which can rewrite different sites. Feeding this into
-// build.cacheKey keeps a fallback-built binary from being reused by later
-// builds that resolved cleanly (str-c8djq cross-file review).
+// OUTCOME (TypeResolved, AllowedFuncs, AllowPackageScope, ImportPath), not
+// just of the mock config: a transient type-load failure flips the whole set
+// to the syntactic fallback, which can rewrite different sites, and ImportPath
+// (str-djcv2) changes which of two same-spelled candidates the rewriter picks
+// at a given call site. Feeding this into build.cacheKey keeps a
+// fallback-built (or wrong-candidate-pinned) binary from being reused by later
+// builds that resolved differently (str-c8djq cross-file review).
 func SubstitutionsFingerprint(subs []MockSubstitution) string {
 	if len(subs) == 0 {
 		return ""
@@ -60,6 +62,7 @@ func SubstitutionsFingerprint(subs []MockSubstitution) string {
 		parts = append(parts, strings.Join([]string{
 			s.QualifiedFunction,
 			s.Expression,
+			s.ImportPath,
 			strconv.FormatBool(s.TypeResolved),
 			strconv.FormatBool(s.AllowPackageScope),
 			strings.Join(funcs, ","),

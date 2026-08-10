@@ -80,6 +80,17 @@ type MockSubstitution struct {
 // when the symbol carried a full slash-bearing import path, in which case
 // matching and dedupe can key on package identity instead of the ambiguous
 // base name.
+//
+// The slash-free colon form ("auth:GetAccount") is deliberately classified as
+// bare, not path-qualified, even though a colon always originates from a real
+// import path: DedupeMocks and the rewriter must let it collapse with — and
+// be overridden by — a user's dotted config spelling for the same function
+// ("auth.GetAccount"), which is the whole point of the wire-to-config upgrade
+// path. Treating it as path-qualified here would split that identity in two.
+// discoverDependencies (executor.go) needs the opposite precision for
+// dependency-SUPPRESSION (an exact import path, not "any same-named
+// package"), so it recovers the colon signal itself before falling back to
+// this shared parse.
 type parsedMockSymbol struct {
 	ImportPath string // full import path when path-qualified, else ""
 	Base       string // final package qualifier / base name
@@ -198,7 +209,14 @@ func MockSubstitutionsFromConfigs(mocks []MockConfig) []MockSubstitution {
 // wholesale used to discard the wire fields (str-djcv2). The single surviving
 // entry keeps a unique sanitizeMockName so generateLoopMockFile cannot emit a
 // duplicate ShatterMock_<name> declaration (str-c8djq review fix 2).
-func DedupeMocks(mocks []MockConfig) []MockConfig {
+//
+// logf (may be nil) receives a one-line warning whenever a merge silently
+// picks a side: two genuinely conflicting non-empty values for the same
+// field (mergeMockConfigs keeps the first-seen one), or a wire mock's
+// ShouldTrackCalls surviving onto a merged entry whose Expression makes the
+// ShatterMock shim — the only thing that acts on ShouldTrackCalls — never
+// get generated for it (wireShimMocks, build/instrumented_overlay.go).
+func DedupeMocks(mocks []MockConfig, logf func(msg string, args ...any)) []MockConfig {
 	if len(mocks) < 2 {
 		return mocks
 	}
@@ -207,7 +225,7 @@ func DedupeMocks(mocks []MockConfig) []MockConfig {
 	for _, m := range mocks {
 		key := mockDedupeKey(m.Symbol)
 		if i, seen := pos[key]; seen {
-			out[i] = mergeMockConfigs(out[i], m)
+			out[i] = mergeMockConfigs(out[i], m, logf)
 			continue
 		}
 		pos[key] = len(out)
@@ -247,23 +265,63 @@ func mockDedupeKey(symbol string) string {
 // preserving each half's contribution: Expression (config call-site
 // substitution) and the wire shim fields (ReturnValues, ShouldTrackCalls,
 // DefaultBehavior). The existing (first-seen) entry's Symbol spelling is kept
-// for a stable sanitizeMockName. Non-empty / true values win field-by-field so
-// the merge is order-independent for the fields either side supplies.
-func mergeMockConfigs(existing, incoming MockConfig) MockConfig {
+// for a stable sanitizeMockName. A field with only one non-empty side takes
+// that value, so the merge is order-independent when the two sides do not
+// overlap — the common case, since wire mocks carry ReturnValues/behavior and
+// config mocks carry Expression. When BOTH sides supply a genuinely
+// different non-empty value for the same field, the first-seen (existing)
+// value wins and logf (if non-nil) reports the discarded one — silently
+// picking a side on a real conflict is exactly the failure mode this merge
+// exists to avoid for the Expression-vs-ReturnValues case.
+func mergeMockConfigs(existing, incoming MockConfig, logf func(msg string, args ...any)) MockConfig {
 	merged := existing
 	if strings.TrimSpace(merged.Expression) == "" && strings.TrimSpace(incoming.Expression) != "" {
 		merged.Expression = incoming.Expression
 	}
-	if len(merged.ReturnValues) == 0 && len(incoming.ReturnValues) > 0 {
+	if len(merged.ReturnValues) == 0 {
 		merged.ReturnValues = incoming.ReturnValues
+	} else if len(incoming.ReturnValues) > 0 && !returnValuesEqual(merged.ReturnValues, incoming.ReturnValues) {
+		if logf != nil {
+			logf("mock merge: discarding conflicting return_values",
+				"symbol", merged.Symbol, "kept", merged.ReturnValues, "discarded", incoming.ReturnValues)
+		}
 	}
 	if strings.TrimSpace(merged.DefaultBehavior) == "" && strings.TrimSpace(incoming.DefaultBehavior) != "" {
 		merged.DefaultBehavior = incoming.DefaultBehavior
+	} else if strings.TrimSpace(incoming.DefaultBehavior) != "" && merged.DefaultBehavior != incoming.DefaultBehavior {
+		if logf != nil {
+			logf("mock merge: discarding conflicting default_behavior",
+				"symbol", merged.Symbol, "kept", merged.DefaultBehavior, "discarded", incoming.DefaultBehavior)
+		}
 	}
 	if incoming.ShouldTrackCalls {
 		merged.ShouldTrackCalls = true
 	}
+	// A ShatterMock shim — the only consumer of ShouldTrackCalls/ReturnValues —
+	// is never generated for an Expression-bearing entry (wireShimMocks,
+	// build/instrumented_overlay.go: the call site is replaced by Expression
+	// outright, so a shim for it would never be called). Preserving
+	// ShouldTrackCalls onto such an entry keeps the field on the struct but it
+	// has no effect; say so instead of silently dropping the guarantee.
+	if merged.ShouldTrackCalls && strings.TrimSpace(merged.Expression) != "" && logf != nil {
+		logf("mock merge: should_track_calls has no effect once merged with an expression mock; the call site is replaced outright and no shim is generated",
+			"symbol", merged.Symbol)
+	}
 	return merged
+}
+
+// returnValuesEqual reports whether two ReturnValues slices carry the same
+// values in the same order.
+func returnValuesEqual(a, b []any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // isGoIdentifier reports whether s is a valid Go identifier.
@@ -510,16 +568,17 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 		// the first candidate would win in both — the very collision this
 		// keying exists to prevent. importPaths pins each candidate to the
 		// import this file actually binds to that qualifier.
-		var chosen *MockSubstitution
-		for i := range candidates {
-			if !mockCallSiteAllowed(candidates[i], site.EnclosingFunc, site.Qualifier, imports, boundByFunc) {
-				continue
-			}
-			if !mockImportIdentityMatches(candidates[i], site.Qualifier, importPaths) {
-				continue
-			}
-			chosen = &candidates[i]
-			break
+		//
+		// A pinned (path-qualified) candidate must always win over an unpinned
+		// (bare) one at a site both match — mockImportIdentityMatches passes an
+		// unpinned candidate unconditionally, so relying on `candidates` order
+		// alone would let an unrelated bare candidate mask the more specific
+		// pinned one whenever it happened to sort first. Two explicit passes —
+		// pinned candidates first, unpinned only as a fallback — make that
+		// precedence a property of ImportPath, not of slice order.
+		chosen := selectMockCandidate(candidates, site, imports, importPaths, boundByFunc, true)
+		if chosen == nil {
+			chosen = selectMockCandidate(candidates, site, imports, importPaths, boundByFunc, false)
 		}
 		if chosen == nil {
 			return nil
@@ -579,6 +638,36 @@ func mockImportIdentityMatches(sub MockSubstitution, qualifier string, importPat
 		return true
 	}
 	return path == sub.ImportPath
+}
+
+// selectMockCandidate returns the first candidate substitution that both
+// covers this call site (mockCallSiteAllowed) and matches its package
+// identity (mockImportIdentityMatches), restricted to pinned (ImportPath !=
+// "") candidates when pinnedOnly is true and to unpinned candidates
+// otherwise. Callers run the pinned pass first so a path-qualified mock
+// always wins over a bare one at a site both match, regardless of slice
+// order.
+func selectMockCandidate(
+	candidates []MockSubstitution,
+	site QualifiedCallSite,
+	imports map[string]bool,
+	importPaths map[string]string,
+	boundByFunc map[string]map[string]bool,
+	pinnedOnly bool,
+) *MockSubstitution {
+	for i := range candidates {
+		if (candidates[i].ImportPath != "") != pinnedOnly {
+			continue
+		}
+		if !mockCallSiteAllowed(candidates[i], site.EnclosingFunc, site.Qualifier, imports, boundByFunc) {
+			continue
+		}
+		if !mockImportIdentityMatches(candidates[i], site.Qualifier, importPaths) {
+			continue
+		}
+		return &candidates[i]
+	}
+	return nil
 }
 
 // mockCallSiteAllowed decides whether a matched call site should be rewritten.

@@ -321,34 +321,39 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 		return nil
 	}
 
-	// Build the mocked-import matchers from mock symbols using the shared
-	// parsed-symbol representation (parseMockSymbol) so this suppression pass
-	// and the call-site rewriter agree on package identity (str-djcv2). Shapes:
-	//   "module/path.Func" / "module/path:Export" (path-qualified) — suppress
-	//     the exact import path only, so a same-base-name import from a
-	//     DIFFERENT module stays reported;
-	//   "pkg.Func" (bare qualifier) — suppress any import whose local name
-	//     (alias, or path base; instrument.ImportLocalName) is the qualifier.
-	//     Bare qualifiers can't distinguish same-base-name modules, so this
-	//     over-suppresses when e.g. two different `auth` packages are imported —
-	//     an accepted limit of the source-qualifier spelling; use the
-	//     path-qualified form when it matters.
+	// Build the mocked-import matchers from mock symbols. Shapes:
+	//   "module/path.Func" / "module/path:Export" / "module:Export"
+	//     (colon form, any module) — suppress the exact import path only, so
+	//     a same-base-name import from a DIFFERENT module stays reported. A
+	//     colon always separates a real import path from the exported
+	//     function name (wire/discovery form) even when that import path has
+	//     no slash — a single-segment import path is valid Go (every stdlib
+	//     package: "fmt", "os", "strings"). Checked ahead of the shared
+	//     parsed-symbol representation (parseMockSymbol), which deliberately
+	//     classifies a slash-free colon form as a bare qualifier for
+	//     DedupeMocks/the rewriter's purposes (see parsedMockSymbol's doc
+	//     comment) — this suppression pass needs the opposite precision, an
+	//     exact import-path match rather than same-name-anywhere.
+	//   "pkg.Func" (bare qualifier, dot form) — suppress any import whose
+	//     local name (alias, or path base; instrument.ImportLocalName) is the
+	//     qualifier. Bare qualifiers can't distinguish same-base-name
+	//     modules, so this over-suppresses when e.g. two different `auth`
+	//     packages are imported — an accepted limit of the source-qualifier
+	//     spelling; use the path-qualified form when it matters.
 	mockedModules := make(map[string]bool)
 	mockedQualifiers := make(map[string]bool)
 	for _, m := range mocks {
 		sym := m.Symbol
+		if module, _, found := strings.Cut(sym, ":"); found {
+			mockedModules[module] = true
+			continue
+		}
 		if p, ok := parseMockSymbol(sym); ok {
 			if p.ImportPath != "" {
 				mockedModules[p.ImportPath] = true
 			} else {
 				mockedQualifiers[p.Base] = true
 			}
-			continue
-		}
-		// Fallback for symbols that don't name a qualified function (e.g. a
-		// bare module path "module/path"): suppress that exact import path.
-		if module, _, found := strings.Cut(sym, ":"); found {
-			mockedModules[module] = true
 			continue
 		}
 		mockedModules[sym] = true
