@@ -7,6 +7,7 @@ import (
 	"go/printer"
 	"go/token"
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -186,7 +187,9 @@ func MockSubstitutionsFromConfigs(mocks []MockConfig) []MockSubstitution {
 // (parsedMockSymbol.identityKey): path-qualified symbols collapse only with an
 // exact import-path match, bare symbols by base qualifier. Two packages sharing
 // a base name ("a/util.Do" vs "b/util.Do") therefore no longer collide and
-// silently drop one another (str-djcv2).
+// silently drop one another (str-djcv2). Keeping distinct spellings does mean
+// two wire mocks whose spellings differ but sanitize to the same
+// ShatterMock_<name> can both reach shim generation; see str-heegk.
 //
 // When both a wire mock (ReturnValues, empty Expression) and a config mock
 // (Expression) target the same symbol, they are MERGED rather than replaced:
@@ -477,6 +480,7 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 	}
 
 	imports := importedPackageNames(file)
+	importPaths := importedPackagePaths(file)
 
 	// Precompute per-top-level-function bound names for the shadow checks.
 	// The "" key holds bindings from package-scope function literals, whose
@@ -498,16 +502,24 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 		if !ok {
 			return nil
 		}
-		// First candidate whose allow-list covers this site wins. Candidates
-		// for one spelling have disjoint allow-lists when they came from type
-		// resolution, so at most one can match; order only decides among
-		// syntactic-fallback entries, where the spelling is all we have.
+		// Pick the candidate whose allow-list AND package identity cover this
+		// site. The allow-list alone is not enough to separate two candidates
+		// sharing a local spelling: function-scoped keys are package-unique, but
+		// every package-scope site reports the same empty key, so two same-base
+		// packages each mocked in a different file would both be "allowed" and
+		// the first candidate would win in both — the very collision this
+		// keying exists to prevent. importPaths pins each candidate to the
+		// import this file actually binds to that qualifier.
 		var chosen *MockSubstitution
 		for i := range candidates {
-			if mockCallSiteAllowed(candidates[i], site.EnclosingFunc, site.Qualifier, imports, boundByFunc) {
-				chosen = &candidates[i]
-				break
+			if !mockCallSiteAllowed(candidates[i], site.EnclosingFunc, site.Qualifier, imports, boundByFunc) {
+				continue
 			}
+			if !mockImportIdentityMatches(candidates[i], site.Qualifier, importPaths) {
+				continue
+			}
+			chosen = &candidates[i]
+			break
 		}
 		if chosen == nil {
 			return nil
@@ -526,6 +538,47 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 		return count, fmt.Errorf("mock substitution: %s", strings.Join(parseErrs, "; "))
 	}
 	return count, nil
+}
+
+// importedPackagePaths maps each local package qualifier in a file to the
+// import path it binds. Unlike the type-resolved pass this is purely
+// syntactic — an ImportSpec's alias-or-base-segment and its quoted path — but
+// it is exact for the question the rewriter asks: within THIS file, which
+// package does this qualifier name?
+func importedPackagePaths(file *ast.File) map[string]string {
+	paths := make(map[string]string, len(file.Imports))
+	for _, imp := range file.Imports {
+		name := ImportLocalName(imp)
+		if name == "" || imp.Path == nil {
+			continue
+		}
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		paths[name] = path
+	}
+	return paths
+}
+
+// mockImportIdentityMatches reports whether a substitution pinned to a package
+// identity may fire at a call site in this file.
+//
+// A substitution with no ImportPath is unpinned and matches anywhere its
+// allow-list permits (the syntactic fallback, and bare mocks that legitimately
+// span several same-base packages). A pinned substitution fires only when this
+// file's import for the qualifier is the same package. When the file has no
+// import under that name at all, the qualifier cannot be resolved here, so the
+// pin is not treated as a mismatch — the allow-list checks already decided.
+func mockImportIdentityMatches(sub MockSubstitution, qualifier string, importPaths map[string]string) bool {
+	if sub.ImportPath == "" {
+		return true
+	}
+	path, ok := importPaths[qualifier]
+	if !ok {
+		return true
+	}
+	return path == sub.ImportPath
 }
 
 // mockCallSiteAllowed decides whether a matched call site should be rewritten.

@@ -47,6 +47,11 @@ func resolveMockSubstitutionScopes(
 		expr     string
 		allowed  map[string]bool
 		allowPkg bool
+		// paths is the set of import paths this entry's call sites resolved to.
+		// Exactly one means the entry can be pinned to that package identity,
+		// which is what lets the rewriter tell two same-spelled candidates apart
+		// at package scope (where the enclosing-function key is "" for both).
+		paths map[string]bool
 	}
 	resolved := map[string]*resolvedSub{}
 	var order []string
@@ -54,7 +59,12 @@ func resolveMockSubstitutionScopes(
 		key := spelling + "\x00" + expr
 		rs, ok := resolved[key]
 		if !ok {
-			rs = &resolvedSub{spelling: spelling, expr: expr, allowed: map[string]bool{}}
+			rs = &resolvedSub{
+				spelling: spelling,
+				expr:     expr,
+				allowed:  map[string]bool{},
+				paths:    map[string]bool{},
+			}
 			resolved[key] = rs
 			order = append(order, key)
 		}
@@ -85,6 +95,15 @@ func resolveMockSubstitutionScopes(
 			// spelling (str-djcv2).
 			resolvedPath := pkgName.Imported().Path()
 			resolvedBase := pkgName.Imported().Name()
+
+			// Collect every mock that names this call site, then keep only the
+			// most specific class. A path-qualified spelling identifies the
+			// package exactly, so when one matches it must win over a bare
+			// base-name shorthand that also matches — otherwise the shorthand,
+			// which sorts first, would silently render the precise entry inert
+			// and invert the documented precedence.
+			var hits []int
+			pathQualified := false
 			for i := range subs {
 				base, fn := mockSymbolParts(subs[i])
 				if fn != site.FuncName {
@@ -94,13 +113,22 @@ func resolveMockSubstitutionScopes(
 					if resolvedPath != subs[i].ImportPath {
 						continue
 					}
+					pathQualified = true
 				} else if resolvedBase != base {
 					continue
 				}
+				hits = append(hits, i)
+			}
+			for _, i := range hits {
+				if pathQualified && subs[i].ImportPath == "" {
+					continue
+				}
+				base, _ := mockSymbolParts(subs[i])
 				matched[i] = true
 				// Key by the spelling actually used at this call site so the
 				// rewriter — which matches on spelling — can find it.
 				rs := obtain(site.Qualifier+"."+site.FuncName, subs[i].Expression)
+				rs.paths[resolvedPath] = true
 				if site.EnclosingFunc == "" {
 					rs.allowPkg = true
 				} else {
@@ -144,12 +172,26 @@ func resolveMockSubstitutionScopes(
 	out := make([]instrument.MockSubstitution, 0, len(order))
 	for _, key := range order {
 		rs := resolved[key]
+		// Pin the entry to a package identity when all its sites agreed on one.
+		// The rewriter uses this to separate two candidates that share a local
+		// spelling but name different packages — the allow-list alone cannot,
+		// because at package scope both candidates carry the same empty
+		// enclosing-function key. Leave it empty when a bare mock legitimately
+		// spanned several packages (the ambiguity warning above covers that
+		// case, and the documented behavior there is to substitute in all).
+		importPath := ""
+		if len(rs.paths) == 1 {
+			for p := range rs.paths {
+				importPath = p
+			}
+		}
 		out = append(out, instrument.MockSubstitution{
 			QualifiedFunction: rs.spelling,
 			Expression:        rs.expr,
 			AllowedFuncs:      rs.allowed,
 			AllowPackageScope: rs.allowPkg,
 			TypeResolved:      true,
+			ImportPath:        importPath,
 		})
 	}
 	return out
@@ -165,11 +207,14 @@ func resolveMockSubstitutionScopes(
 // resolving to nothing — the failure mode would be an empty allow-list, which
 // the rewriter reads as "rewrite nowhere" and mocks would quietly stop applying.
 func mockSymbolParts(s instrument.MockSubstitution) (base, fn string) {
-	if s.BaseQualifier != "" {
-		if len(s.BaseQualifier) < len(s.QualifiedFunction) {
-			return s.BaseQualifier, s.QualifiedFunction[len(s.BaseQualifier)+1:]
-		}
-		return s.BaseQualifier, ""
+	// Only trust BaseQualifier when QualifiedFunction actually carries it as a
+	// prefix. Feeding this pass's own output back in (or any producer that
+	// re-keys the spelling to an alias) leaves BaseQualifier describing a
+	// different qualifier than the spelling, and slicing blindly would yield a
+	// truncated function name that matches nothing — silently disabling the
+	// mock rather than failing.
+	if s.BaseQualifier != "" && strings.HasPrefix(s.QualifiedFunction, s.BaseQualifier+".") {
+		return s.BaseQualifier, s.QualifiedFunction[len(s.BaseQualifier)+1:]
 	}
 	dot := strings.LastIndex(s.QualifiedFunction, ".")
 	if dot < 0 {

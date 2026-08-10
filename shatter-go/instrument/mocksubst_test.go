@@ -629,3 +629,62 @@ func TestRewriteMockCallSites_MultipleCandidatesPerSpelling(t *testing.T) {
 		t.Errorf("candidate selection mismatched function order:\n%s", out)
 	}
 }
+
+// Package-scope call sites all report the same empty enclosing-function key, so
+// the allow-list cannot separate two candidates that share a local spelling —
+// both set AllowPackageScope and the first would win everywhere. That silently
+// reintroduces the same-base-name collision this keying exists to prevent (a
+// package-level `var B = util.Do()` initialized with the OTHER package's mock).
+// The candidate's resolved ImportPath, checked against the import this file
+// actually binds to the qualifier, is what tells them apart.
+func TestRewriteMockCallSites_PackageScopeCandidatesDisambiguateByImportPath(t *testing.T) {
+	fileA := "package target\n\n" +
+		"import \"a/util\"\n\n" +
+		"var A = util.Do()\n"
+	fileB := "package target\n\n" +
+		"import \"b/util\"\n\n" +
+		"var B = util.Do()\n"
+	subs := []MockSubstitution{
+		{
+			QualifiedFunction: "util.Do", Expression: `"fromA"`, TypeResolved: true,
+			AllowPackageScope: true, ImportPath: "a/util",
+		},
+		{
+			QualifiedFunction: "util.Do", Expression: `"fromB"`, TypeResolved: true,
+			AllowPackageScope: true, ImportPath: "b/util",
+		},
+	}
+
+	outA, nA := rewrite(t, fileA, subs)
+	if nA != 1 || !strings.Contains(outA, `"fromA"`) {
+		t.Errorf("file importing a/util should get fromA (n=%d):\n%s", nA, outA)
+	}
+	if strings.Contains(outA, `"fromB"`) {
+		t.Errorf("file importing a/util wrongly got b/util's expression:\n%s", outA)
+	}
+
+	outB, nB := rewrite(t, fileB, subs)
+	if nB != 1 || !strings.Contains(outB, `"fromB"`) {
+		t.Errorf("file importing b/util should get fromB (n=%d):\n%s", nB, outB)
+	}
+	if strings.Contains(outB, `"fromA"`) {
+		t.Errorf("file importing b/util wrongly got a/util's expression:\n%s", outB)
+	}
+}
+
+// An unpinned substitution (no ImportPath) keeps matching anywhere its
+// allow-list permits: that covers the syntactic fallback and a bare mock that
+// legitimately spans several same-base packages, where the documented behavior
+// is to substitute in all of them.
+func TestRewriteMockCallSites_UnpinnedSubstitutionStillMatches(t *testing.T) {
+	src := "package target\n\n" +
+		"import \"a/util\"\n\n" +
+		"var A = util.Do()\n"
+	subs := []MockSubstitution{
+		{QualifiedFunction: "util.Do", Expression: `"any"`, TypeResolved: true, AllowPackageScope: true},
+	}
+	out, n := rewrite(t, src, subs)
+	if n != 1 || !strings.Contains(out, `"any"`) {
+		t.Errorf("unpinned substitution should still rewrite (n=%d):\n%s", n, out)
+	}
+}
