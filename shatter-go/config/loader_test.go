@@ -81,6 +81,73 @@ functions:
 	}
 }
 
+func TestLoad_SeedsSection_PoolOfDocuments(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "target.go:UseSeeds":
+    seeds:
+      data:
+        - openapi: "3.0.0"
+          info:
+            title: "a"
+        - openapi: "3.1.0"
+          info:
+            title: "b"
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(file.Warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", file.Warnings)
+	}
+	entry := file.MatchTarget("target.go", "UseSeeds")
+	docs, ok := entry.Seeds["data"]
+	if !ok {
+		t.Fatalf("seeds[%q] missing", "data")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 seed documents, got %d (%+v)", len(docs), docs)
+	}
+	for i, doc := range docs {
+		if !json.Valid(doc.JSON) {
+			t.Errorf("seed %d JSON is not valid: %s", i, string(doc.JSON))
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(doc.JSON, &decoded); err != nil {
+			t.Errorf("seed %d did not decode as an object: %v", i, err)
+		}
+		if v, ok := decoded["openapi"]; !ok || v == "" {
+			t.Errorf("seed %d missing openapi field: %s", i, string(doc.JSON))
+		}
+	}
+	if !strings.Contains(string(docs[0].JSON), `"3.0.0"`) {
+		t.Errorf("seed 0 JSON = %s, want to contain 3.0.0", string(docs[0].JSON))
+	}
+	if !strings.Contains(string(docs[1].JSON), `"3.1.0"`) {
+		t.Errorf("seed 1 JSON = %s, want to contain 3.1.0", string(docs[1].JSON))
+	}
+}
+
+func TestLoad_SeedsSection_UnknownKeyNotWarned(t *testing.T) {
+	t.Parallel()
+	target := writeConfig(t, `
+functions:
+  "target.go:UseSeeds":
+    seeds:
+      data:
+        - {}
+`)
+	file, err := config.Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(file.Warnings) != 0 {
+		t.Fatalf("seeds is a known key; expected no warnings, got %v", file.Warnings)
+	}
+}
+
 func TestLoad_MocksSection(t *testing.T) {
 	t.Parallel()
 	target := writeConfig(t, `

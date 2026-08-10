@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -48,6 +49,13 @@ type ParamPlanOptions struct {
 	// An entry matching a parameter produces the top-priority ValuePlan for
 	// that parameter (literal kind).
 	HintsByName map[string]ParamValueHint
+	// SeedsByName supplies a pool of example structured documents keyed by
+	// parameter name. Each entry produces its own Literal ValuePlan, ranked
+	// just below HintsByName and ahead of source-mined/generic candidates —
+	// each becomes its own candidate execution so the explorer's mutation
+	// phase has multiple valid document shapes to mutate around instead of
+	// pure-random bytes (str-b27zm).
+	SeedsByName map[string][]ParamValueHint
 	// GeneratorsByName names a runtime-value registry entry per parameter
 	// (parameter name → registered Go type spelling, e.g. "context.Context").
 	// When a parameter has a generator entry, PlanParam consults the named
@@ -232,22 +240,32 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		if typeHint == "" {
 			typeHint = family.typeHint
 		}
-		literal := hint.Literal
-		// str-e41w: the wrapper decodes a *http.Request body slot as a JSON
-		// string. A structured YAML hint (defaults: r: {model: ...}) arrives
-		// here as an object/array literal; re-encode it as a JSON string so
-		// the natural config spelling works instead of failing wrapper-side
-		// deserialization on every execution.
-		if isHTTPRequestBodyParam(p) && !isJSONStringLiteral(literal) {
-			if encoded, err := json.Marshal(string(literal)); err == nil {
-				literal = encoded
-			}
-		}
 		add(protocol.ValuePlan{
 			Kind:     protocol.ValuePlanKindLiteral,
-			Literal:  literal,
+			Literal:  normalizeHintLiteral(p, family.typeHint, hint.Literal),
 			TypeHint: typeHint,
 		})
+	}
+
+	// str-b27zm: a configured seed pool ranks just below the single Defaults
+	// override — each entry is a candidate example document in its own
+	// right, not just a fallback, so structured-decode params get several
+	// valid shapes to execute (and for the fuzz/genetic mutation phase to
+	// mutate around) instead of only ever seeing one fixed literal.
+	if seeds, found := opts.SeedsByName[p.Name]; found {
+		for _, seed := range seeds {
+			typeHint := seed.TypeHint
+			if typeHint == "" {
+				typeHint = family.typeHint
+			}
+			if !add(protocol.ValuePlan{
+				Kind:     protocol.ValuePlanKindLiteral,
+				Literal:  normalizeHintLiteral(p, family.typeHint, seed.Literal),
+				TypeHint: typeHint,
+			}) {
+				break
+			}
+		}
 	}
 
 	if family.typeHint == paramTypeHintString {
@@ -459,6 +477,43 @@ func addStringLiteralPlans(add func(protocol.ValuePlan) bool, literals []string,
 func isJSONStringLiteral(raw json.RawMessage) bool {
 	var s string
 	return json.Unmarshal(raw, &s) == nil
+}
+
+// normalizeHintLiteral adapts an operator-supplied hint/seed literal (Defaults
+// or Seeds) to the wire encoding the target parameter's family expects. A
+// structured YAML document (defaults/seeds: r: {model: ...}) decodes to a
+// JSON object/array literal; two families need it re-encoded rather than
+// passed through as-is:
+//
+//   - *http.Request body params (string family, symbolic body slot): the
+//     wrapper decodes the body as a JSON string, so an object/array literal
+//     is re-encoded as a JSON string carrying the document text (str-e41w).
+//   - []byte params (byteSliceFamily): Go's json.Marshal encodes []byte as a
+//     base64 string, so an object/array literal — already valid JSON text —
+//     is base64-encoded and wrapped as a JSON string so json.Unmarshal into
+//     the []byte parameter reproduces the original document bytes
+//     (str-b27zm).
+//
+// A literal that is already a JSON string is passed through unchanged in
+// both cases, trusting the operator supplied the exact wire content.
+func normalizeHintLiteral(p protocol.ParamInfo, familyTypeHint string, literal json.RawMessage) json.RawMessage {
+	if isJSONStringLiteral(literal) {
+		return literal
+	}
+	if isHTTPRequestBodyParam(p) {
+		if encoded, err := json.Marshal(string(literal)); err == nil {
+			return encoded
+		}
+		return literal
+	}
+	if familyTypeHint == paramTypeHintByteSlice {
+		encoded, err := json.Marshal(base64.StdEncoding.EncodeToString(literal))
+		if err != nil {
+			return literal
+		}
+		return encoded
+	}
+	return literal
 }
 
 func isHTTPRequestBodyParam(p protocol.ParamInfo) bool {

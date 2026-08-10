@@ -72,6 +72,15 @@ type FunctionConfig struct {
 	// precedence over classifyParamFamily defaults (str-hy9b.G3 AC1).
 	Defaults map[string]DefaultValue `yaml:"defaults,omitempty"`
 
+	// Seeds supplies a pool of example structured documents per parameter,
+	// keyed by parameter name. Unlike Defaults (exactly one override value),
+	// Seeds accepts a list: the planner emits one Literal ValuePlan per
+	// entry, each of which becomes its own candidate execution. Intended for
+	// parameters decoded via json.Unmarshal/yaml.Unmarshal into a struct,
+	// where neither random bytes nor a single fixed literal give the
+	// explorer's mutation phase anything valid to mutate from (str-b27zm).
+	Seeds map[string][]DefaultValue `yaml:"seeds,omitempty"`
+
 	// Mocks supplies per-target mock substitutions keyed by qualified
 	// function name (e.g. "fmt.Println"). The value's Expression is the Go
 	// source expression pasted in place of the original call
@@ -409,6 +418,7 @@ var (
 	knownFunctionKeys = map[string]struct{}{
 		"policy":     {},
 		"defaults":   {},
+		"seeds":      {},
 		"mocks":      {},
 		"generators": {},
 		"receiver":   {},

@@ -2,7 +2,9 @@ package planner_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/planner"
@@ -353,6 +355,124 @@ func TestPlanParam_DefaultCap(t *testing.T) {
 	}
 }
 
+func TestPlanParam_SeedPool_ByteSliceReencodedAsBase64(t *testing.T) {
+	docs := []planner.ParamValueHint{
+		{Literal: json.RawMessage(`{"openapi":"3.0.0"}`)},
+		{Literal: json.RawMessage(`{"openapi":"3.1.0"}`)},
+	}
+	opts := planner.ParamPlanOptions{
+		SeedsByName: map[string][]planner.ParamValueHint{"data": docs},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, byteSliceParam("data"), opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) < 2 {
+		t.Fatalf("expected at least 2 plans (one per seed), got %d", len(plans))
+	}
+	for i, want := range docs {
+		plan := plans[i]
+		if plan.Kind != protocol.ValuePlanKindLiteral {
+			t.Fatalf("plans[%d].Kind = %q, want %q", i, plan.Kind, protocol.ValuePlanKindLiteral)
+		}
+		// byteSliceFamily wire literals are base64 JSON strings (Go's
+		// json.Marshal encodes []byte that way); the seed doc's raw JSON
+		// text must round-trip through that encoding intact.
+		var b64 string
+		if err := json.Unmarshal(plan.Literal, &b64); err != nil {
+			t.Fatalf("plans[%d].Literal is not a JSON string: %v; literal=%s", i, err, plan.Literal)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			t.Fatalf("plans[%d].Literal is not valid base64: %v", i, err)
+		}
+		if string(decoded) != string(want.Literal) {
+			t.Fatalf("plans[%d] decoded = %s, want %s", i, decoded, want.Literal)
+		}
+	}
+}
+
+func TestPlanParam_SeedPool_RankedBelowSingleDefault(t *testing.T) {
+	opts := planner.ParamPlanOptions{
+		HintsByName: map[string]planner.ParamValueHint{
+			"data": {Literal: json.RawMessage(`{"openapi":"default"}`)},
+		},
+		SeedsByName: map[string][]planner.ParamValueHint{
+			"data": {{Literal: json.RawMessage(`{"openapi":"seed"}`)}},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, byteSliceParam("data"), opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) < 2 {
+		t.Fatalf("expected default + seed plans, got %d", len(plans))
+	}
+	var first string
+	if err := json.Unmarshal(plans[0].Literal, &first); err != nil {
+		t.Fatalf("plans[0].Literal not a JSON string: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(first)
+	if err != nil {
+		t.Fatalf("plans[0].Literal not valid base64: %v", err)
+	}
+	if string(decoded) != `{"openapi":"default"}` {
+		t.Fatalf("plans[0] = %s, want the single Default to rank first", decoded)
+	}
+}
+
+func TestPlanParam_SeedPool_RespectsMaxPlansPerParam(t *testing.T) {
+	opts := planner.ParamPlanOptions{
+		MaxPlansPerParam: 2,
+		SeedsByName: map[string][]planner.ParamValueHint{
+			"data": {
+				{Literal: json.RawMessage(`{"v":1}`)},
+				{Literal: json.RawMessage(`{"v":2}`)},
+				{Literal: json.RawMessage(`{"v":3}`)},
+			},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, byteSliceParam("data"), opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("len(plans) = %d, want 2 (cap enforced)", len(plans))
+	}
+}
+
+func TestPlanParam_SeedPool_HTTPRequestBodyReencodedAsString(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+	opts := planner.ParamPlanOptions{
+		SeedsByName: map[string][]planner.ParamValueHint{
+			"r": {{Literal: json.RawMessage(`{"model":"m"}`)}},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, param, opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) == 0 {
+		t.Fatalf("no plans produced")
+	}
+	var body string
+	if err := json.Unmarshal(plans[0].Literal, &body); err != nil {
+		t.Fatalf("seed was not re-encoded as a JSON string: %v; literal=%s", err, plans[0].Literal)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal([]byte(body), &roundTrip); err != nil {
+		t.Fatalf("re-encoded body %q does not round-trip to the seed object: %v", body, err)
+	}
+	if roundTrip["model"] != "m" {
+		t.Fatalf("re-encoded body lost seed content: %q", body)
+	}
+}
+
 func TestPlanParam_HintOverrideTakesPriority(t *testing.T) {
 	literal := json.RawMessage(`"custom"`)
 	opts := planner.ParamPlanOptions{
@@ -522,6 +642,70 @@ func TestPlanParam_HTTPRequestBodyInvariants(t *testing.T) {
 			var s string
 			if err := json.Unmarshal(plans[0].Literal, &s); err != nil {
 				rt.Fatalf("hint plan literal is not a JSON string: %s", plans[0].Literal)
+			}
+		}
+	})
+}
+
+// Rapid property (str-b27zm): for a []byte structured-decode param with a
+// configured seed pool —
+//   - the plan count never exceeds MaxPlansPerParam;
+//   - a single Defaults hint, when present, is always plan[0];
+//   - every seed's raw JSON document round-trips exactly through the
+//     base64-JSON-string wire encoding, in declaration order, regardless of
+//     how many seeds are truncated by the cap.
+func TestPlanParam_SeedPoolInvariants(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		maxPlans := rapid.IntRange(1, 8).Draw(rt, "maxPlans")
+		n := rapid.IntRange(0, 6).Draw(rt, "numSeeds")
+		docs := make([]planner.ParamValueHint, n)
+		for i := range n {
+			docs[i] = planner.ParamValueHint{
+				Literal: json.RawMessage(fmt.Sprintf(`{"openapi":"3.0.%d"}`, i)),
+			}
+		}
+		hasDefault := rapid.Bool().Draw(rt, "hasDefault")
+		opts := planner.ParamPlanOptions{
+			MaxPlansPerParam: maxPlans,
+			SeedsByName:      map[string][]planner.ParamValueHint{"data": docs},
+		}
+		var defaultLiteral json.RawMessage
+		if hasDefault {
+			defaultLiteral = json.RawMessage(`{"openapi":"default"}`)
+			opts.HintsByName = map[string]planner.ParamValueHint{"data": {Literal: defaultLiteral}}
+		}
+
+		plans, unsat := planner.PlanParam(testTargetID, 0, byteSliceParam("data"), opts)
+		if unsat != nil {
+			rt.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+		}
+		if len(plans) > maxPlans {
+			rt.Fatalf("len(plans) = %d exceeds cap %d", len(plans), maxPlans)
+		}
+
+		decode := func(i int) string {
+			var b64 string
+			if err := json.Unmarshal(plans[i].Literal, &b64); err != nil {
+				rt.Fatalf("plan[%d].Literal is not a JSON string: %v; literal=%s", i, err, plans[i].Literal)
+			}
+			raw, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				rt.Fatalf("plan[%d].Literal is not valid base64: %v", i, err)
+			}
+			return string(raw)
+		}
+
+		idx := 0
+		if hasDefault && len(plans) > 0 {
+			if got := decode(0); got != string(defaultLiteral) {
+				rt.Fatalf("plan[0] = %s, want the single Default %s to rank first", got, defaultLiteral)
+			}
+			idx = 1
+		}
+		for i := 0; idx < len(plans) && i < n; i, idx = i+1, idx+1 {
+			want := string(docs[i].Literal)
+			if got := decode(idx); got != want {
+				rt.Fatalf("plan[%d] = %s, want seed %d = %s (order must be preserved)", idx, got, i, want)
 			}
 		}
 	})

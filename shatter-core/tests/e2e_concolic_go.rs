@@ -1682,6 +1682,99 @@ async fn e2e_go_http_request_symbolic_body_discovers_body_branches() {
 }
 
 // ---------------------------------------------------------------------------
+// Test: config-driven seed pool for a structured-decode parameter (str-b27zm).
+//
+// ClassifySpec(data []byte) string decodes data via encoding/json into a
+// Spec struct and branches on the decoded fields (6 outcomes, see spec.go).
+// Random byte mutation essentially never produces valid JSON, so without
+// seeding only "invalid" (and the nil-bytes zero-value case) is reachable
+// within any reasonable budget. The fixture's `.shatter/config.yaml`
+// supplies a `seeds` pool of four example documents for `data` (the
+// planner's per-parameter cap without further config), one per targeted
+// branch. The planner (shatter-go/planner/param.go) emits one
+// Literal ValuePlan per seed document, base64-re-encoded for the []byte
+// wire format (normalizeHintLiteral); fetch_planner_seeds materializes each
+// resulting InvocationPlan into a candidate argument vector, which this
+// test threads into the orchestrator's seed_inputs exactly as the CLI's
+// --planner path does. This proves the config seed pool reaches the
+// pipeline end-to-end, matching Zolem's real specs/openapi.go
+// NormalizeOpenAPI shape (a []byte param json.Unmarshal'd into a struct).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_seed_pool_reaches_structured_decode_branches() {
+    let file = repo_examples_go_dir()
+        .join("json-seed-pool")
+        .join("spec.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("json-seed-pool").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "ClassifySpec").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "ClassifySpec takes 1 param (data []byte)"
+    );
+
+    instrument_function(&mut frontend, &file_str, "ClassifySpec").await;
+
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    assert!(
+        !bundle.seeds.is_empty(),
+        "expected the config seed pool to materialize at least one candidate; unsatisfied={:?}",
+        bundle.unsatisfied
+    );
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "ClassifySpec",
+        bundle.seeds,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    for expected in [
+        "\"missing-version\"",
+        "\"swagger2\"",
+        "\"openapi3\"",
+        "\"untitled\"",
+    ] {
+        assert!(
+            return_values.contains(expected),
+            "config seed pool should reach branch returning {expected}; found: {return_values:?}"
+        );
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
 // Test: execute-time config mock substitution (str-c8djq).
 //
 // Classify(x int) string calls dep.Fetch(x) and branches on the result:

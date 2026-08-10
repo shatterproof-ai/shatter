@@ -62,6 +62,10 @@ type PerTargetHints struct {
 	// hint). Consumed by PlanParam as top-priority ValuePlans, taking
 	// precedence over classifyParamFamily defaults.
 	Defaults map[string]ParamValueHint
+	// Seeds supplies a pool of example structured documents per parameter
+	// (parameter name → ordered hints). Consumed by PlanParam as one Literal
+	// ValuePlan per entry, ranked just below Defaults (str-b27zm).
+	Seeds map[string][]ParamValueHint
 	// Generators names a runtime-value registry entry per parameter. The
 	// planner consults the named generator before falling back to primitive
 	// families.
@@ -275,6 +279,9 @@ func paramOptionsFromHints(hints PerTargetHints, opts PlanRequirementsOptions) P
 	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
 	if len(hints.Defaults) > 0 {
 		paramOpts.HintsByName = hints.Defaults
+	}
+	if len(hints.Seeds) > 0 {
+		paramOpts.SeedsByName = hints.Seeds
 	}
 	if len(hints.Generators) > 0 {
 		paramOpts.GeneratorsByName = hints.Generators
