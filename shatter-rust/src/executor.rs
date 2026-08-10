@@ -11,9 +11,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(test)]
 use std::sync::Mutex as StdMutex;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -327,6 +327,7 @@ fn rust_string_literal(value: &str) -> String {
 }
 
 /// Signature data for a single compatible function used in dispatch harness generation.
+#[derive(Clone)]
 struct CompatFn {
     name: String,
     param_names: Vec<String>,
@@ -334,6 +335,21 @@ struct CompatFn {
     return_type: Option<String>,
     /// True if the function is declared `async fn`.
     is_async: bool,
+}
+
+impl CompatFn {
+    /// Build a `CompatFn` from a discovered function name and its parsed
+    /// signature. Single construction point for the crate_bridge and crate-backed
+    /// dispatch-table collectors (str-303gg review #8).
+    fn from_signature(name: impl Into<String>, sig: &FnSignature) -> Self {
+        Self {
+            name: name.into(),
+            param_names: sig.param_names.clone(),
+            param_types: sig.param_types.clone(),
+            return_type: sig.return_type.clone(),
+            is_async: sig.is_async,
+        }
+    }
 }
 
 /// Cache key for a crate-backed file-level dispatch harness.
@@ -505,6 +521,62 @@ impl Drop for BridgeSourceBackup {
 
 pub type CrateBridgeHarnessCache = Mutex<HashMap<CrateBridgeHarnessKey, CrateBridgeHarnessEntry>>;
 
+/// Process-global negative cache of whole-file crate_bridge plans whose harness
+/// failed to compile (str-303gg review #5). Keyed by the content-addressed
+/// [`CrateBridgeHarnessKey`], so an entry is only valid for the exact
+/// wrapper/source it failed on. Once a file's whole-file plan is known-poisoned,
+/// later functions in the same file skip it and go straight to the
+/// single-function fallback instead of each paying a guaranteed-failing
+/// whole-file `cargo build`.
+static POISONED_WHOLE_FILE_PLANS: std::sync::LazyLock<Mutex<HashSet<CrateBridgeHarnessKey>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Whether a crate_bridge execution should attempt the whole-file dispatch
+/// harness (registering every statically-compatible sibling) before the
+/// single-function fallback.
+///
+/// Only when the file has more than one compatible function AND the requested
+/// call carries no native replay. Native replays are derived positionally from
+/// the requested call's inputs; the whole-file wrapper applies them to every
+/// sibling at the same index, where the parameter type generally differs, so the
+/// harness fails to compile and the whole-file attempt is a guaranteed wasted
+/// build (str-303gg review #2).
+fn crate_bridge_should_try_whole_file(compatible_count: usize, has_native_replay: bool) -> bool {
+    compatible_count > 1 && !has_native_replay
+}
+
+/// Emit a diagnostic line to stderr when `SHATTER_LOG_LEVEL` is `debug` or
+/// `trace`. Stderr is safe for diagnostics — the frontend protocol uses stdout.
+fn crate_bridge_debug(msg: &str) {
+    if matches!(
+        std::env::var("SHATTER_LOG_LEVEL").as_deref(),
+        Ok("debug") | Ok("trace")
+    ) {
+        eprintln!("[shatter-rust] {msg}");
+    }
+}
+
+/// Acquire an exclusive advisory lock guarding the build of a crate_bridge
+/// harness dir (str-303gg review #3). The lock file is a sibling of `harness_dir`
+/// (never inside it) so directory cleanup never deletes it. Serialises concurrent
+/// builders of the SAME content-addressed plan across processes, so parallel scan
+/// workers cannot corrupt each other's `cargo build` in the shared dir and the
+/// CompilationFailed cleanup below is race-free. Returns the locked file handle
+/// whose `Drop` releases the lock, or `None` (proceeding unserialised) when the
+/// lock file cannot be created or locked — the lock is a best-effort race guard,
+/// not a correctness precondition.
+fn acquire_crate_bridge_build_lock(harness_dir: &Path) -> Option<std::fs::File> {
+    let lock_path = harness_dir.with_extension("build-lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
 /// A compiled, running harness subprocess ready to accept execute requests via stdin.
 pub struct PersistentHarness {
     /// The subprocess handle (used to kill on timeout/cleanup).
@@ -665,10 +737,30 @@ fn mocks_hash(mocks: &[Value]) -> u64 {
     h.finish()
 }
 
+/// Cache-busting version for compiled harness binaries.
+///
+/// `source_hash` keys every harness binary cache (crate-bridge `wrapper_hash`,
+/// axum-crate `wrapper_hash`, the main `src_hash`, and the Cargo.lock hash). It
+/// hashes only source *text*, so a frontend fix that changes harness *behavior*
+/// without changing the emitted source string — e.g. a fix to the staging WRITE
+/// PATH where instrumented source is written (str-oc67) — leaves every cache key
+/// identical and silently reuses the stale, pre-fix harness binary. The symptom
+/// is false 0% coverage from a harness that runs the uninstrumented handler.
+///
+/// **Bump this constant whenever a frontend change alters harness behavior but
+/// not the source text it emits.** Bumping invalidates all stale harness caches
+/// so the next run recompiles. Pure source-text changes do not need a bump —
+/// they already change the hash. See str-wcf3.
+const HARNESS_CACHE_VERSION: u64 = 2;
+
 /// Hash the source content for stable binary cache invalidation.
+///
+/// Folds [`HARNESS_CACHE_VERSION`] into the digest so behavior-only frontend
+/// fixes can invalidate stale harness binaries by bumping that constant.
 fn source_hash(content: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    HARNESS_CACHE_VERSION.hash(&mut h);
     content.hash(&mut h);
     h.finish()
 }
@@ -907,6 +999,26 @@ fn to_absolute(p: PathBuf) -> PathBuf {
     }
 }
 
+/// Working directory for *executing* a compiled harness binary (str-gg9v).
+///
+/// The shatter CLI default-denies unsandboxed host execution; when the operator
+/// opts in, it exports `SHATTER_HOST_WRITE_DIR` pointing at a throwaway
+/// directory. Running the harness there means a target's relative-path file
+/// writes (`std::fs::write("out", ...)`) land in the throwaway directory and are
+/// cleaned with the run, instead of littering the invoking repository. When the
+/// variable is unset (in-tree tests, or a caller that manages isolation itself)
+/// the harness build directory is used unchanged. The compiled binary path is
+/// absolute, so the redirected cwd does not affect binary lookup.
+///
+/// Applied only at harness *execution* sites, never to `cargo build`/`cargo
+/// check`, which must run in the harness build directory.
+fn harness_exec_cwd(default_dir: &Path) -> PathBuf {
+    match std::env::var_os("SHATTER_HOST_WRITE_DIR") {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => default_dir.to_path_buf(),
+    }
+}
+
 /// Read the harness cache root from `SHATTER_HARNESS_CACHE`.
 /// Returns `None` if unset or empty. Always returns an absolute path so that
 /// all derived paths (`standalone_target_dir`, `make_harness_dir`, etc.) are
@@ -980,19 +1092,23 @@ fn standalone_target_dir() -> Option<PathBuf> {
 }
 
 /// Check if `cargo check` should be skipped before build.
-/// Reads `SHATTER_SKIP_CHECK` env var — `"1"` or `"true"` (case-insensitive) skips check.
+///
+/// Skipping is the default because a required `cargo build` already reports
+/// compile errors, and running both commands doubles successful harness
+/// compilation work in whole-corpus scans. Set `SHATTER_SKIP_CHECK=0` when a
+/// caller wants the older pre-build validation step.
 fn skip_cargo_check() -> bool {
     std::env::var("SHATTER_SKIP_CHECK")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// Run `cargo check` for fast type/borrow validation before a full build.
 ///
 /// Catches errors ~3x faster than `cargo build` by skipping codegen and linking.
 /// Shares the same `CARGO_TARGET_DIR` so check metadata is reused by the subsequent build.
-/// Set `SHATTER_SKIP_CHECK=1` to bypass the check step.
+/// Skipped by default; set `SHATTER_SKIP_CHECK=0` to run this validation step.
 fn cargo_check_before_build(
     working_dir: &Path,
     target_dir: &Path,
@@ -1556,6 +1672,13 @@ fn is_input_dependent_prepare_error(err: &ExecuteError) -> bool {
         err,
         ExecuteError::NonExecutable(msg)
             if msg.contains("not JSON-harness compatible: function parameters")
+                // An axum `State<T>` extractor is rejected by the static prepare
+                // precheck, but a per-execute native-replay marker (from a
+                // configured state generator) CAN construct it in the dispatch
+                // harness. Defer the prepare failure so execute can supply the
+                // marker; execute still emits a clean not_supported when no
+                // marker is present. (str-uz5m)
+                || msg.contains("not constructible without an app-state generator")
     )
 }
 
@@ -2017,6 +2140,51 @@ fn axum_state_unsupported_reason(param_types: &[String]) -> Option<String> {
     }
 }
 
+/// Like `axum_state_unsupported_reason`, but a `State<T>` param that has a
+/// native-replay marker IS constructible: a configured state generator builds
+/// the inner value during prefetch and the harness re-wraps it. Only reject
+/// `State<T>` params that have NO native-replay spec to construct them.
+/// (str-uz5m)
+fn axum_state_unsupported_reason_with_replays(
+    param_types: &[String],
+    native_replays: &[Option<NativeReplaySpec>],
+) -> Option<String> {
+    let unresolved: Vec<String> = param_types
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ty)| match classify_axum_extractor(ty) {
+            Some(AxumExtractor::State(_))
+                if native_replays.get(i).and_then(|s| s.as_ref()).is_none() =>
+            {
+                Some(ty.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if unresolved.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "axum extractor `{}` not constructible without an app-state generator; \
+             configure a state generator or run via the Axum harness adapter",
+            unresolved.join("`, `")
+        ))
+    }
+}
+
+/// For a native-replay param, return `(downcast_type, wrap_prefix, wrap_suffix)`.
+///
+/// Axum `State<T>` generators return the INNER value (e.g. `AppState`), so the
+/// harness downcasts the generator output to `T` and re-wraps it with
+/// `axum::extract::State(..)`. All other params downcast directly to the
+/// declared param type with no wrapping. (str-uz5m)
+fn native_replay_downcast_parts(ty: &str) -> (String, &'static str, &'static str) {
+    match classify_axum_extractor(ty) {
+        Some(AxumExtractor::State(inner)) => (inner, "axum::extract::State(", ")"),
+        _ => (ty.to_string(), "", ""),
+    }
+}
+
 /// True if any parameter is an Axum extractor (handler-shaped function).
 ///
 /// Used to decide whether to skip Serialize-on-return-value capture, which
@@ -2114,9 +2282,7 @@ fn owned_type_for_ref(ty: &str) -> Option<OwnedTypeMapping> {
         // &[E]
         syn::Type::Slice(slice) => match &*slice.elem {
             // &[&str] → Vec<String>, re-borrowed as Vec<&str>.
-            syn::Type::Reference(inner)
-                if matches!(&*inner.elem, syn::Type::Path(p) if type_path_leaf_is(p, "str")) =>
-            {
+            syn::Type::Reference(inner) if matches!(&*inner.elem, syn::Type::Path(p) if type_path_leaf_is(p, "str")) => {
                 Some(OwnedTypeMapping {
                     deser_type: "Vec<String>".to_string(),
                     needs_slice_conversion: true,
@@ -2205,7 +2371,7 @@ fn generate_harness(
     // If any parameter is an Axum `State<T>` we cannot synthesize it from JSON
     // (it has no `Deserialize` impl). Emit an early return with a clear error
     // rather than producing uncompilable `from_value::<State<T>>` code.
-    if let Some(reason) = axum_state_unsupported_reason(param_types) {
+    if let Some(reason) = axum_state_unsupported_reason_with_replays(param_types, native_replays) {
         h.push_str(&format!(
             "        return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":{:?}}})), 0.0, vec![]);\n",
             reason
@@ -2232,12 +2398,15 @@ fn generate_harness(
                 "        let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
                 spec.module_name, spec.function_name
             ));
+            let (__dcast, __wpre, __wpost) = native_replay_downcast_parts(ty);
             h.push_str(&format!(
-                "        let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                "        let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{__dcast}>() {{\n"
             ));
-            h.push_str("            Ok(value) => *value,\n");
             h.push_str(&format!(
-                "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {ty}\"}})), 0.0, vec![]),\n"
+                "            Ok(value) => {__wpre}*value{__wpost},\n"
+            ));
+            h.push_str(&format!(
+                "            Err(_) => return shatter_rust_runtime::build_result_json(None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {__dcast}\"}})), 0.0, vec![]),\n"
             ));
             h.push_str("        };\n");
         } else if let Some(ext) = classify_axum_extractor(ty) {
@@ -2462,6 +2631,12 @@ fn generate_dispatch_harness(
         );
     }
     h.push_str(&module_block);
+    // Bring the wrapped user types into scope so bare param-type bindings
+    // (`let c: Color = …`) resolve. Function calls and globals are qualified
+    // (`user_code::…`), but param types are emitted bare from the source
+    // signature, so without this glob a locally-defined struct/enum param fails
+    // to compile (`cannot find type` — str-2nfoe). Mirrors `generate_harness`.
+    h.push_str("\nuse crate::user_code::*;\n");
     for spec in native_replays.iter().flatten() {
         let file_path = rust_string_literal(&spec.file_path.display().to_string());
         h.push_str(&format!(
@@ -2519,7 +2694,9 @@ fn generate_dispatch_harness(
         ));
         // Axum `State<T>` short-circuits with a clear "not supported" before
         // emitting any uncompilable `from_value::<State<T>>` code.
-        if let Some(reason) = axum_state_unsupported_reason(param_types) {
+        if let Some(reason) =
+            axum_state_unsupported_reason_with_replays(param_types, native_replays)
+        {
             h.push_str(&format!(
                 "                break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"not_supported\",\"message\":{:?}}})), 0.0);\n",
                 reason
@@ -2545,12 +2722,15 @@ fn generate_dispatch_harness(
                     "                let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
                     spec.module_name, spec.function_name
                 ));
+                let (__dcast, __wpre, __wpost) = native_replay_downcast_parts(ty);
                 h.push_str(&format!(
-                    "                let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                    "                let {clean_name}: {ty} = match __generated_{i}.value.downcast::<{__dcast}>() {{\n"
                 ));
-                h.push_str("                    Ok(value) => *value,\n");
                 h.push_str(&format!(
-                    "                    Err(_) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {ty}\"}})), 0.0),\n"
+                    "                    Ok(value) => {__wpre}*value{__wpost},\n"
+                ));
+                h.push_str(&format!(
+                    "                    Err(_) => break 'shatter_arm (None, Some(serde_json::json!({{\"error_type\":\"runtime_error\",\"message\": \"native replay downcast failed for input {i}: expected {__dcast}\"}})), 0.0),\n"
                 ));
                 h.push_str("                };\n");
             } else if let Some(ext) = classify_axum_extractor(ty) {
@@ -2763,7 +2943,8 @@ fn build_and_spawn_harness(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
+    // Optional validation: successful scans skip this by default to avoid
+    // compiling each harness twice.
     cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
 
     let build_start = Instant::now();
@@ -2813,7 +2994,7 @@ fn build_and_spawn_harness(
 
     // Spawn the subprocess with stdin/stdout pipes
     let mut child = Command::new(&binary_path)
-        .current_dir(harness_dir)
+        .current_dir(harness_exec_cwd(harness_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -2897,7 +3078,8 @@ fn build_and_spawn_crate_harness(
         std::fs::write(&cargo_toml_path, cargo_toml_content)?;
         std::fs::write(&main_rs_path, harness_source)?;
 
-        // Fast validation: cargo check catches type/borrow errors ~3x faster than build.
+        // Optional validation: successful scans skip this by default to avoid
+        // compiling each harness twice.
         cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
 
         let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
@@ -2954,7 +3136,7 @@ fn build_and_spawn_crate_harness(
     }
 
     let mut child = Command::new(&binary_path)
-        .current_dir(harness_dir)
+        .current_dir(harness_exec_cwd(harness_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -3674,6 +3856,53 @@ fn crate_bridge_driver_package_name(prefix: &str, harness_dir: &Path) -> String 
 /// without ever touching the original files (str-ja70).
 ///
 /// Returns the staging crate root path.
+/// True if the `[dependencies]` section already declares `serde` in any form
+/// (`serde = ...`, `serde.workspace = true`, or a `[dependencies.serde]` table).
+/// Does not match sibling crates like `serde_json` / `serde_yaml`.
+fn cargo_toml_declares_serde(cargo_toml: &str) -> bool {
+    if cargo_toml.contains("[dependencies.serde]") {
+        return true;
+    }
+    let mut in_deps = false;
+    for line in cargo_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_deps = trimmed == "[dependencies]";
+            continue;
+        }
+        if in_deps
+            && let Some(rest) = trimmed.strip_prefix("serde")
+            && (rest.starts_with(' ') || rest.starts_with('=') || rest.starts_with('.'))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ensure the staged crate-shadow declares `serde` as a direct dependency so the
+/// str-dg09 return-capture helper (which names `serde::Serialize`) compiles. A
+/// no-op when serde is already declared, avoiding a duplicate-key error.
+fn ensure_serde_dependency(cargo_toml: &str) -> String {
+    if cargo_toml_declares_serde(cargo_toml) {
+        return cargo_toml.to_string();
+    }
+    let serde_line = "serde = { version = \"1\", features = [\"derive\"] }\n";
+    if let Some(pos) = cargo_toml.find("[dependencies]") {
+        let after_header = cargo_toml[pos..]
+            .find('\n')
+            .map(|nl| pos + nl + 1)
+            .unwrap_or(cargo_toml.len());
+        let mut out = String::with_capacity(cargo_toml.len() + serde_line.len());
+        out.push_str(&cargo_toml[..after_header]);
+        out.push_str(serde_line);
+        out.push_str(&cargo_toml[after_header..]);
+        out
+    } else {
+        format!("{cargo_toml}\n[dependencies]\n{serde_line}")
+    }
+}
+
 fn create_crate_staging_copy(crate_root: &Path, staging_root: &Path) -> io::Result<PathBuf> {
     let staging_crate = staging_root.join("crate-shadow");
     // Copy src/ tree recursively.
@@ -3692,6 +3921,11 @@ fn create_crate_staging_copy(crate_root: &Path, staging_root: &Path) -> io::Resu
         };
         let resolved =
             resolve_cargo_toml_paths(&content, crate_root, workspace_sections.as_deref());
+        // str-dg09: the return-capture helper names `serde::Serialize` to drive
+        // autoref specialization, which requires `serde` as a *direct*
+        // dependency (transitive availability via serde_json is not enough to
+        // name the crate). Backfill it for crates that only pull in serde_json.
+        let resolved = ensure_serde_dependency(&resolved);
         std::fs::create_dir_all(&staging_crate)?;
         std::fs::write(staging_crate.join("Cargo.toml"), resolved)?;
     }
@@ -4442,6 +4676,19 @@ fn generate_crate_bridge_wrapper(
     w.push_str("// Generated by shatter-rust crate_bridge — do not edit\n");
     w.push_str("#![allow(unused_imports, dead_code, clippy::all)]\n");
     w.push_str("use serde_json::Value;\n\n");
+    // str-dg09: autoref-based specialization so return-value capture compiles
+    // whether or not the return type implements Serialize. A return type that
+    // does implement Serialize is captured via `serde_json::to_value`; one that
+    // does not (e.g. image `DetectedFormat`, `RgbaImage`, foreign error enums)
+    // degrades to `Value::Null` instead of failing the harness build and marking
+    // the whole function unsupported. The more-specific impl lives on
+    // `ShatterRetW<&T>` (no autoref) and the fallback on `&ShatterRetW<&T>` (one
+    // autoref), so method resolution picks Serialize when available.
+    w.push_str("pub struct ShatterRetW<T>(pub T);\n");
+    w.push_str("pub trait ShatterRetViaSer { fn shatter_cap(&self) -> Value; }\n");
+    w.push_str("impl<T: serde::Serialize> ShatterRetViaSer for ShatterRetW<&T> { fn shatter_cap(&self) -> Value { serde_json::to_value(self.0).unwrap_or(Value::Null) } }\n");
+    w.push_str("pub trait ShatterRetViaNull { fn shatter_cap(&self) -> Value; }\n");
+    w.push_str("impl<T> ShatterRetViaNull for &ShatterRetW<&T> { fn shatter_cap(&self) -> Value { Value::Null } }\n\n");
     if native_replays.iter().any(Option::is_some) {
         w.push_str(
             "extern crate self as shatter_rust;\npub mod generators {\n    pub struct GeneratorResult {\n        pub id: String,\n        pub value: Box<dyn std::any::Any + Send>,\n        pub recipe: serde_json::Value,\n    }\n}\n\n",
@@ -4470,7 +4717,9 @@ fn generate_crate_bridge_wrapper(
         // Axum `State<T>` extractors are not constructible by the generic
         // wrapper (no `Deserialize` impl). Short-circuit with a clear
         // not-supported error instead of emitting `from_value::<State<T>>`.
-        if let Some(reason) = axum_state_unsupported_reason(param_types) {
+        if let Some(reason) =
+            axum_state_unsupported_reason_with_replays(param_types, native_replays)
+        {
             w.push_str("    let _ = inputs;\n");
             w.push_str(&format!(
                 "    return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"not_supported\", \"message\": {:?}}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}});\n",
@@ -4522,12 +4771,13 @@ fn generate_crate_bridge_wrapper(
                     "    let __generated_{i} = {}::{}(Some(__recipe_{i}));\n",
                     spec.module_name, spec.function_name
                 ));
+                let (__dcast, __wpre, __wpost) = native_replay_downcast_parts(ty);
                 w.push_str(&format!(
-                    "    let {clean}: {ty} = match __generated_{i}.value.downcast::<{ty}>() {{\n"
+                    "    let {clean}: {ty} = match __generated_{i}.value.downcast::<{__dcast}>() {{\n"
                 ));
-                w.push_str("        Ok(value) => *value,\n");
+                w.push_str(&format!("        Ok(value) => {__wpre}*value{__wpost},\n"));
                 w.push_str(&format!(
-                    "        Err(_) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": \"native replay downcast failed for input {i}: expected {ty}\"}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
+                    "        Err(_) => return serde_json::json!({{\"return_value\": null, \"thrown_error\": {{\"error_type\": \"runtime_error\", \"message\": \"native replay downcast failed for input {i}: expected {__dcast}\"}}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {{\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}}}),\n"
                 ));
                 w.push_str("    };\n");
             } else if let Some(ext) = classify_axum_extractor(ty) {
@@ -4629,11 +4879,11 @@ fn generate_crate_bridge_wrapper(
             .is_some_and(|ty| is_result_return_shape(ty));
         if return_type.is_some() && result_return_shape && !axum_shape {
             w.push_str("    match result {\n");
-            w.push_str("        Ok(Ok(ref ret_val)) => { obj.insert(\"return_value\".into(), serde_json::to_value(ret_val).unwrap_or(Value::Null)); }\n");
+            w.push_str("        Ok(Ok(ref ret_val)) => { obj.insert(\"return_value\".into(), (&ShatterRetW(ret_val)).shatter_cap()); }\n");
             w.push_str("        Ok(Err(ref err_val)) => { obj.insert(\"return_value\".into(), Value::Null); obj.insert(\"thrown_error\".into(), serde_json::json!({\"error_type\": \"runtime_error\", \"message\": format!(\"{:?}\", err_val)})); }\n");
         } else if return_type.is_some() && !axum_shape {
             w.push_str("    match result {\n");
-            w.push_str("        Ok(ref ret_val) => { obj.insert(\"return_value\".into(), serde_json::to_value(ret_val).unwrap_or(Value::Null)); }\n");
+            w.push_str("        Ok(ref ret_val) => { obj.insert(\"return_value\".into(), (&ShatterRetW(ret_val)).shatter_cap()); }\n");
         } else if return_type.is_some() {
             // Axum handler shape: return type may be `axum::Json<T>` or
             // `Result<Json<T>, ProjectError>` without a `Serialize` bound on
@@ -4722,7 +4972,9 @@ fn generate_crate_bridge_wrapper(
     w.push_str("        if line.is_empty() { continue; }\n");
     w.push_str("        let req: Value = serde_json::from_str(line).unwrap_or_default();\n");
     w.push_str("        let function_name = req[\"function\"].as_str().unwrap_or(\"\");\n");
-    w.push_str("        let mut inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n");
+    w.push_str(
+        "        let mut inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n",
+    );
     w.push_str("        for __input in inputs.iter_mut() { shatter_rust_runtime::materialize_complex(__input); }\n");
     w.push_str("        let exec_result = match function_name {\n");
     for fn_info in fns {
@@ -4992,7 +5244,7 @@ fn build_and_spawn_crate_bridge_harness(
     }
 
     let mut child = Command::new(&binary_path)
-        .current_dir(harness_dir)
+        .current_dir(harness_exec_cwd(harness_dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -5066,10 +5318,11 @@ fn execute_function_crate_bridge(
     let source = strip_shatter_wrapper(&raw_source);
     let mh = mocks_hash(mocks);
 
-    // Collect all functions so we can locate the requested target. The
-    // crate_bridge wrapper is intentionally built for one target function at a
-    // time: one non-JSON-compatible sibling in the same file must not poison
-    // execution for every other function in the dispatch harness.
+    // Collect all functions so we can locate the requested target and register
+    // every statically-compatible sibling in one whole-file dispatch harness
+    // (str-303gg). A sibling that fails to *compile* never poisons the requested
+    // function: the whole-file build degrades to a single-function fallback (and
+    // the poisoned plan is remembered so later functions skip it).
     let all_fn_ctxs = extract_all_fn_contexts(&source);
     let static_mut_names = extract_static_mut_items(&source);
 
@@ -5083,27 +5336,66 @@ fn execute_function_crate_bridge(
             "crate_bridge: function `{function_name}` has generic type parameters — cannot deserialise concrete inputs"
         )));
     }
-    let fn_info = CompatFn {
-        name: function_name.to_string(),
-        param_names: ctx.sig.param_names.clone(),
-        param_types: ctx.sig.param_types.clone(),
-        return_type: ctx.sig.return_type.clone(),
-        is_async: ctx.sig.is_async,
-    };
-    if let Some(reason) = crate_bridge_unsupported_reason(&fn_info) {
+    let requested_fn = CompatFn::from_signature(function_name, &ctx.sig);
+    if let Some(reason) = crate_bridge_unsupported_reason(&requested_fn) {
         return Err(ExecuteError::NonExecutable(format!(
             "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
         )));
     }
-    let expected_inputs = fn_info.param_names.len();
-    let compatible_fns = vec![fn_info];
+    let expected_inputs = requested_fn.param_names.len();
     if inputs.len() != expected_inputs {
         return Err(ExecuteError::InstrumentError(format!(
             "expected {expected_inputs} inputs for {function_name}, got {}",
             inputs.len()
         )));
     }
+
+    // Register every statically-compatible function in the file in one dispatch
+    // harness (str-303gg), mirroring the crate_backed filter in
+    // `execute_function_crate_backed`: non-generic and free of trait-object /
+    // raw-pointer / unconstructible-extractor parameters. Previously only the
+    // requested function was registered, so a later request for a sibling that
+    // shares the running harness hit the dispatch table's "unknown" arm and was
+    // misreported as completed/0% instead of executing (or being classified
+    // unsupported). The predicate is *static* — a sibling can still fail to
+    // *compile* (e.g. a parameter type that does not implement
+    // `DeserializeOwned`), which the per-candidate fallback below handles so one
+    // bad sibling never poisons the requested function's harness.
+    let all_compatible: Vec<CompatFn> = all_fn_ctxs
+        .iter()
+        .filter_map(|(name, ctx)| {
+            if ctx.sig.has_generics {
+                return None;
+            }
+            let cf = CompatFn::from_signature(name, &ctx.sig);
+            crate_bridge_unsupported_reason(&cf).is_none().then_some(cf)
+        })
+        .collect();
+
     let native_replays = native_replay_specs(inputs)?;
+    // str-303gg review #2: native replays are derived positionally from the
+    // REQUESTED call's inputs. The whole-file wrapper applies that same
+    // positional replay to every sibling function, whose parameter type at the
+    // same index generally differs — the generated wrapper then fails to compile,
+    // so the whole-file harness is a guaranteed failing build that every function
+    // pays before falling back (making the feature a no-op in axum projects). When
+    // any native replay is present, skip the whole-file candidate and build only
+    // the single-function harness, whose positional replays are correct.
+    let has_native_replay = native_replays.iter().any(Option::is_some);
+
+    // Candidate function sets in priority order: the whole compatible file first
+    // (one harness serves every discovered pub fn), then just the requested
+    // function as a poison-resistant fallback. When the file has a single
+    // compatible function — or a native replay is present (see above) — only the
+    // single-function harness is built. `all_compatible` is guaranteed to contain
+    // the requested function because it passed the same static predicate above.
+    let single = vec![requested_fn.clone()];
+    let candidates: Vec<&[CompatFn]> =
+        if crate_bridge_should_try_whole_file(all_compatible.len(), has_native_replay) {
+            vec![all_compatible.as_slice(), single.as_slice()]
+        } else {
+            vec![single.as_slice()]
+        };
 
     let mocks_json = serde_json::to_string(mocks)
         .map_err(|e| ExecuteError::InstrumentError(format!("cannot serialize mocks: {e}")))?;
@@ -5121,21 +5413,17 @@ fn execute_function_crate_bridge(
 
     // In-module wrapper appended to the target file so it sees module-local
     // imports and private items (str-31j.3). The crate-root `__shatter.rs` is
-    // a small FFI stub that forwards to the in-module entry symbol.
-    let in_module_wrapper = generate_in_module_wrapper(
-        &compatible_fns,
-        &mocks_json,
-        &static_mut_names,
-        &native_replays,
-    );
+    // a small FFI stub that forwards to the in-module entry symbol. Precompute
+    // one plan (wrapper + content-addressed cache key) per candidate function
+    // set so the fast-path scan and the slow-path build share hashes without
+    // regenerating wrappers.
     let root_stub = generate_crate_bridge_root_stub();
-
-    let mut target_contents = instr_result.source.clone();
-    if !target_contents.ends_with('\n') {
-        target_contents.push('\n');
-    }
-    target_contents.push_str(&in_module_wrapper);
-
+    // Crate-level metadata is candidate-independent, so read it once. Needed
+    // up front (rather than only in the slow path below) because the
+    // per-plan cache key must hash the actual instrumented+wrapped source
+    // (str-70m2) — a plan whose wrapper text is unchanged but whose
+    // underlying source changed must still get a different key, or a stale
+    // harness binary is silently reused.
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
     let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.toml: {e}")))?;
@@ -5143,47 +5431,82 @@ fn execute_function_crate_bridge(
         extract_crate_name(&user_cargo_toml).unwrap_or_else(|| "user_crate".to_string());
     let crate_alias = crate_name.replace('-', "_");
     let runtime_path = find_runtime_crate_path()?;
-
-    let rel_file = crate_bridge_target_rel_file(file_path, crate_root)?;
-    let bridge_source_hash = crate_bridge_source_hash(
-        crate_root,
-        &rel_file,
-        &target_contents,
-        &root_stub,
-        &crate_alias,
-        &runtime_path,
-        &native_replays,
-    )
-    .map_err(|e| ExecuteError::FileError(format!("cannot hash crate_bridge sources: {e}")))?;
     let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
 
-    let key = CrateBridgeHarnessKey {
-        crate_root: crate_root.to_path_buf(),
-        bridge_source_hash,
-        mocks_hash: mh,
-        cargo_lock_hash,
-    };
+    // Used only to label hashed bytes below, so the canonicalize-based
+    // `crate_bridge_target_rel_file` (str-70m2's own hashing helper, exercised
+    // by its `crate_bridge_source_hash_changes_when_*` regression tests) is
+    // fine here even though the later staging *write* uses the more
+    // permissive `staging_rel_file` (str-oc67) to tolerate a relative
+    // `file_path` against an absolute `crate_root`.
+    let hash_rel_file = crate_bridge_target_rel_file(file_path, crate_root)?;
 
-    // Fast path: harness already running and function in dispatch table.
+    struct BridgePlan<'a> {
+        fns: &'a [CompatFn],
+        target_contents: String,
+        bridge_source_hash: u64,
+        key: CrateBridgeHarnessKey,
+    }
+    let plans: Vec<BridgePlan> = candidates
+        .iter()
+        .map(|fns| {
+            let in_module_wrapper =
+                generate_in_module_wrapper(fns, &mocks_json, &static_mut_names, &native_replays);
+            let mut target_contents = instr_result.source.clone();
+            if !target_contents.ends_with('\n') {
+                target_contents.push('\n');
+            }
+            target_contents.push_str(&in_module_wrapper);
+            let bridge_source_hash = crate_bridge_source_hash(
+                crate_root,
+                &hash_rel_file,
+                &target_contents,
+                &root_stub,
+                &crate_alias,
+                &runtime_path,
+                &native_replays,
+            )
+            .map_err(|e| {
+                ExecuteError::FileError(format!("cannot hash crate_bridge sources: {e}"))
+            })?;
+            let key = CrateBridgeHarnessKey {
+                crate_root: crate_root.to_path_buf(),
+                bridge_source_hash,
+                mocks_hash: mh,
+                cargo_lock_hash,
+            };
+            Ok(BridgePlan {
+                fns,
+                target_contents,
+                bridge_source_hash,
+                key,
+            })
+        })
+        .collect::<Result<Vec<_>, ExecuteError>>()?;
+
+    // Fast path: a harness for either candidate is already running and serves
+    // the requested function.
     {
         let mut map = bridge_cache.lock().unwrap();
-        if let Some(entry) = map.get_mut(&key)
-            && entry.compatible_functions.contains(function_name)
-        {
-            let result = entry
-                .harness
-                .execute_dispatch(function_name, inputs, timeout_ms)?;
-            if result
-                .thrown_error
-                .as_ref()
-                .and_then(|e| e.get("error_type"))
-                .and_then(|v| v.as_str())
-                == Some("timeout")
+        for plan in &plans {
+            if let Some(entry) = map.get_mut(&plan.key)
+                && entry.compatible_functions.contains(function_name)
             {
-                map.remove(&key);
+                let result = entry
+                    .harness
+                    .execute_dispatch(function_name, inputs, timeout_ms)?;
+                if result
+                    .thrown_error
+                    .as_ref()
+                    .and_then(|e| e.get("error_type"))
+                    .and_then(|v| v.as_str())
+                    == Some("timeout")
+                {
+                    map.remove(&plan.key);
+                }
+                return Ok(result);
             }
-            return Ok(result);
         }
     }
 
@@ -5196,114 +5519,189 @@ fn execute_function_crate_bridge(
         )
     })?;
 
-    let harness_dir = stable_crate_bridge_dir(crate_root, bridge_source_hash, mh);
-    std::fs::create_dir_all(&harness_dir)?;
+    // Map `file_path` from original crate to staging copy. str-oc67: `file_path`
+    // may be RELATIVE while `crate_root` is absolute, so a naive
+    // `strip_prefix(crate_root)` fails and the instrumented source + in-module
+    // `__shatter` wrapper land at a bogus nested path while cargo compiles the
+    // ORIGINAL file — leaving `shatter_crate_bridge_entry` undefined (link error)
+    // for every non-axum function. Strip the canonicalized source_path.
+    let source_path =
+        std::fs::canonicalize(file_path).unwrap_or_else(|_| Path::new(file_path).to_path_buf());
+    let crate_root_canon =
+        std::fs::canonicalize(crate_root).unwrap_or_else(|_| crate_root.to_path_buf());
+    let rel_file = staging_rel_file(&source_path, Path::new(file_path), &crate_root_canon);
 
-    // Create an isolated staging copy of the user crate. All mutations
-    // (instrumented source, wrapper module, Cargo.toml feature injection)
-    // happen inside this copy, leaving the original tree untouched (str-ja70).
-    let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
-        ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
-    })?;
+    // Build each candidate in priority order. A CompilationFailed on the
+    // whole-file harness is treated as a poisoned sibling and degrades to the
+    // single-function fallback; only a failure on the FINAL candidate (the
+    // requested function on its own) is reported as a genuine incompatibility of
+    // the target itself (str-303gg).
+    let plan_count = plans.len();
+    for (idx, plan) in plans.iter().enumerate() {
+        let is_last = idx + 1 == plan_count;
 
-    // Map `file_path` from original crate to staging copy.
-    let staging_file = staging_crate.join(&rel_file);
-    let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| {
-        ExecuteError::NonExecutable("crate_bridge: cannot find lib.rs in staging copy".to_string())
-    })?;
-    let staging_shatter_mod = staging_crate.join("src").join("__shatter.rs");
-    let staging_cargo_toml = staging_crate.join("Cargo.toml");
+        // str-303gg review #5: skip a whole-file plan already known to fail
+        // compilation in this process — go straight to the single-fn fallback
+        // rather than repay the guaranteed-failing build for every function.
+        if !is_last
+            && POISONED_WHOLE_FILE_PLANS
+                .lock()
+                .unwrap()
+                .contains(&plan.key)
+        {
+            continue;
+        }
 
-    // Write the instrumented source + in-module wrapper to the staging copy.
-    if let Some(parent) = staging_file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
+        let harness_dir = stable_crate_bridge_dir(crate_root, plan.bridge_source_hash, mh);
+
+        // str-303gg review #3: serialise concurrent builders of this exact plan
+        // across processes before touching the shared content-addressed dir. The
+        // lock is held for the whole build+dispatch of this candidate; its Drop at
+        // the end of the iteration (or on return) releases it.
+        if let Some(parent) = harness_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _build_lock = acquire_crate_bridge_build_lock(&harness_dir);
+
+        std::fs::create_dir_all(&harness_dir)?;
+
+        // Create an isolated staging copy of the user crate. All mutations
+        // (instrumented source, wrapper module, Cargo.toml feature injection)
+        // happen inside this copy, leaving the original tree untouched (str-ja70).
+        let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
+            ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
+        })?;
+
+        let staging_file = staging_crate.join(&rel_file);
+        let staging_lib_rs = find_lib_rs(&staging_crate).ok_or_else(|| {
+            ExecuteError::NonExecutable(
+                "crate_bridge: cannot find lib.rs in staging copy".to_string(),
+            )
+        })?;
+        let staging_shatter_mod = staging_crate.join("src").join("__shatter.rs");
+        let staging_cargo_toml = staging_crate.join("Cargo.toml");
+
+        // Write the instrumented source + in-module wrapper to the staging
+        // copy. `plan.target_contents` was already computed once above (it
+        // also feeds the cache-key hash), so no need to rebuild it here.
+        if let Some(parent) = staging_file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ExecuteError::IoError(io::Error::other(format!(
+                    "cannot create staging directories: {e}"
+                )))
+            })?;
+        }
+        std::fs::write(&staging_file, &plan.target_contents).map_err(|e| {
             ExecuteError::IoError(io::Error::other(format!(
-                "cannot create staging directories: {e}"
+                "cannot write instrumented source to staging: {e}"
             )))
         })?;
-    }
-    std::fs::write(&staging_file, &target_contents).map_err(|e| {
-        ExecuteError::IoError(io::Error::other(format!(
-            "cannot write instrumented source to staging: {e}"
-        )))
-    })?;
 
-    // Write the FFI stub at staging crate root.
-    std::fs::write(&staging_shatter_mod, &root_stub).map_err(ExecuteError::IoError)?;
+        // Write the FFI stub at staging crate root.
+        std::fs::write(&staging_shatter_mod, &root_stub).map_err(ExecuteError::IoError)?;
 
-    // Inject mod declaration into staging lib.rs (idempotent).
-    inject_lib_module_declaration(&staging_lib_rs, &crate_alias)?;
+        // Inject mod declaration into staging lib.rs (idempotent).
+        inject_lib_module_declaration(&staging_lib_rs, &crate_alias)?;
 
-    // Inject feature + deps into staging Cargo.toml (idempotent).
-    inject_crate_bridge_feature(&staging_cargo_toml, &runtime_path)?;
+        // Inject feature + deps into staging Cargo.toml (idempotent).
+        inject_crate_bridge_feature(&staging_cargo_toml, &runtime_path)?;
 
-    let needs_tokio = compatible_fns.iter().any(|f| f.is_async);
-    let driver_source = generate_crate_bridge_bin(&crate_alias);
-    let driver_package_name =
-        crate_bridge_driver_package_name("shatter-crate-bridge-exec", &harness_dir);
-    let driver_cargo_toml = generate_crate_bridge_cargo_toml(
-        &driver_package_name,
-        &crate_name,
-        &staging_crate,
-        needs_tokio,
-    );
+        let needs_tokio = plan.fns.iter().any(|f| f.is_async);
+        let driver_source = generate_crate_bridge_bin(&crate_alias);
+        let driver_package_name =
+            crate_bridge_driver_package_name("shatter-crate-bridge-exec", &harness_dir);
+        let driver_cargo_toml = generate_crate_bridge_cargo_toml(
+            &driver_package_name,
+            &crate_name,
+            &staging_crate,
+            needs_tokio,
+        );
 
-    // Shadow `timing` as mutable so we can `take()` it inside the branch.
-    let mut timing = timing;
-
-    let harness_result = if let Some(t) = timing.take() {
-        t.record("execute.build", |t| {
+        let harness_result = if let Some(t) = timing.take() {
+            t.record("execute.build", |t| {
+                build_and_spawn_crate_bridge_harness(
+                    &driver_source,
+                    &driver_cargo_toml,
+                    &harness_dir,
+                    Some(t),
+                )
+            })
+        } else {
             build_and_spawn_crate_bridge_harness(
                 &driver_source,
                 &driver_cargo_toml,
                 &harness_dir,
-                Some(t),
+                None,
             )
-        })
-    } else {
-        build_and_spawn_crate_bridge_harness(&driver_source, &driver_cargo_toml, &harness_dir, None)
-    };
-    let mut harness = match harness_result {
-        Ok(harness) => harness,
-        Err(ExecuteError::CompilationFailed(msg)) => {
-            let _ = std::fs::remove_dir_all(&harness_dir);
-            if let Some(reason) = crate_bridge_serde_bound_failure_reason(&msg) {
-                return Err(ExecuteError::NonExecutable(format!(
-                    "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
-                )));
+        };
+        let mut harness = match harness_result {
+            Ok(harness) => harness,
+            Err(ExecuteError::CompilationFailed(msg)) => {
+                let _ = std::fs::remove_dir_all(&harness_dir);
+                if is_last {
+                    if let Some(reason) = crate_bridge_serde_bound_failure_reason(&msg) {
+                        return Err(ExecuteError::NonExecutable(format!(
+                            "crate_bridge: function `{function_name}` is not JSON-harness compatible: {reason}"
+                        )));
+                    }
+                    return Err(ExecuteError::CompilationFailed(msg));
+                }
+                // A sibling in the whole-file harness failed to compile. Degrade
+                // to the single-function fallback so the requested target still
+                // runs.
+                //
+                // str-303gg review #6: surface WHY (build timeout, a
+                // non-DeserializeOwned sibling, …) — the message is otherwise
+                // silently discarded, hiding build-timeout regressions.
+                crate_bridge_debug(&format!(
+                    "crate_bridge: whole-file harness for `{function_name}` ({} fn(s)) failed to \
+                     compile; falling back to single-function harness: {msg}",
+                    plan.fns.len(),
+                ));
+                // str-303gg review #5: remember this poisoned whole-file plan so
+                // later functions in the same file skip it instead of repaying
+                // the guaranteed-failing build.
+                POISONED_WHOLE_FILE_PLANS
+                    .lock()
+                    .unwrap()
+                    .insert(plan.key.clone());
+                continue;
             }
-            return Err(ExecuteError::CompilationFailed(msg));
-        }
-        Err(err) => {
+            Err(err) => {
+                let _ = std::fs::remove_dir_all(&harness_dir);
+                return Err(err);
+            }
+        };
+
+        let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
+
+        let timed_out = result
+            .thrown_error
+            .as_ref()
+            .and_then(|e| e.get("error_type"))
+            .and_then(|v| v.as_str())
+            == Some("timeout");
+
+        if !timed_out {
+            let compatible_set: HashSet<String> =
+                plan.fns.iter().map(|f| f.name.clone()).collect();
+            bridge_cache.lock().unwrap().insert(
+                plan.key.clone(),
+                CrateBridgeHarnessEntry {
+                    harness,
+                    compatible_functions: compatible_set,
+                },
+            );
+        } else {
             let _ = std::fs::remove_dir_all(&harness_dir);
-            return Err(err);
         }
-    };
 
-    let result = harness.execute_dispatch(function_name, inputs, timeout_ms)?;
-
-    let timed_out = result
-        .thrown_error
-        .as_ref()
-        .and_then(|e| e.get("error_type"))
-        .and_then(|v| v.as_str())
-        == Some("timeout");
-
-    if !timed_out {
-        let compatible_set: HashSet<String> =
-            compatible_fns.iter().map(|f| f.name.clone()).collect();
-        bridge_cache.lock().unwrap().insert(
-            key,
-            CrateBridgeHarnessEntry {
-                harness,
-                compatible_functions: compatible_set,
-            },
-        );
-    } else {
-        let _ = std::fs::remove_dir_all(&harness_dir);
+        return Ok(result);
     }
 
-    Ok(result)
+    // The final candidate always returns (Ok, a hard Err, or the is_last
+    // CompilationFailed branch), so the loop cannot fall through.
+    unreachable!("crate_bridge candidate loop must return on the final attempt")
 }
 
 /// Execute a function from a crate-backed Rust file using the stable bin-only dispatch harness.
@@ -5374,13 +5772,7 @@ fn execute_function_crate_backed(
         .iter()
         .filter_map(|(name, ctx)| {
             if check_bin_only_compatibility(name, ctx, true).is_ok() {
-                Some(CompatFn {
-                    name: name.clone(),
-                    param_names: ctx.sig.param_names.clone(),
-                    param_types: ctx.sig.param_types.clone(),
-                    return_type: ctx.sig.return_type.clone(),
-                    is_async: ctx.sig.is_async,
-                })
+                Some(CompatFn::from_signature(name, &ctx.sig))
             } else {
                 None
             }
@@ -5988,7 +6380,7 @@ fn generate_axum_harness(
         let default_path_literal = rust_string_literal(&default_path);
         let default_path_value_literal = rust_string_literal(&default_path_value);
         h.push_str(&format!(
-            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = axum_recipe_field(\"path\") {{\n                if let Some(path) = value.as_str() {{\n                    let expected_pattern_segments = {default_path_literal}.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                    let expected_segments = expected_pattern_segments.len();\n                    let (path_without_query, query_suffix) = match path.split_once('?') {{\n                        Some((path, query)) => (path, format!(\"?{{query}}\")),\n                        None => (path, String::new()),\n                    }};\n                    let actual_segments = path_without_query.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                    if actual_segments.len() == expected_segments {{\n                        return path.to_string();\n                    }}\n                    if !actual_segments.is_empty() && actual_segments.len() < expected_segments {{\n                        let static_prefix_matches = actual_segments.iter().zip(expected_pattern_segments.iter()).all(|(actual, expected)| expected.starts_with('{{') || *actual == *expected);\n                        if static_prefix_matches {{\n                            let mut composed = actual_segments.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>();\n                            let default_segments = {default_path_value_literal}.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                            composed.extend(default_segments.into_iter().skip(composed.len()).take(expected_segments.saturating_sub(composed.len())).map(str::to_string));\n                            if composed.len() == expected_segments {{\n                                return format!(\"/{{}}{{}}\", composed.join(\"/\"), query_suffix);\n                            }}\n                        }}\n                    }}\n                }}\n            }}\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
+            "        let path_value = input_obj.get(\"path\").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| {{\n            if let Some(value) = axum_recipe_field(\"path\") {{\n                if let Some(path) = value.as_str() {{\n                    let expected_pattern_segments = {default_path_literal}.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                    let expected_segments = expected_pattern_segments.len();\n                    let (path_without_query, query_suffix) = match path.split_once('?') {{\n                        Some((path, query)) => (path, format!(\"?{{query}}\")),\n                        None => (path, String::new()),\n                    }};\n                    let actual_segments = path_without_query.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                    if actual_segments.len() == expected_segments {{\n                        return path.to_string();\n                    }}\n                    if !actual_segments.is_empty() && actual_segments.len() < expected_segments {{\n                        let static_prefix_matches = actual_segments.iter().zip(expected_pattern_segments.iter()).all(|(actual, expected)| expected.starts_with('{{') || *actual == *expected);\n                        if static_prefix_matches {{\n                            let mut composed = actual_segments.iter().map(|segment| (*segment).to_string()).collect::<Vec<_>>();\n                            let default_segments = {default_path_value_literal}.split('/').filter(|segment| !segment.is_empty()).collect::<Vec<_>>();\n                            composed.extend(default_segments.into_iter().skip(composed.len()).take(expected_segments.saturating_sub(composed.len())).map(str::to_string));\n                            if composed.len() == expected_segments {{\n                                return format!(\"/{{}}{{}}\", composed.join(\"/\"), query_suffix);\n                            }}\n                        }}\n                    }}\n                    if actual_segments.len() > expected_segments {{\n                        let truncated = actual_segments.into_iter().take(expected_segments).collect::<Vec<_>>();\n                        return format!(\"/{{}}{{}}\", truncated.join(\"/\"), query_suffix);\n                    }}\n                }}\n            }}\n            if let Some(value) = inputs.get({idx}) {{\n                if !value.is_null() {{\n                    if let Some(segment) = value.as_str() {{\n                        return format!(\"/test/{{}}\", segment);\n                    }}\n                    if let Some(segments) = value.as_array() {{\n                        let path_segments = segments.iter().filter_map(|segment| {{\n                            if segment.is_null() {{\n                                None\n                            }} else if let Some(segment) = segment.as_str() {{\n                                Some(segment.to_string())\n                            }} else {{\n                                Some(segment.to_string().trim_matches('\"').to_string())\n                            }}\n                        }}).collect::<Vec<_>>();\n                        if !path_segments.is_empty() {{\n                            return format!(\"/test/{{}}\", path_segments.join(\"/\"));\n                        }}\n                    }}\n                    return format!(\"/test/{{}}\", value.to_string().trim_matches('\"'));\n                }}\n            }}\n            {default_path_value_literal}.to_string()\n        }});\n"
         ));
     } else {
         h.push_str(&format!(
@@ -6308,9 +6700,18 @@ fn generate_axum_harness(
     Ok(h)
 }
 
+/// Forward the handler file's `use` items into the crate-backed axum harness so
+/// that the inner extractor/Path/Json types it names by bare identifier (e.g.
+/// `Uuid` from `use uuid::Uuid;`, request types from `use crate::...;`) resolve.
+///
+/// Rewrites a leading `crate::` segment to `{crate_alias}::` (the driver
+/// references the target crate under that alias). External-crate imports
+/// (`uuid`, `chrono`, std, etc.) are forwarded as-is because the driver crate
+/// depends on the same crates as the handler crate. `super::`/`self::`-relative
+/// imports cannot be resolved at the harness top level, so they are dropped;
+/// the `use {crate_alias}::*;` glob emitted alongside this output covers any
+/// crate-local types those relative paths referenced.
 fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
-    use quote::ToTokens;
-
     let Ok(file) = syn::parse_file(source) else {
         return String::new();
     };
@@ -6319,14 +6720,96 @@ fn crate_use_imports_for_harness(source: &str, crate_alias: &str) -> String {
         let syn::Item::Use(use_item) = item else {
             continue;
         };
-        let tokens = use_item.to_token_stream().to_string();
-        if !tokens.contains("crate ::") {
+        // Only forward top-level imports; nested `use` inside `mod` blocks are
+        // not part of `file.items` so this is already top-level only.
+        let leading = use_tree_leading_ident(&use_item.tree);
+        // Drop relative imports that have no meaning at the harness top level.
+        // The crate-alias glob covers any crate-local names they referenced.
+        if matches!(leading.as_deref(), Some("super") | Some("self")) {
             continue;
         }
-        imports.push_str(&tokens.replace("crate ::", &format!("{crate_alias} ::")));
+        // str-0018: the harness preamble already emits `use serde_json::Value;`.
+        // Forwarding the handler's own `serde_json::Value` import (e.g.
+        // `use serde_json::{json, Value};`) again is a hard E0252 duplicate-import
+        // error that `#![allow(unused_imports)]` cannot suppress. Prune the
+        // `Value` leaf from any forwarded serde_json import; skip the item if
+        // nothing else remains.
+        let pruned_tree = match prune_serde_json_value(&use_item.tree) {
+            Some(t) => t,
+            None => continue,
+        };
+        let tokens = quote::quote!(use #pruned_tree;).to_string();
+        if tokens.contains("crate ::") {
+            imports.push_str(&tokens.replace("crate ::", &format!("{crate_alias} ::")));
+        } else {
+            // External-crate / std imports: forward verbatim. The driver crate
+            // depends on the same external crates as the handler crate.
+            imports.push_str(&tokens);
+        }
         imports.push('\n');
     }
     imports
+}
+
+/// str-0018: prune a `Value` leaf from a `serde_json::...` use tree (the harness
+/// preamble already brings `serde_json::Value` into scope, so re-importing it is
+/// E0252). Returns the rewritten tree, or `None` if the import was solely
+/// `serde_json::Value` and should be dropped entirely. Non-serde_json trees pass
+/// through unchanged.
+fn prune_serde_json_value(tree: &syn::UseTree) -> Option<syn::UseTree> {
+    if let syn::UseTree::Path(path) = tree
+        && path.ident == "serde_json"
+    {
+        let inner = prune_value_leaf(&path.tree)?;
+        return Some(syn::UseTree::Path(syn::UsePath {
+            ident: path.ident.clone(),
+            colon2_token: path.colon2_token,
+            tree: Box::new(inner),
+        }));
+    }
+    Some(tree.clone())
+}
+
+/// Remove a top-level `Value` name from a use tree (a bare `Value`, or the
+/// `Value` member of a brace group). Returns `None` if pruning empties the tree.
+fn prune_value_leaf(tree: &syn::UseTree) -> Option<syn::UseTree> {
+    match tree {
+        syn::UseTree::Name(name) if name.ident == "Value" => None,
+        syn::UseTree::Group(group) => {
+            let kept: Vec<syn::UseTree> = group
+                .items
+                .iter()
+                .filter(|t| !matches!(t, syn::UseTree::Name(n) if n.ident == "Value"))
+                .cloned()
+                .collect();
+            match kept.len() {
+                0 => None,
+                1 => Some(kept.into_iter().next().unwrap()),
+                _ => {
+                    let mut items = syn::punctuated::Punctuated::new();
+                    for k in kept {
+                        items.push(k);
+                    }
+                    Some(syn::UseTree::Group(syn::UseGroup {
+                        brace_token: group.brace_token,
+                        items,
+                    }))
+                }
+            }
+        }
+        other => Some(other.clone()),
+    }
+}
+
+/// Return the leading path identifier of a `use` tree (skipping a leading
+/// `::`), e.g. `Some("crate")`, `Some("super")`, `Some("uuid")`.
+fn use_tree_leading_ident(tree: &syn::UseTree) -> Option<String> {
+    match tree {
+        syn::UseTree::Path(path) => Some(path.ident.to_string()),
+        syn::UseTree::Name(name) => Some(name.ident.to_string()),
+        syn::UseTree::Rename(rename) => Some(rename.ident.to_string()),
+        _ => None,
+    }
 }
 
 fn module_path_for_crate_file(crate_root: &Path, file_path: &Path) -> Option<String> {
@@ -6452,9 +6935,19 @@ fn generate_axum_crate_harness(
         type_sources,
     )?;
     harness = harness.replace("#[allow(dead_code)]\nmod user_code {\n\n}", "");
+    // Replace the standalone harness's `use crate::user_code::*;` with the
+    // handler file's forwarded imports plus a glob over the target crate so
+    // crate-local types (AppState, custom extractors, request types) resolve
+    // even when the handler imported them via `super::`/re-exports.
+    let mut crate_imports = crate_use_imports_for_harness(source, crate_alias);
+    crate_imports.push_str(&format!("use {crate_alias}::*;\n"));
+    harness = harness.replace("use crate::user_code::*;\n", &crate_imports);
+    // Broaden the crate-harness allow attribute: the forwarded imports and the
+    // crate-alias glob can produce ambiguous-glob / unused warnings that would
+    // otherwise be noise (and could fail under deny-warnings driver builds).
     harness = harness.replace(
-        "use crate::user_code::*;\n",
-        &crate_use_imports_for_harness(source, crate_alias),
+        "#![allow(unused_imports)]\n",
+        "#![allow(unused_imports, ambiguous_glob_reexports, unused, clippy::all)]\n",
     );
     let public_module_path = if module_path
         .rsplit("::")
@@ -6600,6 +7093,24 @@ fn collect_rust_sources(
     }
 }
 
+/// Compute the path of a source file relative to its crate root for writing the
+/// instrumented copy into the staging crate.
+///
+/// str-oc67: the caller's `path` may be RELATIVE (e.g. `api/src/handlers/tags.rs`)
+/// while `crate_root` is canonicalized (absolute), so `path.strip_prefix(crate_root)`
+/// fails and would fall back to the full relative path — writing the instrumented
+/// source to a bogus `crate-shadow/api/src/handlers/tags.rs` location while cargo
+/// compiles the ORIGINAL uninstrumented `crate-shadow/src/handlers/tags.rs`,
+/// yielding 0 coverage despite a fully-executed handler. Strip the canonicalized
+/// `source_path` first; fall back to the raw `path` only if that also fails.
+fn staging_rel_file(source_path: &Path, path: &Path, crate_root: &Path) -> PathBuf {
+    source_path
+        .strip_prefix(crate_root)
+        .or_else(|_| path.strip_prefix(crate_root))
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_axum_handler_crate_backed(
     file_path: &str,
@@ -6696,8 +7207,8 @@ fn execute_axum_handler_crate_backed(
     let staging_crate = create_crate_staging_copy(crate_root, &harness_dir).map_err(|e| {
         ExecuteError::IoError(io::Error::other(format!("cannot create staging copy: {e}")))
     })?;
-    let rel_file = path.strip_prefix(crate_root).unwrap_or(path);
-    let staging_file = staging_crate.join(rel_file);
+    let rel_file = staging_rel_file(&source_path, path, crate_root);
+    let staging_file = staging_crate.join(&rel_file);
     if let Some(parent) = staging_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             ExecuteError::IoError(io::Error::other(format!(
@@ -6882,6 +7393,36 @@ mod tests {
             runtime_path.is_ok(),
             "should find runtime crate: {:?}",
             runtime_path.err()
+        );
+    }
+
+    /// Reproduce `source_hash`'s digest with an explicit version, mirroring the
+    /// production folding order (version first, then content).
+    fn source_hash_with_version(version: u64, content: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        version.hash(&mut h);
+        content.hash(&mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn source_hash_folds_cache_version() {
+        let content = "fn target(n: i32) -> i32 { n }";
+
+        // `source_hash` uses the live HARNESS_CACHE_VERSION.
+        assert_eq!(
+            source_hash(content),
+            source_hash_with_version(HARNESS_CACHE_VERSION, content),
+            "source_hash must fold HARNESS_CACHE_VERSION into the digest"
+        );
+
+        // Bumping the version constant changes every cache key even when the
+        // source text is byte-for-byte identical — the str-wcf3 invariant.
+        assert_ne!(
+            source_hash_with_version(HARNESS_CACHE_VERSION, content),
+            source_hash_with_version(HARNESS_CACHE_VERSION + 1, content),
+            "a version bump must invalidate stale harness caches for identical source"
         );
     }
 
@@ -8031,6 +8572,114 @@ pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
     }
 
     #[test]
+    fn execute_axum_handler_truncates_long_native_recipe_path_for_single_param() {
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("handler.rs");
+        std::fs::write(
+            &source_file,
+            r#"
+use axum::extract::{Path, State};
+
+#[derive(Clone)]
+pub struct AppStateLike;
+
+pub async fn handler(
+    State(_state): State<AppStateLike>,
+    Path(segment): Path<u64>,
+) -> String {
+    segment.to_string()
+}
+"#,
+        )
+        .expect("write source");
+
+        let state_generator = dir.path().join("state_gen.rs");
+        std::fs::write(
+            &state_generator,
+            r#"
+use crate::user_code::AppStateLike;
+use shatter_rust::generators::GeneratorResult;
+
+pub fn RecipePathState(recipe: Option<serde_json::Value>) -> GeneratorResult {
+    GeneratorResult {
+        id: "recipe-path-state".to_string(),
+        value: Box::new(AppStateLike),
+        recipe: recipe.unwrap_or(serde_json::Value::Null),
+    }
+}
+"#,
+        )
+        .expect("write generator");
+
+        // Recipe path has 2 segments but the route only expects 1.
+        // The harness must truncate to the first segment (42) rather than
+        // falling through to a Z3-generated garbage string.
+        let state_input = serde_json::json!({
+            "__shatter_native": true,
+            "handle": "recipe-state",
+            "__shatter_replay": {
+                "language": "rust",
+                "file": state_generator,
+                "name": "RecipePathState",
+                "recipe": {
+                    "axum": {
+                        "path": "/test/42/99"
+                    }
+                }
+            }
+        });
+        let mappings = vec![
+            AxumExtractorMapping {
+                param_index: 0,
+                kind: AxumExtractorKind::AppState,
+                type_name: "State".to_string(),
+            },
+            AxumExtractorMapping {
+                param_index: 1,
+                kind: AxumExtractorKind::PathParams,
+                type_name: "Path".to_string(),
+            },
+        ];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            &source_file.to_string_lossy(),
+            "handler",
+            &[state_input, serde_json::Value::Null],
+            &[],
+            30_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200)),
+                    "long native recipe path must be truncated, not passed as garbage: {result:?}"
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!(42))
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if is_offline_compile_error_message(&msg) => {
+                eprintln!(
+                    "skipping execute_axum_handler_truncates_long_native_recipe_path_for_single_param: cargo unavailable ({msg})"
+                );
+            }
+            Err(err) => panic!("execute failed: {err:?}"),
+        }
+    }
+
+    #[test]
     fn execute_axum_handler_defaults_bool_path_segment_to_parseable_value() {
         use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
 
@@ -8442,6 +9091,74 @@ pub struct Nested {
     fn classify_axum_multipart_extractor_returns_multipart() {
         let ext = classify_axum_extractor("axum::extract::Multipart").unwrap();
         assert_eq!(ext, AxumExtractor::Multipart);
+    }
+
+    // str-uz5m / str-wjhv: State<T> with a native-replay marker is constructible.
+    #[test]
+    fn axum_state_with_native_replay_is_not_rejected() {
+        let params = vec!["State<AppState>".to_string(), "Path<Uuid>".to_string()];
+        let replays = vec![
+            Some(NativeReplaySpec {
+                input_index: 0,
+                module_name: "gen".to_string(),
+                function_name: "State".to_string(),
+                file_path: PathBuf::from("gen.rs"),
+                recipe: Value::Null,
+            }),
+            None,
+        ];
+        // A State param backed by a native-replay marker must NOT be rejected.
+        assert!(axum_state_unsupported_reason_with_replays(&params, &replays).is_none());
+        // But the static (replay-blind) check still flags it.
+        assert!(axum_state_unsupported_reason(&params).is_some());
+    }
+
+    #[test]
+    fn axum_state_without_native_replay_is_rejected() {
+        let params = vec!["State<AppState>".to_string()];
+        let replays = vec![None];
+        let reason = axum_state_unsupported_reason_with_replays(&params, &replays)
+            .expect("State without a replay marker must be rejected");
+        assert!(reason.contains("not constructible without an app-state generator"));
+    }
+
+    // str-oc67: a relative source `path` with a canonicalized (absolute)
+    // crate_root must strip to the crate-relative path so the instrumented
+    // source overwrites the real compiled file (not a bogus nested location).
+    #[test]
+    fn staging_rel_file_strips_canonical_source_when_path_is_relative() {
+        let crate_root = Path::new("/abs/proj/api");
+        let source_path = Path::new("/abs/proj/api/src/handlers/tags.rs");
+        let path = Path::new("api/src/handlers/tags.rs");
+        assert_eq!(
+            staging_rel_file(source_path, path, crate_root),
+            Path::new("src/handlers/tags.rs")
+        );
+    }
+
+    #[test]
+    fn staging_rel_file_handles_already_relative_to_root() {
+        let crate_root = Path::new("/abs/proj/api");
+        let source_path = Path::new("/abs/proj/api/src/lib.rs");
+        let path = Path::new("/abs/proj/api/src/lib.rs");
+        assert_eq!(
+            staging_rel_file(source_path, path, crate_root),
+            Path::new("src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn native_replay_downcast_parts_wraps_state_inner() {
+        // State<T> generators return inner T; harness downcasts to T then re-wraps.
+        let (dcast, pre, post) = native_replay_downcast_parts("State<AppState>");
+        assert_eq!(dcast, "AppState");
+        assert_eq!(pre, "axum::extract::State(");
+        assert_eq!(post, ")");
+        // Non-extractor params downcast directly with no wrapping.
+        let (dcast, pre, post) = native_replay_downcast_parts("CurrentAccount");
+        assert_eq!(dcast, "CurrentAccount");
+        assert_eq!(pre, "");
+        assert_eq!(post, "");
     }
 
     #[test]
@@ -9348,6 +10065,29 @@ pub fn PanicString(_recipe: Option<serde_json::Value>) -> GeneratorResult {
         assert!(
             harness.contains("Err(ref msg)"),
             "dispatch harness must use Err(ref msg)\n\nharness:\n{harness}"
+        );
+    }
+
+    /// Regression test (str-2nfoe): the dispatch harness emits param-type
+    /// bindings with bare type names (`let c: Color = …`) taken verbatim from the
+    /// source signature, so it must bring the wrapped user types into scope with
+    /// `use crate::user_code::*;`. Without it, any locally-defined struct/enum
+    /// param fails to compile with `cannot find type`.
+    #[test]
+    fn generate_dispatch_harness_imports_user_code_glob() {
+        let source = r#"pub enum Color { Red, Green, Blue }
+        pub fn classify_color(c: Color) -> u32 { match c { Color::Red => 0, Color::Green => 1, Color::Blue => 2 } }"#;
+        let fns = vec![CompatFn {
+            name: "classify_color".to_string(),
+            param_names: vec!["c".to_string()],
+            param_types: vec!["Color".to_string()],
+            return_type: Some("u32".to_string()),
+            is_async: false,
+        }];
+        let harness = generate_dispatch_harness(source, &fns, "[]", &[], &[]).unwrap();
+        assert!(
+            harness.contains("use crate::user_code::*;"),
+            "dispatch harness must import wrapped user types so bare param-type bindings resolve\n\nharness:\n{harness}"
         );
     }
 
@@ -10819,7 +11559,10 @@ fn enabled(config: Config) -> bool {
     fn skip_cargo_check_env_parsing() {
         // SAFETY: test-only env mutation; single test avoids parallel races.
         unsafe { std::env::remove_var("SHATTER_SKIP_CHECK") };
-        assert!(!skip_cargo_check(), "default should be false");
+        assert!(
+            skip_cargo_check(),
+            "default should skip cargo check so successful scans do not compile each harness twice"
+        );
 
         unsafe { std::env::set_var("SHATTER_SKIP_CHECK", "1") };
         assert!(skip_cargo_check(), "'1' should enable skip");
@@ -11005,6 +11748,47 @@ fn enabled(config: Config) -> bool {
             toml.contains("incremental = false"),
             "dev builds should avoid per-driver incremental state"
         );
+    }
+
+    #[test]
+    fn ensure_serde_dependency_backfills_when_absent() {
+        let toml = "[package]\nname = \"x\"\n\n[dependencies]\nserde_json = \"1\"\n";
+        assert!(!cargo_toml_declares_serde(toml));
+        let out = ensure_serde_dependency(toml);
+        assert!(out.contains("serde = { version = \"1\", features = [\"derive\"] }"));
+        // serde_json must survive and not be treated as a serde declaration.
+        assert!(out.contains("serde_json = \"1\""));
+    }
+
+    #[test]
+    fn ensure_serde_dependency_is_noop_when_present() {
+        // Plain key form.
+        let plain = "[dependencies]\nserde = { version = \"1\" }\nserde_json = \"1\"\n";
+        assert!(cargo_toml_declares_serde(plain));
+        assert_eq!(ensure_serde_dependency(plain), plain);
+        // Workspace-inherited form.
+        let ws = "[dependencies]\nserde.workspace = true\n";
+        assert!(cargo_toml_declares_serde(ws));
+        assert_eq!(ensure_serde_dependency(ws), ws);
+        // Table form.
+        let table = "[dependencies.serde]\nversion = \"1\"\nfeatures = [\"derive\"]\n";
+        assert!(cargo_toml_declares_serde(table));
+        assert_eq!(ensure_serde_dependency(table), table);
+    }
+
+    #[test]
+    fn cargo_toml_declares_serde_ignores_serde_json_only() {
+        // serde_json present but serde absent must report false (sibling crate).
+        let toml = "[dependencies]\nserde_json = \"1\"\nserde_yaml = \"0.9\"\n";
+        assert!(!cargo_toml_declares_serde(toml));
+    }
+
+    #[test]
+    fn ensure_serde_dependency_adds_section_when_missing() {
+        let toml = "[package]\nname = \"x\"\n";
+        let out = ensure_serde_dependency(toml);
+        assert!(out.contains("[dependencies]"));
+        assert!(out.contains("serde = { version = \"1\", features = [\"derive\"] }"));
     }
 
     #[test]
@@ -11261,11 +12045,17 @@ fn enabled(config: Config) -> bool {
     //
     // The function is NOT marked `pub`, verifying that crate_bridge can access
     // crate-private functions that bin_only cannot reach.
+    //
+    // str-303gg: executing ONE function must register EVERY statically-compatible
+    // sibling in the same dispatch harness, so a later request for a sibling is
+    // served by the running harness (real coverage) rather than hitting the
+    // dispatch table's "unknown" arm and being misreported as completed/0%.
 
     #[test]
     fn crate_bridge_executes_private_function() {
         let dir = std::env::temp_dir().join("shatter-test-bridge-private");
-        // Write a crate with a private function.
+        let _ = std::fs::remove_dir_all(&dir);
+        // Write a crate with two private functions.
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(
@@ -11274,7 +12064,7 @@ fn enabled(config: Config) -> bool {
         ).unwrap();
         std::fs::write(
             src.join("lib.rs"),
-            "fn secret_add(a: i32, b: i32) -> i32 { a + b }\n",
+            "fn secret_add(a: i32, b: i32) -> i32 { a + b }\nfn secret_mul(a: i32, b: i32) -> i32 { a * b }\n",
         )
         .unwrap();
 
@@ -11282,8 +12072,11 @@ fn enabled(config: Config) -> bool {
         let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
         let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
 
+        let lib_path = src.join("lib.rs");
+        let lib_path = lib_path.to_str().unwrap();
+
         let result = execute_function_with_timing(
-            src.join("lib.rs").to_str().unwrap(),
+            lib_path,
             "secret_add",
             &[serde_json::json!(3), serde_json::json!(4)],
             &[],
@@ -11295,8 +12088,6 @@ fn enabled(config: Config) -> bool {
             &bridge_cache,
         );
 
-        let _ = std::fs::remove_dir_all(&dir);
-
         match result {
             Ok(r) => {
                 assert_eq!(
@@ -11304,14 +12095,159 @@ fn enabled(config: Config) -> bool {
                     Some(serde_json::json!(7)),
                     "secret_add(3, 4) should return 7"
                 );
+
+                // str-303gg: the harness built to run `secret_add` must ALSO
+                // register the compatible sibling `secret_mul`.
+                {
+                    let map = bridge_cache.lock().unwrap();
+                    let entry = map
+                        .values()
+                        .next()
+                        .expect("bridge cache should hold the running harness");
+                    assert!(
+                        entry.compatible_functions.contains("secret_add")
+                            && entry.compatible_functions.contains("secret_mul"),
+                        "whole-file harness must register every compatible sibling, got: {:?}",
+                        entry.compatible_functions
+                    );
+                }
+
+                // Requesting the sibling must be served by the SAME running
+                // harness (fast path) — not rebuilt, and not "not in dispatch
+                // table".
+                let sibling = execute_function_with_timing(
+                    lib_path,
+                    "secret_mul",
+                    &[serde_json::json!(3), serde_json::json!(4)],
+                    &[],
+                    60_000,
+                    Some("crate_bridge"),
+                    None,
+                    &cache,
+                    &crate_cache,
+                    &bridge_cache,
+                )
+                .expect("sibling execution should succeed");
+                assert_eq!(
+                    sibling.return_value,
+                    Some(serde_json::json!(12)),
+                    "secret_mul(3, 4) should return 12 from the shared harness"
+                );
+                assert!(
+                    sibling.thrown_error.is_none(),
+                    "sibling must execute, not report a not_supported dispatch error: {:?}",
+                    sibling.thrown_error
+                );
+                assert_eq!(
+                    bridge_cache.lock().unwrap().len(),
+                    1,
+                    "sibling must reuse the single shared harness, not spawn a second"
+                );
+
+                let _ = std::fs::remove_dir_all(&dir);
             }
             Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!(
                     "skipping crate_bridge_executes_private_function: cargo unavailable ({msg})"
                 );
+                let _ = std::fs::remove_dir_all(&dir);
             }
-            Err(e) => panic!("unexpected error: {e:?}"),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                panic!("unexpected error: {e:?}");
+            }
         }
+    }
+
+    /// str-70m2 end-to-end regression: a crate-bridge harness must rebuild
+    /// (and return the NEW result) after the target source changes, even
+    /// though the generated in-module wrapper text — the only thing the
+    /// on-disk cache directory used to be keyed on — is identical for both
+    /// versions of the function. Before this fix, `execute_function_crate_bridge`
+    /// derived `harness_dir` from a wrapper-only hash, so the second call
+    /// below would silently reuse the first harness binary and return the
+    /// stale `1` instead of `2`.
+    #[test]
+    fn crate_bridge_rebuilds_and_returns_new_result_after_source_changes() {
+        let dir = std::env::temp_dir().join("shatter-test-bridge-source-invalidation");
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-bridge-source-invalidation\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        )
+        .unwrap();
+        let lib_path = src.join("lib.rs");
+        let lib_path_str = lib_path.to_str().unwrap();
+
+        std::fs::write(&lib_path, "pub fn answer() -> i32 { 1 }\n").unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let first = execute_function_with_timing(
+            lib_path_str,
+            "answer",
+            &[],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        match &first {
+            Ok(r) => {
+                assert_eq!(r.return_value, Some(serde_json::json!(1)));
+            }
+            Err(ExecuteError::CompilationFailed(msg))
+                if msg.contains("linker")
+                    || msg.contains("not found")
+                    || msg.to_lowercase().contains("cargo") =>
+            {
+                eprintln!(
+                    "skipping crate_bridge_rebuilds_and_returns_new_result_after_source_changes: cargo unavailable ({msg})"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                panic!("unexpected error on first execution: {e:?}");
+            }
+        }
+
+        // Change ONLY the source — the generated in-module wrapper for
+        // `answer` (name, arity, mocks) is identical before and after.
+        std::fs::write(&lib_path, "pub fn answer() -> i32 { 2 }\n").unwrap();
+
+        let second = execute_function_with_timing(
+            lib_path_str,
+            "answer",
+            &[],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        )
+        .expect("second execution should succeed");
+
+        assert_eq!(
+            second.return_value,
+            Some(serde_json::json!(2)),
+            "crate-bridge cache must not serve the stale harness built from the \
+             pre-edit source — the wrapper text alone does not capture the \
+             source change (str-70m2)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -11842,6 +12778,33 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
     }
 
     #[test]
+    fn crate_bridge_whole_file_skipped_when_native_replay_present() {
+        // str-303gg review #2: native replays are positional to the requested
+        // call, so they miscompile against siblings. When any replay is present
+        // the whole-file dispatch harness must be skipped in favour of the
+        // single-function harness — even with many compatible siblings.
+        // black_box defeats const-folding so clippy does not flag these as
+        // constant-valued assertions.
+        use std::hint::black_box;
+        assert!(
+            crate_bridge_should_try_whole_file(black_box(5), black_box(false)),
+            "multiple compatible fns and no native replay → whole-file harness"
+        );
+        assert!(
+            !crate_bridge_should_try_whole_file(black_box(5), black_box(true)),
+            "a native replay must force the single-function harness"
+        );
+        assert!(
+            !crate_bridge_should_try_whole_file(black_box(1), black_box(false)),
+            "a single compatible fn never needs the whole-file harness"
+        );
+        assert!(!crate_bridge_should_try_whole_file(
+            black_box(1),
+            black_box(true)
+        ));
+    }
+
+    #[test]
     fn crate_bridge_unsupported_sibling_does_not_poison_requested_function() {
         let dir = unique_tmp_dir("sibling-poison");
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -11894,12 +12857,7 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
                 Some(serde_json::json!("pos")),
                 "supported functions must execute even when the same file has unsupported siblings",
             ),
-            Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("No such file")
-                    || msg.contains("spurious network error")
-                    || msg.contains("download of config.json failed")
-                    || msg.contains("Could not resolve host") =>
-            {
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!("skipping sibling poison regression: cargo unavailable ({msg})");
             }
             Err(e) => panic!("expected requested function to execute despite sibling, got: {e:?}"),
@@ -11910,12 +12868,7 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
                 msg.contains("JSON-harness compatible"),
                 "unsupported sibling should be classified clearly, got: {msg}"
             ),
-            Err(ExecuteError::CompilationFailed(msg))
-                if msg.contains("No such file")
-                    || msg.contains("spurious network error")
-                    || msg.contains("download of config.json failed")
-                    || msg.contains("Could not resolve host") =>
-            {
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!(
                     "skipping unsupported classification assertion: cargo unavailable ({msg})"
                 );
@@ -12438,6 +13391,84 @@ rust-version.workspace = true
         let _ = std::fs::remove_dir_all(&staging_root);
     }
 
+    /// str-2q7z: a workspace member crate that already declares a `[features]`
+    /// table (e.g. Pickpackit's `coverage-denominators`) must stage to a
+    /// crate-shadow Cargo.toml with exactly one `[features]` table, with both
+    /// the original feature and `shatter-crate-bridge` merged into it. The
+    /// regression was a duplicate `[features]` header that made cargo reject
+    /// the shadow manifest before any handler could execute.
+    #[test]
+    fn staging_then_inject_feature_with_existing_features_table() {
+        let ws_root = unique_tmp_dir("ws-root-2q7z");
+        let member_root = ws_root.join("api");
+        std::fs::create_dir_all(member_root.join("src")).unwrap();
+
+        std::fs::write(
+            ws_root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["api"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            member_root.join("Cargo.toml"),
+            r#"[package]
+name = "api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syn = { version = "2", features = ["full", "visit"], optional = true }
+proc-macro2 = { version = "1", features = ["span-locations"], optional = true }
+
+[features]
+coverage-denominators = ["dep:syn", "dep:proc-macro2"]
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(member_root.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let staging_root = unique_tmp_dir("staging-2q7z");
+        let staging_crate = create_crate_staging_copy(&member_root, &staging_root).unwrap();
+        inject_crate_bridge_feature(
+            &staging_crate.join("Cargo.toml"),
+            std::path::Path::new("/fake/runtime"),
+        )
+        .unwrap();
+
+        let staged_toml = std::fs::read_to_string(staging_crate.join("Cargo.toml")).unwrap();
+        let features_header_count = staged_toml
+            .lines()
+            .filter(|line| line.trim() == "[features]")
+            .count();
+        assert_eq!(
+            features_header_count, 1,
+            "crate-shadow Cargo.toml must have exactly one [features] table:\n{staged_toml}",
+        );
+
+        let features_section = section_body(&staged_toml, "[features]");
+        assert!(
+            features_section.contains("coverage-denominators"),
+            "must preserve the existing coverage-denominators feature:\n{staged_toml}",
+        );
+        assert!(
+            features_section.contains("shatter-crate-bridge"),
+            "must merge in the shatter-crate-bridge feature:\n{staged_toml}",
+        );
+
+        let _ = std::fs::remove_dir_all(&ws_root);
+        let _ = std::fs::remove_dir_all(&staging_root);
+    }
+
     #[test]
     fn staging_copy_copies_workspace_lockfile_to_driver_root() {
         let ws_root = unique_tmp_dir("ws-lock-8j9k");
@@ -12546,7 +13577,11 @@ members = ["api"]
         .unwrap();
         let workspace_lockfile = "version = 4\nworkspace = true\n";
         std::fs::write(ws_root.join("Cargo.lock"), workspace_lockfile).unwrap();
-        std::fs::write(member_root.join("Cargo.lock"), "version = 4\nstale = true\n").unwrap();
+        std::fs::write(
+            member_root.join("Cargo.lock"),
+            "version = 4\nstale = true\n",
+        )
+        .unwrap();
         std::fs::write(
             member_root.join("Cargo.toml"),
             r#"[package]

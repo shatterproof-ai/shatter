@@ -1,12 +1,23 @@
 use std::path::{Path, PathBuf};
 
+use crate::generated_paths::{
+    collect_generated_ignore_entries, sync_gitignore, GitignoreOutcome,
+};
 use crate::helpers::Colors;
 
 /// Initialize persistent Shatter project state in the target directory.
 ///
 /// Creates `.shatter/config.yaml` with auto-detected language and sensible
 /// defaults. This establishes the repo-local Shatter configuration root.
-/// Idempotent: if `.shatter/` already exists, reports status without overwriting.
+/// Idempotent: if `.shatter/` already exists, reports status without
+/// overwriting the config.
+///
+/// Regardless of whether the project was freshly initialized, this also
+/// writes (or verifies) a managed `.gitignore` block covering every output
+/// path Shatter generates — cache, seed pool, preserved artifacts, and any
+/// configured report outputs — so generated files never pollute `git status`
+/// (str-1fwt). The entries are driven by `shatter.config.json` values when
+/// present, falling back to the documented defaults.
 pub(crate) fn run_init(
     directory: Option<&Path>,
     _colors: &Colors,
@@ -23,9 +34,12 @@ pub(crate) fn run_init(
     };
 
     let shatter_dir = resolved_dir.join(".shatter");
+    let already_initialized = shatter_dir.exists();
 
-    // If .shatter/ already exists, report and return.
-    if shatter_dir.exists() {
+    // If .shatter/ already exists, report without overwriting the config.
+    // We still verify the .gitignore block below so re-running init repairs a
+    // missing entry (e.g. seeds_dir added after the fact).
+    if already_initialized {
         println!("Project already initialized at {}", shatter_dir.display());
         // Report which files exist inside .shatter/.
         if let Ok(entries) = std::fs::read_dir(&shatter_dir) {
@@ -33,23 +47,38 @@ pub(crate) fn run_init(
                 println!("  {}", entry.path().display());
             }
         }
-        return Ok(());
+    } else {
+        // Create .shatter/ directory.
+        std::fs::create_dir_all(&shatter_dir)?;
+        println!("  Created  .shatter/");
+
+        // Detect language from marker files.
+        let language = detect_language(&resolved_dir);
+
+        // Write config.yaml.
+        let config_path = shatter_dir.join("config.yaml");
+        let config_content = build_config_yaml(&language);
+        std::fs::write(&config_path, config_content)?;
+        println!("  Created  .shatter/config.yaml  (detected language: {language})");
     }
 
-    // Create .shatter/ directory.
-    std::fs::create_dir_all(&shatter_dir)?;
-    println!("  Created  .shatter/");
+    // Write or verify the managed .gitignore block for generated output paths.
+    let ignore_entries = collect_generated_ignore_entries(&resolved_dir);
+    match sync_gitignore(&resolved_dir, &ignore_entries)? {
+        GitignoreOutcome::Created => println!(
+            "  Created  .gitignore  ({} generated path(s) ignored)",
+            ignore_entries.len()
+        ),
+        GitignoreOutcome::Updated => println!(
+            "  Updated  .gitignore  ({} generated path(s) ignored)",
+            ignore_entries.len()
+        ),
+        GitignoreOutcome::AlreadyCurrent => {}
+    }
 
-    // Detect language from marker files.
-    let language = detect_language(&resolved_dir);
-
-    // Write config.yaml.
-    let config_path = shatter_dir.join("config.yaml");
-    let config_content = build_config_yaml(&language);
-    std::fs::write(&config_path, config_content)?;
-    println!("  Created  .shatter/config.yaml  (detected language: {language})");
-
-    println!("Initialized Shatter project at {}", resolved_dir.display());
+    if !already_initialized {
+        println!("Initialized Shatter project at {}", resolved_dir.display());
+    }
 
     Ok(())
 }
@@ -76,6 +105,15 @@ fn build_config_yaml(language: &str) -> String {
 # Place this file alongside your source code in a `.shatter/` directory.
 # Shatter discovers config files by walking upward from each target file;
 # the nearest config wins when settings conflict.
+#
+# This file owns PER-FUNCTION analysis behavior (iterations, timeouts, mocks,
+# generators, setup, opaque types). SCAN-GLOBAL settings (file discovery,
+# output, caching, resource limits, seeds_dir) live in `shatter.config.json`
+# at the project root. The two files do not overlap.
+# Precedence (highest first):
+#   CLI flags > --set overrides > .shatter/config.yaml (nearest wins)
+#     > shatter.config.json > built-in defaults
+# See the "Project Configuration" section of README.md for details.
 
 # ── Global defaults ──────────────────────────────────────────────────────
 # These apply to every function unless overridden below.
@@ -110,6 +148,7 @@ defaults:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generated_paths::{GITIGNORE_BEGIN, GITIGNORE_END};
 
     #[test]
     fn detect_language_typescript() {
@@ -160,6 +199,16 @@ mod tests {
             std::fs::read_to_string(dir.path().join(".shatter").join("config.yaml")).unwrap();
         assert!(content.contains("max_iterations: 100"));
         assert!(content.contains("timeout: 60"));
+        // str-mktn: the generated config ships the ownership/precedence note so
+        // integrators can tell which file owns what without reading the docs.
+        assert!(
+            content.contains("shatter.config.json"),
+            "config.yaml header must reference the sibling scan-global config"
+        );
+        assert!(
+            content.contains("Precedence"),
+            "config.yaml header must state the override precedence"
+        );
     }
 
     #[test]
@@ -192,5 +241,56 @@ mod tests {
         let content =
             std::fs::read_to_string(dir.path().join(".shatter").join("config.yaml")).unwrap();
         assert!(content.contains("typescript"));
+    }
+
+    fn read_gitignore(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join(".gitignore")).unwrap()
+    }
+
+    #[test]
+    fn run_init_creates_gitignore_with_default_generated_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let colors = Colors::new(false);
+        run_init(Some(dir.path()), &colors).unwrap();
+
+        let gitignore = read_gitignore(dir.path());
+        assert!(gitignore.contains(GITIGNORE_BEGIN));
+        assert!(gitignore.contains(GITIGNORE_END));
+        // All documented default output paths must be present with a trailing /.
+        assert!(gitignore.contains("\n.shatter-cache/\n"));
+        assert!(gitignore.contains("\n.shatter/seeds/\n"));
+        assert!(gitignore.contains("\nshatter-artifacts/\n"));
+        // The harness storage cache under `.shatter/` (str-1fwt).
+        assert!(gitignore.contains("\n.shatter/cache/\n"));
+    }
+
+    #[test]
+    fn run_init_appends_block_preserving_existing_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n*.log\n").unwrap();
+        let colors = Colors::new(false);
+        run_init(Some(dir.path()), &colors).unwrap();
+
+        let gitignore = read_gitignore(dir.path());
+        // Pre-existing content is preserved.
+        assert!(gitignore.contains("node_modules/"));
+        assert!(gitignore.contains("*.log"));
+        // Managed block is appended.
+        assert!(gitignore.contains(GITIGNORE_BEGIN));
+        assert!(gitignore.contains(".shatter/seeds/"));
+    }
+
+    #[test]
+    fn run_init_repairs_gitignore_when_already_initialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let colors = Colors::new(false);
+        // Pre-create .shatter/ so init takes the already-initialized path.
+        std::fs::create_dir_all(dir.path().join(".shatter")).unwrap();
+
+        run_init(Some(dir.path()), &colors).unwrap();
+
+        // Even on the already-initialized path, the gitignore block is written.
+        let gitignore = read_gitignore(dir.path());
+        assert!(gitignore.contains(".shatter/seeds/"));
     }
 }

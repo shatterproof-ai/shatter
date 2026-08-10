@@ -1,5 +1,14 @@
 version: '3'
 
+# Per-agent parallelism budgets (str-35vtk.5). Many agents share this
+# machine; each tool would otherwise assume it owns every core. A pre-set
+# environment value wins (solo humans / CI reclaim full parallelism by
+# exporting GOFLAGS / GOMAXPROCS; cargo caps live in .cargo/config.toml and
+# yield to CARGO_BUILD_JOBS / RUST_TEST_THREADS).
+env:
+  GOFLAGS: '{{env "GOFLAGS" | default "-p=4"}}'
+  GOMAXPROCS: '{{env "GOMAXPROCS" | default "8"}}'
+
 includes:
   core:
     taskfile: ./shatter-core/Taskfile.yml
@@ -55,23 +64,52 @@ tasks:
 
   test:
     desc: Run all tests (all languages)
+    # core:test races frontend builds here too (str-ahqdb, same hazard as
+    # str-6y5w8 fixed for test-standard below) -- not fixed in this task yet.
     deps: [core:test, cli:test, ts:test, go:test, rust-fe:test, rust-rt:test]
 
   test-quick:
     desc: "Quick: cargo workspace tests only"
+    # core:test races frontend builds here too (str-ahqdb, same hazard as
+    # str-6y5w8 fixed for test-standard below) -- not fixed in this task yet,
+    # despite this being the tier CLAUDE.md documents for use during
+    # development (i.e. the one most likely to hit it in a fresh checkout).
     deps: [core:test, cli:test]
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
-    deps: [core:test, cli:test, core:clippy, cli:clippy]
+    # core:test exercises shatter-core/tests/e2e_concolic.rs, which panics if
+    # the TS frontend isn't built yet (str-6y5w8). Two internal tasks instead
+    # of one so core:test/cli:test still run in parallel with each other
+    # (as they did before this fix) rather than serializing behind a single
+    # combined dep list, which would slow every test-standard run down.
+    # frontends-built and the clippy tasks don't depend on each other, so
+    # they still run in parallel too; core-cli-tests only starts once
+    # frontends-built finishes.
+    deps: [frontends-built, core:clippy, cli:clippy]
+    cmds:
+      - task: core-cli-tests
+
+  frontends-built:
+    internal: true
+    deps: [ts:build, go:build, rust-fe:build]
+
+  core-cli-tests:
+    internal: true
+    deps: [core:test, cli:test]
 
   lint:
     desc: Run all linters
     deps: [core:clippy, cli:clippy, rust-fe:clippy, rust-rt:clippy, go:vet]
 
   check-fast:
-    desc: "Fast quality gate (pre-push: clippy + tests + TS + Go)"
-    deps: [core:clippy, cli:clippy, core:test-ignored, cli:test, ts:test, go:test]
+    desc: "Fast quality gate (pre-push: clippy + tests + TS + Go; nested-build suites serialized)"
+    deps: [core:clippy, cli:clippy, ts:test, go:test]
+    cmds:
+      # Same starvation hazard as check-unit: cli:test and core:test-ignored
+      # spawn cargo/go builds from inside tests; run them after the parallel
+      # deps, one at a time, inside one heavyweight slot.
+      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test && task core:test-ignored"
 
   # --- Cross-cutting quality (issue 5) ---
 
@@ -90,24 +128,8 @@ tasks:
     cmds:
       - python3 protocol/schemas/test_schema_validation.py
 
-  parity:
-    desc: Validate frontend capabilities against the parity contract (protocol/parity-matrix.yaml)
-    preconditions:
-      - sh: command -v python3
-        msg: "python3 not installed"
-      - sh: python3 -c "import yaml" 2>/dev/null
-        msg: "pyyaml not installed (pip install pyyaml)"
-    sources:
-      - protocol/parity-matrix.yaml
-      - protocol/registry.yaml
-      - shatter-ts/src/handlers.ts
-      - shatter-ts/src/executor.ts
-      - shatter-go/protocol/constants.go
-      - shatter-go/protocol/handler.go
-      - shatter-go/instrument/executor.go
-      - shatter-rust/src/handler.rs
-    cmds:
-      - python3 scripts/validate-parity.py
+  # `parity` is defined once, below. go-task silently uses the LAST definition
+  # of a duplicated task name — don't add another `parity:` here.
 
   conformance:
     desc: Run protocol conformance tests across all frontends
@@ -123,7 +145,7 @@ tasks:
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
     cmds:
-      - python3 protocol/conformance/conformance_harness.py
+      - bash scripts/gate-wrapper.sh conformance python3 protocol/conformance/conformance_harness.py
 
   parity:
     desc: Validate frontend feature parity (registry consistency + capability contract)
@@ -131,6 +153,8 @@ tasks:
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
     sources:
       - protocol/registry.yaml
       - protocol/conformance/golden_cases.yaml
@@ -150,7 +174,25 @@ tasks:
         else
           echo "[skip] validate-parity.py not present (pending str-7jgm.2)"
         fi
-      - python3 protocol/conformance/run_golden_tests.py
+      - bash scripts/gate-wrapper.sh golden python3 protocol/conformance/run_golden_tests.py
+
+  drift-patrol:
+    desc: "Bounded drift patrol (protocol registry/codegen, conformance, parity expiry, tracker hygiene). See docs/DRIFT-PATROL.md."
+    # Build the frontends first so the conformance check runs for real instead
+    # of degrading to a hollow pass — that is why --require-conformance is safe
+    # here but not for a bare `python3 scripts/drift-patrol.py`.
+    # No `sources:` (unlike parity/golden-test/docs-smoke): staleness here is
+    # date-driven (stale tracker issues, parity expiry windows), not
+    # file-content-driven, so a checksum-based skip-if-unchanged would be
+    # wrong -- the same tree can go from clean to stale with no diff.
+    deps: [ts:build, go:build, rust-fe:build]
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    cmds:
+      - python3 scripts/drift-patrol.py --require-conformance
 
   protocol-codegen-check:
     desc: "Verify generated protocol artifacts are in sync with protocol/registry.yaml"
@@ -184,7 +226,25 @@ tasks:
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
     cmds:
-      - python3 protocol/conformance/run_golden_tests.py
+      - bash scripts/gate-wrapper.sh golden python3 protocol/conformance/run_golden_tests.py
+
+  docs-smoke:
+    desc: "Validate docs examples against the built CLI (stale flags, removed commands, invalid JSON/YAML)"
+    deps: [cli:build]
+    preconditions:
+      - sh: command -v python3
+        msg: "python3 not installed"
+      - sh: python3 -c "import yaml" 2>/dev/null
+        msg: "pyyaml not installed (pip install pyyaml)"
+    sources:
+      - scripts/docs-smoke.py
+      - scripts/docs-smoke.yaml
+      - README.md
+      - QUICKSTART.md
+      - SPEC.md
+      - docs/INDEX.md
+    cmds:
+      - python3 scripts/docs-smoke.py
 
   docs:
     desc: Run documentation quality checks
@@ -225,8 +285,11 @@ tasks:
       - scripts/test_package_npm_release.py
       - scripts/retention_continuous_releases.py
       - scripts/test_retention_continuous_releases.py
+      - scripts/drift-patrol.py
+      - scripts/test_drift_patrol.py
     cmds:
       - bash -n install.sh
+      - python3 -m unittest scripts.test_drift_patrol
       - python3 -m unittest scripts.test_release_workflow
       - python3 -m unittest scripts.test_install_manifest
       - python3 -m unittest scripts.test_package_npm_release
@@ -256,24 +319,49 @@ tasks:
         done
 
   check:
-    desc: "Full quality suite"
+    desc: "Full quality suite (staged fail-fast: static -> unit -> integration; one heavyweight slot machine-wide)"
+    cmds:
+      # One wrapper = one machine-wide heavyweight slot for the whole check;
+      # nested wrapped tasks pass through via SHATTER_GATE_LOCK_HELD.
+      # Note: the sh -c indirection means `task --force check` does NOT
+      # propagate --force into the stages; force a stage directly
+      # (e.g. `task --force check-unit`) when you need a re-run.
+      - bash scripts/gate-wrapper.sh check sh -c "task check-static && task check-unit && task check-integration"
+
+  check-static:
+    desc: "check stage 1: cheap checks — clippy, schemas, docs lint, meta (meta includes small go/python test runs)"
     deps:
-      - core:test-ignored
-      - cli:test
       - core:clippy
       - cli:clippy
-      - rust-fe:test
       - rust-fe:clippy
-      - rust-rt:test
       - rust-rt:clippy
+      - schemas
+      - docs
+      - docs-smoke
+      - meta
+
+  check-unit:
+    desc: "check stage 2: unit test suites (nested-build suites serialized last)"
+    deps:
+      - rust-rt:test
       - ts:test
       - go:test
       - go:vet
-      - schemas
-      - parity
-      - docs
-      - meta
     cmds:
+      # cli:test and rust-fe:test both spawn nested cargo builds from inside
+      # tests (scan pipelines / fixture-crate harnesses). If run in parallel
+      # with each other and the deps above, they starve those builds past
+      # their 60s deadlines ("build timed out" flakes). Keep them sequenced
+      # here, not as parallel deps.
+      - task: cli:test
+      - task: rust-fe:test
+
+  check-integration:
+    desc: "check stage 3: expensive integration (core e2e superset, conformance, parity). Core unit-test failures surface here, not stage 2: they ride in core:test-ignored to avoid running the core suite twice per check; stage-1 clippy already catches compile-level core breaks."
+    deps:
+      - go:build
+    cmds:
+      - task: core:test-ignored
       - task: conformance
       - task: parity
 
@@ -281,26 +369,64 @@ tasks:
 
   e2e:
     desc: Run E2E concolic pipeline tests (TS + Rust + Go frontends)
-    deps: [ts:build, rust-fe:build]
+    # Build all three frontends in parallel up front; the subtasks' own dep
+    # checks then no-op and the test phases run sequentially.
+    deps: [ts:build, go:build, rust-fe:build]
+    cmds:
+      - bash scripts/gate-wrapper.sh e2e sh -c "task e2e-ts && task e2e-go && task e2e-rust"
+
+  e2e-ts:
+    desc: "E2E concolic pipeline: TypeScript frontend (e2e_concolic.rs; also uses the prebuilt Go frontend for its Go planner section)"
+    deps: [ts:build, go:build]
     sources:
       - shatter-core/tests/e2e_concolic.rs
-      - shatter-core/tests/e2e_concolic_rust.rs
-      - shatter-core/tests/e2e_concolic_go.rs
       - shatter-core/src/**/*.rs
       - shatter-ts/src/**/*.ts
-      - shatter-rust/src/**/*.rs
       - shatter-go/**/*.go
       - scripts/examples_checkout.py
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
-        SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic
-        SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic_rust -- --include-ignored
-        SHATTER_EXAMPLES_DIR="$examples_root" cargo test --test e2e_concolic_go -- --include-ignored
+        export SHATTER_EXAMPLES_DIR="$examples_root"
+        export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
+        bash scripts/gate-wrapper.sh e2e-ts cargo test --test e2e_concolic
+
+  e2e-go:
+    desc: "E2E concolic pipeline: Go frontend (e2e_concolic_go.rs)"
+    deps: [go:build]
+    sources:
+      - shatter-core/tests/e2e_concolic_go.rs
+      - shatter-core/src/**/*.rs
+      - shatter-go/**/*.go
+      - scripts/examples_checkout.py
+    cmds:
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+        export SHATTER_EXAMPLES_DIR="$examples_root"
+        export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
+        bash scripts/gate-wrapper.sh e2e-go cargo test --test e2e_concolic_go -- --include-ignored
+
+  e2e-rust:
+    desc: "E2E concolic pipeline: Rust frontend (e2e_concolic_rust.rs)"
+    deps: [rust-fe:build]
+    sources:
+      - shatter-core/tests/e2e_concolic_rust.rs
+      - shatter-core/src/**/*.rs
+      - shatter-rust/src/**/*.rs
+      - scripts/examples_checkout.py
+    cmds:
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+        export SHATTER_EXAMPLES_DIR="$examples_root"
+        bash scripts/gate-wrapper.sh e2e-rust cargo test --test e2e_concolic_rust -- --include-ignored
 
   smoke:
     desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function, failed-instrumentation regression."
     deps: [ts:build]
+    # str-gg9v: these steps execute target functions without an OS sandbox, so
+    # opt into host execution (targets still run in a throwaway working dir).
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
@@ -330,18 +456,24 @@ tasks:
   walkthrough:
     desc: Run the compact walkthrough demo
     deps: [build]
+    # str-gg9v: demo/walkthrough.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
-      - bash demo/walkthrough.sh --auto --delay 0
+      - bash scripts/gate-wrapper.sh walkthrough bash demo/walkthrough.sh --auto --delay 0
 
   gauntlet:
     desc: Run the broad CLI coverage gauntlet
     deps: [build]
+    # str-gg9v: demo/gauntlet.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
-      - bash demo/gauntlet.sh --auto --delay 0
+      - bash scripts/gate-wrapper.sh gauntlet bash demo/gauntlet.sh --auto --delay 0
 
   broad-run-corpus:
     desc: Run the broad-run validation corpus gate (Kapow failure-class fixtures)
     deps: [cli:build]
+    # str-gg9v: scans execute target functions unsandboxed; opt in so the
+    # default-deny guard permits execution (writes go to a throwaway working dir).
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
     preconditions:
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"
@@ -481,6 +613,10 @@ tasks:
   broad-run-validation:
     desc: "Broad-run validation corpus gate (str-jeen.14). Documented local check; not in CI."
     deps: [cli:build, ts:build, go:build]
+    # str-gg9v: scans execute target functions unsandboxed; opt in so the
+    # default-deny guard permits execution (writes go to a throwaway working dir).
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
     preconditions:
       - sh: command -v python3 >/dev/null 2>&1
         msg: "python3 not installed"

@@ -47,7 +47,10 @@ curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install
 
 The installer reads the release manifest, verifies the archive checksum, and
 installs `shatter` into `~/.local/bin` by default. Set `INSTALL_DIR` to choose a
-different destination.
+different destination. The TypeScript and Go frontends are embedded in the
+`shatter` binary; the `shatter-rust` frontend ships as a sibling binary and is
+installed into the same directory, so Rust scans work out of the box once
+`INSTALL_DIR` is on your `PATH` (no source checkout required).
 
 Projects can also consume the same GitHub Release payloads through a
 registryless npm tarball dependency, a Go tool wrapper, or the GitHub setup
@@ -56,7 +59,23 @@ manifest in a mixed repo. See [docs/distribution.md](docs/distribution.md).
 
 ### Build from source
 
-Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+, and `libclang`.
+Requires the [Rust toolchain](https://rustup.rs/), Node.js 22+, Go 1.24+,
+`libclang`, and Z3. `shatter-core` links the system Z3 library, so the Z3
+development package must be installed first or `cargo build` fails with a
+linker/bindgen error. On Ubuntu/Debian:
+
+```bash
+sudo apt install libclang-dev libz3-dev
+```
+
+(macOS: `brew install llvm z3`.)
+
+Running the test and quality gates additionally needs
+[go-task](https://taskfile.dev/installation/) (the `go-task` package, or
+`sh -c "$(curl -ssL https://taskfile.dev/install.sh)"`) and Python 3 with the
+`pyyaml` and `jsonschema` packages (`pip install pyyaml jsonschema`). These are
+not required for a plain `cargo build`. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for the full toolchain.
 
 ```bash
 git clone https://github.com/shatterproof-ai/shatter.git
@@ -197,6 +216,34 @@ replace the config entirely (they are not appended). For boolean flags
 (`--no-cache`, `--capture-side-effects`): passing the flag on the CLI sets the
 value to true, overriding the config.
 
+`shatter doctor` prints which of the two files are present in the current
+project and restates this precedence, so an integrating repo can confirm what
+is in effect without reading this table.
+
+### Build-tool wrappers
+
+When you wire Shatter into a `Makefile`, `Taskfile.yml`, or `package.json`
+(for example via the `add-shatter-target` skill so `run-shatter` discovers it),
+invoke the binary as `shatter` — resolved from `PATH` — rather than a checkout
+path. Never hardcode a build path such as
+`$(HOME)/project/shatter/target/release/shatter`; it breaks for every other
+contributor and after the checkout moves. When a target needs an override knob,
+default to `PATH` and let an environment variable win:
+
+```make
+# Makefile
+SHATTER_BIN ?= shatter
+
+.PHONY: shatter
+shatter:
+	$(SHATTER_BIN)
+```
+
+A contributor with a source build points at it with
+`SHATTER_BIN=./target/release/shatter make shatter`; everyone else gets the
+`PATH` binary with no edits. The same convention applies to Taskfile and
+`package.json` wrappers.
+
 ## Quick Start
 
 See [QUICKSTART.md](QUICKSTART.md) for a copy-paste first run.
@@ -234,6 +281,48 @@ Single-target commands (`observe`, `revalidate`, `stale`) require a concrete
 `<file>` or `<file>:<function>` and reject wildcard inputs with an actionable
 error — use `explore`/`properties` for glob targets and `scan --include` for
 repository discovery.
+
+## Executing Target Functions Safely
+
+> **Breaking change (str-gg9v).** Commands that *run* your target functions —
+> `explore`, `scan`, `run`, `observe`, `properties`, `revalidate`, `bench` —
+> now **refuse to execute without a sandbox** unless you explicitly opt in.
+> Analysis-only commands (`analyze`, `solve`, `specify`, `stale`, `diff`,
+> `list-targets`, …) are unaffected.
+
+Shatter explores a function by *calling it* with mined and generated inputs. A
+target that opens, creates, renames, or deletes a file by **relative path**
+will mutate the directory the command runs in — historically this left stray
+files (named after generated string inputs) scattered through the invoking
+repository, unnoticed for weeks. Two independent controls now prevent that:
+
+1. **Default-deny.** With no OS sandbox configured, execution commands exit with
+   an instructive error instead of running. Choose one remedy:
+
+   ```bash
+   # Recommended: run targets inside an OS sandbox (Go frontend).
+   export SHATTER_SANDBOX_BACKEND=docker   # or: bwrap
+
+   # Or opt into unsandboxed execution (see control #2 below):
+   shatter explore shipping.ts:calculateShipping --allow-host-writes
+   # …or once per shell / CI job:
+   export SHATTER_ALLOW_HOST_WRITES=1
+   ```
+
+2. **Throwaway working directory.** Even with `--allow-host-writes`, each
+   unsandboxed run executes in a fresh temp directory that is deleted when the
+   command finishes, so a target that writes `./foo` leaves nothing behind in
+   your repository. (A configured `SHATTER_SANDBOX_BACKEND` supersedes this —
+   the sandbox already contains writes, so runs are unchanged.) **Go and Rust
+   targets only** — the TypeScript frontend does not yet redirect relative-path
+   writes into the throwaway directory (str-02i70 tracks this); an
+   unsandboxed, opted-in TS target can still write into the invoking
+   repository. Configure an OS sandbox for TS targets until str-02i70 lands.
+
+If you script Shatter in CI or a wrapper, prefer configuring
+`SHATTER_SANDBOX_BACKEND`; use `SHATTER_ALLOW_HOST_WRITES=1` only where an OS
+sandbox is unavailable and you accept that targets run against the host
+filesystem (confined to the throwaway directory).
 
 ## Core Commands
 

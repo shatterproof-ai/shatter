@@ -686,14 +686,14 @@ mod tests {
             name: name.to_string(),
             exported: true,
             params: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             dependencies: deps
                 .into_iter()
                 .map(|d| crate::protocol::ExternalDependency {
                     symbol: d,
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 })

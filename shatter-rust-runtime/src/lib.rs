@@ -449,8 +449,60 @@ fn complex_envelope_to_native(tag: &str, map: &serde_json::Map<String, Value>) -
         // `uuid`/`url` carry their canonical string under `value`; the target
         // types (`uuid::Uuid`, `url::Url`) deserialize from that string.
         "uuid" | "url" => map.get("value").cloned(),
+        // `date`/`date_time` carry an epoch-ms integer under `value`; chrono's
+        // `NaiveDate` deserializes from "%Y-%m-%d" and `DateTime<Utc>` from
+        // RFC3339, so emit the matching ISO string (str-8euf).
+        "date" => map
+            .get("value")
+            .and_then(Value::as_i64)
+            .map(|ms| Value::String(iso_date_from_epoch_ms(ms))),
+        "date_time" => map
+            .get("value")
+            .and_then(Value::as_i64)
+            .map(|ms| Value::String(iso_datetime_from_epoch_ms(ms))),
         _ => None,
     }
+}
+
+/// Floor division (rounds toward negative infinity) for epoch math on dates
+/// before 1970, where `/` would round toward zero.
+fn floor_div(a: i64, b: i64) -> i64 {
+    let q = a / b;
+    if (a % b != 0) && ((a < 0) != (b < 0)) {
+        q - 1
+    } else {
+        q
+    }
+}
+
+/// Convert days since the Unix epoch to a `(year, month, day)` civil date using
+/// Howard Hinnant's algorithm. Valid for the full proleptic Gregorian range.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+    (y + i64::from(m <= 2), m, d)
+}
+
+fn iso_date_from_epoch_ms(epoch_ms: i64) -> String {
+    let days = floor_div(epoch_ms, 86_400_000);
+    let (y, m, d) = civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn iso_datetime_from_epoch_ms(epoch_ms: i64) -> String {
+    let days = floor_div(epoch_ms, 86_400_000);
+    let ms_of_day = epoch_ms - days * 86_400_000; // [0, 86_400_000)
+    let secs = ms_of_day / 1000;
+    let (hh, mm, ss) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let (y, mo, d) = civil_from_days(days);
+    format!("{y:04}-{mo:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
 
 /// Recursively rewrite `__complex_type` envelopes anywhere in `value` into their
@@ -990,6 +1042,25 @@ mod tests {
             v["nested"][0],
             serde_json::json!("00000000-0000-0000-0000-000000000001")
         );
+    }
+
+    #[test]
+    fn materialize_complex_converts_date_envelopes_to_iso() {
+        // epoch 1704067200000 ms == 2024-01-01T00:00:00Z.
+        let mut date = serde_json::json!({"__complex_type": "date", "value": 1_704_067_200_000_i64});
+        materialize_complex(&mut date);
+        assert_eq!(date, serde_json::json!("2024-01-01"));
+
+        let mut dt = serde_json::json!({"__complex_type": "date_time", "value": 1_704_067_200_000_i64});
+        materialize_complex(&mut dt);
+        assert_eq!(dt, serde_json::json!("2024-01-01T00:00:00Z"));
+
+        // epoch 0 and a pre-1970 value (floor division correctness).
+        assert_eq!(iso_date_from_epoch_ms(0), "1970-01-01");
+        assert_eq!(iso_datetime_from_epoch_ms(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_date_from_epoch_ms(-86_400_000), "1969-12-31");
+        // 2038-01-19T03:14:07Z (Y2K38).
+        assert_eq!(iso_datetime_from_epoch_ms(2_147_483_647_000), "2038-01-19T03:14:07Z");
     }
 
     #[test]

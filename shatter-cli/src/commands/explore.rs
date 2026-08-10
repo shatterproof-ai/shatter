@@ -163,7 +163,12 @@ fn new_discoveries_in_batch(
 ///
 /// Merge rules per field:
 /// - `iterations`: sum across batches (each batch ran a disjoint slice)
-/// - `unique_paths`: recomputed after merge from deduped `discoveries`
+/// - `unique_paths`: count of merged `new_path_executions` (one per rendered
+///   path). Resume state seeds the orchestrator's `covered_paths`, so paths
+///   covered in an earlier batch are not re-emitted as new — the concatenated
+///   length is the cumulative unique-path count and matches the table rows.
+///   (str-4o07; previously this was `discoveries.len()`, the branch-ID count,
+///   which mislabeled branches as paths.)
 /// - `lines_covered` / `total_lines`: max (line sets are not carried through,
 ///   so we conservatively take the largest single-batch observation)
 /// - `discoveries`: deduped by `branch_id`, earliest batch wins (HashMap insert
@@ -290,7 +295,16 @@ impl ExploreResultAccumulator {
         let mut stubbed = self.stubbed_modules;
         stubbed.sort();
         stubbed.dedup();
-        let unique_paths = self.discoveries.len();
+        // str-4o07: report the number of unique execution paths, not the number
+        // of unique branch IDs. `new_path_executions` holds one summary per
+        // path that the explorer rendered into the Call→Outcome table, and the
+        // orchestrator's resume state seeds `covered_paths` so already-covered
+        // paths are never re-emitted as new across batches — its length is
+        // therefore the cumulative unique-path count and matches the table row
+        // count exactly. The previous `discoveries.len()` counted branch IDs,
+        // which undercounts whenever a function has more paths than branches
+        // (multi-return, switch arms) and mislabels branches as paths.
+        let unique_paths = self.new_path_executions.len();
         Ok(shatter_core::explorer::ObservationOutput {
             function_name: self.function_name,
             iterations: self.total_iterations,
@@ -962,9 +976,23 @@ async fn fetch_planner_extra_seeds(
     Vec<Vec<serde_json::Value>>,
     Option<shatter_core::protocol::InvocationPlan>,
 ) {
-    let Some(_planner_name) = explore_config.planner.as_deref() else {
+    // str-79t9: consult the planner whenever the frontend advertises the
+    // capability, not only when `--planner` was passed. `scan` has always
+    // auto-detected this (see scan_orchestrator's
+    // `fetch_default_execute_plan_for_method`); explore's flag-only gate meant
+    // configured `.shatter/config.yaml` `defaults`/`generators` were silently
+    // ignored on the default `shatter explore` invocation, leaving the whole
+    // configured-input lever dead unless the operator knew to add
+    // `--planner go`. `--planner` remains accepted (and still forces
+    // consultation) for explicit selection and backward compatibility.
+    if explore_config.planner.is_none()
+        && !task_frontend
+            .capabilities()
+            .iter()
+            .any(|cap| cap == "get_invocation_plan")
+    {
         return (Vec::new(), None);
-    };
+    }
 
     // Prime the task frontend's analysis cache so get_invocation_plan can
     // resolve the target_id via its analyzed-by-name lookup.
@@ -1001,10 +1029,18 @@ async fn fetch_planner_extra_seeds(
                 bundle.plans.len(),
                 bundle.unsatisfied.len(),
             );
-            let selected_plan = bundle.plans.iter().find_map(|plan| {
-                shatter_core::planner_consumer::materialize_seed_for_plan(plan, &func.params)
-                    .map(|_| plan.clone())
-            });
+            // str-ozjv: for method targets the receiver-construction plan must
+            // be threaded as the default execute plan even when its method-
+            // argument seed cannot be fully materialized (an unsatisfiable
+            // method parameter yields a receiver-only fallback plan whose
+            // `argument_plans` is empty). The prior `find_map(materialize_seed_
+            // for_plan)` selection dropped such plans — losing the constructor
+            // input prefix so generated method args leaked into the wrapper's
+            // constructor-arg slots (`json: cannot unmarshal object into Go
+            // value of type string`). `select_execute_plan` prefers the
+            // receiver plan, mirroring the scan path's selection.
+            let selected_plan =
+                shatter_core::planner_consumer::select_execute_plan(&bundle.plans, &func.params);
             match selected_plan {
                 Some(plan) => {
                     let seeds =
@@ -1767,6 +1803,19 @@ fn bucket_counts_from_entries(entries: &[ExploreSummaryEntry]) -> OutcomeBuckets
 /// `wall_time` is the per-function clock used when synthesising the timeout
 /// reason; the caller already tracks it for progress logging, so we reuse
 /// it instead of plumbing the budget separately.
+/// Detect a frontend "not supported" classification carried in a stringified
+/// [`PipelineError`] (str-303gg review #4). The Display chain is stable and
+/// owned by our error types: `ExploreError::Unsupported` renders as
+/// `unsupported: <msg>`, wrapped by `PipelineError` as
+/// `observe stage failed: unsupported: <msg>` (random explorer) or
+/// `concolic observe failed: unsupported: <msg>` (concolic). Anchoring to the
+/// exact wrapped prefixes keeps a genuine runtime message that merely mentions
+/// "unsupported" out of this bucket.
+fn is_unsupported_error_message(msg: &str) -> bool {
+    msg.starts_with("observe stage failed: unsupported:")
+        || msg.starts_with("concolic observe failed: unsupported:")
+}
+
 fn classify_outcome_status(
     result: &Result<shatter_core::explorer::ObservationOutput, String>,
     wall_time: Duration,
@@ -1780,6 +1829,10 @@ fn classify_outcome_status(
             )),
         ),
         Ok(_) => ("completed", None),
+        // str-303gg review #4: a frontend "not supported" classification is not a
+        // failure — surface it as `unsupported` so it lands in the unsupported
+        // bucket (like the scan/observe paths) instead of `runtime_failed`.
+        Err(e) if is_unsupported_error_message(e) => ("unsupported", Some(e.clone())),
         Err(e) => ("failed", Some(e.clone())),
     }
 }
@@ -4048,6 +4101,7 @@ fn build_no_target_spec_bundle(
         functions: Vec::new(),
         status: Some(shatter_core::spec::FileSpecBundleStatus::NoTargets),
         no_target_reason: Some(reason),
+        ..FileSpecBundle::default()
     }
 }
 
@@ -5095,7 +5149,6 @@ pub(crate) async fn run_explore(
                     branch_profile: None, // standalone concolic has no prior random phase
                     meta_config: meta_config.clone(),
                     execution_profile: explore_config.execution_profile.clone(),
-                    loop_convergence_window: 3,
                     refine_budget: if refine_budget > 0 {
                         Some(refine_budget)
                     } else {
@@ -5106,6 +5159,8 @@ pub(crate) async fn run_explore(
                     fuzz: resolved.fuzz.clone(),
                     planner: planner.map(str::to_string),
                     default_execute_plan: None,
+                    // Pin custom-generator/extractor slots through concolic (str-6cdp).
+                    value_sources: explore_config.value_sources.clone(),
                 };
                 (Some(cc), seeds, users)
             } else {
@@ -5491,12 +5546,21 @@ pub(crate) async fn run_explore(
                 .instrument(tracing::info_span!("pipeline.observe"))
                 .await;
 
-                let (result, batch_resume_state) = match observe_result {
+                let (result, batch_resume_state, is_unsupported) = match observe_result {
                     Ok(stage_result) => (
                         Ok(stage_result.observe.observation),
                         stage_result.resume_state,
+                        false,
                     ),
-                    Err(err) => (Err(err.to_string()), None),
+                    // str-303gg review #4: a frontend "not supported"
+                    // classification is not a failure — route it to the
+                    // unsupported bucket like the scan/observe paths so
+                    // `shatter explore --concolic` (and gauntlet) do not report a
+                    // spurious error for a function the frontend cannot execute.
+                    Err(err) => {
+                        let unsupported = err.is_unsupported();
+                        (Err(err.to_string()), None, unsupported)
+                    }
                 };
                 let completed = completed_functions.fetch_add(1, Ordering::Relaxed) + 1;
                 // str-gz8j: keep the live progress line consistent with the
@@ -5506,6 +5570,7 @@ pub(crate) async fn run_explore(
                 let progress_status = match &result {
                     Ok(obs) if obs.timed_out => "failed",
                     Ok(_) => "completed",
+                    Err(_) if is_unsupported => "unsupported",
                     Err(_) => "failed",
                 };
                 emit_explore_progress(
@@ -5882,10 +5947,14 @@ pub(crate) async fn run_explore(
             // instead of silently looking like a Completed run.
             let (summary_status, summary_reason) =
                 classify_outcome_status(&outcome.result, outcome.wall_time);
-            if summary_status == "completed" {
-                explore_summary.completed += 1;
-            } else {
-                explore_summary.failed += 1;
+            match summary_status {
+                "completed" => explore_summary.completed += 1,
+                // str-303gg review #4: a frontend-unsupported function is not a
+                // failure. Count it under `skipped` (the legacy superset of the
+                // `unsupported` bucket) rather than `failed`; the precise
+                // `unsupported` bucket is bumped below via outcome_status_from_entry.
+                "unsupported" => explore_summary.skipped += 1,
+                _ => explore_summary.failed += 1,
             }
             // str-oo31: also bump the precise per-OutcomeStatus bucket and
             // the produced-coverage denominator. The bucket assignment must
@@ -5932,6 +6001,12 @@ pub(crate) async fn run_explore(
                     let inferred = match (&outcome.result, summary_status) {
                         (Ok(_), _) => UnavailableReason::WriteFailed,
                         (Err(_), "completed") => UnavailableReason::WriteFailed,
+                        // str-303gg review #4: keep a frontend-unsupported
+                        // classification in the Unsupported bucket rather than
+                        // inferring RuntimeFailed from the generic Err arm.
+                        (Err(msg), _) if is_unsupported_error_message(msg) => {
+                            UnavailableReason::Unsupported
+                        }
                         (Err(msg), _) => {
                             let lower = msg.to_lowercase();
                             if lower.contains("timeout") || lower.contains("timed out") {
@@ -5976,11 +6051,14 @@ pub(crate) async fn run_explore(
                 shatter_core::protocol::OutcomeStatus::PreflightFailed => {
                     explore_summary.preflight_failed += 1;
                 }
-                // Skipped variants don't appear here: this branch only runs
-                // for scheduled work items (completed | failed). Pre-skipped
-                // functions are seeded into `unsupported` at summary init.
-                shatter_core::protocol::OutcomeStatus::Unsupported
-                | shatter_core::protocol::OutcomeStatus::SkippedByPolicy => {}
+                // str-303gg review #4: a scheduled function the frontend reports
+                // as not-supported mid-run lands here too (not only pre-skipped
+                // functions seeded at summary init), so surface it in the
+                // dedicated `unsupported` bucket instead of dropping it.
+                shatter_core::protocol::OutcomeStatus::Unsupported => {
+                    explore_summary.unsupported += 1;
+                }
+                shatter_core::protocol::OutcomeStatus::SkippedByPolicy => {}
             }
             if let Ok(ref result) = outcome.result
                 && result.unique_paths > 0
@@ -6185,6 +6263,9 @@ pub(crate) async fn run_explore(
                                         seed_inputs,
                                         targets,
                                         &func.params,
+                                        // Standalone GA path resolves no custom
+                                        // generators; all slots are built-in (str-6cdp).
+                                        &[],
                                         &outcome.genetic_config,
                                     )
                                     .await
@@ -7202,20 +7283,37 @@ mod tests {
 
     // --- ExploreResultAccumulator unit tests (str-b2my.6) ---
 
-    fn obs_with(
+    /// Build a synthetic per-batch observation. `new_paths` summaries are
+    /// emitted in `new_path_executions` to model the paths the orchestrator
+    /// rendered for this batch (str-4o07: the accumulator now derives
+    /// `unique_paths` from `new_path_executions.len()`, so tests must populate
+    /// it). Resume state means a path covered in an earlier batch is never
+    /// re-emitted as new, so callers pass the count of *genuinely new* paths.
+    fn obs_with_paths(
         iterations: u32,
         lines_covered: usize,
         total_lines: u32,
+        new_paths: usize,
         discoveries: Vec<(u32, shatter_core::coverage_metrics::DiscoveryMethod)>,
         stubbed: Vec<String>,
     ) -> shatter_core::explorer::ObservationOutput {
+        let new_path_executions = (0..new_paths)
+            .map(|i| shatter_core::explorer::ExecutionSummary {
+                inputs: vec![serde_json::json!(i)],
+                return_value: Some(serde_json::json!(i)),
+                thrown_error: None,
+                lines_executed: vec![],
+                is_new_path: true,
+                error_intent: None,
+            })
+            .collect();
         shatter_core::explorer::ObservationOutput {
             function_name: "load/user".to_string(),
             iterations,
-            unique_paths: discoveries.len(),
+            unique_paths: new_paths,
             lines_covered,
             total_lines,
-            new_path_executions: vec![],
+            new_path_executions,
             raw_results: vec![],
             discoveries,
             nondeterministic_fields: vec![],
@@ -7229,6 +7327,26 @@ mod tests {
             stubbed_modules: stubbed,
             ..Default::default()
         }
+    }
+
+    /// Convenience wrapper: one new path per discovered branch (the common case
+    /// where every branch discovery in a batch is a genuinely new path).
+    fn obs_with(
+        iterations: u32,
+        lines_covered: usize,
+        total_lines: u32,
+        discoveries: Vec<(u32, shatter_core::coverage_metrics::DiscoveryMethod)>,
+        stubbed: Vec<String>,
+    ) -> shatter_core::explorer::ObservationOutput {
+        let new_paths = discoveries.len();
+        obs_with_paths(
+            iterations,
+            lines_covered,
+            total_lines,
+            new_paths,
+            discoveries,
+            stubbed,
+        )
     }
 
     #[test]
@@ -7273,19 +7391,53 @@ mod tests {
             vec![],
         )));
         // Second batch re-discovers branch 5 via Random — first-wins keeps Z3.
-        acc.merge(Ok(obs_with(
+        // Only branch 7 is a genuinely new path here (branch 5's path was
+        // already covered in batch 1 and is not re-emitted), so new_paths = 1.
+        acc.merge(Ok(obs_with_paths(
             100,
             1,
             10,
+            1,
             vec![(5, DiscoveryMethod::Random), (7, DiscoveryMethod::Random)],
             vec![],
         )));
         let obs = acc.into_result().expect("ok");
+        // Two unique paths total: branch 5 (batch 1) + branch 7 (batch 2).
         assert_eq!(obs.unique_paths, 2);
         let by_id: std::collections::HashMap<u32, DiscoveryMethod> =
             obs.discoveries.into_iter().collect();
         assert_eq!(by_id.get(&5), Some(&DiscoveryMethod::Z3));
         assert_eq!(by_id.get(&7), Some(&DiscoveryMethod::Random));
+    }
+
+    #[test]
+    fn accumulator_unique_paths_counts_paths_not_branches() {
+        // str-4o07 regression: classifyNumber-shape function — 4 unique paths
+        // (multi-return) but only 3 distinct branch IDs. The header path count
+        // must equal the number of rendered path executions (4), not the branch
+        // count (3). Previously `into_result` returned `discoveries.len()` == 3,
+        // so the "N path(s)" header disagreed with the 4-row Call→Outcome table.
+        use shatter_core::coverage_metrics::DiscoveryMethod;
+        let mut acc = ExploreResultAccumulator::new("classifyNumber".to_string());
+        acc.merge(Ok(obs_with_paths(
+            20,
+            7,
+            7,
+            4, // four rendered paths
+            vec![
+                (0, DiscoveryMethod::Random),
+                (1, DiscoveryMethod::Z3),
+                (2, DiscoveryMethod::Random),
+            ], // three branch IDs
+            vec![],
+        )));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.new_path_executions.len(), 4);
+        assert_eq!(
+            obs.unique_paths,
+            obs.new_path_executions.len(),
+            "header path count must equal the Call→Outcome table row count"
+        );
     }
 
     #[test]
@@ -7369,6 +7521,10 @@ mod tests {
         let mut cursors = [0usize, 0usize];
         let mut order: Vec<usize> = Vec::new();
         let mut not_exhausted_count = 0u32;
+        // Track branches already seen per task so a re-discovered branch
+        // contributes zero new paths (resume state suppresses re-emission).
+        let mut seen_branches: [std::collections::HashSet<u32>; 2] =
+            [Default::default(), Default::default()];
 
         while let Some(batch_cfg) = scheduler.next_batch() {
             order.push(batch_cfg.task_index);
@@ -7376,8 +7532,12 @@ mod tests {
             let (iters, discoveries) = scripts[batch_cfg.task_index][*cursor].clone();
             *cursor += 1;
 
+            let new_paths = discoveries
+                .iter()
+                .filter(|(id, _)| seen_branches[batch_cfg.task_index].insert(*id))
+                .count();
             let result: Result<shatter_core::explorer::ObservationOutput, String> =
-                Ok(obs_with(iters, 1, 5, discoveries, vec![]));
+                Ok(obs_with_paths(iters, 1, 5, new_paths, discoveries, vec![]));
             let exhausted = batch_is_exhausted(&result, batch_cfg.batch_size);
             if !exhausted {
                 not_exhausted_count += 1;
@@ -7489,8 +7649,16 @@ mod tests {
             let (iters, discoveries) = scripts[batch_cfg.task_index][*cursor].clone();
             *cursor += 1;
 
+            // Branches not yet recorded by the accumulator are genuinely new
+            // paths this batch; re-discovered branches add no new path.
+            let new_paths = discoveries
+                .iter()
+                .filter(|(id, _)| {
+                    !accs[batch_cfg.task_index].discoveries.contains_key(id)
+                })
+                .count();
             let result: Result<shatter_core::explorer::ObservationOutput, String> =
-                Ok(obs_with(iters, 1, 5, discoveries, vec![]));
+                Ok(obs_with_paths(iters, 1, 5, new_paths, discoveries, vec![]));
             let exhausted = batch_is_exhausted(&result, batch_cfg.batch_size);
 
             // Compute the rerank score BEFORE merging, matching the
@@ -9434,6 +9602,32 @@ mod tests {
         let (status, reason) = classify_outcome_status(&result, Duration::from_millis(50));
         assert_eq!(status, "failed");
         assert_eq!(reason.as_deref(), Some("frontend crashed: signal 11"));
+    }
+
+    #[test]
+    fn classify_outcome_status_unsupported_routes_to_unsupported_bucket() {
+        // str-303gg review #4: a frontend not_supported classification (wrapped
+        // by PipelineError) must classify as `unsupported`, not `failed`, so it
+        // lands in the unsupported bucket like the scan/observe paths.
+        for msg in [
+            "concolic observe failed: unsupported: function not in crate_bridge dispatch table",
+            "observe stage failed: unsupported: axum State<AppState> requires native replay input 0",
+        ] {
+            let result: Result<shatter_core::explorer::ObservationOutput, String> =
+                Err(msg.to_string());
+            let (status, reason) = classify_outcome_status(&result, Duration::from_millis(10));
+            assert_eq!(status, "unsupported", "message: {msg}");
+            assert_eq!(reason.as_deref(), Some(msg));
+        }
+
+        // A genuine runtime error that merely mentions "unsupported" is still a
+        // failure — the anchor is the exact PipelineError prefix.
+        let runtime: Result<shatter_core::explorer::ObservationOutput, String> =
+            Err("runtime panic: unsupported opcode".into());
+        assert_eq!(
+            classify_outcome_status(&runtime, Duration::from_millis(10)).0,
+            "failed"
+        );
     }
 
     fn make_named_observation(name: &str) -> shatter_core::explorer::ObservationOutput {

@@ -211,11 +211,12 @@ mod tests {
         StrategyContext {
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         }
     }
 
@@ -224,7 +225,7 @@ mod tests {
             params: vec![
                 ParamInfo {
                     name: "n".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
                 ParamInfo {
@@ -240,6 +241,7 @@ mod tests {
             ],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         }
     }
 
@@ -262,7 +264,7 @@ mod tests {
     fn type_aware_mutator_int_returns_number() {
         let mut m = TypeAwareMutator::new(vec![]);
         let mut rng = StdRng::seed_from_u64(42);
-        let result = m.mutate(&Value::from(5), &TypeInfo::Int, &mut rng);
+        let result = m.mutate(&Value::from(5), &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng);
         assert!(
             result.is_number(),
             "Int mutation should produce a number, got {result:?}"
@@ -417,7 +419,7 @@ mod tests {
                 let params: Vec<ParamInfo> = (0..param_count)
                     .map(|i| ParamInfo {
                         name: format!("p{i}"),
-                        typ: TypeInfo::Int,
+                        typ: TypeInfo::Int { int_width: None, int_signed: None },
                         type_name: None,
                     })
                     .collect();
@@ -428,6 +430,7 @@ mod tests {
                     params: params.clone(),
                     literals: vec![],
                     capabilities: FrontendCapabilities::from_raw(&[]),
+                    value_sources: vec![],
                 };
                 let result = serde_json::from_str::<ExecuteResult>(
                     r#"{"return_value": 0, "branch_path": [], "lines_executed": [], "path_constraints": [], "performance": {"wall_time_ms": 1.0, "cpu_time_us": 0, "heap_used_bytes": 0, "heap_allocated_bytes": 0}}"#,

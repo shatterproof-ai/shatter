@@ -70,7 +70,7 @@ pub fn build_schema(param_types: &[ParamInfo]) -> Value {
 
 fn type_to_schema(t: &TypeInfo) -> Value {
     match t {
-        TypeInfo::Int => json!({ "type": "integer" }),
+        TypeInfo::Int { .. } => json!({ "type": "integer" }),
         TypeInfo::Float => json!({ "type": "number" }),
         TypeInfo::Str => json!({ "type": "string" }),
         TypeInfo::Bool => json!({ "type": "boolean" }),
@@ -92,7 +92,16 @@ fn type_to_schema(t: &TypeInfo) -> Value {
                 "additionalProperties": false,
             })
         }
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
+            // A concrete value domain (str-pjlc1) is exactly JSON Schema's
+            // `enum`; presenting it as an arbitrary base type invites the LLM
+            // to produce decoder-rejected values.
+            if !enum_values.is_empty() {
+                return json!({ "enum": enum_values.clone() });
+            }
             let any_of: Vec<Value> = variants.iter().map(type_to_schema).collect();
             json!({ "anyOf": any_of })
         }
@@ -109,7 +118,7 @@ fn type_to_schema(t: &TypeInfo) -> Value {
 
 fn type_label(t: &TypeInfo) -> String {
     match t {
-        TypeInfo::Int => "int".to_string(),
+        TypeInfo::Int { .. } => "int".to_string(),
         TypeInfo::Float => "float".to_string(),
         TypeInfo::Str => "string".to_string(),
         TypeInfo::Bool => "bool".to_string(),
@@ -122,7 +131,7 @@ fn type_label(t: &TypeInfo) -> String {
                 .join(", ");
             format!("object{{{body}}}")
         }
-        TypeInfo::Union { variants } => variants
+        TypeInfo::Union { variants, .. } => variants
             .iter()
             .map(type_label)
             .collect::<Vec<_>>()
@@ -144,7 +153,7 @@ mod tests {
             function_source: "fn f(x: i64) -> bool { x > 10 }".to_string(),
             param_types: vec![ParamInfo {
                 name: "x".to_string(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             condition: FailedCondition {
@@ -168,7 +177,7 @@ mod tests {
         let params = vec![
             ParamInfo {
                 name: "x".to_string(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -185,5 +194,40 @@ mod tests {
         let required = schema["items"]["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "x"));
         assert!(required.iter().any(|v| v == "s"));
+    }
+
+    /// str-pjlc1: a union carrying a value domain is presented to the LLM as a
+    /// JSON Schema `enum`, not as its base type — an arbitrary-string schema
+    /// invites decoder-rejected candidates. Domain-free unions keep `anyOf`.
+    #[test]
+    fn build_schema_enum_domain_union() {
+        use serde_json::json;
+        let params = vec![ParamInfo {
+            name: "c".to_string(),
+            typ: TypeInfo::Union {
+                variants: vec![TypeInfo::Str],
+                enum_values: vec![json!("RED"), json!("GREEN")],
+            },
+            type_name: None,
+        }];
+        let schema = build_schema(&params);
+        assert_eq!(
+            schema["items"]["properties"]["c"]["enum"],
+            json!(["RED", "GREEN"])
+        );
+
+        let plain = vec![ParamInfo {
+            name: "c".to_string(),
+            typ: TypeInfo::Union {
+                variants: vec![TypeInfo::Str],
+                enum_values: Vec::new(),
+            },
+            type_name: None,
+        }];
+        let schema = build_schema(&plain);
+        assert!(
+            schema["items"]["properties"]["c"]["anyOf"].is_array(),
+            "domain-free union should keep anyOf; got {schema}"
+        );
     }
 }

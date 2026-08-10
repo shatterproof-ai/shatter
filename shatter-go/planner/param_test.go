@@ -213,6 +213,132 @@ func TestPlanParam_PrimitiveFamilies(t *testing.T) {
 	}
 }
 
+func TestPlanParam_HTTPRequestBodySymbolicStringPlans(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatalf("no plans produced")
+	}
+	for i, plan := range plans {
+		if plan.Kind == protocol.ValuePlanKindRuntimeValue {
+			t.Fatalf("plan[%d] is runtime-value plan; direct *http.Request must consume a symbolic body input", i)
+		}
+		if plan.TypeHint != "string" {
+			t.Fatalf("plan[%d].TypeHint = %q, want string", i, plan.TypeHint)
+		}
+	}
+}
+
+func TestPlanParam_HTTPRequestBodyIncludesJSONRequestSeeds(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	mined := []string{"model-alpha", "exact-match-payload"}
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		StringLiteralsByParam: map[string][]string{"r": mined},
+		MaxPlansPerParam:      8,
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) < len(mined)+1 {
+		t.Fatalf("len(plans) = %d, want mined literals plus at least one seed", len(plans))
+	}
+	// Source-mined comparison literals are exact known-answer payloads and
+	// must precede the schema-agnostic seeds so a tight MaxPlansPerParam cap
+	// never evicts them.
+	for i, want := range mined {
+		var got string
+		if err := json.Unmarshal(plans[i].Literal, &got); err != nil {
+			t.Fatalf("plan[%d] literal does not decode as string: %v", i, err)
+		}
+		if got != want {
+			t.Fatalf("plan[%d] = %q, want mined literal %q before body seeds", i, got, want)
+		}
+	}
+	var seededBody string
+	if err := json.Unmarshal(plans[len(mined)].Literal, &seededBody); err != nil {
+		t.Fatalf("first seed literal does not decode as string: %v", err)
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(seededBody), &parsed); err != nil {
+		t.Fatalf("first request body seed %q is not valid JSON: %v", seededBody, err)
+	}
+	if _, isObject := parsed.(map[string]any); !isObject {
+		t.Fatalf("first request body seed = %q, want a JSON object so decode-into-struct handlers pass their parse guard", seededBody)
+	}
+	if plans[len(mined)].TypeHint != "string" {
+		t.Fatalf("first seed TypeHint = %q, want string", plans[len(mined)].TypeHint)
+	}
+}
+
+func TestPlanParam_HTTPRequestBodyStructuredHintReencodedAsString(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	structured := json.RawMessage(`{"model":"m","max_tokens":32}`)
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		HintsByName: map[string]planner.ParamValueHint{"r": {Literal: structured}},
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatalf("no plans produced")
+	}
+	// The wrapper decodes the body slot as a JSON string; a structured YAML
+	// hint must arrive re-encoded as a string literal, not an object.
+	var body string
+	if err := json.Unmarshal(plans[0].Literal, &body); err != nil {
+		t.Fatalf("structured hint was not re-encoded as a JSON string: %v; literal=%s", err, plans[0].Literal)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal([]byte(body), &roundTrip); err != nil {
+		t.Fatalf("re-encoded body %q does not round-trip to the hinted object: %v", body, err)
+	}
+	if roundTrip["model"] != "m" {
+		t.Fatalf("re-encoded body lost hint content: %q", body)
+	}
+}
+
+func TestPlanParam_HTTPRequestBodyRejectsGenerator(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		GeneratorsByName: map[string]string{"r": "*http.Request"},
+	})
+	if plans != nil {
+		t.Fatalf("expected no plans for generator on symbolic request body, got %d", len(plans))
+	}
+	// A runtime-value generator plan would materialize as a null slot and
+	// silently produce an empty-body request; the conflict must surface.
+	if unsat == nil {
+		t.Fatalf("expected unsatisfied requirement explaining the generator conflict")
+	}
+}
+
 func TestPlanParam_Cap(t *testing.T) {
 	plans, _ := planner.PlanParam(testTargetID, 0, intParam("n"), planner.ParamPlanOptions{MaxPlansPerParam: 2})
 	if len(plans) != 2 {
@@ -314,6 +440,91 @@ func TestPlanParam_ComplexKindFamilies_Unsatisfied(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Rapid property (str-e41w): for any *http.Request body param and any mix of
+// config hint, mined string literals, and plan cap —
+//   - no plan is ever kind runtime_value (the gen-v12 wrapper always consumes
+//     the slot as a symbolic body; a runtime_value plan would silently yield
+//     an empty-body request);
+//   - a config hint, when present, is always plan[0] and its literal is a
+//     JSON string (structured hints are re-encoded);
+//   - mined literals precede the schema-agnostic seeds;
+//   - the MaxPlansPerParam cap holds.
+func TestPlanParam_HTTPRequestBodyInvariants(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		typeName := "*http.Request"
+		param := protocol.ParamInfo{
+			Name:     "r",
+			Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+			TypeName: &typeName,
+		}
+		maxPlans := rapid.IntRange(1, 8).Draw(rt, "maxPlans")
+		seedSet := map[string]bool{`{}`: true, `{"data":{"id":"1","name":"a"},"items":["a"]}`: true, `[]`: true}
+		drawn := rapid.SliceOfN(rapid.StringMatching(`[a-z{}":,0-9]{0,20}`), 0, 4).Draw(rt, "mined")
+		mined := make([]string, 0, len(drawn))
+		for _, m := range drawn {
+			// A mined literal identical to a seed would make seed-order
+			// detection ambiguous below; the collision carries no signal.
+			if !seedSet[m] {
+				mined = append(mined, m)
+			}
+		}
+		opts := planner.ParamPlanOptions{
+			MaxPlansPerParam:      maxPlans,
+			StringLiteralsByParam: map[string][]string{"r": mined},
+		}
+		hasHint := rapid.Bool().Draw(rt, "hasHint")
+		var hintJSON json.RawMessage
+		if hasHint {
+			if rapid.Bool().Draw(rt, "structuredHint") {
+				hintJSON = json.RawMessage(`{"model":"m"}`)
+			} else {
+				hintJSON = json.RawMessage(`"{\"model\":\"m\"}"`)
+			}
+			opts.HintsByName = map[string]planner.ParamValueHint{"r": {Literal: hintJSON}}
+		}
+
+		plans, unsat := planner.PlanParam(testTargetID, 0, param, opts)
+		if unsat != nil {
+			rt.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+		}
+		if len(plans) > maxPlans {
+			rt.Fatalf("len(plans) = %d exceeds cap %d", len(plans), maxPlans)
+		}
+		minedSet := map[string]bool{}
+		for _, m := range mined {
+			minedSet[m] = true
+		}
+		lastMined, firstSeed := -1, len(plans)
+		for i, plan := range plans {
+			if plan.Kind == protocol.ValuePlanKindRuntimeValue {
+				rt.Fatalf("plan[%d] is runtime_value; symbolic body params must never plan runtime values", i)
+			}
+			if plan.Kind != protocol.ValuePlanKindLiteral || len(plan.Literal) == 0 {
+				continue
+			}
+			var s string
+			if err := json.Unmarshal(plan.Literal, &s); err != nil {
+				continue
+			}
+			if minedSet[s] && i > lastMined {
+				lastMined = i
+			}
+			if seedSet[s] && i < firstSeed {
+				firstSeed = i
+			}
+		}
+		if lastMined > firstSeed {
+			rt.Fatalf("mined literal at plan[%d] ranked after generic seed at plan[%d]", lastMined, firstSeed)
+		}
+		if hasHint && len(plans) > 0 {
+			var s string
+			if err := json.Unmarshal(plans[0].Literal, &s); err != nil {
+				rt.Fatalf("hint plan literal is not a JSON string: %s", plans[0].Literal)
+			}
+		}
+	})
 }
 
 // Rapid property: priorities are strictly increasing, cap is respected,
@@ -602,6 +813,187 @@ func TestPlanParam_GoDuration_IntegerNanosecondCandidates(t *testing.T) {
 		var n int64
 		if err := json.Unmarshal(p.Literal, &n); err != nil {
 			t.Errorf("plans[%d]: literal %q cannot unmarshal as integer: %v", i, string(p.Literal), err)
+		}
+	}
+}
+
+// str-79nvf: []byte params classified via go_byte element (TypeName absent) must
+// produce byteSlice candidates and honour defaults hints — the same as when
+// TypeName is explicitly set to "[]byte".
+func TestPlanParam_ByteSlice_GoByteElement_NoTypeName(t *testing.T) {
+	goByteElem := protocol.TypeInfo{Kind: "complex", ComplexKind: "go_byte"}
+	param := protocol.ParamInfo{
+		Name: "data",
+		Type: protocol.TypeInfo{Kind: "array", Element: &goByteElem},
+		// TypeName intentionally absent — matches the type-checker path that emits
+		// Element.ComplexKind but no TypeName (e.g. NormalizeGeminiDiscovery.data).
+	}
+
+	t.Run("plans_without_hint", func(t *testing.T) {
+		plans, u := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{MaxPlansPerParam: 8})
+		if u != nil {
+			t.Fatalf("unexpected unsatisfied: %+v", u)
+		}
+		if len(plans) == 0 {
+			t.Fatal("expected at least one plan, got none")
+		}
+		for i, p := range plans {
+			if p.TypeHint != "[]byte" {
+				t.Errorf("plans[%d].TypeHint = %q, want []byte", i, p.TypeHint)
+			}
+		}
+	})
+
+	t.Run("hint_applied_as_first_plan", func(t *testing.T) {
+		hintLiteral := json.RawMessage(`"aGVsbG8="`) // base64("hello")
+		opts := planner.ParamPlanOptions{
+			MaxPlansPerParam: 8,
+			HintsByName: map[string]planner.ParamValueHint{
+				"data": {Literal: hintLiteral, TypeHint: "string"},
+			},
+		}
+		plans, u := planner.PlanParam(testTargetID, 0, param, opts)
+		if u != nil {
+			t.Fatalf("unexpected unsatisfied: %+v", u)
+		}
+		if len(plans) == 0 {
+			t.Fatal("expected at least one plan")
+		}
+		if plans[0].Kind != protocol.ValuePlanKindLiteral {
+			t.Fatalf("plans[0].Kind = %q, want literal (hint should be first)", plans[0].Kind)
+		}
+		if !bytes.Equal(plans[0].Literal, hintLiteral) {
+			t.Errorf("plans[0].Literal = %s, want %s (hint literal)", plans[0].Literal, hintLiteral)
+		}
+	})
+}
+
+// unionStringParam builds a ParamInfo shaped like the analyzer's output for a
+// named string-alias enum (type X string; const A, B, … X = …). The analyzer's
+// enumValuesFromNamed emits Kind="union" with a single str base variant and the
+// constant string domain in EnumValues (str-pjlc1). str-9pkrb teaches the
+// planner to consume that domain as high-priority ValuePlan candidates.
+func unionStringParam(name string, values ...string) protocol.ParamInfo {
+	ev := make([]any, len(values))
+	for i, v := range values {
+		ev[i] = v
+	}
+	return protocol.ParamInfo{
+		Name: name,
+		Type: protocol.TypeInfo{
+			Kind:       "union",
+			Variants:   []protocol.TypeInfo{{Kind: "str"}},
+			EnumValues: ev,
+		},
+	}
+}
+
+// str-9pkrb: a named string-alias enum parameter must seed every same-package
+// constant as a string candidate so an enum-like switch reaches its case arms
+// without a hand-written generator. Before this change classifyParamFamily had
+// no "union" case and the parameter fell to the unsupported path.
+func TestPlanParam_NamedStringEnum_SeedsConstantCandidates(t *testing.T) {
+	// Four constants + the default per-param cap of 4 also verifies the cap is
+	// expanded so both the full enum domain AND the generic fuzz family survive.
+	p := unionStringParam("t", "CORE", "LOCATION", "ACADEMICS", "OTHER")
+	plans, u := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{})
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+
+	got := map[string]bool{}
+	for i, pl := range plans {
+		if pl.TypeHint != "string" {
+			t.Errorf("plans[%d].TypeHint = %q, want string", i, pl.TypeHint)
+		}
+		if pl.ParamName != "t" {
+			t.Errorf("plans[%d].ParamName = %q, want t", i, pl.ParamName)
+		}
+		if pl.ParamIndex != 0 {
+			t.Errorf("plans[%d].ParamIndex = %d, want 0", i, pl.ParamIndex)
+		}
+		if pl.Kind == protocol.ValuePlanKindLiteral {
+			var s string
+			if json.Unmarshal(pl.Literal, &s) == nil {
+				got[s] = true
+			}
+		}
+	}
+	for _, want := range []string{"CORE", "LOCATION", "ACADEMICS", "OTHER"} {
+		if !got[want] {
+			t.Errorf("enum constant %q missing from candidates %+v", want, plans)
+		}
+	}
+
+	// Existing random/string fuzzing is preserved (not replaced): the generic
+	// string family's zero-value (empty string) off-domain probe still appears.
+	foundZero := false
+	for _, pl := range plans {
+		if pl.Kind == protocol.ValuePlanKindZero {
+			foundZero = true
+			break
+		}
+	}
+	if !foundZero {
+		t.Errorf("expected generic zero-value candidate preserved for off-domain fuzzing, got %+v", plans)
+	}
+}
+
+// str-9pkrb: enum constants are seeded as high-priority candidates, but an
+// operator override (config default) must still win the top slot — mirroring
+// the primitive-family precedence in TestPlanParam_HintOverrideTakesPriority.
+func TestPlanParam_NamedStringEnum_HintTakesPriority(t *testing.T) {
+	p := unionStringParam("t", "CORE", "LOCATION")
+	lit := json.RawMessage(`"CUSTOM"`)
+	opts := planner.ParamPlanOptions{
+		HintsByName: map[string]planner.ParamValueHint{
+			"t": {Literal: lit, TypeHint: "string"},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, p, opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan")
+	}
+	if plans[0].Kind != protocol.ValuePlanKindLiteral || !bytes.Equal(plans[0].Literal, lit) {
+		t.Errorf("plans[0] = %+v, want hint literal %s first", plans[0], lit)
+	}
+	// Enum constants still follow the hint.
+	got := map[string]bool{}
+	for _, pl := range plans {
+		if pl.Kind == protocol.ValuePlanKindLiteral {
+			var s string
+			if json.Unmarshal(pl.Literal, &s) == nil {
+				got[s] = true
+			}
+		}
+	}
+	for _, want := range []string{"CORE", "LOCATION"} {
+		if !got[want] {
+			t.Errorf("enum constant %q missing from candidates %+v", want, plans)
+		}
+	}
+}
+
+// str-9pkrb scope boundary: int enums are out of scope (semantic domain
+// inference for arbitrary numeric enums is explicitly deferred). A union with a
+// non-string base must not be seeded as string candidates; it retains the
+// pre-existing unsupported behavior so no int-enum regression is introduced.
+func TestPlanParam_NamedIntEnum_NotSeededAsStrings(t *testing.T) {
+	p := protocol.ParamInfo{
+		Name: "p",
+		Type: protocol.TypeInfo{
+			Kind:       "union",
+			Variants:   []protocol.TypeInfo{{Kind: "int"}},
+			EnumValues: []any{int64(0), int64(1), int64(2)},
+		},
+	}
+	plans, _ := planner.PlanParam(testTargetID, 0, p, planner.ParamPlanOptions{})
+	for i, pl := range plans {
+		if pl.TypeHint == "string" {
+			t.Errorf("plans[%d]=%+v: int enum must not be seeded as a string candidate", i, pl)
 		}
 	}
 }

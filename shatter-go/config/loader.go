@@ -1,8 +1,8 @@
 // Package config parses the per-project .shatter/config.yaml hint file.
 // The loader covers the safety-policy section consumed by the policy gate
 // (str-hy9b.G4) plus the wider hint_config_v1 surface (defaults, mocks,
-// generators) consumed by the Go planner (str-hy9b.G3). Unknown keys are
-// reported via File.Warnings rather than returned as errors so the loader
+// generators, receiver) consumed by the Go planner (str-hy9b.G3). Unknown keys
+// are reported via File.Warnings rather than returned as errors so the loader
 // remains forward-compatible with future hint sections.
 package config
 
@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -41,6 +43,24 @@ type GoRuntimeValueConfig struct {
 	Imports    []string `yaml:"imports,omitempty"`
 }
 
+// ReceiverConfig is a user-supplied method receiver recipe. Expression is
+// pasted into the generated same-package wrapper as the receiver value, and
+// Imports lists any unaliased import paths the expression needs.
+type ReceiverConfig struct {
+	Label      string   `yaml:"label,omitempty"`
+	Expression string   `yaml:"expression"`
+	Imports    []string `yaml:"imports,omitempty"`
+}
+
+// ReceiverKind returns the wrapper-facing receiver token for this recipe.
+func (r ReceiverConfig) ReceiverKind() string {
+	label := strings.TrimSpace(r.Label)
+	if label == "" {
+		return "configured"
+	}
+	return "configured:" + label
+}
+
 // FunctionConfig is the per-target entry. Only known sections are decoded;
 // unrecognized keys are reported via File.Warnings for forward compatibility.
 type FunctionConfig struct {
@@ -53,10 +73,10 @@ type FunctionConfig struct {
 	Defaults map[string]DefaultValue `yaml:"defaults,omitempty"`
 
 	// Mocks supplies per-target mock substitutions keyed by qualified
-	// function name (e.g. "fmt.Println"). The value is the Go source
-	// expression a code generator pastes in place of the original call
-	// (str-hy9b.G3 AC2).
-	Mocks map[string]string `yaml:"mocks,omitempty"`
+	// function name (e.g. "fmt.Println"). The value's Expression is the Go
+	// source expression pasted in place of the original call
+	// (str-hy9b.G3 AC2; execute-time substitution str-c8djq).
+	Mocks map[string]MockValue `yaml:"mocks,omitempty"`
 
 	// Generators names a runtime-value registry entry per parameter. The
 	// planner consults the named generator before falling back to primitive
@@ -64,6 +84,36 @@ type FunctionConfig struct {
 	// Go-source type spelling registered with the planner's runtime-value
 	// registry (e.g. "context.Context", "*bytes.Buffer").
 	Generators map[string]string `yaml:"generators,omitempty"`
+
+	// Receiver supplies a method receiver construction recipe for targets
+	// whose useful behavior requires initialized receiver fields.
+	Receiver *ReceiverConfig `yaml:"receiver,omitempty"`
+}
+
+// MockValue is one `mocks` entry. Two YAML forms are accepted so the same
+// config file satisfies both the Go frontend and the Rust CLI schema
+// (str-7lab0): a bare string — the call-site substitution expression — and a
+// mapping with an optional `expression` key. CLI-owned mapping keys
+// (`return_values`, `behavior`) are tolerated and ignored here; a mapping
+// without an expression parses to the empty string, which every downstream
+// consumer skips.
+type MockValue struct {
+	Expression string
+}
+
+// UnmarshalYAML implements the dual string/mapping form for MockValue.
+func (m *MockValue) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&m.Expression)
+	}
+	var full struct {
+		Expression string `yaml:"expression"`
+	}
+	if err := node.Decode(&full); err != nil {
+		return fmt.Errorf("mocks entry must be an expression string or a mapping with an `expression` key: %w", err)
+	}
+	m.Expression = full.Expression
+	return nil
 }
 
 // PolicyConfig carries the user-facing safety policy overrides.
@@ -157,6 +207,12 @@ func Load(fromFile string) (File, error) {
 	return parsed, nil
 }
 
+// FindConfigFile is the exported form of findConfigFile: it walks upward from
+// fromFile's directory and returns the path to the nearest .shatter/config.yaml,
+// or "" if none exists. Callers use it to stat the resolved config for
+// mtime-based caching (str-c8djq).
+func FindConfigFile(fromFile string) (string, error) { return findConfigFile(fromFile) }
+
 // findConfigFile walks upward from fromFile's directory looking for a
 // .shatter/config.yaml. Returns "" if none is found before reaching the
 // filesystem root.
@@ -183,42 +239,84 @@ func findConfigFile(fromFile string) (string, error) {
 	}
 }
 
+// TargetRelpath normalizes a source-file path into the form MatchTarget
+// expects. Absolute paths (and paths that escape the working tree via "../")
+// collapse to their basename, mirroring how filename-scoped config globs are
+// written; clean relative paths pass through unchanged. Both the safety-policy
+// resolver and the hint-config resolver MUST funnel SourceFile through this
+// helper before MatchTarget — historically the hint resolver passed the raw
+// absolute SourceFile, so filename-scoped `defaults`/`generators` globs silently
+// failed to match during scans even though the same globs worked for `policy`
+// (str-rd0a).
+func TargetRelpath(file string) string {
+	clean := filepath.ToSlash(filepath.Clean(file))
+	if filepath.IsAbs(clean) {
+		return filepath.Base(clean)
+	}
+	if strings.HasPrefix(clean, "../") {
+		return filepath.Base(clean)
+	}
+	return clean
+}
+
 // MatchTarget returns the most specific FunctionConfig whose glob pattern
 // matches relpath:function. Patterns use path.Match semantics on both
 // sides of the colon (e.g. "*_test.go:*" or "models/user.go:Fetch*").
-// Falls back to a zero-value FunctionConfig when no entry matches.
+// A filename-scoped pattern also matches the path's basename; see
+// matchFileGlob. Falls back to a zero-value FunctionConfig when no entry
+// matches. Callers should pass relpath through TargetRelpath first.
 func (f File) MatchTarget(relpath, function string) FunctionConfig {
+	return f.matchTarget(relpath, function, true)
+}
+
+// MatchTargetAnchored is MatchTarget without the basename fallback: every
+// pattern must match the full relative path as written. The safety-policy gate
+// uses this so a change to hint-key breadth can never widen which files a
+// `policy.allow` block covers — an over-broad policy match grants side-effect
+// allowances (network, subprocess, filesystem) the operator never scoped, so
+// this lookup fails closed rather than being maximally convenient.
+func (f File) MatchTargetAnchored(relpath, function string) FunctionConfig {
+	return f.matchTarget(relpath, function, false)
+}
+
+func (f File) matchTarget(relpath, function string, allowBasenameFallback bool) FunctionConfig {
 	const exactScore = 1000
 	best := FunctionConfig{}
-	bestScore := -1
+	bestTier, bestScore := -1, -1
 	for pattern, entry := range f.Functions {
-		score, matched := matchScore(pattern, relpath, function, exactScore)
+		tier, score, matched := matchScore(pattern, relpath, function, exactScore, allowBasenameFallback)
 		if !matched {
 			continue
 		}
-		if score > bestScore {
-			bestScore = score
+		// Tier dominates score: an anchored match always outranks a basename
+		// fallback, however literal the fallback's spelling. Comparing on score
+		// alone let a bare "loader.go" key tie an anchored
+		// "internal/fixture/loader.go" key (both exact, both 2000) and let Go's
+		// randomized map iteration pick the winner — the same file resolving to
+		// different mocks/defaults on different requests in one process.
+		if tier > bestTier || (tier == bestTier && score > bestScore) {
+			bestTier, bestScore = tier, score
 			best = entry
 		}
 	}
 	return best
 }
 
-// matchScore returns a match quality score for a pattern against a
-// target identifier. Higher score = more specific. Exact literal matches
-// on both sides score higher than glob matches.
-func matchScore(pattern, relpath, function string, exactScore int) (int, bool) {
+// matchScore returns a specificity tier and score for a pattern against a
+// target identifier. Higher tier wins outright; score orders patterns within a
+// tier. Exact literal matches score higher than glob matches.
+func matchScore(pattern, relpath, function string, exactScore int, allowBasenameFallback bool) (int, int, bool) {
 	fileGlob, funcGlob := splitPattern(pattern)
 	if fileGlob == "" || funcGlob == "" {
-		return 0, false
+		return 0, 0, false
 	}
-	fileOK, fileExact := globMatch(fileGlob, relpath)
+	fileOK, fileExact, anchored := matchFileGlob(fileGlob, relpath, allowBasenameFallback)
 	if !fileOK {
-		return 0, false
+		return 0, 0, false
 	}
 	funcOK, funcExact := globMatch(funcGlob, function)
 	if !funcOK {
-		return 0, false
+		return 0, 0, false
 	}
 	score := 0
 	if fileExact {
@@ -231,7 +329,11 @@ func matchScore(pattern, relpath, function string, exactScore int) (int, bool) {
 	} else {
 		score += len(funcGlob)
 	}
-	return score, true
+	tier := 0
+	if anchored {
+		tier = 1
+	}
+	return tier, score, true
 }
 
 func splitPattern(pattern string) (string, string) {
@@ -241,6 +343,47 @@ func splitPattern(pattern string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// matchFileGlob matches the file half of a config key against a source path,
+// reporting whether it matched, whether the match was an exact literal, and
+// whether it matched the path as written (anchored) rather than via the
+// basename fallback.
+//
+// A pattern carrying a path separator is anchored: it matches only the full
+// relative path, so "internal/fixture/loader.go" never matches a bare
+// "loader.go" or a same-named file in another directory.
+//
+// A filename-scoped pattern (no separator, e.g. "*.resolvers.go" or
+// "resolver.go") falls back to matching the path's basename. filepath.Match's
+// "*" does not cross a separator, so without this fallback such a pattern
+// matched only when the caller happened to hold an absolute path — which
+// TargetRelpath collapses to a basename — and silently failed for a clean
+// nested relative path. That asymmetry split the two consumers of the same
+// config key: the planner/hint path (absolute SourceFile) resolved `mocks`
+// entries while the prepare/execute path (repo-relative `file`) did not, so
+// config mock expressions were never substituted into the built harness
+// (kapow-jdb8). Filename-scoped keys are the documented spelling, so they must
+// mean the same thing regardless of how the caller spells the path.
+//
+// The anchored flag is what keeps the fallback from distorting specificity:
+// callers rank any anchored match above any fallback match, so a bare
+// "loader.go" key cannot outrank — or tie — a directory-scoped
+// "internal/fixture/*.go" or a full-path key for the same file.
+func matchFileGlob(pattern, relpath string, allowBasenameFallback bool) (matched, exact, anchored bool) {
+	if ok, exact := globMatch(pattern, relpath); ok {
+		return true, exact, true
+	}
+	if !allowBasenameFallback || strings.ContainsRune(pattern, '/') {
+		return false, false, false
+	}
+	base := path.Base(relpath)
+	if base == relpath {
+		// Already a basename; the anchored attempt above was the only one.
+		return false, false, false
+	}
+	ok, exact := globMatch(pattern, base)
+	return ok, exact, false
 }
 
 // globMatch reports whether target matches pattern under path.Match
@@ -268,6 +411,7 @@ var (
 		"defaults":   {},
 		"mocks":      {},
 		"generators": {},
+		"receiver":   {},
 	}
 )
 
@@ -307,14 +451,29 @@ func collectFunctionWarnings(path string, functions *yaml.Node) []string {
 		if entry == nil || entry.Kind != yaml.MappingNode {
 			continue
 		}
-		for k := range mappingPairs(entry) {
+		pairs := mappingPairs(entry)
+		for k := range pairs {
 			if _, ok := knownFunctionKeys[k]; ok {
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf("config %s: function %q: ignoring unknown key %q", path, pattern, k))
 		}
+		if receiver, ok := pairs["receiver"]; ok && missingReceiverExpression(receiver) {
+			warnings = append(warnings, fmt.Sprintf("config %s: function %q: receiver expression is empty; ignoring receiver recipe", path, pattern))
+		}
 	}
 	return warnings
+}
+
+func missingReceiverExpression(receiver *yaml.Node) bool {
+	if receiver == nil || receiver.Kind != yaml.MappingNode {
+		return true
+	}
+	expression := mappingPairs(receiver)["expression"]
+	if expression == nil || expression.Kind != yaml.ScalarNode {
+		return true
+	}
+	return strings.TrimSpace(expression.Value) == ""
 }
 
 // documentMapping returns the top-level mapping node of a parsed YAML

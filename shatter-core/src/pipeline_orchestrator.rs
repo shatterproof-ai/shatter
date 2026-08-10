@@ -50,6 +50,21 @@ pub enum PipelineError {
     StageIo(#[from] StageIoError),
 }
 
+impl PipelineError {
+    /// True when this error is a frontend "not supported" classification for the
+    /// whole function (from either the random explorer or the concolic
+    /// orchestrator). Callers route it to the unsupported bucket rather than
+    /// reporting a hard failure, matching the scan/observe paths (str-303gg
+    /// review #4).
+    pub fn is_unsupported(&self) -> bool {
+        matches!(
+            self,
+            PipelineError::Explore(explorer::ExploreError::Unsupported(_))
+                | PipelineError::ConcolicExplore(orchestrator::ExploreError::Unsupported(_))
+        )
+    }
+}
+
 /// Which stages of the pipeline to execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -433,9 +448,24 @@ pub async fn run_observe_stage(
         })
         .await;
 
-    if let Err(e) = instrument_resp {
-        log::debug!("instrument failed: {e}");
-    }
+    // Capture the frontend's instrumentable-line count so the concolic path
+    // can reconcile coverage against the same denominator the random explorer
+    // uses (str-4o07). Without this the concolic path falls back to the raw
+    // source span (`end_line - start_line + 1`), inflating `total_lines` and
+    // under-reporting coverage versus the random explorer on the same function.
+    let instrumentable_line_count = match instrument_resp {
+        Ok(resp) => match resp.result {
+            ResponseResult::Instrument {
+                instrumentable_line_count,
+                ..
+            } => instrumentable_line_count,
+            _ => None,
+        },
+        Err(e) => {
+            log::debug!("instrument failed: {e}");
+            None
+        }
+    };
 
     // Propagate the per-target execute plan from ObserveStageOptions into both
     // the random-explorer and concolic-orchestrator configs so that every
@@ -448,7 +478,7 @@ pub async fn run_observe_stage(
     }
 
     let (observation, resume_state) = if input.use_concolic {
-        run_concolic_observe(input, &options).await?
+        run_concolic_observe(input, &options, instrumentable_line_count).await?
     } else {
         (run_random_observe(input, &options).await?, None)
     };
@@ -467,6 +497,7 @@ pub async fn run_observe_stage(
 async fn run_concolic_observe(
     input: &mut ObserveInput<'_>,
     options: &ObserveStageOptions<'_>,
+    instrumentable_line_count: Option<u32>,
 ) -> Result<
     (
         explorer::ObservationOutput,
@@ -523,7 +554,7 @@ async fn run_concolic_observe(
         &mut obs,
         input.analysis.start_line,
         input.analysis.end_line,
-        None,
+        instrumentable_line_count,
     );
     Ok((obs, Some(resume_state)))
 }
@@ -633,7 +664,7 @@ mod tests {
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: (0..branch_count)
@@ -1272,6 +1303,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };

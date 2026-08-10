@@ -321,21 +321,43 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 		return nil
 	}
 
-	// Build set of mocked module prefixes from mock symbols ("module:export" → "module").
+	// Build the mocked-import matchers from mock symbols. Shapes:
+	//   "module:export" / "module/path"   — suppress the exact import path;
+	//   "module/path.Func"                — suppress the exact import path;
+	//   "pkg.Func" (config-mock qualifier) — suppress any import whose local
+	//     name (alias, or path base; instrument.ImportLocalName) is the
+	//     qualifier. Bare qualifiers can't distinguish same-base-name modules,
+	//     so this over-suppresses when e.g. two different `auth` packages are
+	//     imported — an accepted limit of the source-qualifier spelling; use
+	//     the path-qualified form when it matters.
 	mockedModules := make(map[string]bool)
+	mockedQualifiers := make(map[string]bool)
 	for _, m := range mocks {
-		if idx := strings.Index(m.Symbol, ":"); idx >= 0 {
-			mockedModules[m.Symbol[:idx]] = true
-		} else {
-			mockedModules[m.Symbol] = true
+		sym := m.Symbol
+		if module, _, found := strings.Cut(sym, ":"); found {
+			mockedModules[module] = true
+			continue
 		}
+		if slash := strings.LastIndex(sym, "/"); slash >= 0 {
+			if dot := strings.Index(sym[slash:], "."); dot >= 0 {
+				mockedModules[sym[:slash+dot]] = true
+			} else {
+				mockedModules[sym] = true
+			}
+			continue
+		}
+		if qualifier, _, found := strings.Cut(sym, "."); found {
+			mockedQualifiers[qualifier] = true
+			continue
+		}
+		mockedModules[sym] = true
 	}
 
 	var deps []DiscoveredDependency
 	for _, imp := range f.Imports {
 		importPath := strings.Trim(imp.Path.Value, `"`)
 
-		if mockedModules[importPath] {
+		if mockedModules[importPath] || mockedQualifiers[ImportLocalName(imp)] {
 			continue
 		}
 

@@ -22,10 +22,60 @@ import (
 	"github.com/shatter-dev/shatter/shatter-go/wrapper"
 )
 
+// hostWriteDirEnv carries the absolute path of the Rust CLI's throwaway
+// host-write isolation directory (str-gg9v). It is set only when a target is
+// executed with no OS sandbox backend configured; the launcher then runs with
+// this as its working directory so a target's relative-path file writes
+// (`os.OpenFile("./out", ...)`) land in the throwaway directory rather than
+// mutating the invoking repository. Sandbox backends already contain writes and
+// never receive this variable, so it is ignored when a sandbox is enabled.
+const hostWriteDirEnv = "SHATTER_HOST_WRITE_DIR"
+
+// executionWorkDir returns the working directory for the launcher subprocess.
+// When no OS sandbox is active and the CLI supplied a host-write isolation
+// directory, that directory wins over the target module directory so
+// relative-path writes are redirected out of the repo. Otherwise the target
+// module directory is used unchanged.
+func executionWorkDir(sb sandbox.Runner, targetModuleDir string) string {
+	if !sb.Enabled() {
+		if dir := strings.TrimSpace(os.Getenv(hostWriteDirEnv)); dir != "" {
+			return dir
+		}
+	}
+	return targetModuleDir
+}
+
+// preparedProvenance records the configuration inputs a prepared harness was
+// built under, so an execute that names the harness by an explicit prepare_id
+// can tell that those inputs have since changed (str-hr40t).
+//
+// mockFingerprint is instrument.MockFingerprint of the effective mock set
+// (wire mocks + `.shatter/config.yaml` mocks) resolved at prepare time. It is
+// the same value computePrepareID keys on, which is why a driver that
+// re-prepares always gets a fresh harness; the explicit prepare_id path
+// bypasses that derivation and must compare the fingerprint itself.
+//
+// configPath is the `.shatter/config.yaml` the mocks were resolved from ("" if
+// none). It is diagnostic only — the fingerprint is the authority, because
+// loadMockConfig already revalidates the parsed config by mtime + size, so a
+// content change is reflected in the fingerprint without a second stat.
+type preparedProvenance struct {
+	mockFingerprint string
+	configPath      string
+}
+
+// Provenance satisfies preparedExecution for any type embedding
+// preparedProvenance.
+func (p preparedProvenance) Provenance() preparedProvenance { return p }
+
 type preparedExecution interface {
 	IsValid() bool
 	Cleanup()
 	KillProc()
+	// Provenance reports the configuration inputs this harness was built
+	// under. handleExecute compares it against the current inputs before
+	// reusing a harness named by an explicit prepare_id.
+	Provenance() preparedProvenance
 	// Invoke runs the prepared target with the implementation's default
 	// receiver_kind (free-function path: "" baked in at prepare time).
 	Invoke(inputs []json.RawMessage, capture bool) (*instrument.ExecuteResult, error)
@@ -38,6 +88,11 @@ type preparedExecution interface {
 }
 
 type preparedLauncher struct {
+	// preparedProvenance is stamped by handlePrepare after the harness is
+	// built; a zero value means "unknown provenance" (one-shot execute
+	// harnesses, which are never cached).
+	preparedProvenance
+
 	ArtifactDir string
 	BinaryPath  string
 	ProjectRoot string
@@ -235,7 +290,7 @@ func (h *Handler) prepareDirectExecution(
 		return nil, fmt.Errorf("analyzing function: %w", err)
 	}
 
-	req, targetID, err := buildDirectExecutionRequest(pkg, absoluteFilePath, function, mocks)
+	req, targetID, err := buildDirectExecutionRequest(pkg, absoluteFilePath, function, mocks, h.log.Warn)
 	finishAnalyze()
 	if err != nil {
 		return nil, fmt.Errorf("analyzing function: %w", err)
@@ -253,11 +308,12 @@ func (h *Handler) prepareDirectExecution(
 		return nil, fmt.Errorf("build failed: %w", err)
 	}
 
+	sb := sandbox.FromEnv()
 	return &preparedLauncher{
 		BinaryPath:             result.BinaryPath,
 		ProjectRoot:            req.TargetModuleDir,
-		WorkDir:                req.TargetModuleDir,
-		Sandbox:                sandbox.FromEnv(),
+		WorkDir:                executionWorkDir(sb, req.TargetModuleDir),
+		Sandbox:                sb,
 		TargetID:               targetID,
 		DefaultReceiverKind:    defaultReceiverKind,
 		DefaultGenericTypeArgs: append([]string{}, defaultGenericTypeArgs...),
@@ -328,8 +384,9 @@ func buildDirectExecutionRequest(
 	absoluteFilePath string,
 	function string,
 	mocks []instrument.MockConfig,
+	logf func(msg string, args ...any),
 ) (build.BuildRequest, string, error) {
-	targets := wrapper.BuildWrapperTargets(pkg)
+	targets := wrapper.BuildWrapperTargetsForSource(pkg, absoluteFilePath)
 	target, err := selectDirectWrapperTarget(targets, function)
 	if err != nil {
 		return build.BuildRequest{}, "", err
@@ -348,6 +405,11 @@ func buildDirectExecutionRequest(
 	constructorInterfaceImpls := discoverConstructorInterfaceImplCandidates(pkg, constructors)
 	constructorRuntimeValues := discoverConstructorRuntimeValues(pkg, constructors)
 
+	// Resolve expression mock substitutions (str-c8djq) against the loaded
+	// package's TypesInfo so the overlay build rewrites only genuine
+	// package-qualified call sites (not method calls on same-named locals).
+	mockSubs := resolveMockSubstitutionScopes(pkg, instrument.MockSubstitutionsFromConfigs(mocks), logf)
+
 	return build.BuildRequest{
 		Targets:                targets,
 		Constructors:           toWrapperConstructorsWithBindings(constructors, constructorInterfaceImpls, constructorRuntimeValues),
@@ -358,6 +420,7 @@ func buildDirectExecutionRequest(
 		TargetPackageDir:       packageDir,
 		InstrumentedSourceFile: packageFileForBuild(pkg, absoluteFilePath),
 		Mocks:                  mocks,
+		MockSubstitutions:      mockSubs,
 	}, target.ID, nil
 }
 

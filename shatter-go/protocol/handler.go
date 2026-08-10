@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/types"
 	"io"
 	"log/slog"
 	"os"
@@ -17,6 +18,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/tools/go/packages"
 
@@ -66,6 +69,29 @@ type Handler struct {
 	// the given source file. Injectable so tests can supply a synthetic
 	// config without touching the real filesystem. Nil defers to config.Load.
 	policyConfigLoader func(file string) (config.File, error)
+
+	// configCache memoizes parsed .shatter/config.yaml by resolved path,
+	// invalidated on mtime or size change (str-c8djq review fix 4; size
+	// guards against writes within one mtime-granularity tick). The
+	// orchestrator issues thousands of executes; without this each pays a
+	// directory walk + read + YAML unmarshal even when the prepared-harness
+	// fast path ignores the result. configPathCache memoizes the upward
+	// FindConfigFile walk per source directory (including "no config here"),
+	// cutting the per-execute cost to two stats. Both guarded by
+	// configCacheMu.
+	configCacheMu   sync.Mutex
+	configCache     map[string]cachedConfigEntry
+	configPathCache map[string]string
+	// adapterMockWarned dedupes the "config mocks inactive for adapter-owned
+	// target" warning per file\x00function. Guarded by configCacheMu.
+	adapterMockWarned map[string]bool
+}
+
+// cachedConfigEntry is one memoized .shatter/config.yaml parse.
+type cachedConfigEntry struct {
+	mtime time.Time
+	size  int64
+	file  config.File
 }
 
 // NewHandler creates a handler reading from r, writing responses to w,
@@ -392,6 +418,20 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		resp.Message = fmt.Sprintf("file not found: %s", req.File)
 		return resp
 	}
+	// Normalize to absolute path so SourceFile entries stored in the
+	// analysis cache are always absolute. Relative paths survive os.Stat
+	// above but produce mismatches in hintConfigResolver: TargetRelpath
+	// passes clean relative paths through unchanged, so a relative
+	// SourceFile like "internal/fixture/loader.go" never matches a
+	// filename-scoped config glob like "loader.go:Func".
+	if !filepath.IsAbs(req.File) {
+		if abs, err := filepath.Abs(req.File); err == nil {
+			req.File = abs
+		} else {
+			h.log.Warn("analyze: failed to resolve relative path to absolute; hint config globs may not match",
+				"file", req.File, "err", err)
+		}
+	}
 
 	// file_not_found takes priority over env preflight — a typo'd path is
 	// more actionable, and TS/Rust agree on this ordering
@@ -521,6 +561,16 @@ func (h *Handler) finalizeAnalyzeFromCache(resp Response, req Request, cached []
 	for i := range cached {
 		if cached[i].SourceFile == "" {
 			cached[i].SourceFile = req.File
+		} else if !filepath.IsAbs(cached[i].SourceFile) {
+			// Normalize a relative SourceFile from an older cache entry to
+			// absolute so hintConfigResolver's TargetRelpath call reduces it
+			// to a plain basename and config globs like "loader.go:Func" match.
+			if abs, err := filepath.Abs(cached[i].SourceFile); err == nil {
+				cached[i].SourceFile = abs
+			} else {
+				h.log.Warn("analyze: failed to normalize cached relative SourceFile to absolute; hint config globs may not match",
+					"source_file", cached[i].SourceFile, "err", err)
+			}
 		}
 		key := req.File + "\x00" + cached[i].Name
 		h.cachedAnalyses[key] = &cached[i]
@@ -664,14 +714,12 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 func computePrepareID(file, function string, mocks []instrument.MockConfig, receiverKind string, genericTypeArgs ...string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00", file, function)
-	symbols := make([]string, len(mocks))
-	for i, m := range mocks {
-		symbols[i] = m.Symbol
-	}
-	sort.Strings(symbols)
-	for _, s := range symbols {
-		fmt.Fprintf(h, "%s\x00", s)
-	}
+	// Key on the full mock fingerprint (symbol + expression + behavior +
+	// return values). Shared with build.cacheKey via instrument.MockFingerprint
+	// so the prepare fast path — which fires before Build — cannot reuse a
+	// stale harness when return_values or a substitution expression changes
+	// (str-c8djq review fix 3).
+	fmt.Fprintf(h, "%s\x00", instrument.MockFingerprint(mocks))
 	fmt.Fprintf(h, "%s\x00", receiverKind)
 	for _, arg := range genericTypeArgs {
 		fmt.Fprintf(h, "%s\x00", arg)
@@ -720,15 +768,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		return resp
 	}
 
-	var execMocks []instrument.MockConfig
-	for _, m := range req.Mocks {
-		execMocks = append(execMocks, instrument.MockConfig{
-			Symbol:           m.Symbol,
-			ReturnValues:     m.ReturnValues,
-			ShouldTrackCalls: m.ShouldTrackCalls,
-			DefaultBehavior:  m.DefaultBehavior,
-		})
-	}
+	execMocks := h.resolveExecMocks(file, *req.Function, req.Mocks)
 
 	// Extract receiver_kind from the plan when present so the prepare_id
 	// keys on (file, function, mocks, receiver_kind), allowing plan-aware
@@ -741,7 +781,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 	}
 
 	prepareID := computePrepareID(file, *req.Function, execMocks, receiverKind, genericTypeArgs...)
-	targetKey := file + "\x00" + *req.Function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
+	targetKey := preparedTargetKey(file, *req.Function, receiverKind, genericTypeArgs)
 
 	if cachedAnalysis := h.cachedAnalysisForPolicy(file, *req.Function, timing); cachedAnalysis != nil && !isAdapterOwned(cachedAnalysis) {
 		if decision, applied := h.evaluateExecutePolicy(file, *req.Function, cachedAnalysis); applied && !decision.Allow {
@@ -757,9 +797,8 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		h.log.Debug("invalidating stale prepared harness", "old_prepare_id", oldID, "new_prepare_id", prepareID)
 		if oldHarness, ok := h.preparedHarnesses[oldID]; ok {
 			oldHarness.Cleanup()
-			delete(h.preparedHarnesses, oldID)
 		}
-		delete(h.preparedTargets, targetKey)
+		h.forgetPreparedHarness(oldID)
 	}
 
 	// Idempotent: return immediately if already prepared and still valid.
@@ -771,8 +810,7 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 			return finalizeResponse(resp, timing)
 		}
 		existing.Cleanup()
-		delete(h.preparedHarnesses, prepareID)
-		delete(h.preparedTargets, targetKey)
+		h.forgetPreparedHarness(prepareID)
 	}
 
 	h.prunePreparedHarnessesBeforeNewPrepare(prepareID)
@@ -796,11 +834,222 @@ func (h *Handler) handlePrepare(resp Response, req Request) Response {
 		return resp
 	}
 
+	// Stamp the mock provenance so a later execute naming this prepare_id
+	// explicitly can detect that `.shatter/config.yaml` mocks changed
+	// underneath it and rebuild (str-hr40t).
+	harness.preparedProvenance = h.mockProvenance(file, execMocks)
 	h.preparedHarnesses[prepareID] = harness
 	h.preparedTargets[targetKey] = prepareID
 	resp.Status = "prepare"
 	resp.PrepareID = prepareID
 	return finalizeResponse(resp, timing)
+}
+
+// configMockConfigs loads the `.shatter/config.yaml` `mocks` entries that
+// apply to (file, function) and returns them as expression-bearing
+// instrument.MockConfig values (str-c8djq). This is the execute-time bridge
+// that makes hint_config_v1 mocks affect execution, not just planning: the
+// planner already threads these through PerTargetHints, but nothing wired the
+// same expressions into the build/overlay path until now. Because it runs
+// frontend-side at execute time, it applies regardless of which Rust driver
+// (explorer or orchestrator) issued the Execute request.
+//
+// A missing config yields no mocks silently. A malformed config is logged at
+// WARN (with path + error) rather than swallowed: a suppressed mock means the
+// real, possibly unsafe dependency (network/subprocess) runs unmocked, so the
+// operator must be able to see why (str-c8djq review fix 4).
+func (h *Handler) configMockConfigs(file, function string) []instrument.MockConfig {
+	if file == "" {
+		return nil
+	}
+	cfg, ok := h.loadMockConfig(file)
+	if !ok {
+		return nil
+	}
+	entry := cfg.MatchTarget(config.TargetRelpath(file), function)
+	if len(entry.Mocks) == 0 {
+		return nil
+	}
+	mocks := make([]instrument.MockConfig, 0, len(entry.Mocks))
+	for qualified, mv := range entry.Mocks {
+		if strings.TrimSpace(mv.Expression) == "" {
+			continue
+		}
+		mocks = append(mocks, instrument.MockConfig{
+			Symbol:     qualified,
+			Expression: mv.Expression,
+		})
+	}
+	sort.Slice(mocks, func(i, j int) bool { return mocks[i].Symbol < mocks[j].Symbol })
+	return mocks
+}
+
+// resolveExecMocks builds the effective mock set for one prepare/execute
+// request: wire mocks converted to instrument.MockConfig, config-declared
+// mocks appended, duplicates collapsed. Both handlePrepare and handleExecute
+// MUST build their mock set through this helper — a branch that assembles its
+// own set can silently diverge on which mocks are active for the same target
+// (this repo's parallel-path trap; str-c8djq review).
+func (h *Handler) resolveExecMocks(file, function string, wireMocks []MockConfig) []instrument.MockConfig {
+	var execMocks []instrument.MockConfig
+	for _, m := range wireMocks {
+		execMocks = append(execMocks, instrument.MockConfig{
+			Symbol:           m.Symbol,
+			ReturnValues:     m.ReturnValues,
+			ShouldTrackCalls: m.ShouldTrackCalls,
+			DefaultBehavior:  m.DefaultBehavior,
+		})
+	}
+	execMocks = append(execMocks, h.configMockConfigs(file, function)...)
+	return instrument.DedupeMocks(execMocks)
+}
+
+// mockProvenance captures the mock inputs a harness is being built under so a
+// later execute can detect that they changed (str-hr40t). The config path is
+// read from the memoized directory walk, so this costs no extra syscalls on
+// the prepare path beyond the ones resolveExecMocks already made.
+func (h *Handler) mockProvenance(file string, mocks []instrument.MockConfig) preparedProvenance {
+	prov := preparedProvenance{mockFingerprint: instrument.MockFingerprint(mocks)}
+	if h.policyConfigLoader == nil {
+		if path, ok := h.resolveConfigPath(file); ok {
+			prov.configPath = path
+		}
+	}
+	return prov
+}
+
+// preparedTargetKey builds the `preparedTargets` key for one target shape.
+// Every site that reads or writes that map MUST go through this helper — the
+// key was previously spelled out by hand at each call site, so a change to its
+// shape could silently desynchronize registration from lookup.
+func preparedTargetKey(file, function, receiverKind string, genericTypeArgs []string) string {
+	return file + "\x00" + function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
+}
+
+// forgetPreparedHarness drops prepareID from the harness cache along with any
+// target registration still pointing at it, so a subsequent lookup rebuilds
+// instead of resurrecting a dangling id. Callers are responsible for calling
+// Cleanup() on the harness first.
+func (h *Handler) forgetPreparedHarness(prepareID string) {
+	delete(h.preparedHarnesses, prepareID)
+	for targetKey, id := range h.preparedTargets {
+		if id == prepareID {
+			delete(h.preparedTargets, targetKey)
+		}
+	}
+}
+
+// warnAdapterMocksInactiveOnce emits the "config mocks inactive for
+// adapter-owned target" warning at most once per (file, function). The
+// orchestrator issues thousands of executes per target; an undeduplicated
+// WARN floods the protocol stderr (str-c8djq cross-file review).
+func (h *Handler) warnAdapterMocksInactiveOnce(file, function, adapterID string) {
+	n := countExpressionMocks(h.configMockConfigs(file, function))
+	if n == 0 {
+		return
+	}
+	key := file + "\x00" + function
+	h.configCacheMu.Lock()
+	if h.adapterMockWarned == nil {
+		h.adapterMockWarned = make(map[string]bool)
+	}
+	warned := h.adapterMockWarned[key]
+	h.adapterMockWarned[key] = true
+	h.configCacheMu.Unlock()
+	if warned {
+		return
+	}
+	h.log.Warn("config mocks inactive for adapter-owned target (not substituted through the adapter harness)",
+		"function", function, "adapter", adapterID, "expression_mocks", n)
+}
+
+// countExpressionMocks reports how many mocks carry a call-site substitution
+// expression (str-c8djq).
+func countExpressionMocks(mocks []instrument.MockConfig) int {
+	n := 0
+	for _, m := range mocks {
+		if strings.TrimSpace(m.Expression) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// loadMockConfig returns the parsed .shatter/config.yaml for file, memoized by
+// resolved path + mtime. ok is false when there is no config (silent) or the
+// config failed to load/parse (logged at WARN). An injected policyConfigLoader
+// (tests) bypasses the on-disk cache.
+func (h *Handler) loadMockConfig(file string) (config.File, bool) {
+	if h.policyConfigLoader != nil {
+		cfg, err := h.policyConfigLoader(file)
+		if err != nil {
+			h.log.Warn("mock config: load failed; config mocks inactive (unmocked dependency may run)",
+				"file", file, "error", err)
+			return config.File{}, false
+		}
+		return cfg, true
+	}
+
+	path, ok := h.resolveConfigPath(file)
+	if !ok {
+		return config.File{}, false
+	}
+	if path == "" {
+		return config.File{}, false // no config is not an error
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		h.log.Warn("mock config: stat failed; config mocks inactive", "path", path, "error", statErr)
+		return config.File{}, false
+	}
+
+	h.configCacheMu.Lock()
+	defer h.configCacheMu.Unlock()
+	if ent, hit := h.configCache[path]; hit && ent.mtime.Equal(info.ModTime()) && ent.size == info.Size() {
+		return ent.file, true
+	}
+	cfg, loadErr := config.Load(file)
+	if loadErr != nil {
+		h.log.Warn("mock config: parse failed; config mocks inactive (unmocked dependency may run)",
+			"path", path, "error", loadErr)
+		return config.File{}, false
+	}
+	if h.configCache == nil {
+		h.configCache = make(map[string]cachedConfigEntry)
+	}
+	h.configCache[path] = cachedConfigEntry{mtime: info.ModTime(), size: info.Size(), file: cfg}
+	return cfg, true
+}
+
+// resolveConfigPath memoizes config.FindConfigFile's upward directory walk per
+// source directory, including the "no config" result. The walk stats every
+// ancestor directory; on the execute hot path that is thousands of redundant
+// syscalls per explore. Consequence of memoizing absence: a .shatter/config.yaml
+// CREATED mid-session is only picked up by a new session — the same freshness
+// contract as the prepared-harness cache. ok is false only on a walk error
+// (logged, mocks inactive).
+func (h *Handler) resolveConfigPath(file string) (string, bool) {
+	dir := filepath.Dir(file)
+	h.configCacheMu.Lock()
+	if path, hit := h.configPathCache[dir]; hit {
+		h.configCacheMu.Unlock()
+		return path, true
+	}
+	h.configCacheMu.Unlock()
+
+	path, err := config.FindConfigFile(file)
+	if err != nil {
+		h.log.Warn("mock config: locating .shatter/config.yaml failed; config mocks inactive",
+			"file", file, "error", err)
+		return "", false
+	}
+	h.configCacheMu.Lock()
+	if h.configPathCache == nil {
+		h.configPathCache = make(map[string]string)
+	}
+	h.configPathCache[dir] = path
+	h.configCacheMu.Unlock()
+	return path, true
 }
 
 func (h *Handler) handleExecute(resp Response, req Request) Response {
@@ -925,6 +1174,11 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		resp.Performance = &PerfMetrics{}
 		return finalizeResponse(resp, timing)
 	case "adapter":
+		// Adapter-owned targets run through a curated httptest/gin harness, not
+		// the overlay build, so call-site mock substitution does not apply
+		// (str-c8djq review fix 7). Warn if the operator configured expression
+		// mocks for this target so an inactive mock isn't silent.
+		h.warnAdapterMocksInactiveOnce(file, *req.Function, strategy.AdapterID)
 		finishExecute := timing.Start("execute.total")
 		result, err := ExecuteAdapterOwned(strategy.Hook, InvocationContext{
 			File:            file,
@@ -952,21 +1206,17 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 
 	// --- Direct execution via builder/launcher ---
 
-	var execMocks []instrument.MockConfig
-	for _, m := range req.Mocks {
-		execMocks = append(execMocks, instrument.MockConfig{
-			Symbol:           m.Symbol,
-			ReturnValues:     m.ReturnValues,
-			ShouldTrackCalls: m.ShouldTrackCalls,
-			DefaultBehavior:  m.DefaultBehavior,
-		})
-	}
+	execMocks := h.resolveExecMocks(file, *req.Function, req.Mocks)
 
 	var (
 		result       *instrument.ExecuteResult
 		err          error
 		oneShot      *preparedLauncher
 		preparedExec preparedExecution
+		// recacheAfterMockChange marks that an explicit prepare_id was
+		// invalidated by a config-mock change (str-hr40t), so the rebuilt
+		// harness must be re-registered instead of torn down as a one-shot.
+		recacheAfterMockChange bool
 	)
 
 	// When the request carries a non-nil Plan (str-hy9b.H5), thread the
@@ -1013,12 +1263,45 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 
 	finishExecute := timing.Start("execute.total")
 	if req.PrepareID != nil && *req.PrepareID != "" {
-		preparedExec, _ = h.preparedHarnesses[*req.PrepareID]
+		preparedExec = h.preparedHarnesses[*req.PrepareID]
 		if preparedExec != nil && !preparedExec.IsValid() {
 			h.log.Warn("prepared harness artifacts missing, rebuilding", "prepare_id", *req.PrepareID)
 			preparedExec.Cleanup()
-			delete(h.preparedHarnesses, *req.PrepareID)
+			h.forgetPreparedHarness(*req.PrepareID)
 			preparedExec = nil
+		}
+		// An explicit prepare_id bypasses computePrepareID, which is the only
+		// thing that normally keys a harness on its mock fingerprint. Without
+		// this check, editing `.shatter/config.yaml` mocks between prepare and
+		// a later execute in the same session would silently keep the old
+		// substitutions active (str-hr40t). Compare against the fingerprint
+		// recorded at prepare time and rebuild on mismatch, mirroring the
+		// IsValid() artifact check above. The comparison reuses the mock set
+		// resolveExecMocks already resolved for this request, so the hot path
+		// pays one hash over the mock list and no extra config parse.
+		//
+		// Neither side of the comparison can fail: execMocks is already
+		// resolved upstream (config load errors were logged and degraded to
+		// "no mocks" there) and MockFingerprint is a pure hash, so there is
+		// no error path to thread through here.
+		if preparedExec != nil {
+			prov := preparedExec.Provenance()
+			if current := instrument.MockFingerprint(execMocks); prov.mockFingerprint != current {
+				// The fingerprints themselves are raw mock expressions joined
+				// by control characters — unfit for a log line; the config
+				// path plus the current mock count is what an operator acts on.
+				h.log.Info("mock configuration changed since prepare, rebuilding harness",
+					"prepare_id", *req.PrepareID, "config", prov.configPath, "mocks", len(execMocks))
+				preparedExec.Cleanup()
+				h.forgetPreparedHarness(*req.PrepareID)
+				preparedExec = nil
+				// The driver holds a prepare_id and will keep sending it, so
+				// the rebuild below must repopulate the cache under the new
+				// fingerprint. Without this the fallback build is treated as
+				// one-shot and torn down after a single invoke, making EVERY
+				// subsequent execute rebuild from scratch.
+				recacheAfterMockChange = true
+			}
 		}
 		if preparedExec == nil {
 			h.log.Debug("stale prepare_id, rebuilding", "prepare_id", *req.PrepareID)
@@ -1035,6 +1318,22 @@ func (h *Handler) handleExecute(resp Response, req Request) Response {
 		oneShot, err = h.prepareDirectExecution(file, *req.Function, execMocks, timing, "execute", requestReceiverKind, requestGenericTypeArgs)
 		if err == nil {
 			preparedExec = oneShot
+			if recacheAfterMockChange {
+				// Re-register under the NEW fingerprint and hand ownership to
+				// the cache (oneShot cleared so the tear-down below skips it),
+				// so a config edit costs one rebuild per prepare_id rather
+				// than one rebuild per execute for the rest of the session
+				// (str-hr40t review). The driver's next execute still names
+				// the OLD prepare_id, which now misses; it falls through to
+				// lookupPreparedHarness, which recomputes the same new id and
+				// hits this entry.
+				newID := computePrepareID(file, *req.Function, execMocks, requestReceiverKind, requestGenericTypeArgs...)
+				oneShot.preparedProvenance = h.mockProvenance(file, execMocks)
+				h.preparedHarnesses[newID] = oneShot
+				h.preparedTargets[preparedTargetKey(file, *req.Function, requestReceiverKind, requestGenericTypeArgs)] = newID
+				h.log.Debug("re-registered rebuilt harness after mock change", "prepare_id", newID)
+				oneShot = nil
+			}
 		}
 	}
 	if err == nil {
@@ -1427,11 +1726,7 @@ func (h *Handler) lookupPreparedHarness(file, function string, mocks []instrumen
 	if !harness.IsValid() {
 		h.log.Warn("pruning prepared harness with missing artifacts", "prepare_id", prepareID)
 		harness.Cleanup()
-		delete(h.preparedHarnesses, prepareID)
-		targetKey := file + "\x00" + function + "\x00" + receiverKind + "\x00" + strings.Join(genericTypeArgs, "\x00")
-		if h.preparedTargets[targetKey] == prepareID {
-			delete(h.preparedTargets, targetKey)
-		}
+		h.forgetPreparedHarness(prepareID)
 		return nil
 	}
 	return harness
@@ -1708,6 +2003,19 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 	if analysis == nil {
 		return nil
 	}
+	// str-r2q7.1: the planner closure's hint-config resolver keys off
+	// Analysis.SourceFile to load .shatter/config.yaml and match per-target
+	// defaults/generators globs. buildTargetContext resolves `file` here even
+	// when the cached FunctionAnalysis predates SourceFile population, so
+	// backfill it (on a copy, to avoid mutating the shared cache entry).
+	// Without this the resolver early-returns on an empty SourceFile and
+	// configured per-parameter inputs are silently ignored on the
+	// get_invocation_plan path (free functions especially).
+	if analysis.SourceFile == "" && file != "" {
+		cp := *analysis
+		cp.SourceFile = file
+		analysis = &cp
+	}
 	ctx := &TargetContext{Analysis: analysis}
 
 	// Always load the package when possible: the analyzer emits a bare
@@ -1732,6 +2040,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 	target := BuildDiscoveredTarget(pkg.Fset, fn, pkg.TypesInfo, pkg.PkgPath, pkg.Name, file)
 	ctx.Target = &target
 	ctx.StringLiteralsByParam = stringLiteralCandidatesByParam(fn, pkg.TypesInfo, analysis.Params)
+	ctx.ErrorSentinelCountsByParam = errorSentinelCountsByParam(fn, pkg.TypesInfo, pkg.PkgPath, analysis.Params)
 
 	if target.Receiver != nil && target.Receiver.TypeName != "" {
 		all := ScanConstructors(pkg)
@@ -2083,6 +2392,52 @@ func findFuncDeclByBareName(pkg *packages.Package, name string) *ast.FuncDecl {
 		}
 	}
 	return nil
+}
+
+// errorSentinelCountsByParam mines errors.Is/errors.As sentinel targets for the
+// target's bare `error` parameters and returns the count per parameter name
+// (str-kvzh7). The planner uses these counts to emit one
+// `{"__complex_type":"error","sentinel":N}` Literal candidate per index. The
+// mining runs through the same wrapper.MineErrorSentinels traversal the wrapper
+// uses to bake its sentinel table, so the sentinel indices stay aligned across
+// the analyze and build phases. Returns nil when no error param has sentinels.
+func errorSentinelCountsByParam(fn *ast.FuncDecl, info *types.Info, pkgPath string, params []ParamInfo) map[string]int {
+	if fn == nil || fn.Body == nil {
+		return nil
+	}
+	errorParamNames := make(map[string]bool)
+	for _, p := range params {
+		if p.Name != "" && isErrorTypedParam(p) {
+			errorParamNames[p.Name] = true
+		}
+	}
+	if len(errorParamNames) == 0 {
+		return nil
+	}
+	sentinelsByParam := wrapper.MineErrorSentinels(fn.Body, info, pkgPath, errorParamNames)
+	if len(sentinelsByParam) == 0 {
+		return nil
+	}
+	counts := make(map[string]int, len(sentinelsByParam))
+	for name, sentinels := range sentinelsByParam {
+		if len(sentinels) > 0 {
+			counts[name] = len(sentinels)
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	return counts
+}
+
+// isErrorTypedParam reports whether p is a bare builtin `error` parameter,
+// matching the classification the wrapper (GoType == "error") and the planner
+// fallback (ComplexKind "error") use.
+func isErrorTypedParam(p ParamInfo) bool {
+	if p.TypeName != nil && strings.TrimSpace(*p.TypeName) == "error" {
+		return true
+	}
+	return p.Type.Kind == "complex" && p.Type.ComplexKind == "error"
 }
 
 func bareSymbolFromTargetID(targetID string) string {

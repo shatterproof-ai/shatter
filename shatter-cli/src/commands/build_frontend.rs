@@ -337,12 +337,16 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/shatter-dev/shatter/shatter-go/frontendsetup"
 	"github.com/shatter-dev/shatter/shatter-go/protocol"
 	"shatter-custom-frontend/usergens"
 )
 
 func main() {{
 	handler := protocol.NewHandler(os.Stdin, os.Stdout, os.Stderr)
+	// str-79t9: register the hint-config-aware planner so configured .shatter
+	// defaults/generators apply on the custom frontend, matching the embedded one.
+	frontendsetup.RegisterDefaultPlanner(handler)
 {registrations}
 	if err := handler.Run(); err != nil {{
 		fmt.Fprintf(os.Stderr, "[shatter-go-custom] Fatal: %v\n", err)

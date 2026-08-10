@@ -53,6 +53,19 @@ export function isHookName(name: string): boolean {
 }
 
 /**
+ * Returns true if `fileName` uses a JSX-capable extension (`.tsx` / `.jsx`).
+ *
+ * With the React 17+ automatic JSX runtime a component needs no `react`
+ * import, so a JSX-bearing body in a `.tsx`/`.jsx` file is treated as a
+ * component even absent any React import (str-cd4ur). The decision is
+ * extension + JSX-in-body only; tsconfig `jsx` settings are intentionally
+ * not consulted.
+ */
+export function isJsxFileName(fileName: string): boolean {
+  return fileName.endsWith(".tsx") || fileName.endsWith(".jsx");
+}
+
+/**
  * Returns true if `name` looks like a React function component:
  * starts with an uppercase ASCII letter. Component names are PascalCase
  * by React convention; lowercase names are reserved for host elements
@@ -93,6 +106,14 @@ interface ReactImportContext {
   allReactImports: Set<string>;
   /** Whether the file imports from any React module at all. */
   hasReactImport: boolean;
+  /**
+   * `useXxx`-named identifiers imported from ANY module (react or third-party
+   * hook packages like `@mantine/hooks`, store hooks, etc.). A call to one of
+   * these is treated as a hook-usage signal even without a React import
+   * (str-cd4ur). Builtin-hook detection is unchanged — this only widens the
+   * custom-hook signal.
+   */
+  hookImports: Set<string>;
 }
 
 /**
@@ -101,6 +122,7 @@ interface ReactImportContext {
 function collectReactImports(sourceFile: ts.SourceFile): ReactImportContext {
   const importedBuiltinHooks = new Set<string>();
   const allReactImports = new Set<string>();
+  const hookImports = new Set<string>();
   let hasReactImport = false;
 
   for (const stmt of sourceFile.statements) {
@@ -109,33 +131,42 @@ function collectReactImports(sourceFile: ts.SourceFile): ReactImportContext {
     if (!ts.isStringLiteral(moduleSpec)) continue;
 
     const moduleName = moduleSpec.text;
-    if (!REACT_HOOK_MODULES.has(moduleName)) continue;
+    const isReactModule = REACT_HOOK_MODULES.has(moduleName);
+    if (isReactModule) {
+      hasReactImport = true;
+    }
 
-    hasReactImport = true;
-
+    // Collect `useXxx`-named bindings from ANY module as hook-usage signals.
     const namedBindings = stmt.importClause?.namedBindings;
-    if (namedBindings) {
-      if (ts.isNamedImports(namedBindings)) {
-        for (const element of namedBindings.elements) {
-          const name = element.name.text;
+    if (namedBindings && ts.isNamedImports(namedBindings)) {
+      for (const element of namedBindings.elements) {
+        const name = element.name.text;
+        if (isHookName(name)) {
+          hookImports.add(name);
+        }
+        if (isReactModule) {
           allReactImports.add(name);
           if (BUILTIN_REACT_HOOKS.has(name)) {
             importedBuiltinHooks.add(name);
           }
         }
-      } else if (ts.isNamespaceImport(namedBindings)) {
-        allReactImports.add(namedBindings.name.text);
       }
     }
 
-    // Default import: import React from "react"
-    const defaultImport = stmt.importClause?.name;
-    if (defaultImport) {
-      allReactImports.add(defaultImport.text);
+    // React-module-only bookkeeping for namespace / default imports.
+    if (isReactModule) {
+      if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+        allReactImports.add(namedBindings.name.text);
+      }
+      // Default import: import React from "react"
+      const defaultImport = stmt.importClause?.name;
+      if (defaultImport) {
+        allReactImports.add(defaultImport.text);
+      }
     }
   }
 
-  return { importedBuiltinHooks, allReactImports, hasReactImport };
+  return { importedBuiltinHooks, allReactImports, hasReactImport, hookImports };
 }
 
 /** Result of scanning a function body for hook call sites. */
@@ -192,8 +223,66 @@ function scanFunctionForHookCalls(
 }
 
 /**
+ * Higher-order component wrappers whose call expressions wrap a component
+ * function (`memo(Fn)`, `forwardRef(Fn)`, and the `React.`-qualified forms).
+ * findFunctionBody unwraps these to the inner function (str-cd4ur).
+ */
+const COMPONENT_HOC_WRAPPERS = new Set(["memo", "forwardRef"]);
+
+/**
+ * Returns the callee name of a call expression if it is a bare identifier
+ * (`memo(...)`) or a property access (`React.memo(...)`), else undefined.
+ */
+function calleeName(call: ts.CallExpression): string | undefined {
+  const callee = call.expression;
+  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
+    return callee.name.text;
+  }
+  return undefined;
+}
+
+/**
+ * Unwrap an expression to the underlying arrow / function expression,
+ * peeling any HOC wrappers (`memo`, `forwardRef`, possibly nested) off the
+ * outside. Returns undefined if no function is reachable.
+ */
+function unwrapToFunction(
+  expr: ts.Expression,
+): ts.ArrowFunction | ts.FunctionExpression | undefined {
+  if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
+    return expr;
+  }
+  if (ts.isCallExpression(expr)) {
+    const name = calleeName(expr);
+    if (name && COMPONENT_HOC_WRAPPERS.has(name) && expr.arguments.length > 0) {
+      return unwrapToFunction(expr.arguments[0]!);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The body node to analyze for a function-like node. For arrow functions this
+ * is the concise body (block or expression); for declarations / function
+ * expressions it is the block (or undefined for an overload signature).
+ */
+function functionBodyNode(
+  fn: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration,
+): ts.Node | undefined {
+  return fn.body;
+}
+
+/**
  * Find the function body AST node for a given FunctionAnalysis by matching
  * on start/end line range.
+ *
+ * Handles plain declarations, arrow/function expressions, const-assigned
+ * arrow/function components, and HOC-wrapped components (`const C =
+ * memo(fn)` / `forwardRef(fn)`) by unwrapping the call expression to the
+ * inner function (str-cd4ur). Line matching accepts either the declaration's
+ * initializer range or the inner function's own range, since analyzers may
+ * report either.
  */
 function findFunctionBody(
   sourceFile: ts.SourceFile,
@@ -201,34 +290,30 @@ function findFunctionBody(
 ): ts.Node | undefined {
   let result: ts.Node | undefined;
 
-  function visit(node: ts.Node): void {
-    const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-    const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+  const lineRange = (node: ts.Node): [number, number] => [
+    sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+    sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1,
+  ];
+  const matches = (node: ts.Node): boolean => {
+    const [s, e] = lineRange(node);
+    return s === analysis.start_line && e === analysis.end_line;
+  };
 
-    if (startLine === analysis.start_line && endLine === analysis.end_line) {
+  function visit(node: ts.Node): void {
+    if (matches(node)) {
       if (ts.isFunctionDeclaration(node) && node.body) {
         result = node.body;
-      } else if (ts.isArrowFunction(node)) {
-        result = ts.isBlock(node.body) ? node.body : node.body;
-      } else if (ts.isFunctionExpression(node) && node.body) {
-        result = node.body;
+      } else if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+        result = functionBodyNode(node);
       }
     }
 
     if (!result) {
-      // Check variable declarations wrapping arrow/function expressions
+      // Variable declarations wrapping arrow/function expressions or HOC calls.
       if (ts.isVariableDeclaration(node) && node.initializer) {
-        const init = node.initializer;
-        if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
-          const initStart = sourceFile.getLineAndCharacterOfPosition(init.getStart(sourceFile)).line + 1;
-          const initEnd = sourceFile.getLineAndCharacterOfPosition(init.getEnd()).line + 1;
-          if (initStart === analysis.start_line && initEnd === analysis.end_line) {
-            if (ts.isArrowFunction(init)) {
-              result = ts.isBlock(init.body) ? init.body : init.body;
-            } else {
-              result = init.body;
-            }
-          }
+        const inner = unwrapToFunction(node.initializer);
+        if (inner && (matches(node.initializer) || matches(inner))) {
+          result = functionBodyNode(inner);
         }
       }
     }
@@ -253,9 +338,13 @@ export function recognizeReactHooks(
   functions: readonly FunctionAnalysis[],
 ): (AdapterHint | undefined)[] {
   const importCtx = collectReactImports(sourceFile);
+  const isJsxFile = isJsxFileName(sourceFile.fileName);
 
-  // No React imports at all → no hooks possible
-  if (!importCtx.hasReactImport) {
+  // Recognition is possible when the file imports from React, imports any
+  // useXxx-named hook (third-party or store hook), or is a JSX-capable file
+  // (.tsx/.jsx). Absent all three, no function can be a recognized hook or
+  // component and we early-return to preserve prior behavior for plain .ts.
+  if (!importCtx.hasReactImport && importCtx.hookImports.size === 0 && !isJsxFile) {
     return functions.map(() => undefined);
   }
 
@@ -271,23 +360,36 @@ export function recognizeReactHooks(
       reasons.push(`Calls ${hookName} imported from 'react'`);
     }
 
-    // Medium signal: calls custom hooks
-    for (const hookName of customHookCalls) {
+    // Medium signal: calls custom hooks. Without a React import in the file,
+    // only useXxx calls that resolve to an imported hook (from any module)
+    // count — a locally-defined useXxx helper is not a hook-usage signal.
+    // Within a React-importing file, any useXxx call counts (legacy behavior).
+    const qualifyingCustomCalls = importCtx.hasReactImport
+      ? customHookCalls
+      : customHookCalls.filter((name) => importCtx.hookImports.has(name));
+    for (const hookName of qualifyingCustomCalls) {
       reasons.push(`Calls custom hook ${hookName}`);
     }
 
     const hasBuiltinCalls = builtinHookCalls.length > 0;
-    const hasCustomCalls = customHookCalls.length > 0;
+    const hasCustomCalls = qualifyingCustomCalls.length > 0;
     const hasHookName = isHookName(fn.name);
 
     // Strong signal: a PascalCase function whose body contains JSX is a
-    // React function component. These cannot run raw — their JSX children
-    // call hooks that require a React dispatcher.
+    // React function component. These cannot run raw — they (and their JSX
+    // children) require a React dispatcher, so they must execute under the
+    // react-hook adapter. This holds even when the component also calls a
+    // custom/store hook, so it is deliberately independent of the hook-call
+    // signals: a JSX component is a high-confidence, auto-appliable target
+    // regardless (str-cd4ur — otherwise a JSX component that also calls a
+    // store hook would be demoted to medium/suggested and never applied,
+    // leaving it to crash on the raw path). A React import OR a JSX-capable
+    // file extension (automatic JSX runtime) is required so we don't tag
+    // JSX-shaped helpers in plain .ts files.
     const isJsxComponent =
-      !hasBuiltinCalls &&
-      !hasCustomCalls &&
       isComponentName(fn.name) &&
-      bodyContainsJsx(body);
+      bodyContainsJsx(body) &&
+      (importCtx.hasReactImport || isJsxFile);
 
     if (isJsxComponent) {
       reasons.push("Returns JSX (PascalCase function component)");

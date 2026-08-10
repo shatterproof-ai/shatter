@@ -73,6 +73,8 @@ type PerTargetHints struct {
 	// ConfiguredRuntimeValues supplies exact type-spelling runtime values from
 	// the project-level go_runtime_values config section.
 	ConfiguredRuntimeValues map[string]config.GoRuntimeValueConfig
+	// Receiver supplies a configured method receiver recipe.
+	Receiver *config.ReceiverConfig
 }
 
 // MockSpec is the planner's representation of a single hint_config_v1 mock
@@ -83,13 +85,16 @@ type PerTargetHints struct {
 // appear on the protocol wire because hint_config_v1 is a Go-only
 // capability.
 //
-// IMPORTANT: emitting a MockSpec is the planner-side half of mock
-// substitution. The execute-time half — a build-time symbol swap or
-// launcher-level shim that actually replaces the call site at runtime — is
-// NOT IMPLEMENTED in str-hy9b.G3 (str-ruw0). Anyone relying on user-
-// supplied mocks taking effect at runtime today is unsupported. The
-// substitution mechanism is tracked under follow-up issue str-8v66
-// ("hint_config_v1 mocks substitution mechanism", blocked by str-ruw0).
+// MockSpec is the planner-side view of a configured mock, used for planning
+// and reporting. The execute-time substitution half is now implemented
+// separately (str-c8djq): the protocol handler loads the same
+// `.shatter/config.yaml` `mocks` entries at execute/prepare time and the
+// overlay build rewrites each call site via instrument.RewriteMockCallSites.
+// That path consumes config expressions directly (through
+// protocol.configMockConfigs), not MockSpec, so MockSpec remains a
+// planning/reporting artifact. Only the wire ReturnValues-based auto-mock
+// path (str-8v66, blocked by str-ruw0) is still unsubstituted at the call
+// site.
 type MockSpec struct {
 	// TargetID is the planner-scoped target the mock applies to (e.g.
 	// "example.com/pkg:Func").
@@ -97,9 +102,9 @@ type MockSpec struct {
 	// QualifiedFunction is the call site intended for replacement (e.g.
 	// "fmt.Println"). Comes verbatim from the user's hint config.
 	QualifiedFunction string
-	// Expression is the Go source expression intended to replace the call
-	// site once the executor-side substitution mechanism (str-8v66) is
-	// wired.
+	// Expression is the Go source expression that replaces the call site at
+	// execute time (instrument/mocksubst.go, str-c8djq). Only the wire
+	// MockConfig.ReturnValues typed-decode path remains deferred (str-8v66).
 	Expression string
 }
 
@@ -108,15 +113,15 @@ type MockSpec struct {
 // hints carry no mocks. Ordering is alphabetical by QualifiedFunction so
 // callers and tests see deterministic output.
 //
-// This is the planner-output half of str-hy9b.G3 AC2 — the artifact a
-// future code generator will consume to substitute mocks at execute time.
-// The substitution itself (build-time symbol swap or launcher-level shim)
-// is NOT IMPLEMENTED yet; it is tracked under str-8v66 ("hint_config_v1
-// mocks substitution mechanism", blocked by str-ruw0). Until str-8v66
-// ships, calling this function and observing its output is safe and
-// deterministic, but the resulting MockSpec entries do not affect runtime
-// behaviour. Callers MUST NOT assume that a mock declared in the user's
-// `.shatter/config.yaml` takes effect when execute is invoked today.
+// This is the planner-output half of str-hy9b.G3 AC2 — a planning/reporting
+// artifact. Execute-time substitution of config `mocks` IS implemented
+// (str-c8djq), but through a separate path: the protocol handler reads the
+// same `.shatter/config.yaml` `mocks` at execute/prepare time and the overlay
+// build rewrites each call site (see instrument/mocksubst.go and
+// protocol.configMockConfigs). That path consumes config expressions directly
+// rather than these MockSpec entries. A `.shatter/config.yaml` mock therefore
+// DOES take effect at execute time today; only the wire ReturnValues-based
+// auto-mock path (str-8v66, blocked by str-ruw0) remains unsubstituted.
 func ResolveMockSpecs(targetID string, hints PerTargetHints) []MockSpec {
 	if len(hints.Mocks) == 0 {
 		return nil
@@ -192,6 +197,9 @@ func planOne(
 	if len(ctx.StringLiteralsByParam) > 0 {
 		paramOpts.StringLiteralsByParam = ctx.StringLiteralsByParam
 	}
+	if len(ctx.ErrorSentinelCountsByParam) > 0 {
+		paramOpts.ErrorSentinelCountsByParam = ctx.ErrorSentinelCountsByParam
+	}
 	return planWithGenericArgs(req, ctx, nil, false, paramOpts, opts)
 }
 
@@ -220,9 +228,11 @@ func planMethod(
 	if len(constructorInterfaceImpls) == 0 {
 		constructorInterfaceImpls = ctx.InterfaceImplsByParam
 	}
+	hints := hintsForRequirement(req.TargetID, opts)
 	receiverPlans, receiverUnsat := PlanReceivers(*target, PlanOptions{
 		SamePackageConstructors:         ctx.Constructors,
 		ReceiverIsCompositeLiteralSafe:  false,
+		Hint:                            receiverHintFromConfig(hints.Receiver),
 		ReceiverRequiresConstruction:    ctx.ReceiverRequiresConstruction,
 		ReceiverSupportsInitializedMaps: ctx.ReceiverSupportsInitializedMaps,
 		MaxPlans:                        opts.MaxReceiverPlans,
@@ -233,7 +243,7 @@ func planMethod(
 		return nil, []protocol.UnsatisfiedRequirement{*receiverUnsat}
 	}
 
-	paramOpts := paramOptionsForRequirement(req.TargetID, opts)
+	paramOpts := paramOptionsFromHints(hints, opts)
 	// str-4v9h: propagate interface impl candidates for method targets too.
 	if len(ctx.InterfaceImplsByParam) > 0 {
 		paramOpts.InterfaceImplsByParam = ctx.InterfaceImplsByParam
@@ -244,24 +254,45 @@ func planMethod(
 	if len(ctx.StringLiteralsByParam) > 0 {
 		paramOpts.StringLiteralsByParam = ctx.StringLiteralsByParam
 	}
+	if len(ctx.ErrorSentinelCountsByParam) > 0 {
+		paramOpts.ErrorSentinelCountsByParam = ctx.ErrorSentinelCountsByParam
+	}
 	return planWithGenericArgs(req, ctx, receiverPlans, true, paramOpts, opts)
 }
 
 func paramOptionsForRequirement(targetID string, opts PlanRequirementsOptions) ParamPlanOptions {
+	return paramOptionsFromHints(hintsForRequirement(targetID, opts), opts)
+}
+
+func hintsForRequirement(targetID string, opts PlanRequirementsOptions) PerTargetHints {
+	if opts.PerTargetHints == nil {
+		return PerTargetHints{}
+	}
+	return opts.PerTargetHints(targetID)
+}
+
+func paramOptionsFromHints(hints PerTargetHints, opts PlanRequirementsOptions) ParamPlanOptions {
 	paramOpts := ParamPlanOptions{MaxPlansPerParam: opts.MaxPlansPerParam}
-	if opts.PerTargetHints != nil {
-		hints := opts.PerTargetHints(targetID)
-		if len(hints.Defaults) > 0 {
-			paramOpts.HintsByName = hints.Defaults
-		}
-		if len(hints.Generators) > 0 {
-			paramOpts.GeneratorsByName = hints.Generators
-		}
-		if len(hints.ConfiguredRuntimeValues) > 0 {
-			paramOpts.ConfiguredRuntimeValues = hints.ConfiguredRuntimeValues
-		}
+	if len(hints.Defaults) > 0 {
+		paramOpts.HintsByName = hints.Defaults
+	}
+	if len(hints.Generators) > 0 {
+		paramOpts.GeneratorsByName = hints.Generators
+	}
+	if len(hints.ConfiguredRuntimeValues) > 0 {
+		paramOpts.ConfiguredRuntimeValues = hints.ConfiguredRuntimeValues
 	}
 	return paramOpts
+}
+
+func receiverHintFromConfig(receiver *config.ReceiverConfig) *ReceiverHint {
+	if receiver == nil || strings.TrimSpace(receiver.Expression) == "" {
+		return nil
+	}
+	return &ReceiverHint{
+		ReceiverKind: receiver.ReceiverKind(),
+		Label:        receiver.Label,
+	}
 }
 
 func planWithGenericArgs(

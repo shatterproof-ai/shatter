@@ -96,7 +96,7 @@ fn write_atomic_file(
 
     match fs::rename(&tmp_path, destination) {
         Ok(()) => Ok(()),
-        Err(e) if destination.exists() => {
+        Err(_e) if destination.exists() => {
             let _ = fs::remove_file(&tmp_path);
             Ok(())
         }

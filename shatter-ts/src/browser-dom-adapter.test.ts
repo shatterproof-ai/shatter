@@ -3,6 +3,7 @@
  * factory registration, and integration with existing browser-globals fixtures.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import fc from "fast-check";
 
@@ -12,7 +13,8 @@ import {
   createBrowserDomFactory,
 } from "./browser-dom-adapter.js";
 import { BROWSER_GLOBALS_ADAPTER_ID } from "./browser-globals-recognizer.js";
-import { executeFunction } from "./executor.js";
+import { executeFunction, executeInstrumented } from "./executor.js";
+import { instrumentFunction } from "./instrumentor.js";
 import { resolveRuntimeHooks } from "./runtime-hooks.js";
 
 const FIXTURES_DIR = path.resolve(__dirname, "__fixtures__");
@@ -304,6 +306,97 @@ describe("browser-globals fixture execution", () => {
     );
     expect(result.thrown_error).toBeNull();
     expect(result.return_value).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Instrumented coverage through the browser-dom sandbox provider (str-26fhi)
+//
+// The browser-dom adapter is a SandboxProvider, not an InvocationHook: its
+// targets keep invocation_model=direct and execute through executeInstrumented
+// with the provider augmenting the sandbox. They therefore ALREADY report real
+// lines_executed / branch_path / path_constraints. These tests lock that in so
+// the epic's "browser-dom adapter targets contribute zero coverage" symptom
+// cannot regress for TS.
+// ---------------------------------------------------------------------------
+
+describe("browser-dom instrumented coverage (str-26fhi)", () => {
+  const SOURCE = fs.readFileSync(BROWSER_FIXTURE, "utf-8");
+
+  function resolveProviders(options?: Record<string, unknown>) {
+    return resolveRuntimeHooks(
+      {
+        adapters: [
+          {
+            id: BROWSER_GLOBALS_ADAPTER_ID,
+            apply: "required",
+            ...(options ? { options } : {}),
+          },
+        ],
+      },
+      { phase: "execute", entry_file: BROWSER_FIXTURE },
+    ).sandbox_providers;
+  }
+
+  function lineOf(needle: string): number {
+    const idx = SOURCE.split("\n").findIndex((l) => l.includes(needle));
+    if (idx < 0) throw new Error(`fixture line not found: ${needle}`);
+    return idx + 1;
+  }
+
+  async function runInstrumented(
+    fn: string,
+    inputs: unknown[],
+    options?: Record<string, unknown>,
+  ) {
+    const instr = instrumentFunction(SOURCE, fn, BROWSER_FIXTURE);
+    if ("error" in instr) {
+      throw new Error(`instrumentation failed: ${instr.error}`);
+    }
+    return executeInstrumented(
+      instr.instrumentedSource,
+      fn,
+      inputs,
+      [],
+      BROWSER_FIXTURE,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      resolveProviders(options),
+    );
+  }
+
+  it("getViewportWidth reports coverage for the wide (desktop) branch", async () => {
+    const desktopReturn = lineOf('return "desktop"');
+    const mobileReturn = lineOf('return "mobile"');
+
+    const result = await runInstrumented("getViewportWidth", []);
+
+    expect(result.thrown_error).toBeNull();
+    expect(result.return_value).toBe("desktop");
+    expect(result.lines_executed.length).toBeGreaterThan(0);
+    expect(result.branch_path.length).toBeGreaterThan(0);
+    expect(result.path_constraints).toHaveLength(result.branch_path.length);
+    expect(result.lines_executed).toContain(desktopReturn);
+    expect(result.lines_executed).not.toContain(mobileReturn);
+  });
+
+  it("getViewportWidth covers the narrow (mobile) branch with seeded width", async () => {
+    const desktopReturn = lineOf('return "desktop"');
+    const mobileReturn = lineOf('return "mobile"');
+
+    const result = await runInstrumented("getViewportWidth", [], {
+      window: { innerWidth: 500 },
+    });
+
+    expect(result.return_value).toBe("mobile");
+    expect(result.lines_executed).toContain(mobileReturn);
+    expect(result.lines_executed).not.toContain(desktopReturn);
+    const branch = result.branch_path.find(
+      (b) => b.line === lineOf("width > 768"),
+    );
+    expect(branch?.taken).toBe(false);
   });
 });
 

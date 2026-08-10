@@ -1673,6 +1673,9 @@ pub async fn scan(
             config.timeout_per_fn.as_secs(),
         );
         let mut candidate_inputs = config_function_inputs.candidate_inputs;
+        candidate_inputs.extend(crate::input_gen::expression_string_candidate_inputs(
+            &analysis.params,
+        ));
         // Extend with cached seeds from prior exploration runs.
         if let Some(ref cache) = config.cache
             && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -1688,16 +1691,22 @@ pub async fn scan(
             }
         }
 
-        // str-jeen.50: consult the planner before building ExploreConfig so
-        // method targets carry a `default_execute_plan` into the executor —
-        // see `fetch_default_execute_plan_for_method` for the no-op cases.
-        let default_execute_plan = fetch_default_execute_plan_for_method(
-            frontend,
-            analysis,
-            &file,
-            config.project_root.as_deref(),
-        )
-        .await;
+        // str-jeen.50 / str-r2q7: consult the planner before building
+        // ExploreConfig so method targets carry a `default_execute_plan` into
+        // the executor, AND so materialized planner seeds (configured `.shatter`
+        // defaults/generators, string-literal and boundary seeds) drive scan
+        // exploration the same way the explore CLI feeds them.
+        let (planner_seeds, default_execute_plan) =
+            fetch_planner_seeds_for_scan(frontend, analysis, &file, config.project_root.as_deref())
+                .await;
+        if !planner_seeds.is_empty() {
+            log::debug!(
+                "[scan] {} planner seed(s) for {}",
+                planner_seeds.len(),
+                func_name,
+            );
+            candidate_inputs.extend(planner_seeds);
+        }
 
         let explore_config = ExploreConfig {
             file,
@@ -1737,7 +1746,8 @@ pub async fn scan(
 
         let explore_started = Instant::now();
         let exploration =
-            explore_with_scan_mode(frontend, analysis, config.concolic, &explore_config).await?;
+            explore_with_scan_mode(frontend, analysis, config.concolic, &explore_config, None)
+                .await?;
 
         // Harvest interesting inputs into the cross-function pool.
         interesting_pool::harvest_from_exploration(
@@ -1780,6 +1790,7 @@ pub async fn scan(
                         seed_inputs,
                         targets,
                         &analysis.params,
+                        &explore_config.value_sources,
                         &genetic_config,
                     )
                     .await
@@ -2088,6 +2099,76 @@ impl ScanFailurePolicy {
 /// Minimum number of idle workers to keep warm in the pool.
 /// Prevents reaping the last worker, ensuring fast checkout for the next task.
 const MIN_IDLE_WORKERS: usize = 1;
+
+/// str-tbk9e: serializes the first per-function harness build of a scan.
+///
+/// On a cold host language build cache, launching every harness build
+/// concurrently makes each build redundantly compile the shared dependency
+/// graph (the Go build cache does not deduplicate in-flight work across
+/// concurrent `go build` processes), the CPU is oversubscribed N-fold, every
+/// build blows `build_timeout`, and the scan completes zero functions.
+/// Running exactly one task to completion first warms the build cache, so
+/// the remaining builds are cheap incremental compiles.
+///
+/// The first caller of [`BuildWarmupGate::enter`] becomes the leader and
+/// receives a [`WarmupLeaderGuard`]; every other caller waits until that
+/// guard drops. The gate opens even when the leader's task fails — a failed
+/// attempt still warms the cache as a side effect of its build — and stays
+/// open for the remainder of the scan. On a warm cache the only cost is one
+/// function's exploration running before the fan-out.
+///
+/// The mechanism is language-agnostic: TS (tsc incremental state) and Rust
+/// (cargo target dir) frontends have the same cold-cache stampede shape.
+pub(crate) struct BuildWarmupGate {
+    leader_chosen: std::sync::atomic::AtomicBool,
+    done: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl BuildWarmupGate {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            leader_chosen: std::sync::atomic::AtomicBool::new(false),
+            done: std::sync::atomic::AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Returns `Some(guard)` for the single leader; followers resolve to
+    /// `None` only after the leader's guard drops. Hold the guard across the
+    /// leader's build+explore, then drop it to release the fleet.
+    pub(crate) async fn enter(self: &Arc<Self>) -> Option<WarmupLeaderGuard> {
+        use std::sync::atomic::Ordering;
+        if self.done.load(Ordering::Acquire) {
+            return None;
+        }
+        if !self.leader_chosen.swap(true, Ordering::AcqRel) {
+            return Some(WarmupLeaderGuard(Arc::clone(self)));
+        }
+        loop {
+            let notified = self.notify.notified();
+            if self.done.load(Ordering::Acquire) {
+                return None;
+            }
+            notified.await;
+        }
+    }
+
+    fn open(&self) {
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+/// Guard held by the warm-up leader; dropping it opens the gate for all
+/// waiting and future tasks.
+pub(crate) struct WarmupLeaderGuard(Arc<BuildWarmupGate>);
+
+impl Drop for WarmupLeaderGuard {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
 
 /// A channel-based pool of frontend worker subprocesses with adaptive growth.
 ///
@@ -2700,6 +2781,9 @@ async fn run_layer_batched(
             PhasedOutcome::Failed(e) => {
                 let unsupported_reason = match &e {
                     ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
+                    ScanError::Concolic(crate::orchestrator::ExploreError::Unsupported(msg)) => {
+                        Some(msg.clone())
+                    }
                     _ => None,
                 };
                 let reason = match &unsupported_reason {
@@ -2888,11 +2972,19 @@ fn compute_uncovered_branch_strings(
         .collect()
 }
 
-async fn explore_with_scan_mode(
+/// Explore one function in either random or concolic mode, returning a uniform
+/// [`crate::explorer::ObservationOutput`] regardless of explorer. This is the
+/// single source of truth for the instrument → prepare → `orchestrator::explore`
+/// concolic-dispatch sequence; `scan`, and the CLI `run` command, all funnel
+/// through here so the concolic path is wired identically everywhere (CLAUDE.md
+/// parallel-path rule). `solver_timeout_ms` bounds each Z3 query on the concolic
+/// path (`None` = no limit); it is ignored in random mode.
+pub async fn explore_with_scan_mode(
     frontend: &mut Frontend,
     analysis: &FunctionAnalysis,
     concolic: bool,
     explore_config: &ExploreConfig,
+    solver_timeout_ms: Option<u64>,
 ) -> Result<crate::explorer::ObservationOutput, ScanError> {
     if !concolic {
         return Ok(
@@ -2955,7 +3047,7 @@ async fn explore_with_scan_mode(
         .iter()
         .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
     let max_executions = concolic_scan_max_executions(max_iterations, has_custom_generators);
-    let generated_inputs = prefetch_concolic_generator_inputs(
+    let (generated_inputs, prefetch_failures) = prefetch_concolic_generator_inputs(
         frontend,
         analysis,
         explore_config,
@@ -2975,22 +3067,23 @@ async fn explore_with_scan_mode(
         plateau_threshold: 20,
         mocks: explore_config.mocks.clone(),
         mock_params: explore_config.mock_params.clone(),
-        solver_timeout_ms: None,
+        solver_timeout_ms,
         seed: explore_config.seed,
         solver_offload: true,
         timeout_explore: explore_config.timeout_explore,
         branch_profile: None,
         meta_config: explore_config.meta_config.clone(),
         execution_profile: explore_config.execution_profile.clone(),
-        loop_convergence_window: 3,
         refine_budget: None,
         shrink_budget: explore_config.shrink_budget,
         mcdc: false,
         fuzz: crate::config::FuzzConfig::default(),
         planner: explore_config.planner.clone(),
         default_execute_plan: explore_config.default_execute_plan.clone(),
+        // Pin custom-generator/extractor slots through the concolic loop (str-6cdp).
+        value_sources: explore_config.value_sources.clone(),
     };
-    let (mut result, _state) = crate::orchestrator::explore(
+    let explored = crate::orchestrator::explore(
         frontend,
         &analysis.name,
         seed_inputs,
@@ -3003,7 +3096,19 @@ async fn explore_with_scan_mode(
         None,
         None,
     )
-    .await?;
+    .await;
+    let (mut result, _state) = match explored {
+        Ok(explored) => explored,
+        // str-mt78j: a generator whose prefetch failed leaves its extractor slot
+        // filled by a built-in value, which the frontend then rejects as an
+        // unsupported extractor type. Name the prefetch failure instead.
+        Err(crate::orchestrator::ExploreError::Unsupported(reason)) => {
+            let reason = crate::input_gen::attribute_prefetch_failure(&reason, &prefetch_failures)
+                .unwrap_or(reason);
+            return Err(crate::orchestrator::ExploreError::Unsupported(reason).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     result.total_lines = analysis.end_line.saturating_sub(analysis.start_line) + 1;
     Ok(result.into())
 }
@@ -3033,14 +3138,17 @@ async fn prefetch_concolic_generator_inputs(
     explore_config: &ExploreConfig,
     capabilities: &crate::orchestrator::FrontendCapabilities,
     max_iterations: usize,
-) -> Vec<Vec<serde_json::Value>> {
+) -> (
+    Vec<Vec<serde_json::Value>>,
+    Vec<crate::input_gen::PrefetchFailure>,
+) {
     let has_generators = explore_config
         .value_sources
         .iter()
         .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
 
     if !has_generators || !capabilities.commands.contains("generate") {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let mut prefetched = match crate::input_gen::prefetch_custom_values(
@@ -3053,22 +3161,30 @@ async fn prefetch_concolic_generator_inputs(
     {
         Ok(prefetched) => prefetched,
         Err(err) => {
-            log::debug!(
+            log::warn!(
                 "scan concolic generator prefetch failed for {}: {err}",
                 analysis.name
             );
-            PrefetchedValues::new()
+            // str-mt78j: a transport-level failure starves every configured
+            // generator; record one failure each so the function's failure
+            // reason can name the cause.
+            PrefetchedValues::with_failures(crate::input_gen::prefetch_failures_for_all_generators(
+                &explore_config.value_sources,
+                &err.to_string(),
+            ))
         }
     };
 
-    concolic_generator_inputs_from_prefetch(
+    let failures = prefetched.failures().to_vec();
+    let inputs = concolic_generator_inputs_from_prefetch(
         analysis,
         &explore_config.value_sources,
         capabilities,
         explore_config.seed,
         max_iterations,
         &mut prefetched,
-    )
+    );
+    (inputs, failures)
 }
 
 fn concolic_generator_inputs_from_prefetch(
@@ -3117,6 +3233,7 @@ async fn run_layer_function_mode(
     fe_config: Arc<FrontendConfig>,
     tasks: Vec<ExploreTask>,
     max_concurrent: usize,
+    warmup_gate: Arc<BuildWarmupGate>,
     concolic: bool,
     timeout: Duration,
     build_timeout: Duration,
@@ -3147,6 +3264,7 @@ async fn run_layer_function_mode(
     } in tasks
     {
         let semaphore = Arc::clone(&semaphore);
+        let warmup_gate = Arc::clone(&warmup_gate);
         let fe_config = Arc::clone(&fe_config);
         let behavior_maps = Arc::clone(behavior_maps);
         let input_pool = Arc::clone(input_pool);
@@ -3159,6 +3277,10 @@ async fn run_layer_function_mode(
         let handle_func_name = func_name.clone();
 
         let handle = tokio::spawn(async move {
+            // str-tbk9e: first task of the scan runs alone to warm the
+            // language build cache; the guard drops when this task's
+            // build+explore finishes (task scope end), releasing the rest.
+            let _warmup = warmup_gate.enter().await;
             // Acquire a concurrency slot before spawning the frontend.
             let _permit = semaphore
                 .acquire()
@@ -3245,6 +3367,9 @@ async fn run_layer_function_mode(
                 PhasedOutcome::Failed(e) => {
                     let unsupported_reason = match &e {
                         ScanError::Explore(ExploreError::Unsupported(msg)) => Some(msg.clone()),
+                        ScanError::Concolic(crate::orchestrator::ExploreError::Unsupported(
+                            msg,
+                        )) => Some(msg.clone()),
                         _ => None,
                     };
                     let reason = match &unsupported_reason {
@@ -3723,6 +3848,10 @@ pub async fn parallel_scan_with_progress(
     let behavior_maps: Arc<Mutex<HashMap<String, BehaviorMap>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
+    // str-tbk9e: one gate for the whole scan — the first task anywhere runs
+    // alone to warm the language build cache before the fleet fans out.
+    let warmup_gate = BuildWarmupGate::new();
+
     // Load the interesting input pool for cross-function seed sharing.
     let input_pool: Arc<Mutex<InterestingPool>> = {
         let loaded = config
@@ -4187,6 +4316,9 @@ pub async fn parallel_scan_with_progress(
             };
 
             let mut candidate_inputs = config_function_inputs.candidate_inputs;
+            candidate_inputs.extend(crate::input_gen::expression_string_candidate_inputs(
+                &analysis.params,
+            ));
             // Extend with cached seeds from prior exploration runs.
             if let Some(ref cache) = config.cache
                 && let Ok(Some(cached_map)) = cache.load(func_name)
@@ -4319,6 +4451,7 @@ pub async fn parallel_scan_with_progress(
                     Arc::clone(&fe_config_persistent),
                     tasks,
                     effective_parallelism,
+                    Arc::clone(&warmup_gate),
                     config.concolic,
                     config.timeout_per_fn,
                     config.build_timeout,
@@ -4430,12 +4563,17 @@ pub async fn parallel_scan_with_progress(
                     let handle_func_name = func_name.clone();
                     let handle_progress_index = progress_index;
                     let file_limiter = file_limiters.get(&file_path).cloned();
+                    let warmup_gate = Arc::clone(&warmup_gate);
                     let lease = Arc::new(WorkerTaskLease::new(
                         Arc::clone(&pool),
                         Arc::clone(&tasks_remaining),
                     ));
                     let handle_lease = Arc::clone(&lease);
                     let handle = tokio::spawn(async move {
+                        // str-tbk9e: gate BEFORE the same-file permit — a
+                        // follower holding a file permit while parked at the
+                        // gate would deadlock a leader that needs that file.
+                        let warmup = warmup_gate.enter().await;
                         let _same_file_permit = match file_limiter {
                             Some(limiter) => limiter.acquire_owned().await.ok(),
                             None => None,
@@ -4532,6 +4670,10 @@ pub async fn parallel_scan_with_progress(
                                 }
                             }
                         };
+
+                        // str-tbk9e: leader's build+explore is done (success
+                        // or failure) — open the gate for the fleet.
+                        drop(warmup);
 
                         let timed_out = matches!(
                             result,
@@ -5095,6 +5237,89 @@ async fn fetch_default_execute_plan_for_method(
     }
 }
 
+/// Consult the frontend's invocation planner for ANY target (free function or
+/// method) and return both the materialized planner seeds and, for method
+/// targets, the receiver `InvocationPlan` to install as
+/// [`ExploreConfig::default_execute_plan`].
+///
+/// str-r2q7: scan previously only consulted the planner for method receiver
+/// plans (`fetch_default_execute_plan_for_method`) and discarded
+/// `PlannerSeedBundle::seeds`. As a result, materialized `Literal`/`Zero`
+/// `ValuePlan`s — including operator-configured `.shatter` `defaults`/`generators`
+/// for a parameter — never seeded the scan explorer, even though the `explore`
+/// CLI already feeds them (`shatter-cli/src/commands/explore.rs`). This mirrors
+/// the explore path so configured per-parameter inputs (e.g. a real fixture
+/// directory for a filesystem-loading function) actually drive scan exploration,
+/// while preserving the method-only `default_execute_plan`.
+async fn fetch_planner_seeds_for_scan(
+    frontend: &mut Frontend,
+    analysis: &FunctionAnalysis,
+    file: &str,
+    project_root: Option<&str>,
+) -> (Vec<Vec<serde_json::Value>>, Option<crate::protocol::InvocationPlan>) {
+    let none = (Vec::new(), None);
+    if !frontend
+        .capabilities()
+        .iter()
+        .any(|cap| cap == "get_invocation_plan")
+    {
+        return none;
+    }
+
+    // Prime the analysis cache so the frontend's get_invocation_plan target_id
+    // lookup resolves. Mirrors the explore CLI pattern.
+    let _ = frontend
+        .send(crate::protocol::Command::Analyze {
+            file: file.to_string(),
+            function: Some(analysis.name.clone()),
+            project_root: project_root.map(str::to_string),
+            execution_profile: None,
+        })
+        .await;
+
+    let target_id = format!(":{}", analysis.name);
+    match crate::planner_consumer::fetch_planner_seeds(frontend, &target_id, &analysis.params).await
+    {
+        Ok(bundle) => {
+            if !bundle.unsatisfied.is_empty() {
+                log::debug!(
+                    "[scan] planner unsatisfied for {}: {:?}",
+                    analysis.name,
+                    bundle.unsatisfied,
+                );
+            }
+            let is_method = is_method_target_name(&analysis.name);
+            // Select the plan whose seeds we materialize. For methods this
+            // prefers the receiver plan so seeds match the installed
+            // default_execute_plan; free functions take the first
+            // materializable plan. Shared with the explore path via
+            // `select_execute_plan` so the two planner consumers cannot drift
+            // (str-ozjv).
+            let selected =
+                crate::planner_consumer::select_execute_plan(&bundle.plans, &analysis.params);
+            let seeds = match &selected {
+                Some(sel) => crate::planner_consumer::materialize_seeds_compatible_with_plan(
+                    &bundle.plans,
+                    sel,
+                    &analysis.params,
+                ),
+                None => Vec::new(),
+            };
+            // Only method targets need a default_execute_plan (receiver dispatch);
+            // free functions execute through the plain wrapper path.
+            let plan = if is_method { selected } else { None };
+            (seeds, plan)
+        }
+        Err(e) => {
+            log::debug!(
+                "[scan] planner seed fetch failed for {}: {e}",
+                analysis.name,
+            );
+            none
+        }
+    }
+}
+
 async fn attach_default_execute_plan_for_method(
     frontend: &mut Frontend,
     analysis: &FunctionAnalysis,
@@ -5203,6 +5428,19 @@ fn build_timeout_retry_budget(build_timeout: Duration) -> Duration {
     build_timeout.saturating_mul(BUILD_TIMEOUT_RETRY_FACTOR)
 }
 
+/// Remaining slice of the build-phase budget after the planner preamble
+/// (str-slnr). `None` means the preamble already consumed the whole budget, so
+/// the caller should report a build timeout rather than start a Prepare with a
+/// zero-length deadline.
+fn remaining_build_budget(build_timeout: Duration, started: Instant) -> Option<Duration> {
+    let elapsed = started.elapsed();
+    if elapsed >= build_timeout {
+        None
+    } else {
+        Some(build_timeout - elapsed)
+    }
+}
+
 fn claim_build_timeout_retry(retry_claimed: &AtomicBool) -> bool {
     retry_claimed
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -5288,12 +5526,43 @@ async fn run_phased(
     explore_timeout: Duration,
 ) -> PhasedOutcome {
     let mut effective = explore_config.clone();
-    attach_default_execute_plan_for_method(frontend, analysis, &mut effective).await;
+
+    // str-slnr: the planner preamble is part of the build phase, so it must
+    // share the build budget with Prepare rather than run unbudgeted.
+    //
+    // `attach_default_execute_plan_for_method` issues frontend round-trips
+    // (Analyze + get_invocation_plan) and only does so for *method* targets.
+    // Left untimed its only bounds were the frontend's own request_timeout and
+    // the outer join watchdog, which is sized as
+    // `build_timeout + explore_timeout + grace`. A slow package load in the
+    // preamble therefore pushed the task past that watchdog and the failure
+    // surfaced as an opaque `task` timeout instead of the honest `build`
+    // attribution str-ubp1 added — and only ever for method targets, which is
+    // why a single file's methods time out as a cluster while its free
+    // functions report accurate build timeouts.
+    //
+    // Charging both steps to one shared deadline also restores the invariant
+    // the join watchdog already assumes: the pre-explore phase never exceeds
+    // `build_timeout`.
+    let build_phase_start = Instant::now();
+    if tokio::time::timeout(
+        build_timeout,
+        attach_default_execute_plan_for_method(frontend, analysis, &mut effective),
+    )
+    .await
+    .is_err()
+    {
+        return PhasedOutcome::BuildTimedOut(build_timeout);
+    }
+
     if effective.prepare_id_override.is_none()
         && explorer::frontend_supports(&effective.capabilities, "prepare")
     {
+        let Some(prepare_budget) = remaining_build_budget(build_timeout, build_phase_start) else {
+            return PhasedOutcome::BuildTimedOut(build_timeout);
+        };
         let prep = tokio::time::timeout(
-            build_timeout,
+            prepare_budget,
             frontend.send(crate::protocol::Command::Prepare {
                 file: effective.file.clone(),
                 function: analysis.name.clone(),
@@ -5385,10 +5654,34 @@ async fn explore_single_function(
     // No-op for free functions, frontends without `get_invocation_plan`,
     // and callers that already attached a plan upstream.
     let mut effective_config = explore_config.clone();
-    attach_default_execute_plan_for_method(frontend, analysis, &mut effective_config).await;
+    // str-r2q7: fetch planner seeds (configured defaults, string-literal
+    // boundary seeds) for ALL targets so the parallel scan path matches the
+    // explore CLI.  For method targets, `run_phased` upstream may have already
+    // set `default_execute_plan` via `attach_default_execute_plan_for_method`;
+    // the `is_none()` guard below preserves that plan and avoids a second
+    // `GetInvocationPlan` RPC.  Free functions always need their own planner
+    // call here.
+    let (planner_seeds, planner_plan) = fetch_planner_seeds_for_scan(
+        frontend,
+        analysis,
+        &effective_config.file,
+        effective_config.project_root.as_deref(),
+    )
+    .await;
+    if !planner_seeds.is_empty() {
+        log::debug!(
+            "[scan] {} planner seed(s) for {func_name}",
+            planner_seeds.len(),
+        );
+        effective_config.candidate_inputs.extend(planner_seeds);
+    }
+    if effective_config.default_execute_plan.is_none() {
+        effective_config.default_execute_plan = planner_plan;
+    }
     let explore_config = &effective_config;
     let explore_started = Instant::now();
-    let exploration = explore_with_scan_mode(frontend, analysis, concolic, explore_config).await?;
+    let exploration =
+        explore_with_scan_mode(frontend, analysis, concolic, explore_config, None).await?;
 
     // Genetic algorithm follow-up phase: target unsolved branches.
     let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
@@ -5422,6 +5715,7 @@ async fn explore_single_function(
                     seed_inputs,
                     targets,
                     &analysis.params,
+                    &explore_config.value_sources,
                     &genetic_config,
                 )
                 .await
@@ -5858,7 +6152,7 @@ fn format_skip_sections(
 /// Format a [`TypeInfo`] as a concise human-readable string.
 fn format_type(ty: &TypeInfo) -> String {
     match ty {
-        TypeInfo::Int => "int".to_string(),
+        TypeInfo::Int { .. } => "int".to_string(),
         TypeInfo::Float => "float".to_string(),
         TypeInfo::Str => "string".to_string(),
         TypeInfo::Bool => "bool".to_string(),
@@ -5875,7 +6169,7 @@ fn format_type(ty: &TypeInfo) -> String {
                 format!("{{{}}}", field_strs.join(", "))
             }
         }
-        TypeInfo::Union { variants } => variants
+        TypeInfo::Union { variants, .. } => variants
             .iter()
             .map(format_type)
             .collect::<Vec<_>>()
@@ -6173,6 +6467,86 @@ mod tests {
     /// Request timeout for integration tests using the noop frontend.
     const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// str-tbk9e regression: with N tasks queued behind the warm-up gate,
+    /// exactly one (the leader) proceeds while the gate is closed; the rest
+    /// fan out only after the leader's guard drops.
+    #[tokio::test]
+    async fn warmup_gate_serializes_first_task_then_fans_out() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let gate = BuildWarmupGate::new();
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak_while_closed = Arc::new(AtomicUsize::new(0));
+        let leader_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let gate = Arc::clone(&gate);
+            let running = Arc::clone(&running);
+            let peak_while_closed = Arc::clone(&peak_while_closed);
+            let leader_done = Arc::clone(&leader_done);
+            handles.push(tokio::spawn(async move {
+                let guard = gate.enter().await;
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                if guard.is_some() {
+                    // Leader: no one else may be running yet.
+                    peak_while_closed.fetch_max(now, Ordering::SeqCst);
+                    // Simulate the build taking a while so followers pile up.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    peak_while_closed.fetch_max(running.load(Ordering::SeqCst), Ordering::SeqCst);
+                    leader_done.store(true, Ordering::SeqCst);
+                } else {
+                    // Follower: must only run after the leader finished.
+                    assert!(
+                        leader_done.load(Ordering::SeqCst),
+                        "follower ran while the warm-up leader was still building"
+                    );
+                }
+                running.fetch_sub(1, Ordering::SeqCst);
+                drop(guard);
+            }));
+        }
+        for h in handles {
+            h.await.expect("task panicked");
+        }
+        assert_eq!(
+            peak_while_closed.load(Ordering::SeqCst),
+            1,
+            "only the leader may run while the warm-up gate is closed"
+        );
+    }
+
+    /// str-tbk9e: the gate opens even when the leader's task fails (guard
+    /// dropped on an error path) — a failed attempt still warms the cache.
+    #[tokio::test]
+    async fn warmup_gate_opens_when_leader_drops_on_failure() {
+        let gate = BuildWarmupGate::new();
+        let guard = gate.enter().await;
+        assert!(guard.is_some(), "first caller must be the leader");
+        // Simulate the leader failing: guard dropped without any success signal.
+        drop(guard);
+
+        // Followers (and any future entrant) proceed immediately.
+        let follower = tokio::time::timeout(Duration::from_secs(1), gate.enter())
+            .await
+            .expect("gate must be open after the leader guard drops");
+        assert!(follower.is_none(), "post-open entrants are not leaders");
+    }
+
+    /// str-tbk9e: on a warm cache the gate costs exactly one serialized task;
+    /// once open it never closes for the rest of the scan.
+    #[tokio::test]
+    async fn warmup_gate_stays_open_for_later_layers() {
+        let gate = BuildWarmupGate::new();
+        drop(gate.enter().await);
+        for _ in 0..3 {
+            assert!(
+                gate.enter().await.is_none(),
+                "gate must stay open after first release"
+            );
+        }
+    }
+
     /// str-ubp1: phase-tagged reasons distinguish build vs execution timeouts
     /// so users can tell whether `--build-timeout` or `--timeout-per-fn` is
     /// the binding limit on a failure.
@@ -6273,6 +6647,32 @@ mod tests {
 
         assert!(claim_build_timeout_retry(&retry_claimed));
         assert!(!claim_build_timeout_retry(&retry_claimed));
+    }
+
+    /// str-slnr: the planner preamble and Prepare share one build budget, so
+    /// the pre-explore phase can never exceed `build_timeout` — the invariant
+    /// the join watchdog's arithmetic already assumed.
+    #[test]
+    fn remaining_build_budget_shrinks_by_preamble_cost() {
+        let build_timeout = Duration::from_secs(30);
+
+        let fresh = remaining_build_budget(build_timeout, Instant::now())
+            .expect("an unspent budget must leave time for Prepare");
+        assert!(
+            fresh <= build_timeout && fresh > build_timeout - Duration::from_secs(1),
+            "unspent budget should be ~build_timeout, got {fresh:?}"
+        );
+
+        // A preamble that already outran the budget leaves nothing for Prepare,
+        // rather than starting a build under a zero-length deadline.
+        let exhausted = Instant::now() - (build_timeout + Duration::from_secs(1));
+        assert_eq!(remaining_build_budget(build_timeout, exhausted), None);
+
+        // Boundary: exactly spent is also exhausted.
+        assert_eq!(
+            remaining_build_budget(build_timeout, Instant::now() - build_timeout),
+            None
+        );
     }
 
     #[test]
@@ -6550,6 +6950,187 @@ for line in sys.stdin:
         );
 
         frontend.shutdown().await.expect("shutdown fake frontend");
+    }
+
+    fn fake_expr_frontend_config() -> (tempfile::TempDir, crate::frontend::FrontendConfig) {
+        let tempdir = tempfile::tempdir().expect("create fake frontend dir");
+        let script_path = tempdir.path().join("fake_expr_frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import sys
+
+for line in sys.stdin:
+    req = json.loads(line)
+    command = req.get("command")
+    base = {
+        "protocol_version": req.get("protocol_version", "0.1.0"),
+        "id": req.get("id"),
+    }
+    if command == "handshake":
+        resp = {
+            **base,
+            "status": "handshake",
+            "frontend_version": req.get("protocol_version", "0.1.0"),
+            "language": "fake-go",
+            "capabilities": ["analyze", "instrument", "prepare"],
+        }
+    elif command == "analyze":
+        resp = {
+            **base,
+            "status": "analysis",
+            "functions": [],
+        }
+    elif command == "instrument":
+        resp = {**base, "status": "instrument", "instrumented": True, "output_file": None}
+    elif command == "prepare":
+        resp = {**base, "status": "prepare", "prepare_id": "prepared"}
+    elif command == "execute":
+        ok = req.get("inputs") == ["true", 0.0]
+        err = None if ok else {
+            "error_type": "invalid_expr",
+            "message": "invalid expression",
+        }
+        outcome = {
+            "status": "completed" if ok else "runtime_failed",
+            "short_reason": "ok" if ok else "invalid expression",
+            "thrown_error": err,
+        }
+        resp = {
+            **base,
+            "status": "execute",
+            "return_value": "matcher" if ok else None,
+            "thrown_error": err,
+            "branch_path": [],
+            "lines_executed": [1],
+            "calls_to_external": [],
+            "path_constraints": [],
+            "scope_events": [],
+            "loop_body_states": [],
+            "side_effects": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 1000,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0,
+            },
+            "capture_truncation": None,
+            "discovered_dependencies": [],
+            "connection_failures": [],
+            "runtime_crypto_boundaries": [],
+            "outcome": outcome,
+        }
+    elif command == "shutdown":
+        resp = {**base, "status": "shutdown_ack"}
+    else:
+        resp = {
+            **base,
+            "status": "error",
+            "code": "invalid_request",
+            "message": f"unexpected command {command}",
+        }
+    print(json.dumps(resp), flush=True)
+"#,
+        )
+        .expect("write fake frontend");
+
+        let mut frontend_config = crate::frontend::FrontendConfig::new(std::path::PathBuf::from(
+            "python3",
+        ));
+        frontend_config.args = vec![script_path.display().to_string()];
+        frontend_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        (tempdir, frontend_config)
+    }
+
+    fn expr_scan_analysis() -> FunctionAnalysis {
+        FunctionAnalysis {
+            name: "CompileCELMatcher".into(),
+            exported: true,
+            params: vec![
+                ParamInfo {
+                    name: "expr".into(),
+                    typ: TypeInfo::Str,
+                    type_name: Some("string".into()),
+                },
+                ParamInfo {
+                    name: "score".into(),
+                    typ: TypeInfo::Float,
+                    type_name: Some("float64".into()),
+                },
+            ],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Object {
+                fields: Default::default(),
+            },
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        }
+    }
+
+    fn expr_scan_file_map() -> HashMap<String, String> {
+        HashMap::from([("CompileCELMatcher".to_string(), "cel.go".to_string())])
+    }
+
+    fn assert_expr_scan_completed(result: &FunctionResult) {
+        assert!(
+            result
+                .exploration
+                .raw_results
+                .iter()
+                .any(|(inputs, _, exec)| {
+                    inputs == &[serde_json::json!("true"), serde_json::json!(0.0)]
+                        && exec.outcome.as_ref().is_some_and(|outcome| {
+                            outcome.status == crate::protocol::OutcomeStatus::Completed
+                        })
+                }),
+            "one-iteration scan should execute a valid expression seed; raw_results={:?}",
+            result.exploration.raw_results
+        );
+    }
+
+    #[tokio::test]
+    async fn serial_scan_runs_expression_string_candidate_in_one_iteration() {
+        let (_tempdir, frontend_config) = fake_expr_frontend_config();
+        let mut frontend = crate::frontend::Frontend::spawn(&frontend_config)
+            .await
+            .expect("spawn fake frontend");
+        let analysis = expr_scan_analysis();
+        let config = ScanConfig {
+            seed: Some(7),
+            ..minimal_scan_config(expr_scan_file_map())
+        };
+
+        let result = scan(&mut frontend, &[analysis], &config)
+            .await
+            .expect("serial scan should succeed");
+        assert_eq!(result.function_results.len(), 1);
+        assert_expr_scan_completed(&result.function_results[0]);
+
+        frontend.shutdown().await.expect("shutdown fake frontend");
+    }
+
+    #[tokio::test]
+    async fn phased_scan_runs_expression_string_candidate_in_one_iteration() {
+        let (_tempdir, frontend_config) = fake_expr_frontend_config();
+        let analysis = expr_scan_analysis();
+        let config = ScanConfig {
+            seed: Some(7),
+            ..minimal_scan_config(expr_scan_file_map())
+        };
+
+        let result = parallel_scan_with_progress(&frontend_config, &[analysis], &config, None)
+            .await
+            .expect("phased scan should succeed");
+        assert_eq!(result.function_results.len(), 1);
+        assert_expr_scan_completed(&result.function_results[0]);
     }
 
     /// str-v5qe / str-6sie regression: a Go scan with a tiny per-fn timeout
@@ -7404,7 +7985,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7424,7 +8005,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7523,7 +8104,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -7602,7 +8183,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -7687,7 +8268,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7707,7 +8288,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -7794,7 +8375,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -7883,7 +8464,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -8047,7 +8628,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8067,7 +8648,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8170,7 +8751,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -8255,7 +8836,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8275,7 +8856,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8370,7 +8951,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -8488,7 +9069,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8508,7 +9089,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8619,7 +9200,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8639,7 +9220,7 @@ for line in sys.stdin:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -8730,7 +9311,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -9165,7 +9746,7 @@ for line in sys.stdin:
                 name: format!("leaf_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: 2,
                 start_line: 1,
@@ -9179,12 +9760,12 @@ for line in sys.stdin:
                 name: format!("mid_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: format!("leaf_{i}"),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9200,12 +9781,12 @@ for line in sys.stdin:
                 name: format!("top_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: format!("mid_{i}"),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9305,7 +9886,7 @@ for line in sys.stdin:
                 name: format!("fn_{i}"),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: i % 10,
                 start_line: 1,
@@ -9352,7 +9933,7 @@ for line in sys.stdin:
                 name: "fn_c".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: 0,
                 start_line: 1,
@@ -9364,12 +9945,12 @@ for line in sys.stdin:
                 name: "fn_b".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_c".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9383,12 +9964,12 @@ for line in sys.stdin:
                 name: "fn_a".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_b".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9443,7 +10024,7 @@ for line in sys.stdin:
                 name: "fn_c".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 branch_count: 1,
                 start_line: 1,
@@ -9455,12 +10036,12 @@ for line in sys.stdin:
                 name: "fn_b".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_c".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9474,12 +10055,12 @@ for line in sys.stdin:
                 name: "fn_a".to_string(),
                 exported: true,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![crate::protocol::ExternalDependency {
                     symbol: "fn_b".to_string(),
                     kind: crate::protocol::DependencyKind::FunctionCall,
                     source_module: String::new(),
-                    return_type: TypeInfo::Int,
+                    return_type: TypeInfo::Int { int_width: None, int_signed: None },
                     param_types: vec![],
                     call_sites: vec![],
                 }],
@@ -9691,7 +10272,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -9904,6 +10485,102 @@ defaults:
         );
     }
 
+    /// str-mt78j: parallel-path parity — the concolic scan path prefetches
+    /// generators separately from the random explorer, and must attribute a
+    /// starved extractor to the prefetch failure just the same.
+    #[tokio::test]
+    async fn concolic_scan_attributes_unsupported_extractor_to_generator_prefetch_failure() {
+        use crate::frontend::FrontendConfig;
+        use crate::types::{ParamInfo, TypeInfo};
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = manifest_dir.join("../protocol/failing-generator-frontend.sh");
+        let mut fe_config = FrontendConfig::new(PathBuf::from("bash"));
+        fe_config.args = vec![script.to_string_lossy().into_owned()];
+        fe_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        let mut frontend = Frontend::spawn(&fe_config)
+            .await
+            .expect("spawn failing generator frontend");
+
+        let analysis = FunctionAnalysis {
+            name: "list_tags".to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "current".into(),
+                typ: TypeInfo::Unknown,
+                type_name: Some("CurrentAccount".into()),
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 5,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        };
+
+        let explore_config = ExploreConfig {
+            file: "handlers/tags.rs".into(),
+            max_iterations: Some(2),
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: crate::protocol::SetupLevel::Function,
+            value_sources: vec![ValueSource::CustomGenerator {
+                generator_name: "CurrentAccount".into(),
+                param_name: None,
+                generator_file: PathBuf::from("/gen/current_account.rs"),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            }],
+            capabilities: crate::orchestrator::FrontendCapabilities::from_raw(
+                frontend.capabilities(),
+            ),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: explorer::LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+
+        let error = explore_with_scan_mode(&mut frontend, &analysis, true, &explore_config, None)
+            .await
+            .expect_err("all-not_supported concolic exploration should classify Unsupported");
+        let _ = frontend.shutdown().await;
+
+        let reason = error.to_string();
+        assert!(
+            reason.contains("custom generator prefetch failed for CurrentAccount"),
+            "concolic path must name the generator prefetch failure; got {reason}"
+        );
+        assert!(
+            reason.contains("PoolTimedOut"),
+            "concolic path must carry the generator's own error; got {reason}"
+        );
+        assert!(
+            reason.contains("axum handler has unsupported extractor types"),
+            "the original frontend message must be preserved as context; got {reason}"
+        );
+    }
+
     #[test]
     fn concolic_scan_user_inputs_prioritize_generated_values_before_fallbacks() {
         let explicit_user_seed = vec![serde_json::json!("explicit")];
@@ -9999,7 +10676,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10110,7 +10787,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10145,7 +10822,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "y".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10241,7 +10918,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10325,7 +11002,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10433,7 +11110,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10580,7 +11257,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10697,7 +11374,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10722,7 +11399,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -10847,7 +11524,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -10867,7 +11544,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -10969,7 +11646,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -11109,7 +11786,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11129,7 +11806,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11215,7 +11892,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "x".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -11235,7 +11912,7 @@ defaults:
                 exported: true,
                 params: vec![ParamInfo {
                     name: "y".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 }],
                 branches: vec![],
@@ -13650,7 +14327,7 @@ defaults:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],

@@ -4,6 +4,7 @@ pub(crate) mod build_frontend;
 pub(crate) mod cache;
 pub(crate) mod compare;
 pub(crate) mod diff;
+pub(crate) mod doctor;
 pub(crate) mod explore;
 pub(crate) mod init;
 pub(crate) mod list_targets;

@@ -45,6 +45,7 @@ fn zero_match_include_pattern_emits_targeted_diagnostic() {
     let runtime_dir = tmp.path().join("internal").join("runtime");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "scan",
@@ -100,6 +101,7 @@ fn no_include_pattern_keeps_existing_no_files_message() {
     std::fs::create_dir_all(&empty_dir).expect("create empty dir");
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "scan",

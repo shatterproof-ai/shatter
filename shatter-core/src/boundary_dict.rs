@@ -53,7 +53,7 @@ impl BoundaryEntry {
 #[must_use]
 pub fn get_boundary_values(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
     match type_info {
-        TypeInfo::Int => int_boundaries(),
+        TypeInfo::Int { .. } => int_boundaries(),
         TypeInfo::Float => float_boundaries(),
         TypeInfo::Str => string_boundaries(),
         TypeInfo::Bool => bool_boundaries(),
@@ -68,8 +68,22 @@ pub fn get_boundary_values(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
             entries.extend(get_boundary_values(inner));
             entries
         }
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
             let mut entries = Vec::new();
+            // A concrete value domain (str-pjlc1) IS the boundary set: every
+            // member is a distinct decoder-accepted branch driver, which is
+            // exactly what boundary rows are for. Variant boundaries still
+            // follow as off-domain probes for the rejection paths.
+            for member in enum_values {
+                entries.push(BoundaryEntry::new(
+                    member.clone(),
+                    BoundaryCategory::Boundary,
+                    "enum domain member",
+                ));
+            }
             for variant in variants {
                 entries.extend(get_boundary_values(variant));
             }
@@ -397,7 +411,7 @@ mod tests {
 
     #[test]
     fn int_boundaries_include_expected_values() {
-        let entries = get_boundary_values(&TypeInfo::Int);
+        let entries = get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None });
         let values: Vec<&Value> = entries.iter().map(|e| &e.value).collect();
         assert!(values.contains(&&json!(0)), "should contain 0");
         assert!(values.contains(&&json!(-1)), "should contain -1");
@@ -545,7 +559,7 @@ mod tests {
 
     #[test]
     fn category_filtering_works() {
-        let overflow = get_boundary_values_for_category(&TypeInfo::Int, BoundaryCategory::Overflow);
+        let overflow = get_boundary_values_for_category(&TypeInfo::Int { int_width: None, int_signed: None }, BoundaryCategory::Overflow);
         assert!(
             !overflow.is_empty(),
             "int should have overflow boundary values"
@@ -567,12 +581,12 @@ mod tests {
     #[test]
     fn all_entries_have_descriptions() {
         for type_info in &[
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             TypeInfo::Float,
             TypeInfo::Str,
             TypeInfo::Bool,
             TypeInfo::Array {
-                element: Box::new(TypeInfo::Int),
+                element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
             },
             TypeInfo::Object { fields: vec![] },
         ] {
@@ -589,7 +603,7 @@ mod tests {
     #[test]
     fn all_entries_are_valid_json() {
         for type_info in &[
-            TypeInfo::Int,
+            TypeInfo::Int { int_width: None, int_signed: None },
             TypeInfo::Float,
             TypeInfo::Str,
             TypeInfo::Bool,
@@ -609,7 +623,7 @@ mod tests {
     #[test]
     fn nullable_includes_null_plus_inner_boundaries() {
         let entries = get_boundary_values(&TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Int),
+            inner: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         });
         let has_null = entries.iter().any(|e| e.value.is_null());
         assert!(has_null, "nullable should include null");
@@ -622,7 +636,7 @@ mod tests {
         let params = vec![
             ParamInfo {
                 name: "x".to_string(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             },
             ParamInfo {
@@ -633,7 +647,7 @@ mod tests {
         ];
         let inputs = generate_boundary_inputs(&params);
         let expected_count =
-            get_boundary_values(&TypeInfo::Int).len() + get_boundary_values(&TypeInfo::Str).len();
+            get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None }).len() + get_boundary_values(&TypeInfo::Str).len();
         assert_eq!(inputs.len(), expected_count);
         // Each input vector should have 2 elements (one per param)
         for input in &inputs {
@@ -645,6 +659,29 @@ mod tests {
     fn generate_boundary_inputs_empty_params() {
         let inputs = generate_boundary_inputs(&[]);
         assert!(inputs.is_empty());
+    }
+
+    /// str-pjlc1 cross-review: a domain-carrying union's boundary set leads
+    /// with every domain member (each is a distinct decoder-accepted branch
+    /// driver), followed by base-variant boundaries as off-domain probes.
+    #[test]
+    fn enum_union_boundaries_enumerate_domain_members() {
+        let entries = get_boundary_values(&TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: vec![json!("RED"), json!("GREEN"), json!("BLUE")],
+        });
+        let values: Vec<_> = entries.iter().map(|e| &e.value).collect();
+        for member in [json!("RED"), json!("GREEN"), json!("BLUE")] {
+            assert!(
+                values.contains(&&member),
+                "boundary set missing domain member {member}; got {values:?}"
+            );
+        }
+        // Base-variant probes still present (e.g. empty string boundary).
+        assert!(
+            values.contains(&&json!("")),
+            "off-domain base-variant boundaries should still be emitted"
+        );
     }
 
     #[test]
@@ -676,7 +713,7 @@ mod tests {
     #[test]
     fn array_boundary_elements_match_element_type_int() {
         let entries = get_boundary_values(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
         });
         for entry in &entries {
             if let Some(arr) = entry.value.as_array() {

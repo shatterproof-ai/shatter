@@ -51,6 +51,13 @@ Prerequisites:
 - Node.js 22+
 - Go 1.24+
 - `libclang`
+- Z3 (the development package — `shatter-core` links the system Z3 library, so
+  `cargo build` fails without it)
+
+On Ubuntu/Debian: `sudo apt install libclang-dev libz3-dev`. On macOS:
+`brew install llvm z3`. Running the quality gates also needs `go-task` and
+Python 3 with `pyyaml` + `jsonschema` (`pip install pyyaml jsonschema`); see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor toolchain.
 
 ## 2. Explore One Function
 

@@ -333,6 +333,124 @@ shatter explore --capture-side-effects examples/typescript/src/
 }
 ```
 
+### `setup` — Initialize State
+
+Initialize state before execution (DB fixtures, environment, receiver construction, etc.) at a given lifecycle scope. The frontend returns an opaque `setup_context` that the core threads into later `execute` calls and tears down with `teardown`.
+
+The `level` field is one of `session`, `file`, `function`, or `execution` and identifies how long the established state lives. `parent_context` (optional) nests this setup inside a wider scope's context.
+
+**Request:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 7,
+  "command": "setup",
+  "file": "src/shipping.ts",
+  "scope": "calculateShipping",
+  "level": "function"
+}
+```
+
+**Response:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 7,
+  "status": "setup",
+  "setup_context": { "...opaque frontend state..." }
+}
+```
+
+### `teardown` — Tear Down State
+
+Release state established by a prior `setup` at the matching `scope` and `level`.
+
+**Request:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 8,
+  "command": "teardown",
+  "scope": "calculateShipping",
+  "level": "function"
+}
+```
+
+**Response:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 8,
+  "status": "teardown_ack"
+}
+```
+
+### `generate` — Invoke a Custom Generator
+
+Ask the frontend to produce a value for a named type or parameter using a custom generator. `kind` is `type_name` or `param_name`. The optional `recipe` carries generator configuration; the response echoes the (possibly resolved) recipe alongside a `generator_id`.
+
+**Request:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 9,
+  "command": "generate",
+  "file": "src/shipping.ts",
+  "name": "Order",
+  "kind": "type_name"
+}
+```
+
+**Response:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 9,
+  "status": "generate",
+  "value": { "items": [1], "priority": "standard" },
+  "generator_id": "order-gen-1"
+}
+```
+
+### `get_invocation_plan` — Plan Argument Production
+
+Ask the frontend's planner to produce invocation plans for a set of targets. The core supplies `invocation_requirements` (the functions/methods it wants to call and any value constraints); the frontend returns `invocation_plans` describing how to construct arguments, plus `unsatisfied_requirements` for targets it cannot plan (e.g. no constructor, interface receiver).
+
+**Frontend support:** Go advertises `get_invocation_plan`. Frontends that do not advertise it return `not_supported`.
+
+**Request:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 10,
+  "command": "get_invocation_plan",
+  "invocation_requirements": [
+    { "...target and value requirements..." }
+  ]
+}
+```
+
+**Response:**
+
+```json
+{
+  "protocol_version": "0.1.0",
+  "id": 10,
+  "status": "invocation_plan",
+  "invocation_plans": [
+    { "...argument production strategy..." }
+  ],
+  "unsatisfied_requirements": []
+}
+```
+
 ### `shutdown` — Graceful Shutdown
 
 Request the frontend to cleanly shut down.
@@ -389,6 +507,7 @@ Any command can produce an error response instead of its normal response. Error 
 | `compilation_error` | Compilation or transpilation failed. |
 | `internal_error` | An unexpected internal error occurred. |
 | `not_supported` | Command not supported by this frontend. |
+| `preflight_failed` | An environment preflight check failed for this run. Sticky: applies to every subsequent request. Distinct from `not_supported` — indicates an environmental fault outside the function under test (e.g. missing `node_modules`). |
 
 The `details` field is optional and can contain any JSON value with additional context (e.g., source location for parse errors, stack trace for crashes).
 
@@ -406,6 +525,8 @@ Types are represented using the `TypeInfo` schema with a `kind` discriminator:
 | `object` | `fields: [[name, TypeInfo]]` | Object/struct with named fields |
 | `union` | `variants: [TypeInfo]` | Union/sum type |
 | `nullable` | `inner: TypeInfo` | Nullable wrapper |
+| `complex` | `complex_kind`, `metadata`, `inner?: TypeInfo` | Non-primitive, non-collection type (e.g. `date`, `uuid`, `big_int`); `inner` carries the wrapped type for `option`/`result` |
+| `opaque` | `label`, `static_opacity?`, `medium_opacity?` | Runtime resource that cannot be meaningfully constructed for testing (sockets, file descriptors, DB connections). Distinct from `unknown` (unresolved) and `complex` (known and constructible). |
 | `unknown` | — | Type could not be determined |
 
 ## Symbolic Expressions
@@ -419,6 +540,7 @@ Symbolic expressions (`SymExpr`) represent constraints on function inputs. They 
 | `bin_op` | `op`, `left`, `right` | Binary operation |
 | `un_op` | `op`, `operand` | Unary operation |
 | `call` | `name`, `receiver`, `args` | Function/method call |
+| `ite` | `condition`, `then_expr`, `else_expr` | If-then-else; used to build ITE chains when merging per-iteration loop state (emitted by TS and Go) |
 | `unknown` | — | Could not be tracked symbolically |
 
 ### Binary Operators

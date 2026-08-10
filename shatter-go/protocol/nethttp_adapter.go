@@ -18,10 +18,14 @@ func (h *httpHandlerHook) Invoke(ctx InvocationContext) (*AdapterInvocationOutco
 	}
 
 	return &AdapterInvocationOutcome{
-		Status:      OutcomeStatusCompleted,
-		ReturnValue: result.ReturnValue,
-		ThrownError: result.ThrownError,
-		SideEffects: result.SideEffects,
+		Status:        OutcomeStatusCompleted,
+		ReturnValue:   result.ReturnValue,
+		ThrownError:   result.ThrownError,
+		SideEffects:   result.SideEffects,
+		BranchPath:    result.BranchPath,
+		LinesExecuted: result.LinesExecuted,
+		ScopeEvents:   result.ScopeEvents,
+		ExternalCalls: result.ExternalCalls,
 	}, nil
 }
 

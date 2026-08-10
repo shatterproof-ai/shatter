@@ -467,6 +467,13 @@ pub const PROJECT_CONFIG_FILENAME: &str = "shatter.config.json";
 /// resource limits, and parallelism. Per-function settings (iterations,
 /// timeouts, mocks, genetic, generators, setup) belong in
 /// `.shatter/config.yaml` — see [`DefaultsConfig`] and [`FunctionConfig`].
+///
+/// The two files do not overlap. When a setting could be sourced from more than
+/// one place, precedence is (highest first): CLI flags > `--set` overrides >
+/// `.shatter/config.yaml` (nearest to the target file wins) > this file
+/// (`shatter.config.json`) > built-in defaults. `shatter doctor` reports which
+/// files are present, and `README.md` ("Project Configuration") is the
+/// canonical reference.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectConfig {
@@ -615,6 +622,46 @@ pub fn load_project_config(dir: &Path) -> Result<Option<ProjectConfig>, ConfigEr
     let config: ProjectConfig = serde_json::from_str(&contents)
         .map_err(|e| ConfigError::ProjectConfigParse { path, source: e })?;
     Ok(Some(config))
+}
+
+/// Find `shatter.config.json` by walking up from `start_dir`, returning the
+/// parsed config together with the directory it was found in (str-1q12y).
+///
+/// Unlike [`load_project_config`], which only inspects a single directory,
+/// this walks from `start_dir` toward the filesystem root and stops at the
+/// first ancestor containing a `shatter.config.json`. This lets a scan of a
+/// subdirectory (e.g. `shatter scan web/src`) still pick up the project-root
+/// config. The returned directory is the anchor against which the config's
+/// `include`/`exclude` glob patterns should be matched, so project-root
+/// patterns such as `web/src/**/*.test.tsx` keep working for subdir scans.
+///
+/// Returns `Ok(None)` when no config exists in `start_dir` or any ancestor.
+/// A parse error at the first config found is surfaced rather than skipped:
+/// a malformed config should be reported, not silently ignored in favor of an
+/// ancestor.
+pub fn find_project_config(
+    start_dir: &Path,
+) -> Result<Option<(ProjectConfig, PathBuf)>, ConfigError> {
+    let mut dir = start_dir;
+    loop {
+        let candidate = project_config_path(dir);
+        if candidate.is_file() {
+            let contents = std::fs::read_to_string(&candidate).map_err(|e| ConfigError::Io {
+                path: candidate.clone(),
+                source: e,
+            })?;
+            let config: ProjectConfig =
+                serde_json::from_str(&contents).map_err(|e| ConfigError::ProjectConfigParse {
+                    path: candidate.clone(),
+                    source: e,
+                })?;
+            return Ok(Some((config, dir.to_path_buf())));
+        }
+        match dir.parent() {
+            Some(parent) if parent != dir => dir = parent,
+            _ => return Ok(None),
+        }
+    }
 }
 
 /// Configuration for the genetic algorithm explorer.
@@ -1923,6 +1970,41 @@ llm:
         assert_eq!(merged.defaults.timeout, Some(120)); // falls through to far
     }
 
+    /// str-7lab0: one YAML must satisfy both consumers of `.shatter/config.yaml`.
+    /// The Go frontend reads mocks as bare expression strings (str-c8djq); the
+    /// CLI must parse that shorthand (→ MockOverride{expression}) alongside the
+    /// struct form instead of rejecting the file before analysis.
+    #[test]
+    fn mock_override_parses_string_and_struct_forms() {
+        let yaml = r#"
+functions:
+  "*.resolvers.go:*":
+    mocks:
+      "auth.GetAccount": "auth.StaticAccount()"
+      "db.Query":
+        return_values:
+          - {"rows": []}
+      "svc.Fetch":
+        expression: "svc.Fake()"
+"#;
+        let cfg: ShatterConfig = serde_yaml::from_str(yaml).expect("both mock forms must parse");
+        let entry = &cfg.functions["*.resolvers.go:*"];
+        let mocks = entry.mocks.as_ref().expect("mocks parsed");
+        assert_eq!(
+            mocks["auth.GetAccount"].expression.as_deref(),
+            Some("auth.StaticAccount()"),
+            "bare string is expression shorthand"
+        );
+        assert!(mocks["auth.GetAccount"].return_values.is_none());
+        assert_eq!(
+            mocks["db.Query"].return_values.as_ref().map(Vec::len),
+            Some(1),
+            "struct form keeps return_values semantics"
+        );
+        assert!(mocks["db.Query"].expression.is_none());
+        assert_eq!(mocks["svc.Fetch"].expression.as_deref(), Some("svc.Fake()"));
+    }
+
     #[test]
     fn merge_configs_mocks_near_overrides_far() {
         let far = ShatterConfig {
@@ -1933,6 +2015,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!({"rows": [1]})]),
                             behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                                                    expression: None,
                         },
                     ),
                     (
@@ -1940,6 +2023,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!({"accepted": true})]),
                             behavior: Some(crate::protocol::MockBehavior::Passthrough),
+                                                    expression: None,
                         },
                     ),
                 ])),
@@ -1955,6 +2039,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!({"rows": [2]})]),
                             behavior: Some(crate::protocol::MockBehavior::ThrowError),
+                                                    expression: None,
                         },
                     ),
                     (
@@ -1962,6 +2047,7 @@ llm:
                         crate::auto_mock::MockOverride {
                             return_values: Some(vec![serde_json::json!("hit")]),
                             behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                            expression: None,
                         },
                     ),
                 ])),
@@ -1979,6 +2065,7 @@ llm:
             Some(&crate::auto_mock::MockOverride {
                 return_values: Some(vec![serde_json::json!({"rows": [2]})]),
                 behavior: Some(crate::protocol::MockBehavior::ThrowError),
+                            expression: None,
             })
         );
         assert_eq!(
@@ -1986,6 +2073,7 @@ llm:
             Some(&crate::auto_mock::MockOverride {
                 return_values: Some(vec![serde_json::json!({"accepted": true})]),
                 behavior: Some(crate::protocol::MockBehavior::Passthrough),
+                            expression: None,
             })
         );
         assert_eq!(
@@ -1993,6 +2081,7 @@ llm:
             Some(&crate::auto_mock::MockOverride {
                 return_values: Some(vec![serde_json::json!("hit")]),
                 behavior: Some(crate::protocol::MockBehavior::RepeatLast),
+                expression: None,
             })
         );
     }
@@ -3465,6 +3554,70 @@ defaults:
             let path = tmp.path().join(PROJECT_CONFIG_FILENAME);
             std::fs::write(&path, "not json at all {{{").unwrap();
             let result = load_project_config(tmp.path());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn find_project_config_walks_up_from_subdir() {
+            // str-1q12y: a subdir scan must still find the project-root config.
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(PROJECT_CONFIG_FILENAME);
+            std::fs::write(&path, r#"{"exclude": ["web/src/**/*.test.tsx"]}"#).unwrap();
+            let subdir = tmp.path().join("web").join("src").join("features");
+            std::fs::create_dir_all(&subdir).unwrap();
+
+            let (config, dir) = find_project_config(&subdir).unwrap().unwrap();
+            assert_eq!(config.exclude, vec!["web/src/**/*.test.tsx"]);
+            // The returned dir is the config's directory (the project root),
+            // which is the anchor for its glob patterns.
+            assert_eq!(dir, tmp.path());
+        }
+
+        #[test]
+        fn find_project_config_prefers_nearest_ancestor() {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(
+                tmp.path().join(PROJECT_CONFIG_FILENAME),
+                r#"{"timeout_total": 1}"#,
+            )
+            .unwrap();
+            let nested = tmp.path().join("web");
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(
+                nested.join(PROJECT_CONFIG_FILENAME),
+                r#"{"timeout_total": 2}"#,
+            )
+            .unwrap();
+
+            let (config, dir) = find_project_config(&nested).unwrap().unwrap();
+            assert_eq!(config.timeout_total, Some(2));
+            assert_eq!(dir, nested);
+        }
+
+        #[test]
+        fn find_project_config_none_when_absent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let subdir = tmp.path().join("a").join("b");
+            std::fs::create_dir_all(&subdir).unwrap();
+            // No config anywhere up to tmp; walking further up the real FS
+            // could in theory find one, so assert only that our own tree has
+            // none by checking the returned dir (if any) is outside tmp.
+            let result = find_project_config(&subdir).unwrap();
+            if let Some((_, dir)) = result {
+                assert!(
+                    !dir.starts_with(tmp.path()),
+                    "no config should be found within the temp tree"
+                );
+            }
+        }
+
+        #[test]
+        fn find_project_config_surfaces_parse_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join(PROJECT_CONFIG_FILENAME), "not json {{{").unwrap();
+            let subdir = tmp.path().join("web");
+            std::fs::create_dir_all(&subdir).unwrap();
+            let result = find_project_config(&subdir);
             assert!(result.is_err());
         }
 

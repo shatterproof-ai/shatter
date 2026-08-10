@@ -535,6 +535,8 @@ func (h *Handler) Serve() string {
 }
 
 type fakePreparedExecution struct {
+	preparedProvenance
+
 	ArtifactDir  string
 	BinaryPath   string
 	InvokeResult *instrument.ExecuteResult
@@ -961,6 +963,27 @@ func TestAnalyzeWithFunctionFilterReturnsOneFunction(t *testing.T) {
 	}
 	if resp.Functions[0].Name != "Bar" {
 		t.Errorf("name = %q, want Bar", resp.Functions[0].Name)
+	}
+}
+
+func TestAnalyzeRelativePathNormalizesSourceFileToAbsolute(t *testing.T) {
+	// A relative file path passed to analyze must produce an absolute SourceFile
+	// in the returned FunctionAnalysis. Without normalization, hintConfigResolver
+	// calls config.TargetRelpath on the relative path, which passes it through
+	// unchanged, so filename-scoped config globs like "loader.go:Func" never
+	// match — the symptom: configured `defaults` silently not applied in scan.
+	req := reqJSON(3, "analyze", `"file":"testdata/basic.go"`)
+	resp := sendRecv(t, req)
+	if resp.Status != "analyze" {
+		t.Fatalf("status = %q, want analyze", resp.Status)
+	}
+	if len(resp.Functions) == 0 {
+		t.Fatal("no functions returned")
+	}
+	for _, fn := range resp.Functions {
+		if !filepath.IsAbs(fn.SourceFile) {
+			t.Errorf("function %q: SourceFile = %q, want absolute path", fn.Name, fn.SourceFile)
+		}
 	}
 }
 

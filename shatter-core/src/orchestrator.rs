@@ -48,7 +48,7 @@ use crate::strategy::{
 };
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
-use crate::types::{ComplexKind, ParamInfo};
+use crate::types::{ComplexKind, ParamInfo, TypeInfo};
 
 /// Parsed frontend capabilities from the handshake response.
 ///
@@ -137,9 +137,6 @@ pub struct ExploreConfig {
     pub meta_config: crate::strategy::MetaConfig,
     /// Opaque execution profile selected for this function, if any.
     pub execution_profile: Option<crate::protocol::ExecutionProfile>,
-    /// Number of consecutive no-new-coverage observations before suppressing
-    /// negation for branches in a converged loop. 0 disables convergence detection.
-    pub loop_convergence_window: usize,
     /// Per-boundary refinement budget (executions). After the discovery loop,
     /// a separate refinement phase binary-searches between witness pairs.
     /// `None` or `Some(0)` disables refinement.
@@ -161,6 +158,11 @@ pub struct ExploreConfig {
     /// Set from the first plan returned by the planner; `None` when not using
     /// `--planner` or when the frontend returned no plans.
     pub default_execute_plan: Option<crate::protocol::InvocationPlan>,
+    /// Per-parameter value source for the function under exploration.
+    /// Custom-generator/extractor slots (e.g. axum `State<AppState>`) carry
+    /// native-replay markers and must never be mutated or seeded over (str-6cdp).
+    /// Empty when no generators are configured; every slot is then built-in.
+    pub value_sources: Vec<crate::input_gen::ValueSource>,
 }
 
 /// Default shrink budget per behavior witness.
@@ -174,8 +176,6 @@ const BOUNDARY_FITNESS_FIRST: f64 = 1.0;
 /// Fitness boost for branches in the second loop iteration.
 const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
 
-/// Default number of consecutive no-new-coverage observations before marking a loop converged.
-const DEFAULT_LOOP_CONVERGENCE_WINDOW: usize = 3;
 /// Stall count threshold before bounded symbolic unrolling is eligible.
 const BOUNDED_UNROLL_STALL_THRESHOLD: u32 = drilling::DRILL_STALL_THRESHOLD + 1;
 /// Maximum stalled loop frontiers to target with bounded unroll per round.
@@ -202,13 +202,13 @@ impl Default for ExploreConfig {
             branch_profile: None,
             meta_config: crate::strategy::MetaConfig::default(),
             execution_profile: None,
-            loop_convergence_window: DEFAULT_LOOP_CONVERGENCE_WINDOW,
             refine_budget: None,
             shrink_budget: DEFAULT_SHRINK_BUDGET,
             mcdc: false,
             fuzz: crate::config::FuzzConfig::default(),
             planner: None,
             default_execute_plan: None,
+            value_sources: vec![],
         }
     }
 }
@@ -529,7 +529,7 @@ fn json_value_matches_type(value: &serde_json::Value, typ: &crate::types::TypeIn
     use crate::types::TypeInfo;
     match typ {
         TypeInfo::Bool => value.is_boolean(),
-        TypeInfo::Int => value.is_i64() || value.is_u64(),
+        TypeInfo::Int { .. } => value.is_i64() || value.is_u64(),
         TypeInfo::Float => value.is_f64() || value.is_i64() || value.is_u64(),
         TypeInfo::Str => value.is_string(),
         TypeInfo::Array { .. } => value.is_array(),
@@ -735,6 +735,13 @@ pub enum ExploreError {
     Planner(#[from] crate::planner_consumer::PlannerConsumerError),
     #[error("solver feedback error: {0}")]
     SolverFeedback(String),
+    /// Frontend reported the target as `not_supported` during execute — either a
+    /// response-level `ErrorCode::NotSupported` or a `not_supported` thrown_error
+    /// nested in an Ok execute result. The scan layer maps this to
+    /// `SkipCategory::Unsupported` with a clean reason instead of
+    /// `SkipCategory::Error`, mirroring the random explorer path (str-303gg).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 /// A single execution observation: the inputs used, the result, and path classification.
@@ -1032,8 +1039,9 @@ fn stalled_loop_candidate_inputs(
 
     match solver::solve_constraints(&constraints, solver_timeout_ms, param_infos).ok()? {
         SolveResult::Sat(values) => {
+            let param_types = param_types_of(param_infos);
             let mut candidate_inputs =
-                overlay_solved_values(&frontier.best_prefix, &values, param_names);
+                overlay_solved_values(&frontier.best_prefix, &values, param_names, &param_types);
             adjust_loop_bound_candidate(
                 &mut candidate_inputs,
                 &bounded_template,
@@ -1104,19 +1112,28 @@ pub(crate) fn concrete_to_json(value: &ConcreteValue) -> serde_json::Value {
     }
 }
 
+/// Collect the parameter types in positional order, for passing to
+/// [`overlay_solved_values`] alongside the parameter names.
+pub(crate) fn param_types_of(param_infos: &[ParamInfo]) -> Vec<TypeInfo> {
+    param_infos.iter().map(|p| p.typ.clone()).collect()
+}
+
 /// Build a new input vector by overlaying Z3-solved values onto existing inputs.
 ///
 /// The solver returns variable names like "x", "config.timeout" etc. We match
-/// these against parameter names in `base_inputs` (positionally). For now we
-/// support simple flat parameters — if the variable name matches the parameter
-/// index convention (param_0, param_1, …) or the base is a single param, we
-/// update it directly.
+/// these against parameter names in `base_inputs` (positionally). For nested
+/// object paths, each raw field segment is resolved to its declared JSON key
+/// using the matching parameter's [`TypeInfo`] tree (`param_types`, positionally
+/// aligned with `param_names`) — see [`resolve_field_path`]. This keeps Rust
+/// serde structs working regardless of `#[serde(rename_all = "…")]`, and is a
+/// no-op for frontends whose source field names already equal their JSON keys.
 #[requires(base_inputs.len() == param_names.len(), "base_inputs and param_names must be positionally aligned")]
 #[contracts::ensures(ret.len() == base_inputs.len(), "overlay must preserve input vector length")]
 pub(crate) fn overlay_solved_values(
     base_inputs: &[serde_json::Value],
     solved: &std::collections::HashMap<String, ConcreteValue>,
     param_names: &[String],
+    param_types: &[TypeInfo],
 ) -> Vec<serde_json::Value> {
     let mut result = base_inputs.to_vec();
 
@@ -1131,7 +1148,20 @@ pub(crate) fn overlay_solved_values(
             && idx < result.len()
             && !path.is_empty()
         {
-            overlay_json_path(&mut result[idx], &path, concrete_to_json(value));
+            // The solver's field segments are the RAW source identifiers
+            // (the instrumentor lowers `w.unit_price` verbatim). Resolve them
+            // to the JSON keys the executor's deserializer expects, honoring
+            // serde renames declared in the parameter's type metadata.
+            let resolved = match param_types.get(idx) {
+                Some(typ) => resolve_field_path(&path, typ),
+                // No declared type for this parameter: every segment stays an
+                // object key, the behavior that predates positional overlay
+                // support. Choosing an array here would have to guess from the
+                // segment text alone, and a numeric-looking key is a legitimate
+                // object key in the TS and Go frontends.
+                None => path.into_iter().map(PathSegment::Key).collect(),
+            };
+            overlay_json_path(&mut result[idx], &resolved, concrete_to_json(value));
         } else if param_names.len() == 1 && base_inputs.len() == 1 && !var_name.contains('.') {
             // Single-param function with a simple (non-derived) variable name:
             // the solver variable likely refers to the param. Skip derived names
@@ -1149,10 +1179,14 @@ fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
     if param.is_empty() {
         return None;
     }
+    // Segments are the field identifiers exactly as written in the analyzed
+    // source (the instrumentor lowers a field access chain by its raw idents).
+    // Rename resolution to JSON keys happens later in `resolve_field_path`,
+    // which needs the parameter's type metadata; keep the raw names here.
     let path: Vec<String> = parts
         .filter(|part| !part.is_empty())
         .filter(|part| !part.contains('(') && !part.contains(')'))
-        .map(json_field_name)
+        .map(str::to_string)
         .collect();
     if path.is_empty() {
         None
@@ -1161,51 +1195,352 @@ fn solved_object_path(var_name: &str) -> Option<(&str, Vec<String>)> {
     }
 }
 
-fn json_field_name(field: &str) -> String {
-    let mut out = String::with_capacity(field.len());
-    let mut uppercase_next = false;
-    for ch in field.chars() {
-        if ch == '_' {
-            uppercase_next = true;
-            continue;
-        }
-        if uppercase_next {
-            out.extend(ch.to_uppercase());
-            uppercase_next = false;
-        } else {
-            out.push(ch);
+/// One resolved step of an overlay path: an object key or an array position.
+///
+/// Which one a raw segment becomes is decided from the parameter's declared
+/// [`TypeInfo`], never from the segment's spelling — `"0"` is a positional index
+/// in a Rust tuple and an ordinary key in a TS/Go object, and only the type
+/// tells the two apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathSegment {
+    Key(String),
+    Index(usize),
+}
+
+/// Resolve a chain of raw source-level field names into the JSON keys and array
+/// positions the target frontend's deserializer expects, walking `root`'s
+/// [`TypeInfo`] tree one level per segment.
+///
+/// The solver records field segments as the RAW Rust source identifiers (e.g.
+/// `unit_price`), while [`TypeInfo::Object`] fields carry the serde-resolved
+/// JSON keys (e.g. `unitPrice` under `#[serde(rename_all = "camelCase")]`). For
+/// each segment we look up the matching declared field (see
+/// [`resolve_field_key`]) and descend into its type.
+///
+/// A segment becomes a [`PathSegment::Index`] only where the declared type is
+/// genuinely positional — an [`TypeInfo::Array`], or the positional object a
+/// Rust tuple maps to (see [`positional_object_arity`]). Everything else stays a
+/// key. Once a level's type is unknown (`Opaque`/`Complex` from partial
+/// metadata, a genuinely dynamic map, or a `Union`/enum-variant type whose
+/// fields we don't model here), the remaining segments are kept verbatim as
+/// keys — the safe default that matches serde structs without renames and every
+/// non-Rust frontend.
+fn resolve_field_path(raw_path: &[String], root: &TypeInfo) -> Vec<PathSegment> {
+    let mut out = Vec::with_capacity(raw_path.len());
+    let mut current: Option<&TypeInfo> = Some(root);
+    for segment in raw_path {
+        match current.map(peel_nullable) {
+            // Declared array: a numeric segment is a position into it.
+            Some(TypeInfo::Array { element }) => match array_index_segment(segment) {
+                Some(index) => {
+                    out.push(PathSegment::Index(index));
+                    current = Some(element);
+                }
+                None => {
+                    out.push(PathSegment::Key(segment.clone()));
+                    current = None;
+                }
+            },
+            Some(TypeInfo::Object { fields }) => {
+                let arity = positional_object_arity(fields);
+                match array_index_segment(segment).filter(|index| *index < arity) {
+                    // Positional object (a tuple): index into the array the
+                    // frontend's deserializer actually expects.
+                    Some(index) => {
+                        out.push(PathSegment::Index(index));
+                        current = fields
+                            .iter()
+                            .find(|(declared, _)| declared == segment)
+                            .map(|(_, typ)| typ);
+                    }
+                    None => {
+                        let key = resolve_field_key(segment, fields);
+                        current = fields
+                            .iter()
+                            .find(|(declared, _)| *declared == key)
+                            .map(|(_, typ)| typ);
+                        out.push(PathSegment::Key(key));
+                    }
+                }
+            }
+            _ => {
+                out.push(PathSegment::Key(segment.clone()));
+                current = None;
+            }
         }
     }
     out
 }
 
-fn overlay_json_path(target: &mut serde_json::Value, path: &[String], value: serde_json::Value) {
-    if path.is_empty() {
+/// Strip any number of nested `Nullable` layers (`Option<Option<Struct>>` still
+/// overlays into the inner struct).
+fn peel_nullable(typ: &TypeInfo) -> &TypeInfo {
+    match typ {
+        TypeInfo::Nullable { inner } => peel_nullable(inner),
+        other => other,
+    }
+}
+
+/// Arity of a POSITIONAL object — one whose declared field names are exactly the
+/// indices `0..n`, which is how the Rust analyzer models a tuple (`convert_tuple`
+/// in `shatter-rust/src/analyzer.rs` emits `Object { fields: [("0", …), ("1", …)] }`;
+/// `TypeInfo` has no tuple variant). Such a value deserializes from a JSON ARRAY,
+/// so overlays into it must address positions.
+///
+/// Returns 0 for every other object, including one that merely happens to
+/// declare a numeric-looking key (`{"0": …, "label": …}`) — those stay objects.
+fn positional_object_arity(fields: &[(String, TypeInfo)]) -> usize {
+    if fields.is_empty() {
+        return 0;
+    }
+    let mut seen = vec![false; fields.len()];
+    for (declared, _) in fields {
+        match array_index_segment(declared).filter(|index| *index < fields.len()) {
+            Some(index) => seen[index] = true,
+            None => return 0,
+        }
+    }
+    if seen.iter().all(|present| *present) {
+        fields.len()
+    } else {
+        0
+    }
+}
+
+/// Map one raw source field name to its declared JSON key within `fields`.
+///
+/// The segment is a snake_case Rust identifier; the declared keys are serde's
+/// output. We match in three tiers: (1) exact — the common default-serde case
+/// where the JSON key equals the source name; (2) serde `rename_all` — apply
+/// each rename rule to the snake_case segment and use the variant that matches a
+/// declared key; (3) fall back to the raw segment when nothing matches.
+///
+/// Not handled: per-field `#[serde(rename = "arbitrary")]`, whose JSON key is
+/// not derivable from the source name — recovering it would require the protocol
+/// `TypeInfo` to also carry each field's source identifier (str-wp6cf follow-up).
+fn resolve_field_key(segment: &str, fields: &[(String, TypeInfo)]) -> String {
+    let declares = |candidate: &str| fields.iter().any(|(declared, _)| declared == candidate);
+
+    if declares(segment) {
+        return segment.to_string();
+    }
+    for variant in serde_rename_variants(segment) {
+        if declares(&variant) {
+            return variant;
+        }
+    }
+    segment.to_string()
+}
+
+/// Capitalize one word: upper-case the first char, lower-case the remainder.
+///
+/// MUST stay byte-identical to `capitalize_word` in `shatter-rust`'s
+/// `analyzer.rs` (the source of the declared JSON keys we match against). See
+/// [`serde_rename_variants`] for why.
+fn capitalize_word(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+    })
+}
+
+/// Produce the serde `rename_all` renderings of a snake_case identifier — one per
+/// serde `RenameRule` — so a raw source field name can be matched against a
+/// struct's declared JSON keys.
+///
+/// IMPORTANT: the declared keys we match against are computed by `shatter-rust`'s
+/// `apply_rename_all`/`capitalize_word` (`analyzer.rs`), NOT by serde directly,
+/// and this function MUST produce byte-identical output for every rule — a
+/// mismatch (e.g. differing case-folding of a word's remainder) silently drops
+/// back to the raw name and reintroduces the `missing field` bug this exists to
+/// fix. `shatter-core` cannot depend on `shatter-rust` (one-directional
+/// dependency rule), so there is no compiler-enforced link — the two independent
+/// implementations must be kept in sync by hand, guarded by
+/// `serde_rename_variants_match_shatter_rust_rules`.
+fn serde_rename_variants(snake: &str) -> Vec<String> {
+    let words: Vec<&str> = snake.split('_').filter(|w| !w.is_empty()).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let pascal: String = words.iter().map(|w| capitalize_word(w)).collect();
+    let camel: String = words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            if i == 0 {
+                w.to_lowercase()
+            } else {
+                capitalize_word(w)
+            }
+        })
+        .collect();
+    vec![
+        camel,                            // camelCase
+        pascal,                           // PascalCase
+        words.concat().to_lowercase(),    // lowercase
+        words.concat().to_uppercase(),    // UPPERCASE
+        words.join("_").to_lowercase(),   // snake_case
+        words.join("_").to_uppercase(),   // SCREAMING_SNAKE_CASE
+        words.join("-").to_lowercase(),   // kebab-case
+        words.join("-").to_uppercase(),   // SCREAMING-KEBAB-CASE
+    ]
+}
+
+/// Allocation bound on a single overlay position: writing index `n` materializes
+/// `n + 1` elements, so an unbounded index would let one malformed constraint
+/// allocate without limit. The number is a local safety valve chosen here, NOT a
+/// language or analyzer limit — no `MAX_TUPLE_ARITY` exists in shatter-rust or
+/// shatter-core — and it is deliberately far above the arities the tuple lowering
+/// produces in practice. A segment above the cap is not treated as positional:
+/// it stays an object key, and a declared type whose own field names exceed it
+/// is not recognized as positional (see [`positional_object_arity`]).
+const MAX_OVERLAY_ARRAY_INDEX: usize = 63;
+
+/// Parse one raw path segment as a candidate array index.
+///
+/// The instrumentor lowers tuple-index access (`p.0`) to the numeric segment
+/// `"0"` (`field_chain_param_json` in `shatter-rust/src/instrument.rs`). Leading
+/// zeros are rejected (`"01"` is not an index the lowering can emit) as are
+/// values above [`MAX_OVERLAY_ARRAY_INDEX`].
+///
+/// Parsing alone does NOT make a segment positional — a numeric-looking key is a
+/// perfectly ordinary object key in the TS and Go frontends. Only
+/// [`resolve_field_path`], which has the declared [`TypeInfo`], decides that.
+fn array_index_segment(segment: &str) -> Option<usize> {
+    if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if segment.len() > 1 && segment.starts_with('0') {
+        return None;
+    }
+    segment
+        .parse::<usize>()
+        .ok()
+        .filter(|index| *index <= MAX_OVERLAY_ARRAY_INDEX)
+}
+
+/// Try to coerce `slot` into a JSON array so a position can be written into it.
+/// Returns `false` — leaving `slot` untouched — when that would DISCARD data, so
+/// the caller can fall back to an object key instead of losing the value.
+///
+/// An object whose keys are all indices is promoted element-wise rather than
+/// rebuilt: `TypeInfo` has no tuple variant (the Rust analyzer maps a tuple to
+/// `Object { fields: [("0", …), ("1", …)] }`), so the generator seeds tuple
+/// params as `{"0":1,"1":2}`. Promoting preserves the sibling elements the
+/// solver did not constrain, which is what makes the overlaid row actually
+/// deserialize into the tuple.
+///
+/// A null or scalar slot carries nothing worth keeping under a positional type,
+/// so it becomes a fresh array. An object with any non-index key is refused: the
+/// declared type says positional but the value disagrees, and preserving the
+/// value beats silently dropping its fields.
+fn coerce_slot_to_array(slot: &mut serde_json::Value) -> bool {
+    if slot.is_array() {
+        return true;
+    }
+    match slot.as_object() {
+        Some(map) => match numeric_keyed_object_as_array(map) {
+            Some(promoted) => {
+                *slot = promoted;
+                true
+            }
+            None => false,
+        },
+        None => {
+            *slot = serde_json::Value::Array(Vec::new());
+            true
+        }
+    }
+}
+
+/// Rebuild a fully index-keyed JSON object as an array, placing each value at
+/// its key's index and filling gaps with null. Returns `None` when any key is
+/// not an index (a real map — leave it alone).
+fn numeric_keyed_object_as_array(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut entries = Vec::with_capacity(map.len());
+    for (key, value) in map {
+        entries.push((array_index_segment(key)?, value.clone()));
+    }
+    let len = entries.iter().map(|(index, _)| index + 1).max().unwrap_or(0);
+    let mut out = vec![serde_json::Value::Null; len];
+    for (index, value) in entries {
+        out[index] = value;
+    }
+    Some(serde_json::Value::Array(out))
+}
+
+/// Hand back the element slot at `index`, padding with nulls to reach it.
+///
+/// Caller must have coerced `slot` to an array first ([`coerce_slot_to_array`]);
+/// the two steps are separate so the coercion's borrow ends before the element
+/// is borrowed, which is what lets the caller fall back to an object key.
+fn array_element_at(slot: &mut serde_json::Value, index: usize) -> &mut serde_json::Value {
+    let array = slot.as_array_mut().expect("slot was coerced to array");
+    if array.len() <= index {
+        array.resize(index + 1, serde_json::Value::Null);
+    }
+    &mut array[index]
+}
+
+/// Ensure `slot` holds an object, then hand back the entry for `key`, inserting
+/// an empty object when absent. A non-object slot is replaced — a scalar or
+/// array carries nothing addressable by a key.
+fn object_slot_at<'a>(slot: &'a mut serde_json::Value, key: &str) -> &'a mut serde_json::Value {
+    if !slot.is_object() {
+        *slot = serde_json::json!({});
+    }
+    slot.as_object_mut()
+        .expect("slot was normalized to object")
+        .entry(key.to_string())
+        .or_insert_with(|| serde_json::json!({}))
+}
+
+/// Write `value` into `target` at `path`, materializing missing containers.
+///
+/// Each segment carries its own container kind, decided from the parameter's
+/// declared type by [`resolve_field_path`]: a [`PathSegment::Index`] addresses an
+/// array position, a [`PathSegment::Key`] an object key. Both mix in one path, so
+/// a struct field inside a tuple element overlays into `[{"width": …}]`.
+///
+/// An `Index` whose slot cannot become an array without discarding data degrades
+/// to the index's decimal spelling as an object key — the pre-positional
+/// behavior, which is wrong for the deserializer but never loses the value.
+fn overlay_json_path(
+    target: &mut serde_json::Value,
+    path: &[PathSegment],
+    value: serde_json::Value,
+) {
+    let Some((last, parents)) = path.split_last() else {
         *target = value;
         return;
-    }
-    if !target.is_object() {
-        *target = serde_json::json!({});
-    }
+    };
     let mut current = target;
-    for segment in &path[..path.len() - 1] {
-        if !current.is_object() {
-            *current = serde_json::json!({});
+    for segment in parents {
+        current = descend_one(current, segment);
+    }
+    *descend_one(current, last) = value;
+}
+
+/// Borrow (materializing if absent) the slot one `segment` deeper than `slot`.
+///
+/// A missing container is created as an empty object; a later `Index` step
+/// turns it into an array, and a later `Key` step keeps it an object.
+fn descend_one<'a>(slot: &'a mut serde_json::Value, segment: &PathSegment) -> &'a mut serde_json::Value {
+    match segment {
+        PathSegment::Key(key) => object_slot_at(slot, key),
+        PathSegment::Index(index) => {
+            if coerce_slot_to_array(slot) {
+                array_element_at(slot, *index)
+            } else {
+                // The declared type is positional but the value is an object
+                // carrying non-index keys. Degrade to the index's decimal
+                // spelling as a key rather than discard those keys.
+                object_slot_at(slot, &index.to_string())
+            }
         }
-        let object = current
-            .as_object_mut()
-            .expect("target was normalized to object");
-        current = object
-            .entry(segment.clone())
-            .or_insert_with(|| serde_json::json!({}));
     }
-    if !current.is_object() {
-        *current = serde_json::json!({});
-    }
-    let object = current
-        .as_object_mut()
-        .expect("target was normalized to object");
-    object.insert(path[path.len() - 1].clone(), value);
 }
 
 /// Result of trying to observe a single worklist entry.
@@ -1216,6 +1551,12 @@ enum ObserveOneResult {
     TriageSkipped,
     /// Frontend returned an error or unexpected response — entry skipped.
     FrontendSkipped,
+    /// Frontend reported the target as `not_supported` for this iteration —
+    /// either a response-level `NotSupported` or a `not_supported` thrown_error
+    /// nested in an Ok result. The iteration produced no observation; the caller
+    /// records the reason and reclassifies the whole FUNCTION as unsupported only
+    /// if it collected no successful observation at all (str-303gg review fix).
+    Unsupported(String),
     /// A termination budget was hit before executing.
     Terminated(TerminationReason),
 }
@@ -1236,6 +1577,7 @@ async fn observe_one(
     budget: &ExploreBudget,
     setup_context: &Option<SetupContextStack>,
     prepare_id: Option<&str>,
+    native_pins: Option<&crate::input_gen::NativePins>,
 ) -> Result<ObserveOneResult, ExploreError> {
     // Check termination budgets.
     if let Some(max) = config.max_iterations
@@ -1297,10 +1639,13 @@ async fn observe_one(
     // an error — when the frontend is slow to respond (e.g., long compile
     // times in the Rust harness), the orchestrator should stop scheduling
     // new work and report a timeout, not a protocol ID mismatch.
-    let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+    // execute_inputs_for_plan repairs each input against its parameter type
+    // (str-kn3f) — the single funnel point for all execute paths.
+    let execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
         &entry.inputs,
-        param_infos.len(),
+        param_infos,
         config.default_execute_plan.as_ref(),
+        native_pins,
     )?;
     let response = match frontend
         .send(Command::Execute {
@@ -1326,12 +1671,29 @@ async fn observe_one(
 
     let exec_result = match response.result {
         ResponseResult::Execute(result) => *result,
-        ResponseResult::Error { message, .. } => {
+        ResponseResult::Error { code, message, .. } => {
+            // str-303gg review fix: a response-level `NotSupported` is an
+            // unsupported iteration, not a generic frontend error. Surface it so
+            // the aggregate classification can reclassify the function as
+            // unsupported when nothing else executed, mirroring the random
+            // explorer path — without aborting a function that did collect
+            // coverage on other iterations.
+            if code == crate::protocol::ErrorCode::NotSupported {
+                return Ok(ObserveOneResult::Unsupported(message));
+            }
             log::warn!("frontend error during execute: {message}");
             return Ok(ObserveOneResult::FrontendSkipped);
         }
         _ => return Ok(ObserveOneResult::FrontendSkipped),
     };
+
+    // str-303gg: a `not_supported` thrown_error nested in an Ok execute result
+    // is an unsupported iteration. Report it (without aborting) so the aggregate
+    // classification can decide — a per-iteration abort would discard coverage
+    // collected on other iterations.
+    if let Some(reason) = crate::observe::thrown_not_supported_reason(&exec_result) {
+        return Ok(ObserveOneResult::Unsupported(reason));
+    }
 
     let path_id = hash_branch_path(&exec_result.branch_path);
 
@@ -1621,110 +1983,6 @@ pub(crate) fn extract_loop_context(scope_events: &[TraceEvent]) -> HashMap<u32, 
     context
 }
 
-/// Tracks per-loop branch coverage and detects convergence. Retained for unit
-/// tests; not used in the main exploration loop after MetaStrategy migration.
-#[cfg(test)]
-#[derive(Clone)]
-pub(crate) struct LoopCoverageTracker {
-    /// Per loop_id: set of (branch_id, taken) pairs observed.
-    coverage: HashMap<u32, HashSet<(u32, bool)>>,
-    /// Per loop_id: consecutive observations with no new coverage.
-    stale_count: HashMap<u32, usize>,
-    /// Loops that have converged (stale_count >= window).
-    converged: HashSet<u32>,
-    /// Convergence window (0 = disabled).
-    window: usize,
-}
-
-#[cfg(test)]
-impl LoopCoverageTracker {
-    pub(crate) fn new(window: usize) -> Self {
-        Self {
-            coverage: HashMap::new(),
-            stale_count: HashMap::new(),
-            converged: HashSet::new(),
-            window,
-        }
-    }
-
-    /// Observe branch decisions in the context of their enclosing loops.
-    /// Updates coverage sets and stale counters. Marks loops as converged
-    /// when stale_count reaches the window.
-    pub(crate) fn observe(
-        &mut self,
-        loop_context: &HashMap<u32, HashSet<u32>>,
-        branch_path: &[BranchDecision],
-    ) {
-        if self.window == 0 {
-            return;
-        }
-
-        // Collect all loop_ids mentioned in this trace.
-        let mut loops_in_trace: HashSet<u32> = HashSet::new();
-        for loop_ids in loop_context.values() {
-            loops_in_trace.extend(loop_ids);
-        }
-
-        // For each loop, check if any new (branch_id, taken) pair appeared.
-        let mut new_coverage_per_loop: HashMap<u32, bool> = HashMap::new();
-
-        for bd in branch_path {
-            if let Some(loop_ids) = loop_context.get(&bd.branch_id) {
-                for &loop_id in loop_ids {
-                    let pair = (bd.branch_id, bd.taken);
-                    let coverage_set = self.coverage.entry(loop_id).or_default();
-                    if coverage_set.insert(pair) {
-                        new_coverage_per_loop.insert(loop_id, true);
-                    } else {
-                        new_coverage_per_loop.entry(loop_id).or_insert(false);
-                    }
-                }
-            }
-        }
-
-        // Update stale counts.
-        for &loop_id in &loops_in_trace {
-            let had_new = new_coverage_per_loop
-                .get(&loop_id)
-                .copied()
-                .unwrap_or(false);
-            if had_new {
-                self.stale_count.insert(loop_id, 0);
-                self.converged.remove(&loop_id);
-            } else {
-                let count = self.stale_count.entry(loop_id).or_insert(0);
-                *count += 1;
-                if *count >= self.window {
-                    self.converged.insert(loop_id);
-                }
-            }
-        }
-    }
-
-    /// Returns true if the branch's enclosing loop has converged.
-    pub(crate) fn should_skip_branch(
-        &self,
-        branch_id: u32,
-        loop_context: &HashMap<u32, HashSet<u32>>,
-    ) -> bool {
-        if self.window == 0 {
-            return false;
-        }
-        if let Some(loop_ids) = loop_context.get(&branch_id) {
-            loop_ids.iter().any(|id| self.converged.contains(id))
-        } else {
-            false
-        }
-    }
-
-    /// Return a snapshot of the converged loop IDs. Used by the pipelining path
-    /// to capture the convergence set at build-time so it can be moved into
-    /// `spawn_blocking` without borrowing `self`.
-    pub(crate) fn converged_snapshot(&self) -> HashSet<u32> {
-        self.converged.clone()
-    }
-}
-
 /// Input bundle for the Z3 solve phase. Used by unit tests to validate Z3 solving
 /// independently of the main exploration loop.
 #[cfg(test)]
@@ -1732,8 +1990,6 @@ struct Z3SolveInput {
     obs: Observation,
     solvable_with_idx: Vec<(usize, SymExpr)>,
     invariant_skip: HashSet<usize>,
-    loop_context: HashMap<u32, HashSet<u32>>,
-    converged_loops: HashSet<u32>,
     param_infos: Vec<ParamInfo>,
     param_names: Vec<String>,
     solver_timeout_ms: Option<u64>,
@@ -1784,18 +2040,12 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
         if input.invariant_skip.contains(&branch_idx) {
             continue;
         }
-        // Skip branches in converged loops.
         let branch_id = input
             .obs
             .result
             .branch_path
             .get(branch_idx)
             .map_or(0, |bd| bd.branch_id);
-        if let Some(loop_ids) = input.loop_context.get(&branch_id)
-            && loop_ids.iter().any(|id| input.converged_loops.contains(id))
-        {
-            continue;
-        }
 
         match solver::solve_for_new_path(
             &solvable,
@@ -1804,8 +2054,13 @@ fn z3_solve_step(input: Z3SolveInput) -> Z3SolveOutput {
             &input.param_infos,
         ) {
             Ok(SolveResult::Sat(values)) => {
-                let new_inputs =
-                    overlay_solved_values(&input.obs.inputs, &values, &input.param_names);
+                let param_types = param_types_of(&input.param_infos);
+                let new_inputs = overlay_solved_values(
+                    &input.obs.inputs,
+                    &values,
+                    &input.param_names,
+                    &param_types,
+                );
                 output.candidates.push(WorklistEntry {
                     inputs: new_inputs,
                     source: InputSource::Z3Solved,
@@ -2022,6 +2277,7 @@ fn solve_and_generate(
 
 /// Async boundary refinement: binary-searches between witness pairs using the
 /// frontend for execution. Runs after discovery with its own per-boundary budget.
+#[allow(clippy::too_many_arguments)] // native_pins added for extractor pinning (str-6cdp)
 async fn refine_boundaries_async(
     frontend: &mut Frontend,
     function_name: &str,
@@ -2030,6 +2286,7 @@ async fn refine_boundaries_async(
     budget_per_boundary: usize,
     setup_context: &Option<SetupContextStack>,
     execute_plan: Option<crate::protocol::InvocationPlan>,
+    native_pins: Option<&crate::input_gen::NativePins>,
 ) -> Result<Vec<boundary_search::BoundaryResult>, ExploreError> {
     // Collect branch IDs with witnesses on both sides.
     let mut branch_ids: Vec<u32> = Vec::new();
@@ -2068,10 +2325,11 @@ async fn refine_boundaries_async(
             }
 
             let candidate = &candidates[0];
-            let execute_candidate = crate::planner_consumer::execute_inputs_for_plan(
+            let execute_candidate = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                 candidate,
-                param_infos.len(),
+                param_infos,
                 execute_plan.as_ref(),
+                native_pins,
             )?;
             let response = match frontend
                 .send(Command::Execute {
@@ -2216,11 +2474,36 @@ pub async fn explore_with_oracle(
         None => (HashSet::new(), Vec::new()),
     };
     let mut batch_discovery_inputs: Vec<Vec<serde_json::Value>> = Vec::new();
+
+    // str-6cdp: capture the native-replay marker for each custom-generator /
+    // extractor parameter slot from the seed/user/prior candidate vectors that
+    // upstream prefetch already resolved. These markers are re-applied at the
+    // execute funnel on EVERY iteration so the extractor param (e.g. axum
+    // State<AppState>) never reaches the frontend as a generated/mutated scalar,
+    // even after the prefetch queue is exhausted or a strategy produced a fresh
+    // non-native vector.
+    let native_pins = {
+        let mut candidates: Vec<Vec<serde_json::Value>> = Vec::new();
+        candidates.extend(seed_inputs.iter().cloned());
+        candidates.extend(user_inputs.iter().cloned());
+        candidates.extend(prior_discovery_inputs.iter().cloned());
+        crate::input_gen::NativePins::capture_from_inputs(&config.value_sources, &candidates)
+    };
+    let native_pins_arg = if native_pins.is_empty() {
+        None
+    } else {
+        Some(&native_pins)
+    };
+
     let mut executions = Vec::new();
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
     let mut total_executions: usize = 0;
+    // str-303gg review fix: remember a representative `not_supported` reason seen
+    // during exploration. Used only at finalize to reclassify the function as
+    // Unsupported when it collected no successful observation at all.
+    let mut unsupported_reason: Option<String> = None;
     let mut z3_generated: usize = 0;
     let mut fuzz_generated: usize = 0;
     let mut fuzz_attempts: HashMap<u32, FuzzAttemptState> = HashMap::new();
@@ -2293,6 +2576,7 @@ pub async fn explore_with_oracle(
         params: param_infos.to_vec(),
         literals: vec![],
         capabilities: FrontendCapabilities::default(),
+        value_sources: config.value_sources.clone(),
     };
     let feedback_mode = if config.solver_offload {
         ConcolicFeedbackMode::Async
@@ -2353,15 +2637,17 @@ pub async fn explore_with_oracle(
                     timed_out_overall = true;
                     break 'float_probe;
                 }
-                let execute_float_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let execute_float_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &float_inputs,
-                    param_infos.len(),
+                    param_infos,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
-                let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let execute_floor_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &floor_inputs,
-                    param_infos.len(),
+                    param_infos,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let float_resp = frontend
                     .send(Command::Execute {
@@ -2564,6 +2850,7 @@ pub async fn explore_with_oracle(
             &budget,
             &setup_context,
             prepare_id.as_deref(),
+            native_pins_arg,
         )
         .await?;
 
@@ -2575,6 +2862,15 @@ pub async fn explore_with_oracle(
             }
             ObserveOneResult::FrontendSkipped => {
                 total_executions += 1;
+                continue;
+            }
+            ObserveOneResult::Unsupported(reason) => {
+                // str-303gg review fix: a not_supported iteration is skipped like
+                // a frontend error, but its reason is remembered so the function
+                // can be reclassified Unsupported at finalize IF nothing else ever
+                // executed. It never aborts a partially-covered function.
+                total_executions += 1;
+                unsupported_reason.get_or_insert(reason);
                 continue;
             }
             ObserveOneResult::Terminated(reason) => {
@@ -2687,17 +2983,19 @@ pub async fn explore_with_oracle(
                                 None => break crate::fuzzer::FuzzTermination::Plateau,
                             };
 
-                            let mutated = crate::input_gen::havoc_mutate_inputs(
+                            let mutated = crate::input_gen::havoc_mutate_inputs_with_sources(
                                 &parent_inputs,
                                 param_infos,
+                                &config.value_sources,
                                 1.0,
                                 &[],
                                 &mut fuzz_rng,
                             );
-                            let execute_mutated = crate::planner_consumer::execute_inputs_for_plan(
+                            let execute_mutated = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                                 &mutated,
-                                param_infos.len(),
+                                param_infos,
                                 config.default_execute_plan.as_ref(),
+                                native_pins_arg,
                             )?;
 
                             let response = frontend
@@ -3016,8 +3314,13 @@ pub async fn explore_with_oracle(
                                 param_infos,
                             ) {
                                 Ok(SolveResult::Sat(values)) => {
-                                    let new_inputs =
-                                        overlay_solved_values(&obs.inputs, &values, &param_names);
+                                    let param_types = param_types_of(param_infos);
+                                    let new_inputs = overlay_solved_values(
+                                        &obs.inputs,
+                                        &values,
+                                        &param_names,
+                                        &param_types,
+                                    );
                                     supplementary.push(WorklistEntry {
                                         inputs: new_inputs,
                                         source: InputSource::McdcTarget,
@@ -3126,6 +3429,7 @@ pub async fn explore_with_oracle(
                 budget,
                 &setup_context,
                 config.default_execute_plan.clone(),
+                native_pins_arg,
             )
             .await?
         } else {
@@ -3221,10 +3525,11 @@ pub async fn explore_with_oracle(
                     crate::shrink::bulk_shrink_candidate(&current, param_infos)
             {
                 attempts += 1;
-                let execute_bulk_trial = crate::planner_consumer::execute_inputs_for_plan(
+                let execute_bulk_trial = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &bulk_trial,
-                    param_infos.len(),
+                    param_infos,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let resp = frontend
                     .send(Command::Execute {
@@ -3264,10 +3569,11 @@ pub async fn explore_with_oracle(
                         break;
                     }
                     attempts += 1;
-                    let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
+                    let execute_trial = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                         &trial,
-                        param_infos.len(),
+                        param_infos,
                         config.default_execute_plan.as_ref(),
+                        native_pins_arg,
                     )?;
                     let resp = frontend
                         .send(Command::Execute {
@@ -3316,10 +3622,11 @@ pub async fn explore_with_oracle(
                         let mut trial = current.clone();
                         trial[i] = candidate;
                         attempts += 1;
-                        let execute_trial = crate::planner_consumer::execute_inputs_for_plan(
+                        let execute_trial = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                             &trial,
-                            param_infos.len(),
+                            param_infos,
                             config.default_execute_plan.as_ref(),
+                            native_pins_arg,
                         )?;
 
                         let resp = frontend
@@ -3382,6 +3689,18 @@ pub async fn explore_with_oracle(
     feedback_scheduler.drain_pending_feedback().await?;
     let pipeline_overlaps = feedback_scheduler.pipeline_overlaps();
     let unique_paths = covered_paths.len();
+
+    // str-303gg review fix: reclassify the whole function as Unsupported only
+    // when it produced no successful/behavioral observation at all AND at least
+    // one iteration reported not_supported. A function that collected coverage on
+    // any iteration keeps it — a single not_supported result (e.g. an axum
+    // State<T> handler on a non-native-replay solver input) must not discard it.
+    let had_observation = !executions.is_empty() || unique_paths > 0;
+    if let Some(reason) =
+        crate::observe::aggregate_unsupported_reason(unsupported_reason, had_observation)
+    {
+        return Err(ExploreError::Unsupported(reason));
+    }
     let mcdc_summary = mcdc_table.map(|t| t.summary());
     let opaque_suggestions =
         crate::executability::build_opaque_suggestions(param_infos, &param_fail_counts);
@@ -3486,7 +3805,7 @@ mod tests {
     fn make_int_param(name: &str) -> ParamInfo {
         ParamInfo {
             name: name.into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }
     }
@@ -3579,6 +3898,7 @@ mod tests {
             params: vec![make_int_param("x")],
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         }
     }
 
@@ -3851,7 +4171,7 @@ mod tests {
         solved.insert("x".to_string(), ConcreteValue::Int(42));
         let param_names = vec!["x".to_string(), "name".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(result[0], serde_json::json!(42));
         assert_eq!(result[1], serde_json::json!("hello"));
     }
@@ -3863,7 +4183,7 @@ mod tests {
         solved.insert("some_var".to_string(), ConcreteValue::Int(99));
         let param_names = vec!["x".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(result[0], serde_json::json!(99));
     }
 
@@ -3874,7 +4194,7 @@ mod tests {
         solved.insert("unknown_var".to_string(), ConcreteValue::Int(99));
         let param_names = vec!["a".to_string(), "b".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(result, base);
     }
 
@@ -3888,7 +4208,7 @@ mod tests {
         );
         let param_names = vec!["payload".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(
             result,
             vec![serde_json::json!({
@@ -3897,8 +4217,16 @@ mod tests {
         );
     }
 
+    /// Snake_case field segments must be overlaid under the RAW field name, not
+    /// a camelCased one. Rust serde-derive structs default to snake_case JSON
+    /// keys, so a solved `payload.owner_person_id` value must land under
+    /// `owner_person_id` — camelCasing it to `ownerPersonId` makes serde reject
+    /// the object with `missing field owner_person_id` and the execution fails
+    /// (str-wp6cf). This is the fast, frontend-independent regression for the
+    /// same defect the `#[ignore]`d e2e `classify_widget` fixture exercises
+    /// through a real Rust frontend subprocess.
     #[test]
-    fn overlay_nested_payload_field_uses_json_field_name() {
+    fn overlay_nested_payload_field_preserves_snake_case() {
         let base = vec![serde_json::json!({ "label": "existing" })];
         let mut solved = HashMap::new();
         solved.insert(
@@ -3907,13 +4235,371 @@ mod tests {
         );
         let param_names = vec!["payload".to_string()];
 
-        let result = overlay_solved_values(&base, &solved, &param_names);
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
         assert_eq!(
             result,
             vec![serde_json::json!({
                 "label": "existing",
-                "ownerPersonId": "person-id",
+                "owner_person_id": "person-id",
             })]
+        );
+    }
+
+    fn bare_int() -> TypeInfo {
+        TypeInfo::Int {
+            int_width: None,
+            int_signed: None,
+        }
+    }
+
+    /// The `TypeInfo` the Rust analyzer emits for an `arity`-element tuple:
+    /// an object whose declared field names are the indices `0..arity`
+    /// (`convert_tuple` in `shatter-rust/src/analyzer.rs`).
+    fn tuple_type(arity: usize) -> TypeInfo {
+        TypeInfo::Object {
+            fields: (0..arity).map(|i| (i.to_string(), bare_int())).collect(),
+        }
+    }
+
+    /// A struct declared `#[serde(rename_all = "camelCase")]` exposes the JSON
+    /// key `unitPrice`, but the solver records the RAW Rust source field
+    /// `unit_price`. The overlay must resolve the raw segment to the declared
+    /// camelCase key using the parameter's `TypeInfo::Object` metadata — a
+    /// blanket "keep raw" would emit `unit_price`, which serde rejects as
+    /// `missing field unitPrice` (str-wp6cf review follow-up). The declared-key
+    /// resolution is what closes the rename_all gap end-to-end.
+    #[test]
+    fn overlay_resolves_serde_rename_all_camel_case_field() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("order . unit_price".to_string(), ConcreteValue::Int(4242));
+        let param_names = vec!["order".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            // Declared JSON key is the serde-resolved camelCase form.
+            fields: vec![("unitPrice".to_string(), bare_int())],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!({ "unitPrice": 4242 })]);
+    }
+
+    /// Nested object paths resolve each segment against its own level of the
+    /// type tree, honoring renames independently. Here the outer field uses a
+    /// per-field `#[serde(rename)]`-style declared key while the inner uses
+    /// `rename_all = "camelCase"`; both raw source segments must map to their
+    /// declared JSON keys.
+    #[test]
+    fn overlay_resolves_nested_renamed_fields_per_level() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert(
+            "cfg . line_item . unit_price".to_string(),
+            ConcreteValue::Int(7),
+        );
+        let param_names = vec!["cfg".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![(
+                // `line_item` is not renamed at this level (exact match).
+                "line_item".to_string(),
+                TypeInfo::Object {
+                    fields: vec![("unitPrice".to_string(), bare_int())],
+                },
+            )],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(
+            result,
+            vec![serde_json::json!({ "line_item": { "unitPrice": 7 } })]
+        );
+    }
+
+    /// Default serde (no rename): the raw segment already equals the declared
+    /// key, so it is preserved verbatim — the case the original str-wp6cf fix
+    /// targeted, now exercised with real type metadata present.
+    #[test]
+    fn overlay_preserves_snake_case_when_declared_key_matches() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("w . unit_price".to_string(), ConcreteValue::Int(9));
+        let param_names = vec!["w".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![("unit_price".to_string(), bare_int())],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!({ "unit_price": 9 })]);
+    }
+
+    /// A tuple param constrained through a tuple index (`p.0`) must overlay into
+    /// a JSON ARRAY. `TypeInfo` has no tuple variant — the Rust analyzer maps
+    /// `(i32, i32)` to `Object { fields: [("0", …), ("1", …)] }` — so a
+    /// blanket object overlay emits `{"0": …}`, which serde rejects with
+    /// `invalid type: map, expected a tuple of size 2` and the solved row never
+    /// executes (str-wg4jo). The unconstrained sibling element must survive.
+    #[test]
+    fn overlay_places_tuple_index_at_array_position() {
+        let base = vec![serde_json::json!({ "0": 1, "1": 2 })];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0".to_string(), ConcreteValue::Int(42));
+        let param_names = vec!["p".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![("0".to_string(), bare_int()), ("1".to_string(), bare_int())],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!([42, 2])]);
+    }
+
+    /// A tuple `TypeInfo` of N elements: an index beyond what the base value
+    /// holds pads with nulls rather than dropping the solved value, and a base
+    /// carrying nothing (null) becomes an array, not an object.
+    #[test]
+    fn overlay_pads_array_for_higher_tuple_index() {
+        let base = vec![serde_json::Value::Null];
+        let mut solved = HashMap::new();
+        solved.insert("p . 2".to_string(), ConcreteValue::Int(7));
+        let param_names = vec!["p".to_string()];
+        let param_types = vec![tuple_type(3)];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!([null, null, 7])]);
+    }
+
+    /// Object and array segments compose within one path: a struct field inside
+    /// a tuple element (`p.0.width`) overlays into an array of objects.
+    #[test]
+    fn overlay_mixes_tuple_index_and_field_segments() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0 . width".to_string(), ConcreteValue::Int(5));
+        let param_names = vec!["p".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![(
+                "0".to_string(),
+                TypeInfo::Object {
+                    fields: vec![("width".to_string(), bare_int())],
+                },
+            )],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!([{ "width": 5 }])]);
+    }
+
+    /// A declared `TypeInfo::Array` (e.g. a `Vec` element constraint) also takes
+    /// the positional path — positional handling keys off the declared type, not
+    /// off the tuple lowering specifically.
+    #[test]
+    fn overlay_indexes_declared_array_type() {
+        let base = vec![serde_json::json!([1, 2, 3])];
+        let mut solved = HashMap::new();
+        solved.insert("v . 1".to_string(), ConcreteValue::Int(88));
+        let param_names = vec!["v".to_string()];
+        let param_types = vec![TypeInfo::Array {
+            element: Box::new(bare_int()),
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!([1, 88, 3])]);
+    }
+
+    /// REGRESSION (review of str-wg4jo): the array/object choice must come from
+    /// the declared type, never from the segment's spelling. A TS or Go object
+    /// that legitimately declares a numeric-looking key is NOT positional — the
+    /// declared field set is not `0..n` — so `obj.0` must stay an object key and
+    /// the sibling key must survive. Deciding from segment text alone silently
+    /// converted these frontends' objects into arrays.
+    #[test]
+    fn overlay_keeps_numeric_key_on_non_positional_object() {
+        let base = vec![serde_json::json!({ "0": 1, "label": "keep" })];
+        let mut solved = HashMap::new();
+        solved.insert("obj . 0".to_string(), ConcreteValue::Int(5));
+        let param_names = vec!["obj".to_string()];
+        let param_types = vec![TypeInfo::Object {
+            fields: vec![
+                ("0".to_string(), bare_int()),
+                ("label".to_string(), TypeInfo::Str),
+            ],
+        }];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(
+            result,
+            vec![serde_json::json!({ "0": 5, "label": "keep" })]
+        );
+    }
+
+    /// With NO declared type for the parameter, a numeric segment stays an
+    /// object key — the pre-positional behavior. Guessing "array" from the
+    /// segment text would change TS/Go overlays that this issue never intended
+    /// to touch.
+    #[test]
+    fn overlay_without_type_metadata_keeps_numeric_segment_as_key() {
+        let base = vec![serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0".to_string(), ConcreteValue::Int(3));
+        let param_names = vec!["p".to_string()];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &[]);
+        assert_eq!(result, vec![serde_json::json!({ "0": 3 })]);
+    }
+
+    /// A positional TYPE whose base VALUE is an object with non-index keys must
+    /// not have that value thrown away: the overlay degrades to an object key
+    /// so the sibling data survives. Losing fields silently is worse than an
+    /// overlay the deserializer will reject.
+    #[test]
+    fn overlay_preserves_mixed_key_object_under_positional_type() {
+        let base = vec![serde_json::json!({ "0": 1, "note": "keep" })];
+        let mut solved = HashMap::new();
+        solved.insert("p . 0".to_string(), ConcreteValue::Int(9));
+        let param_names = vec!["p".to_string()];
+        let param_types = vec![tuple_type(2)];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(result, vec![serde_json::json!({ "0": 9, "note": "keep" })]);
+    }
+
+    /// Only segments the tuple lowering can actually emit are treated as
+    /// indices. A leading-zero segment and one past
+    /// `MAX_OVERLAY_ARRAY_INDEX` stay object keys even under a positional type,
+    /// so no malformed constraint can force a giant sparse array.
+    #[test]
+    fn overlay_keeps_non_index_numeric_segments_as_object_keys() {
+        let base = vec![serde_json::json!({}), serde_json::json!({})];
+        let mut solved = HashMap::new();
+        solved.insert("a . 01".to_string(), ConcreteValue::Int(1));
+        solved.insert("b . 99999".to_string(), ConcreteValue::Int(2));
+        let param_names = vec!["a".to_string(), "b".to_string()];
+        let param_types = vec![tuple_type(2), tuple_type(2)];
+
+        let result = overlay_solved_values(&base, &solved, &param_names, &param_types);
+        assert_eq!(
+            result,
+            vec![
+                serde_json::json!({ "01": 1 }),
+                serde_json::json!({ "99999": 2 }),
+            ]
+        );
+    }
+
+    /// `positional_object_arity` recognizes exactly the tuple shape: field names
+    /// covering `0..n`. Gaps, duplicates, extra non-index keys, and an empty
+    /// field list are all non-positional.
+    #[test]
+    fn positional_object_arity_recognizes_only_full_index_sets() {
+        let fields = |names: &[&str]| -> Vec<(String, TypeInfo)> {
+            names
+                .iter()
+                .map(|n| ((*n).to_string(), bare_int()))
+                .collect()
+        };
+        assert_eq!(positional_object_arity(&fields(&["0", "1", "2"])), 3);
+        // Declaration order does not matter, only the set of indices.
+        assert_eq!(positional_object_arity(&fields(&["1", "0"])), 2);
+        assert_eq!(positional_object_arity(&fields(&[])), 0);
+        // Gap: "0","2" over two fields leaves index 1 unclaimed.
+        assert_eq!(positional_object_arity(&fields(&["0", "2"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["0", "0"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["0", "label"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["01"])), 0);
+    }
+
+    /// Independent reference implementation of `shatter-rust`'s
+    /// `apply_rename_all` (`analyzer.rs`), duplicated here on purpose: it pins the
+    /// exact byte-level semantics `serde_rename_variants` must reproduce, so a
+    /// drift between the two crates' hand-written serde-rule reimplementations
+    /// fails a test instead of silently reintroducing the `missing field` bug.
+    /// If serde's rules or shatter-rust's copy change, update BOTH this reference
+    /// and `serde_rename_variants`.
+    fn shatter_rust_apply_rename_all(field: &str, rule: &str) -> String {
+        let words: Vec<&str> = field.split('_').filter(|w| !w.is_empty()).collect();
+        let capitalize = |w: &str| {
+            let mut chars = w.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+            })
+        };
+        match rule {
+            "lowercase" => words.concat().to_lowercase(),
+            "UPPERCASE" => words.concat().to_uppercase(),
+            "PascalCase" => words.iter().map(|w| capitalize(w)).collect(),
+            "camelCase" => words
+                .iter()
+                .enumerate()
+                .map(|(i, w)| if i == 0 { w.to_lowercase() } else { capitalize(w) })
+                .collect(),
+            "snake_case" => words.join("_").to_lowercase(),
+            "SCREAMING_SNAKE_CASE" => words.join("_").to_uppercase(),
+            "kebab-case" => words.join("-").to_lowercase(),
+            "SCREAMING-KEBAB-CASE" => words.join("-").to_uppercase(),
+            other => panic!("unknown rule {other}"),
+        }
+    }
+
+    const SERDE_RULES: [&str; 8] = [
+        "lowercase",
+        "UPPERCASE",
+        "PascalCase",
+        "camelCase",
+        "snake_case",
+        "SCREAMING_SNAKE_CASE",
+        "kebab-case",
+        "SCREAMING-KEBAB-CASE",
+    ];
+
+    #[test]
+    fn serde_rename_variants_cover_serde_rules() {
+        let variants = serde_rename_variants("unit_price");
+        for expected in [
+            "unitPrice",  // camelCase
+            "UnitPrice",  // PascalCase
+            "unit-price", // kebab-case
+            "unit_price", // snake_case
+            "UNIT_PRICE", // SCREAMING_SNAKE_CASE
+            "UNIT-PRICE", // SCREAMING-KEBAB-CASE
+            "unitprice",  // lowercase
+            "UNITPRICE",  // UPPERCASE
+        ] {
+            assert!(
+                variants.iter().any(|v| v == expected),
+                "expected variant {expected:?} in {variants:?}"
+            );
+        }
+    }
+
+    /// Every rule's `serde_rename_variants` output must equal `shatter-rust`'s
+    /// `apply_rename_all`, INCLUDING for mixed-case source idents like
+    /// `request_URL` where the two previously diverged (`requestUrl` vs
+    /// `requestURL`) — the divergence that dropped the overlay back to the raw
+    /// name (team-lead second review).
+    #[test]
+    fn serde_rename_variants_match_shatter_rust_rules() {
+        for field in ["unit_price", "request_URL", "HTTPServer_id", "x", "a_b_c"] {
+            let variants = serde_rename_variants(field);
+            for rule in SERDE_RULES {
+                let expected = shatter_rust_apply_rename_all(field, rule);
+                assert!(
+                    variants.contains(&expected),
+                    "field {field:?} rule {rule:?}: expected {expected:?} in {variants:?}"
+                );
+            }
+        }
+    }
+
+    /// The specific mixed-case regression, pinned to concrete strings so a
+    /// re-divergence is unmistakable.
+    #[test]
+    fn serde_rename_variants_lowercase_word_remainder() {
+        let variants = serde_rename_variants("request_URL");
+        assert!(
+            variants.iter().any(|v| v == "requestUrl"),
+            "camelCase of request_URL must be requestUrl (remainder lower-cased); got {variants:?}"
+        );
+        assert!(
+            !variants.iter().any(|v| v == "requestURL"),
+            "must NOT emit requestURL — diverges from shatter-rust apply_rename_all"
         );
     }
 
@@ -4263,7 +4949,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -4317,7 +5003,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -4383,7 +5069,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -4594,7 +5280,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
 
@@ -4612,8 +5298,6 @@ mod tests {
             obs,
             solvable_with_idx,
             invariant_skip: HashSet::new(),
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos,
             param_names: vec!["x".to_string()],
             solver_timeout_ms: None,
@@ -4651,8 +5335,6 @@ mod tests {
             obs,
             solvable_with_idx: vec![],
             invariant_skip: HashSet::new(),
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos: vec![],
             param_names: vec![],
             solver_timeout_ms: None,
@@ -4664,74 +5346,11 @@ mod tests {
         assert!(output.stall_branch_ids.is_empty());
     }
 
-    /// `z3_solve_step` skips branches in converged loops.
-    #[test]
-    fn z3_solve_step_skips_converged_loop_branches() {
-        let x_gt_0 = SymExpr::BinOp {
-            op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param {
-                name: "x".into(),
-                path: vec![],
-            }),
-            right: Box::new(SymExpr::Const(ConstValue::Int(0))),
-        };
-
-        let obs = Observation {
-            inputs: vec![serde_json::json!(5)],
-            result: make_exec_result(vec![BranchDecision {
-                branch_id: 42,
-                line: 1,
-                taken: true,
-                constraint: SymConstraint::Expr {
-                    expr: x_gt_0.clone(),
-                },
-                conditions: None,
-            }]),
-            source: InputSource::Seed,
-            path_id: 99,
-            is_new_path: true,
-            is_sampled_skip: false,
-            mock_values: vec![],
-        };
-
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(42, {
-            let mut s = HashSet::new();
-            s.insert(1u32); // loop_id=1 encloses branch_id=42
-            s
-        });
-
-        let mut converged_loops = HashSet::new();
-        converged_loops.insert(1u32); // loop_id=1 is converged
-
-        let input = Z3SolveInput {
-            obs,
-            solvable_with_idx: vec![(0, x_gt_0)],
-            invariant_skip: HashSet::new(),
-            loop_context,
-            converged_loops,
-            param_infos: vec![ParamInfo {
-                name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
-                type_name: None,
-            }],
-            param_names: vec!["x".to_string()],
-            solver_timeout_ms: None,
-        };
-
-        let output = z3_solve_step(input);
-        assert!(
-            output.candidates.is_empty(),
-            "converged loop branch should be skipped by z3_solve_step"
-        );
-        assert_eq!(output.z3_count, 0);
-    }
-
     #[test]
     fn meta_strategy_replaces_placeholder() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let strategies = vec![
@@ -4753,6 +5372,7 @@ mod tests {
             params: params.clone(),
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(0);
 
@@ -4765,7 +5385,7 @@ mod tests {
     fn meta_strategy_exhaustible_strategies_exhaust() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         // Only exhaustible strategies.
@@ -4786,6 +5406,7 @@ mod tests {
             params: params.clone(),
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(0);
 
@@ -4811,11 +5432,12 @@ mod tests {
         let ctx = StrategyContext {
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(0);
 
@@ -4873,7 +5495,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -4924,7 +5546,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -4980,7 +5602,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5040,7 +5662,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5088,7 +5710,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5136,7 +5758,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5216,7 +5838,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5272,7 +5894,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5320,7 +5942,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5414,7 +6036,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5474,7 +6096,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5529,7 +6151,7 @@ mod tests {
             vec![],
             &[ParamInfo {
                 name: "x".into(),
-                typ: crate::types::TypeInfo::Int,
+                typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             &explore_config,
@@ -5826,7 +6448,7 @@ mod tests {
         };
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -6145,7 +6767,7 @@ mod tests {
 
         let param_infos = vec![ParamInfo {
             name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
+            typ: crate::types::TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let param_names = vec!["x".to_string()];
@@ -6195,8 +6817,6 @@ mod tests {
             obs: obs.clone(),
             solvable_with_idx: solvable_with_idx.clone(),
             invariant_skip,
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos: param_infos.clone(),
             param_names: param_names.clone(),
             solver_timeout_ms: None,
@@ -6213,8 +6833,6 @@ mod tests {
             obs: obs.clone(),
             solvable_with_idx: solvable_with_idx.clone(),
             invariant_skip: HashSet::new(),
-            loop_context: HashMap::new(),
-            converged_loops: HashSet::new(),
             param_infos: param_infos.clone(),
             param_names: param_names.clone(),
             solver_timeout_ms: None,
@@ -6228,219 +6846,6 @@ mod tests {
         assert!(
             out_with_detection.z3_count < out_no_detection.z3_count,
             "invariant detection should reduce Z3 attempts for a loop-invariant branch"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Coverage-guided diminishing returns tests (str-ztqi)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn loop_coverage_tracker_detects_convergence() {
-        let mut tracker = LoopCoverageTracker::new(2);
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(10, [1].into_iter().collect());
-
-        // First observation: new coverage.
-        let bp1 = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        tracker.observe(&loop_context, &bp1);
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-
-        // Second observation: same coverage — stale=1, not converged yet.
-        tracker.observe(&loop_context, &bp1);
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-
-        // Third observation: same again — stale=2 >= window=2 → converged.
-        tracker.observe(&loop_context, &bp1);
-        assert!(tracker.should_skip_branch(10, &loop_context));
-    }
-
-    #[test]
-    fn loop_coverage_tracker_resets_on_new_coverage() {
-        let mut tracker = LoopCoverageTracker::new(2);
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(10, [1].into_iter().collect());
-
-        let bp1 = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        tracker.observe(&loop_context, &bp1);
-        tracker.observe(&loop_context, &bp1); // stale=1
-
-        // New coverage resets stale count.
-        let bp2 = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: false,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        tracker.observe(&loop_context, &bp2);
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-    }
-
-    #[test]
-    fn loop_coverage_tracker_disabled_when_window_zero() {
-        let mut tracker = LoopCoverageTracker::new(0);
-        let mut loop_context: HashMap<u32, HashSet<u32>> = HashMap::new();
-        loop_context.insert(10, [1].into_iter().collect());
-
-        let bp = vec![BranchDecision {
-            branch_id: 10,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::default(),
-            conditions: None,
-        }];
-        for _ in 0..10 {
-            tracker.observe(&loop_context, &bp);
-        }
-        assert!(!tracker.should_skip_branch(10, &loop_context));
-    }
-
-    /// Integration test: enabling loop_convergence_window reduces Z3 solve attempts
-    /// for branches in converged loops without reducing coverage of non-loop paths.
-    ///
-    /// Scenario: f(x) has a loop (loop_id=1) containing branch 0 (`x > 10`, always
-    /// taken=true). Five new-path observations all produce the same loop coverage.
-    /// With window=3, the loop is marked converged on the 4th observation and Z3
-    /// negation is suppressed for observations 4 and 5.
-    #[test]
-    fn loop_convergence_suppresses_z3_for_converged_loop() {
-        use crate::sym_expr::SymExpr;
-        let x_gt_10 = SymExpr::BinOp {
-            op: BinOpKind::Gt,
-            left: Box::new(SymExpr::Param {
-                name: "x".into(),
-                path: vec![],
-            }),
-            right: Box::new(SymExpr::Const(ConstValue::Int(10))),
-        };
-        let loop_branch = BranchDecision {
-            branch_id: 0,
-            line: 5,
-            taken: true,
-            constraint: SymConstraint::Expr {
-                expr: x_gt_10.clone(),
-            },
-            conditions: None,
-        };
-        // scope_events encode branch 0 as inside loop 1.
-        let scope_events_with_loop = vec![
-            TraceEvent::Scope {
-                event: ScopeEvent::LoopEnter { loop_id: 1 },
-            },
-            TraceEvent::Branch {
-                decision: loop_branch.clone(),
-            },
-            TraceEvent::Scope {
-                event: ScopeEvent::LoopExit { loop_id: 1 },
-            },
-        ];
-        let param_infos = vec![ParamInfo {
-            name: "x".into(),
-            typ: crate::types::TypeInfo::Int,
-            type_name: None,
-        }];
-        let param_names = vec!["x".to_string()];
-        // 5 observations, all new-path, with the same loop branch coverage.
-        let observations: Vec<Observation> = (0..5u64)
-            .map(|i| Observation {
-                inputs: vec![serde_json::json!(15i64)],
-                result: ExecuteResult {
-                    branch_path: vec![loop_branch.clone()],
-                    scope_events: scope_events_with_loop.clone(),
-                    loop_body_states: vec![],
-                    return_value: None,
-                    thrown_error: None,
-                    lines_executed: vec![],
-                    calls_to_external: vec![],
-                    path_constraints: vec![],
-                    side_effects: vec![],
-                    capture_truncation: None,
-                    discovered_dependencies: vec![],
-                    connection_failures: vec![],
-                    runtime_crypto_boundaries: vec![],
-                    outcome: None,
-                    performance: empty_perf(),
-                },
-                source: InputSource::Seed,
-                path_id: i, // unique path_id per observation
-                is_new_path: true,
-                is_sampled_skip: false,
-                mock_values: vec![],
-            })
-            .collect();
-
-        // solvable_with_idx for a single-branch observation: [(0, x>10)]
-        let solvable_with_idx = vec![(0usize, x_gt_10)];
-
-        // Z3 solving now happens in z3_solve_step (called from Z3SolverStrategy.feedback),
-        // not in solve_and_generate. Simulate the main loop: process observations
-        // sequentially, updating LoopCoverageTracker and passing converged_loops to
-        // z3_solve_step each round.
-
-        // With window=3: obs 1–3 run Z3; obs 4 triggers convergence → skip; obs 5 → skip.
-        let mut tracker_conv = LoopCoverageTracker::new(3);
-        let mut z3_count_conv = 0usize;
-        for obs in &observations {
-            let loop_context = extract_loop_context(&obs.result.scope_events);
-            tracker_conv.observe(&loop_context, &obs.result.branch_path);
-            let converged = tracker_conv.converged_snapshot();
-            let out = z3_solve_step(Z3SolveInput {
-                obs: obs.clone(),
-                solvable_with_idx: solvable_with_idx.clone(),
-                invariant_skip: HashSet::new(),
-                loop_context,
-                converged_loops: converged,
-                param_infos: param_infos.clone(),
-                param_names: param_names.clone(),
-                solver_timeout_ms: None,
-            });
-            z3_count_conv += out.z3_count;
-        }
-
-        // Without convergence (window=0): all 5 run Z3.
-        let mut z3_count_no_conv = 0usize;
-        for obs in &observations {
-            let loop_context = extract_loop_context(&obs.result.scope_events);
-            let out = z3_solve_step(Z3SolveInput {
-                obs: obs.clone(),
-                solvable_with_idx: solvable_with_idx.clone(),
-                invariant_skip: HashSet::new(),
-                loop_context,
-                converged_loops: HashSet::new(),
-                param_infos: param_infos.clone(),
-                param_names: param_names.clone(),
-                solver_timeout_ms: None,
-            });
-            z3_count_no_conv += out.z3_count;
-        }
-
-        // Without convergence: all 5 observations attempt Z3.
-        assert_eq!(
-            z3_count_no_conv, 5,
-            "window=0 should attempt Z3 for all 5 observations"
-        );
-        // With window=3: obs 1 adds new coverage (stale=0); obs 2-4 are stale (stale=1,2,3→converged);
-        // obs 5 is already converged → skipped. Z3 runs for obs 1-3, skipped for 4-5. Net: 3.
-        assert_eq!(
-            z3_count_conv, 3,
-            "window=3 should skip obs 4 and 5 after loop converges"
-        );
-        assert!(
-            z3_count_conv < z3_count_no_conv,
-            "convergence should reduce Z3 candidates for saturated loop branches"
         );
     }
 
@@ -6498,7 +6903,7 @@ mod tests {
                     (0..len).map(|i| format!("p{i}")).collect();
                 // Empty solved map — output must equal input length.
                 let solved = std::collections::HashMap::new();
-                let result = overlay_solved_values(&base, &solved, &names);
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
                 prop_assert_eq!(
                     base.len(),
                     result.len(),
@@ -6515,7 +6920,7 @@ mod tests {
                     (0..len).map(|i| format!("p{i}")).collect();
                 let mut solved = std::collections::HashMap::new();
                 solved.insert(format!("p{idx}"), ConcreteValue::Int(999));
-                let result = overlay_solved_values(&base, &solved, &names);
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
                 prop_assert_eq!(result.len(), base.len());
                 prop_assert_eq!(&result[idx], &serde_json::json!(999));
             }
@@ -6531,9 +6936,149 @@ mod tests {
                 // Exception: single-param heuristic fires for non-dotted names,
                 // so use a dotted name to avoid that path.
                 solved.insert("unknown.derived".to_string(), ConcreteValue::Int(42));
-                let result = overlay_solved_values(&base, &solved, &names);
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
                 prop_assert_eq!(result.len(), 1);
                 prop_assert_eq!(&result[0], &base_val);
+            }
+
+            /// With NO type metadata (empty `param_types`), a solved object-path
+            /// variable overlays its value under the RAW field segment — the
+            /// safe fallback that keeps default-serde snake_case structs and
+            /// every non-Rust frontend working when the parameter's declared
+            /// shape is unavailable (str-wp6cf). Generate arbitrary snake_case
+            /// identifiers and assert the overlaid object carries the exact key.
+            #[test]
+            fn overlay_object_path_preserves_raw_field_name(
+                field in "[a-z][a-z0-9]{0,4}(_[a-z0-9]{1,4}){0,3}",
+            ) {
+                let base = vec![serde_json::json!({})];
+                let names = vec!["p".to_string()];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{field}"), ConcreteValue::Int(7));
+                let result = overlay_solved_values(&base, &solved, &names, &[]);
+                let obj = result[0]
+                    .as_object()
+                    .expect("overlay target must be an object");
+                prop_assert!(
+                    obj.contains_key(&field),
+                    "overlay must use the raw field name {field:?} as the key; got keys {:?}",
+                    obj.keys().collect::<Vec<_>>()
+                );
+                prop_assert_eq!(&obj[&field], &serde_json::json!(7));
+            }
+
+            /// Under a tuple `TypeInfo`, an index segment always overlays into an
+            /// ARRAY position, for any arity and index, and leaves the sibling
+            /// elements of the generated tuple intact — the shape a serde tuple
+            /// deserializes from (str-wg4jo). The base is the numeric-keyed
+            /// object the generator produces for a tuple's `Object` mapping.
+            #[test]
+            fn overlay_tuple_index_yields_array_preserving_siblings(
+                arity in 1..6usize,
+                index in 0..6usize,
+            ) {
+                prop_assume!(index < arity);
+                let base_obj: serde_json::Value = serde_json::Value::Object(
+                    (0..arity)
+                        .map(|i| (i.to_string(), serde_json::json!(i as i64)))
+                        .collect(),
+                );
+                let base = vec![base_obj];
+                let names = vec!["p".to_string()];
+                let param_types = vec![tuple_type(arity)];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{index}"), ConcreteValue::Int(999));
+                let result = overlay_solved_values(&base, &solved, &names, &param_types);
+                let array = result[0]
+                    .as_array()
+                    .expect("tuple-index overlay must produce an array");
+                prop_assert_eq!(array.len(), arity);
+                for (i, element) in array.iter().enumerate() {
+                    let expected = if i == index {
+                        serde_json::json!(999)
+                    } else {
+                        serde_json::json!(i as i64)
+                    };
+                    prop_assert_eq!(element, &expected, "element {} mismatch", i);
+                }
+            }
+
+            /// Overlaying under a positional type NEVER drops data the base
+            /// already carried (review of str-wg4jo, Important 2). When the base
+            /// object holds a key that is not an index, the array promotion
+            /// would have to discard it, so the overlay stays an object and every
+            /// original key survives alongside the solved value.
+            #[test]
+            fn overlay_positional_type_never_drops_base_keys(
+                extra in "[a-z]{1,5}",
+                arity in 1..4usize,
+                index in 0..4usize,
+            ) {
+                prop_assume!(index < arity);
+                // A digits-only "extra" key would make the base promotable.
+                prop_assume!(array_index_segment(&extra).is_none());
+                let mut base_map = serde_json::Map::new();
+                for i in 0..arity {
+                    base_map.insert(i.to_string(), serde_json::json!(i as i64));
+                }
+                base_map.insert(extra.clone(), serde_json::json!("keep"));
+                let base = vec![serde_json::Value::Object(base_map)];
+                let names = vec!["p".to_string()];
+                let param_types = vec![tuple_type(arity)];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{index}"), ConcreteValue::Int(999));
+
+                let result = overlay_solved_values(&base, &solved, &names, &param_types);
+                let obj = result[0]
+                    .as_object()
+                    .expect("mixed-key base must stay an object, not be discarded");
+                prop_assert_eq!(&obj[&extra], &serde_json::json!("keep"));
+                for i in 0..arity {
+                    let expected = if i == index {
+                        serde_json::json!(999)
+                    } else {
+                        serde_json::json!(i as i64)
+                    };
+                    prop_assert_eq!(&obj[&i.to_string()], &expected);
+                }
+            }
+
+            /// When the parameter's type declares a serde-renamed key, the raw
+            /// source segment resolves to that declared key. The declared key is
+            /// computed by the INDEPENDENT reference `shatter_rust_apply_rename_all`
+            /// (mirroring the crate that populates `TypeInfo`), and the field
+            /// regex generates MIXED-CASE idents (`request_URL`), so a divergence
+            /// between `serde_rename_variants` and shatter-rust's rules — not just
+            /// the all-lowercase happy path — fails here (team-lead second review).
+            #[test]
+            fn overlay_resolves_to_declared_renamed_key(
+                field in "[a-zA-Z][a-zA-Z0-9]{0,4}(_[a-zA-Z0-9]{1,4}){1,3}",
+                rule_idx in 0..SERDE_RULES.len(),
+            ) {
+                let rule = SERDE_RULES[rule_idx];
+                let declared = shatter_rust_apply_rename_all(&field, rule);
+                prop_assume!(declared != field);
+                let base = vec![serde_json::json!({})];
+                let names = vec!["p".to_string()];
+                let param_types = vec![TypeInfo::Object {
+                    fields: vec![(declared.clone(), bare_int())],
+                }];
+                let mut solved = std::collections::HashMap::new();
+                solved.insert(format!("p.{field}"), ConcreteValue::Int(7));
+                let result = overlay_solved_values(&base, &solved, &names, &param_types);
+                let obj = result[0]
+                    .as_object()
+                    .expect("overlay target must be an object");
+                prop_assert!(
+                    obj.contains_key(&declared),
+                    "overlay must resolve {field:?} under rule {rule:?} to declared key \
+                     {declared:?}; got keys {:?}",
+                    obj.keys().collect::<Vec<_>>()
+                );
+                prop_assert!(
+                    !obj.contains_key(&field),
+                    "overlay must not emit the raw key {field:?}"
+                );
             }
 
             /// Worklist dequeues entries in non-increasing InputSource priority.
@@ -6901,7 +7446,7 @@ mod kani_proofs {
         }
 
         let solved = std::collections::HashMap::new();
-        let result = overlay_solved_values(&base_inputs, &solved, &param_names);
+        let result = overlay_solved_values(&base_inputs, &solved, &param_names, &[]);
         assert_eq!(
             result.len(),
             base_inputs.len(),
@@ -6920,7 +7465,7 @@ mod kani_proofs {
         let mut solved = std::collections::HashMap::new();
         solved.insert(String::from("x"), ConcreteValue::Int(42));
 
-        let result = overlay_solved_values(&base_inputs, &solved, &param_names);
+        let result = overlay_solved_values(&base_inputs, &solved, &param_names, &[]);
         assert_eq!(result.len(), 1, "overlay must preserve input vector length");
         assert_eq!(result[0], serde_json::json!(42));
     }

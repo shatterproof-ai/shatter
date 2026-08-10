@@ -31,6 +31,7 @@ fn bundled_ts_frontend_responds_to_handshake() {
 
     // First, verify the CLI binary itself is functional
     let cli_output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .arg("--version")
         .output()
         .expect("failed to run shatter --version");
@@ -140,6 +141,7 @@ fn find_bundle(cache_dir: &str) -> String {
     // before extracting the embedded frontend.
     let binary = env!("CARGO_BIN_EXE_shatter");
     let _ = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args(["explore", "/nonexistent/file.ts"])
         .output();
 

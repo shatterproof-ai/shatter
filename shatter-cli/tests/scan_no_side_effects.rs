@@ -47,6 +47,7 @@ fn scan_with_external_output_and_no_cache_no_seeds_writes_no_project_local_dirs(
 
     let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .env("TMPDIR", command_tmp.path())
         .args([
             "scan",

@@ -1,5 +1,21 @@
 # Shatter v2: Automatic Exploratory Testing via Concolic Execution
 
+> **Status: historical roadmap — not current state.** This is the original v2
+> architecture plan. It captures the design vision and rationale; it describes
+> planned and in-progress work, and includes features that were later reshaped or
+> never built (e.g. some CLI subcommands, the Java frontend milestone, and a
+> project layout that predates the current crate set). It is **not** an
+> authoritative description of what Shatter does today.
+>
+> For current, implemented behavior consult:
+> - **[SPEC.md](SPEC.md)** — the authoritative living specification of current
+>   behavior. When PLAN.md and SPEC.md disagree, SPEC.md reflects reality.
+> - **[docs/INDEX.md](docs/INDEX.md)** — documentation map: which document covers what.
+> - **[PROTOCOL.md](PROTOCOL.md)** and `protocol/registry.yaml` — the current wire protocol.
+>
+> Read this document for the "why" behind the design, not the "what" of the
+> implementation.
+
 ## The Core Problem with v1
 
 The current system uses **coverage-guided random fuzzing**: generate random typed values, run the function, observe which lines executed, then try to hybridize/breed inputs to find new paths. This fails for non-trivial functions because:

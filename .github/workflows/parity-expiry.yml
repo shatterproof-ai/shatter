@@ -1,0 +1,74 @@
+name: Parity Expiry Watch
+
+# Governance backstop for resolved parity-divergence entries (str-5dx0).
+#
+# `task parity` warns while a resolved divergence sits inside its removal
+# grace window and hard-fails once the window expires. Those warnings are only
+# seen by whoever happens to run `task parity` locally, and the hard failure
+# otherwise first surfaces as a red gate on an unrelated parity-touching PR.
+#
+# This scheduled run gives the warning an audience: it escalates any resolved
+# entry within N days of its deadline to a failure, so an impending expiry
+# shows up as a red *scheduled* run (Actions tab + failure notifications) that
+# the owner can act on before the hard deadline blocks someone else's change.
+
+on:
+  schedule:
+    # Weekly, Monday 07:00 UTC — offset from the CI (push/PR) and Perf CI crons.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      warn_within_days:
+        description: "Escalate to failure when a resolved entry is within this many days of its removal deadline"
+        required: false
+        default: "14"
+        type: string
+
+# Escalate resolved-divergence warnings this many days before the hard
+# deadline. DRIFT_RESOLUTION_GRACE_DAYS is 30 and this runs weekly, so 14 gives
+# an owner ~2 red scheduled runs of lead time before an entry would block an
+# unrelated parity-touching branch.
+env:
+  WARN_WITHIN_DAYS: ${{ github.event.inputs.warn_within_days || '14' }}
+
+jobs:
+  parity-expiry:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python protocol tooling
+        run: python3 -m pip install --user pyyaml
+
+      # The parity validator's capability detectors parse frontend source
+      # files directly (no build/toolchain needed), so python + pyyaml is
+      # sufficient to run the full check here.
+      - name: Check for impending parity-divergence expiries
+        id: check
+        run: |
+          python3 scripts/validate-parity.py \
+            --warn-as-error-within-days "$WARN_WITHIN_DAYS"
+
+      - name: Explain a red run
+        if: failure() && steps.check.outcome == 'failure'
+        run: |
+          {
+            echo "## Parity divergence expiry watch — action needed"
+            echo
+            echo "A resolved \`allowed_divergences\` entry in"
+            echo "\`protocol/parity-matrix.yaml\` is within \`$WARN_WITHIN_DAYS\`"
+            echo "day(s) of its removal deadline, or has already expired."
+            echo
+            echo "Remove the entry from both \`protocol/parity-matrix.yaml\` and"
+            echo "\`protocol/PARITY.md\` (see the failing step's log for the id"
+            echo "and owner) before the hard grace deadline turns \`task parity\`"
+            echo "red on an unrelated branch."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# str-gg9v: the gauntlet executes target functions without an OS sandbox. Opt
+# into unsandboxed host execution so the default-deny guard permits it; the
+# targets still run in a throwaway working directory, so no stray files land in
+# the repo. Configure SHATTER_SANDBOX_BACKEND instead to run fully sandboxed.
+export SHATTER_ALLOW_HOST_WRITES="${SHATTER_ALLOW_HOST_WRITES:-1}"
+
 # Shatter Gauntlet — Broad CLI Coverage
 # Exercises shatter's full pipeline against example code, showing output at each stage.
 # This is the exhaustive coverage run (flag permutations, all commands, stress cases).

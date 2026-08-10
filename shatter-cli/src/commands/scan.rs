@@ -61,6 +61,44 @@ fn dry_run_deadline_check(
     Ok(())
 }
 
+/// Interpretation of the `--resume` flag value (str-6q1i).
+///
+/// `--resume` is a free-form string so it can carry a checkpoint file path,
+/// but a handful of barewords are reserved as mode keywords. Without this,
+/// `--resume off` was silently treated as the path `./off`, creating a stray
+/// checkpoint file in the working directory.
+#[derive(Debug, PartialEq, Eq)]
+enum ResumeDirective<'a> {
+    /// Auto-discover the checkpoint from the scan artifact directory.
+    Auto,
+    /// Resume is explicitly turned off; load and write no checkpoint.
+    Disabled,
+    /// Treat the value as a checkpoint file path.
+    Path(&'a str),
+}
+
+/// Classify a raw `--resume` value into a [`ResumeDirective`] (str-6q1i).
+///
+/// Keyword matching is case-insensitive. `off`/`no`/`none`/`false`/`disabled`
+/// disable resume; `on`/`true`/`yes`/`enable`/`enabled` are rejected as
+/// ambiguous (they name no concrete checkpoint and could mean either `auto`
+/// or a path), steering the user toward an unambiguous value. Every other
+/// value is treated as a checkpoint file path.
+fn classify_resume(value: Option<&str>) -> Result<Option<ResumeDirective<'_>>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    match raw.to_ascii_lowercase().as_str() {
+        "auto" => Ok(Some(ResumeDirective::Auto)),
+        "off" | "no" | "none" | "false" | "disabled" => Ok(Some(ResumeDirective::Disabled)),
+        "on" | "true" | "yes" | "enable" | "enabled" => Err(format!(
+            "--resume value {raw:?} is ambiguous. Use \"auto\" to auto-discover a checkpoint, \
+             \"off\" to disable resume, or pass an explicit checkpoint file path."
+        )),
+        _ => Ok(Some(ResumeDirective::Path(raw))),
+    }
+}
+
 /// Derive the source language of a function from its `source_file` path.
 ///
 /// Used to partition analyses for per-language scan passes (str-14en); the
@@ -82,6 +120,55 @@ fn compute_scan_id_from_file_map(file_map: &HashMap<String, String>) -> String {
     shatter_core::checkpoint::ScanCheckpoint::compute_scan_id_for_targets(&targets)
 }
 
+/// The outermost of `include_anchor`/`exclude_anchor` (the one with fewest
+/// path components, i.e. closest to the filesystem root). Both anchors, when
+/// set, are always ancestors of `root` (they come from walking up from the
+/// scan directory to find `shatter.config.json`), so they are totally
+/// ordered along the path from `root` to the filesystem root.
+fn until_outer_anchor<'a>(
+    include_anchor: Option<&'a Path>,
+    exclude_anchor: Option<&'a Path>,
+) -> Option<&'a Path> {
+    [include_anchor, exclude_anchor]
+        .into_iter()
+        .flatten()
+        .min_by_key(|a| a.components().count())
+}
+
+/// `root`'s path relative to the outermost of `include_anchor`/
+/// `exclude_anchor`, if either is set and is an ancestor of `root`.
+///
+/// Used by `run_scan`'s `--until` handling: discovery moves from `root` to a
+/// temp directory holding historical file contents, and this prefix lets
+/// that temp directory mirror the same anchor->root nesting so
+/// `until_temp_anchor` can remap the anchors to still resolve against it
+/// (str-1q12y review follow-up — an anchor pointing at the original working
+/// tree cannot `strip_prefix` a path under an unrelated temp directory).
+fn until_anchor_mirror_prefix(
+    root: &Path,
+    include_anchor: Option<&Path>,
+    exclude_anchor: Option<&Path>,
+) -> Option<PathBuf> {
+    let outer_anchor = until_outer_anchor(include_anchor, exclude_anchor)?;
+    root.strip_prefix(outer_anchor).ok().map(Path::to_path_buf)
+}
+
+/// Remap `anchor` (an ancestor of `root`, or `root` itself) into its
+/// equivalent path inside a `--until` temp directory whose root
+/// (`temp_anchor_base`) corresponds to the outermost of `include_anchor`/
+/// `exclude_anchor` (see `until_anchor_mirror_prefix`).
+fn until_temp_anchor(
+    include_anchor: Option<&Path>,
+    exclude_anchor: Option<&Path>,
+    anchor: Option<&Path>,
+    temp_anchor_base: &Path,
+) -> Option<PathBuf> {
+    let outer_anchor = until_outer_anchor(include_anchor, exclude_anchor)?;
+    let anchor = anchor?;
+    let rel = anchor.strip_prefix(outer_anchor).unwrap_or(Path::new(""));
+    Some(temp_anchor_base.join(rel))
+}
+
 /// Run the scan command: explore multiple functions in dependency order.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_scan(
@@ -89,6 +176,8 @@ pub(crate) async fn run_scan(
     language_filter: Option<&str>,
     include_patterns: &[String],
     exclude_patterns: &[String],
+    include_anchor: Option<&Path>,
+    exclude_anchor: Option<&Path>,
     changed: bool,
     since: Option<&str>,
     until: Option<&str>,
@@ -207,20 +296,26 @@ pub(crate) async fn run_scan(
         log::debug!("Project root: {pr}");
     }
 
-    // Discover source files.
-    let options = DiscoveryOptions {
-        include_patterns: include_patterns.to_vec(),
-        exclude_patterns: exclude_patterns.to_vec(),
-        respect_gitignore: true,
-        max_depth,
-    };
     // When --until is specified, we need to:
     // 1. Validate the ref
     // 2. Check out historical file contents into a temp directory
     // 3. Use that as the analysis root with isolated .shatter state
+    //
+    // `include_anchor`/`exclude_anchor` (when set) point at the project
+    // config's directory under the *original* working tree — an ancestor of
+    // `root`. If discovery below simply moved to a bare temp directory,
+    // `pattern_relative`'s `strip_prefix(anchor)` would always fail (the temp
+    // path shares no prefix with the original anchor), silently falling back
+    // to scan-root-relative matching and reintroducing str-1q12y's original
+    // bug for this flag combination. `anchor_mirror_prefix` is the anchor's
+    // position relative to `root`, used below to mirror that same nesting
+    // inside the temp directory so the anchors keep resolving there.
+    let anchor_mirror_prefix = until_anchor_mirror_prefix(&root, include_anchor, exclude_anchor);
     let _until_temp_dir: Option<tempfile::TempDir> = None;
-    let (effective_root, _until_temp_dir) = if let (Some(base_ref), Some(until_ref)) =
-        (since, until)
+    let (effective_root, _until_temp_dir, until_anchor_base) = if let (
+        Some(base_ref),
+        Some(until_ref),
+    ) = (since, until)
     {
         use shatter_core::scm::{ScmProvider, detect_provider, show_file_at_ref, validate_ref};
 
@@ -254,10 +349,16 @@ pub(crate) async fn run_scan(
             until_ref,
         );
 
-        // Create temp directory and extract historical file contents.
+        // Create temp directory and extract historical file contents. When
+        // an anchor sits above `root`, mirror that same nesting inside the
+        // temp directory (`temp_dir/<anchor_mirror_prefix>/<rel_path>`) so
+        // the anchor still resolves against paths under the mirrored root.
         let temp_dir = tempfile::TempDir::new()
             .map_err(|e| format!("failed to create temp directory: {e}"))?;
-        let temp_root = temp_dir.path().to_path_buf();
+        let temp_root = match &anchor_mirror_prefix {
+            Some(prefix) => temp_dir.path().join(prefix),
+            None => temp_dir.path().to_path_buf(),
+        };
 
         for file in &scm_files {
             let rel_path = file.strip_prefix(&root).map_err(|_| {
@@ -293,9 +394,39 @@ pub(crate) async fn run_scan(
         );
 
         let effective = temp_root;
-        (effective, Some(temp_dir))
+        let anchor_base = anchor_mirror_prefix.is_some().then(|| temp_dir.path().to_path_buf());
+        (effective, Some(temp_dir), anchor_base)
     } else {
-        (root.clone(), None)
+        (root.clone(), None, None)
+    };
+
+    // Remap the config-origin anchors (if set) into the temp directory's
+    // mirrored structure so `strip_prefix` keeps resolving once discovery
+    // moves to `effective_root` under `--until` (str-1q12y review follow-up).
+    let (include_anchor, exclude_anchor) = match &until_anchor_base {
+        Some(anchor_base) => (
+            until_temp_anchor(include_anchor, exclude_anchor, include_anchor, anchor_base),
+            until_temp_anchor(include_anchor, exclude_anchor, exclude_anchor, anchor_base),
+        ),
+        None => (include_anchor.map(Path::to_path_buf), exclude_anchor.map(Path::to_path_buf)),
+    };
+    let include_anchor = include_anchor.as_deref();
+    let exclude_anchor = exclude_anchor.as_deref();
+
+    // Config-file include/exclude patterns are anchored at the config file's
+    // directory (project root) via `include_anchor`/`exclude_anchor`, so
+    // project-root patterns like `web/src/**/*.test.tsx` keep working when the
+    // scan root is a subdirectory. CLI `--include`/`--exclude` pass `None`
+    // (scan-root-relative). Under `--until`, both anchors have already been
+    // remapped into the temp directory's mirrored structure above. See
+    // str-1q12y.
+    let options = DiscoveryOptions {
+        include_patterns: include_patterns.to_vec(),
+        exclude_patterns: exclude_patterns.to_vec(),
+        include_anchor: include_anchor.map(Path::to_path_buf),
+        exclude_anchor: exclude_anchor.map(Path::to_path_buf),
+        respect_gitignore: true,
+        max_depth,
     };
 
     // When using --until, isolate .shatter state so HEAD seeds/specs aren't clobbered.
@@ -445,7 +576,8 @@ pub(crate) async fn run_scan(
         // see only "No supported source files found" and have no idea
         // their `internal/runtime/*.go` pattern never matched because
         // the scan root is already `<repo>/internal/runtime`.
-        if !include_patterns.is_empty() {
+        if !include_patterns.is_empty() && include_anchor.is_none() {
+            // CLI `--include` patterns are scan-root-relative (str-94cg).
             for pat in include_patterns {
                 let suggestion = discovery::suggest_corrected_include_pattern(pat, &effective_root);
                 match suggestion {
@@ -462,6 +594,18 @@ pub(crate) async fn run_scan(
                         effective_root.display(),
                     ),
                 }
+            }
+        } else if !include_patterns.is_empty() {
+            // Config-file `include` patterns are anchored at the config file's
+            // directory (project root), not the scan root (str-1q12y).
+            let anchor = include_anchor.unwrap_or(&effective_root);
+            for pat in include_patterns {
+                log::warn!(
+                    "config include pattern '{pat}' matched 0 files. \
+                     Config patterns are evaluated relative to the config file's \
+                     directory: {}.",
+                    anchor.display(),
+                );
             }
         } else {
             log::info!("No supported source files found in {}", root.display());
@@ -532,10 +676,12 @@ pub(crate) async fn run_scan(
     // deadline so discovery/analysis time is charged before the remaining
     // budget is handed to the scan orchestrator.
     let registry = {
+        let analyzer_versions = crate::frontend_versions::analyzer_versions();
         let fut = batch_analyze::batch_analyze(
             &mut frontends,
             &analyzable_files,
             analysis_cache.as_ref(),
+            &analyzer_versions,
             project_root_str.as_deref(),
         );
         if let Some(remaining) = dry_run_deadline_remaining(run_deadline) {
@@ -955,9 +1101,18 @@ pub(crate) async fn run_scan(
         }
     };
 
-    // Resolve --resume: "auto" discovers from artifact dir, otherwise treat as path.
-    let resolved_resume_path: Option<std::path::PathBuf> = match resume {
-        Some("auto") => {
+    // Resolve --resume (str-6q1i): "auto" discovers from the artifact dir,
+    // "off"/"no"/etc. disable resume, ambiguous keywords error out, and any
+    // other value is an explicit checkpoint path. A nonexistent explicit path
+    // is announced before a fresh checkpoint is created there rather than
+    // silently materializing a stray file (e.g. `--resume off` → `./off`).
+    let resolved_resume_path: Option<std::path::PathBuf> = match classify_resume(resume)? {
+        None => None,
+        Some(ResumeDirective::Disabled) => {
+            log::info!("--resume disabled; no checkpoint will be loaded or written");
+            None
+        }
+        Some(ResumeDirective::Auto) => {
             let sid = compute_scan_id_from_file_map(&file_map);
             match shatter_core::checkpoint::ScanCheckpoint::auto_discover(
                 project_root_str.as_deref(),
@@ -980,8 +1135,16 @@ pub(crate) async fn run_scan(
                 }
             }
         }
-        Some(path) => Some(std::path::PathBuf::from(path)),
-        None => None,
+        Some(ResumeDirective::Path(path)) => {
+            let pb = std::path::PathBuf::from(path);
+            if !pb.exists() {
+                log::info!(
+                    "no checkpoint found at {}; a new checkpoint will be created there",
+                    pb.display()
+                );
+            }
+            Some(pb)
+        }
     };
 
     let scan_config = ScanConfig {
@@ -1626,7 +1789,7 @@ fn build_dry_run_plan_json(
 fn format_type_label(t: &shatter_core::types::TypeInfo) -> String {
     use shatter_core::types::TypeInfo;
     match t {
-        TypeInfo::Int => "int".to_string(),
+        TypeInfo::Int { .. } => "int".to_string(),
         TypeInfo::Float => "float".to_string(),
         TypeInfo::Str => "string".to_string(),
         TypeInfo::Bool => "bool".to_string(),
@@ -1887,6 +2050,152 @@ mod tests {
     };
     use shatter_core::types::{ParamInfo, TypeInfo};
 
+    // ── str-1q12y (review follow-up): `--until` temp-dir anchor remapping ──
+
+    #[test]
+    fn until_anchor_mirror_prefix_none_when_no_anchor_set() {
+        assert_eq!(
+            until_anchor_mirror_prefix(Path::new("/project/web/src"), None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn until_anchor_mirror_prefix_is_root_relative_to_config_dir() {
+        let root = Path::new("/project/web/src");
+        let anchor = Path::new("/project");
+        assert_eq!(
+            until_anchor_mirror_prefix(root, Some(anchor), Some(anchor)),
+            Some(PathBuf::from("web/src"))
+        );
+    }
+
+    #[test]
+    fn until_anchor_mirror_prefix_empty_when_anchor_is_root() {
+        let root = Path::new("/project/web/src");
+        assert_eq!(
+            until_anchor_mirror_prefix(root, Some(root), None),
+            Some(PathBuf::new())
+        );
+    }
+
+    #[test]
+    fn until_temp_anchor_remaps_config_anchor_under_temp_base() {
+        let root = Path::new("/project/web/src");
+        let anchor = Path::new("/project");
+        let temp_base = Path::new("/tmp/until-xyz");
+        assert_eq!(
+            until_temp_anchor(Some(anchor), Some(anchor), Some(anchor), temp_base),
+            Some(temp_base.to_path_buf()),
+            "the outer anchor itself must map onto the temp base"
+        );
+
+        // Round-trip: mirroring `root` under the temp base at the mirror
+        // prefix, then remapping the anchor, must land at a real ancestor of
+        // the mirrored root — i.e. `strip_prefix` against the remapped
+        // anchor succeeds for a file under the mirrored root.
+        let mirror_prefix = until_anchor_mirror_prefix(root, Some(anchor), Some(anchor)).unwrap();
+        let mirrored_root = temp_base.join(&mirror_prefix);
+        let remapped_anchor =
+            until_temp_anchor(Some(anchor), Some(anchor), Some(anchor), temp_base).unwrap();
+        assert!(
+            mirrored_root.strip_prefix(&remapped_anchor).is_ok(),
+            "mirrored root {mirrored_root:?} must be nested under the remapped anchor {remapped_anchor:?}"
+        );
+    }
+
+    #[test]
+    fn until_temp_anchor_handles_differing_include_exclude_anchors() {
+        // include_anchor is the project root; exclude_anchor is a nested
+        // subdirectory's own config (both are valid, distinct ancestors of
+        // `root` in principle). The outer anchor (fewest components) governs
+        // the mirror; the inner one remaps to a nested path under it.
+        let outer = Path::new("/project");
+        let inner = Path::new("/project/web");
+        let temp_base = Path::new("/tmp/until-xyz");
+        assert_eq!(
+            until_temp_anchor(Some(outer), Some(inner), Some(outer), temp_base),
+            Some(temp_base.to_path_buf())
+        );
+        assert_eq!(
+            until_temp_anchor(Some(outer), Some(inner), Some(inner), temp_base),
+            Some(temp_base.join("web"))
+        );
+    }
+
+    #[test]
+    fn until_temp_anchor_none_when_anchor_unset() {
+        let temp_base = Path::new("/tmp/until-xyz");
+        assert_eq!(
+            until_temp_anchor(Some(Path::new("/project")), None, None, temp_base),
+            None
+        );
+    }
+
+    // ── str-6q1i: --resume value classification ──
+
+    #[test]
+    fn classify_resume_none_is_none() {
+        assert_eq!(classify_resume(None), Ok(None));
+    }
+
+    #[test]
+    fn classify_resume_auto() {
+        assert_eq!(classify_resume(Some("auto")), Ok(Some(ResumeDirective::Auto)));
+        // Case-insensitive.
+        assert_eq!(classify_resume(Some("AUTO")), Ok(Some(ResumeDirective::Auto)));
+    }
+
+    #[test]
+    fn classify_resume_disable_keywords() {
+        for kw in ["off", "OFF", "no", "none", "false", "disabled"] {
+            assert_eq!(
+                classify_resume(Some(kw)),
+                Ok(Some(ResumeDirective::Disabled)),
+                "{kw:?} should disable resume",
+            );
+        }
+    }
+
+    #[test]
+    fn classify_resume_ambiguous_keywords_error() {
+        for kw in ["on", "true", "yes", "enable", "enabled"] {
+            let err = classify_resume(Some(kw))
+                .expect_err(&format!("{kw:?} should be rejected as ambiguous"));
+            assert!(err.contains("ambiguous"), "error should explain ambiguity: {err}");
+            assert!(err.contains("auto"), "error should suggest auto: {err}");
+            assert!(err.contains("off"), "error should suggest off: {err}");
+        }
+    }
+
+    #[test]
+    fn classify_resume_path_is_passed_through() {
+        assert_eq!(
+            classify_resume(Some("/tmp/state.json")),
+            Ok(Some(ResumeDirective::Path("/tmp/state.json"))),
+        );
+        // A path-like value is never mistaken for a keyword.
+        assert_eq!(
+            classify_resume(Some("off.json")),
+            Ok(Some(ResumeDirective::Path("off.json"))),
+        );
+    }
+
+    #[test]
+    fn resume_off_never_names_a_checkpoint_path() {
+        // The core regression: `--resume off` must not be treated as the path
+        // `./off`. Disabled resolves to no checkpoint path, so the orchestrator
+        // never loads or creates a file named "off".
+        match classify_resume(Some("off")) {
+            Ok(Some(ResumeDirective::Disabled)) => {}
+            other => panic!("expected Disabled, got {other:?}"),
+        }
+        assert!(
+            !std::path::Path::new("off").exists(),
+            "classifying --resume off must not create a file named 'off'",
+        );
+    }
+
     // ── str-bbyy: dry-run deadline helpers ──
 
     #[test]
@@ -1992,7 +2301,7 @@ mod tests {
             params: vec![],
             branches: vec![],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 1,
             literals: vec![],
@@ -2056,7 +2365,7 @@ mod tests {
             params: vec![ParamInfo {
                 name: "items".into(),
                 typ: TypeInfo::Array {
-                    element: Box::new(TypeInfo::Int),
+                    element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                 },
                 type_name: None,
             }],
@@ -2077,7 +2386,7 @@ mod tests {
                 },
             ],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 8,
             literals: vec![],
@@ -2147,7 +2456,7 @@ mod tests {
                 name: name.into(),
                 exported,
                 params: vec![],
-                return_type: TypeInfo::Int,
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
                 dependencies: vec![],
                 crypto_boundaries: vec![],
                 branch_count: 0,
@@ -2193,7 +2502,7 @@ mod tests {
             name: "raw".into(),
             exported: true,
             params: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             dependencies: vec![],
             crypto_boundaries: vec![],
             branch_count: 7,
@@ -2230,7 +2539,7 @@ mod tests {
             }],
             branches: vec![],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 5,
             literals: vec![],
@@ -2263,7 +2572,7 @@ mod tests {
             }],
             branches: vec![],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 10,
             end_line: 15,
             literals: vec![],
@@ -2314,7 +2623,7 @@ mod tests {
             }],
             branches: vec![],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 5,
             literals: vec![],
@@ -2352,7 +2661,7 @@ mod tests {
             ],
             branches: vec![],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 10,
             end_line: 15,
             literals: vec![],

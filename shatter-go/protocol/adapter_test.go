@@ -219,7 +219,9 @@ func TestExecuteAdapterOwned_Success(t *testing.T) {
 	if result.ThrownError != nil {
 		t.Fatal("expected no thrown error")
 	}
-	// Adapter-owned should have empty instrumentation fields
+	// A non-instrumenting hook (this stub leaves instrumentation nil) yields
+	// empty instrumentation fields; ExecuteAdapterOwned substitutes empty slices.
+	// Instrumenting adapters (net/http, gin) propagate real coverage — str-1qd5i.
 	if len(result.BranchPath) != 0 {
 		t.Fatalf("expected empty branch path, got %d", len(result.BranchPath))
 	}
@@ -386,7 +388,9 @@ func TestHandleExecute_AdapterDispatch(t *testing.T) {
 	if string(resp.ReturnValue) != `{"status":200}` {
 		t.Fatalf("expected return value {\"status\":200}, got %s", resp.ReturnValue)
 	}
-	// Adapter-owned: empty branch path (omitempty serializes empty as absent → nil on deserialize)
+	// This stub adapter does not instrument, so branch path is empty (omitempty
+	// serializes empty as absent → nil on deserialize). Instrumenting adapters
+	// (net/http, gin) report real branch_path/lines_executed — str-1qd5i.
 	if len(resp.BranchPath) != 0 {
 		t.Fatalf("expected empty branch path, got %d", len(resp.BranchPath))
 	}

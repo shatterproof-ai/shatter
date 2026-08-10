@@ -1089,6 +1089,20 @@ pub async fn explore_function(
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
     let (mut prefetched, use_generators) =
         prefetch_custom_values_for_explore(config, frontend, use_generators).await;
+    // str-mt78j: kept for the finalize-time failure reason, where a missing
+    // generator value otherwise surfaces as a bare unsupported-extractor error.
+    let prefetch_failures = prefetched.failures().to_vec();
+
+    // str-6cdp: capture a reusable native-replay marker per custom-generator
+    // slot from the prefetch store. Re-applied at the execute funnel on every
+    // iteration so the extractor param never reaches the frontend as a generated
+    // or mutated scalar, even after the prefetch queue is drained.
+    let native_pins = crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
+    let native_pins_arg = if native_pins.is_empty() {
+        None
+    } else {
+        Some(&native_pins)
+    };
 
     // ObservationAggregator owns the per-execution merge state previously
     // inlined in this function (paths, branches, lines, discoveries,
@@ -1099,6 +1113,14 @@ pub async fn explore_function(
     // will route through this same seam.
     let mut aggregator =
         crate::observation_aggregator::ObservationAggregator::new(config.loop_buckets.clone());
+
+    // str-303gg review fix: a not_supported iteration no longer aborts the
+    // function. Count these attempts so an all-not_supported function still
+    // terminates at the iteration budget (its iterations() stays 0), and keep a
+    // representative reason to reclassify the function Unsupported at finalize iff
+    // no successful observation was ever aggregated.
+    let mut unsupported_iterations: u32 = 0;
+    let mut unsupported_reason: Option<String> = None;
 
     // Tracked for progress reporting: number of branches observed at the last
     // periodic snapshot. The aggregator owns the iteration index at which
@@ -1173,10 +1195,11 @@ pub async fn explore_function(
             let mut divergent_values = Vec::new();
 
             for (float_inputs, floor_inputs) in pairs {
-                let float_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let float_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &float_inputs,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let float_resp = frontend
                     .send(ProtoCommand::Execute {
@@ -1191,10 +1214,11 @@ pub async fn explore_function(
                     })
                     .await?;
 
-                let floor_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let floor_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &floor_inputs,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let floor_resp = frontend
                     .send(ProtoCommand::Execute {
@@ -1284,6 +1308,7 @@ pub async fn explore_function(
         params: analysis.params.clone(),
         literals: analysis.literals.clone(),
         capabilities: config.capabilities.clone(),
+        value_sources: config.value_sources.clone(),
     };
     let mut path_feedback = PathFeedbackQueue::new(analysis, config);
     let explore_start = Instant::now();
@@ -1299,7 +1324,7 @@ pub async fn explore_function(
 
     loop {
         if let Some(budget) = effective_budget
-            && aggregator.iterations() >= budget
+            && aggregator.iterations() + unsupported_iterations >= budget
         {
             // Initial budget exhausted — try to claim surplus if still productive.
             if let Some(ref surplus) = config.budget_surplus {
@@ -1489,10 +1514,11 @@ pub async fn explore_function(
         // event (raw_results, discoveries, new_path_executions, iterations,
         // last_discovery_iteration) without re-deriving what observe_single
         // already computed.
-        let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+        let execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
             &inputs,
-            analysis.params.len(),
+            &analysis.params,
             config.default_execute_plan.as_ref(),
+            native_pins_arg,
         )?;
         let strategy_feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
             execute_inputs.inputs(),
@@ -1513,15 +1539,26 @@ pub async fn explore_function(
             config.default_execute_plan.as_ref(),
         )
         .instrument(tracing::info_span!("explore.execute_round_trip"))
-        .await
-        .map_err(|e| match e {
-            crate::observe::ObserveError::Frontend(fe) => ExploreError::Frontend(fe),
-            crate::observe::ObserveError::Unsupported(msg) => ExploreError::Unsupported(msg),
-            crate::observe::ObserveError::UnexpectedResponse(msg)
-            | crate::observe::ObserveError::InstrumentationFailed(msg) => {
-                ExploreError::UnexpectedResponse(msg)
+        .await;
+        let obs = match obs {
+            Ok(obs) => obs,
+            // str-303gg review fix: a not_supported iteration is recorded and
+            // skipped, never aborting a function that collected coverage on other
+            // iterations. observe_single returns before mutating coverage state,
+            // so nothing leaks from this iteration.
+            Err(crate::observe::ObserveError::Unsupported(msg)) => {
+                unsupported_iterations += 1;
+                unsupported_reason.get_or_insert(msg);
+                continue;
             }
-        })?;
+            Err(crate::observe::ObserveError::Frontend(fe)) => {
+                return Err(ExploreError::Frontend(fe));
+            }
+            Err(crate::observe::ObserveError::UnexpectedResponse(msg))
+            | Err(crate::observe::ObserveError::InstrumentationFailed(msg)) => {
+                return Err(ExploreError::UnexpectedResponse(msg));
+            }
+        };
 
         // --- LiveFirst state transitions ---
         // Check connection_failures reported by the frontend and transition
@@ -1680,10 +1717,11 @@ pub async fn explore_function(
                     crate::shrink::bulk_shrink_candidate(&current, &analysis.params)
             {
                 attempts += 1;
-                let bulk_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                let bulk_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                     &bulk_trial,
-                    analysis.params.len(),
+                    &analysis.params,
                     config.default_execute_plan.as_ref(),
+                    native_pins_arg,
                 )?;
                 let resp = frontend
                     .send(ProtoCommand::Execute {
@@ -1724,10 +1762,11 @@ pub async fn explore_function(
                         break;
                     }
                     attempts += 1;
-                    let trial_execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+                    let trial_execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                         &trial,
-                        analysis.params.len(),
+                        &analysis.params,
                         config.default_execute_plan.as_ref(),
+                        native_pins_arg,
                     )?;
                     let resp = frontend
                         .send(ProtoCommand::Execute {
@@ -1775,10 +1814,11 @@ pub async fn explore_function(
                         attempts += 1;
 
                         let trial_execute_inputs =
-                            crate::planner_consumer::execute_inputs_for_plan(
+                            crate::planner_consumer::execute_inputs_for_plan_with_pins(
                                 &trial,
-                                analysis.params.len(),
+                                &analysis.params,
                                 config.default_execute_plan.as_ref(),
+                                native_pins_arg,
                             )?;
                         let resp = frontend
                             .send(ProtoCommand::Execute {
@@ -1829,6 +1869,21 @@ pub async fn explore_function(
             total_budget_assigned = shrink_stats.total_budget_assigned,
             "shrink pass complete"
         );
+    }
+
+    // str-303gg review fix: reclassify Unsupported only when no successful
+    // observation was aggregated. A function that observed any coverage keeps it,
+    // even if some iterations returned not_supported.
+    if let Some(reason) = crate::observe::aggregate_unsupported_reason(
+        unsupported_reason,
+        aggregator.iterations() > 0,
+    ) {
+        // str-mt78j: a generator whose prefetch failed leaves its extractor slot
+        // filled by a built-in value, which the frontend then rejects as an
+        // unsupported extractor type. Name the prefetch failure instead.
+        let reason = crate::input_gen::attribute_prefetch_failure(&reason, &prefetch_failures)
+            .unwrap_or(reason);
+        return Err(ExploreError::Unsupported(reason));
     }
 
     let opaque_suggestions = crate::executability::build_opaque_suggestions(
@@ -2021,7 +2076,16 @@ async fn prefetch_custom_values_for_explore(
         }
         Err(e) => {
             log::debug!("prefetch failed, falling back to built-in: {e}");
-            (PrefetchedValues::new(), false)
+            // A transport-level prefetch failure leaves every configured
+            // generator without values; record one failure each so a downstream
+            // unsupported-extractor failure can name the cause (str-mt78j).
+            let store = PrefetchedValues::with_failures(
+                crate::input_gen::prefetch_failures_for_all_generators(
+                    &config.value_sources,
+                    &e.to_string(),
+                ),
+            );
+            (store, false)
         }
     }
 }
@@ -2069,6 +2133,12 @@ struct ObserverObservation {
 
 enum ObserverMessage {
     Observed(Box<ObserverObservation>),
+    /// A worker saw a `not_supported` outcome for one iteration (response-level
+    /// NotSupported or a not_supported thrown_error in an Ok result). It is not
+    /// a fatal error: the consumer records the reason and reclassifies the whole
+    /// function as Unsupported only if no successful observation was ever
+    /// aggregated (str-303gg review fix).
+    Unsupported(String),
     Failed(ExploreError),
 }
 
@@ -2143,6 +2213,18 @@ async fn explore_function_with_observer_pool(
     let use_generators = has_generators && frontend_supports(&config.capabilities, "generate");
     let (mut prefetched, use_generators) =
         prefetch_custom_values_for_explore(config, frontend, use_generators).await;
+    // str-mt78j: see explore_function — prefetch failures qualify the
+    // finalize-time Unsupported reason.
+    let prefetch_failures = prefetched.failures().to_vec();
+
+    // str-6cdp: reusable native-replay markers for custom-generator slots, applied
+    // at the execute funnel every iteration (see explore_function for rationale).
+    let native_pins = crate::input_gen::NativePins::capture(&config.value_sources, &prefetched);
+    let native_pins_arg = if native_pins.is_empty() {
+        None
+    } else {
+        Some(&native_pins)
+    };
 
     let mut aggregator =
         crate::observation_aggregator::ObservationAggregator::new(config.loop_buckets.clone());
@@ -2161,6 +2243,7 @@ async fn explore_function_with_observer_pool(
         params: analysis.params.clone(),
         literals: analysis.literals.clone(),
         capabilities: config.capabilities.clone(),
+        value_sources: config.value_sources.clone(),
     };
     let mut path_feedback = PathFeedbackQueue::new(analysis, config);
 
@@ -2205,11 +2288,22 @@ async fn explore_function_with_observer_pool(
     let mut last_summary_time = Instant::now();
     let mut in_flight = 0usize;
     let mut producer_done = false;
+    // str-303gg review fix: a representative not_supported reason, used only at
+    // finalize to reclassify the function Unsupported when no observation was
+    // ever aggregated; and a count of not_supported iterations so an
+    // all-not_supported function (whose iterations() stays 0) still terminates at
+    // the iteration budget instead of spinning.
+    let mut unsupported_reason: Option<String> = None;
+    let mut unsupported_seen: u32 = 0;
 
     while !producer_done || in_flight > 0 {
         while !producer_done && in_flight < observer_pool {
             if let Some(budget) = config.max_iterations
-                && aggregator.iterations().saturating_add(in_flight as u32) >= budget
+                && aggregator
+                    .iterations()
+                    .saturating_add(in_flight as u32)
+                    .saturating_add(unsupported_seen)
+                    >= budget
             {
                 producer_done = true;
                 break;
@@ -2287,10 +2381,11 @@ async fn explore_function_with_observer_pool(
             };
             apply_live_first_overrides(&live_first_states, &mut iteration_mocks);
 
-            let execute_inputs = crate::planner_consumer::execute_inputs_for_plan(
+            let execute_inputs = crate::planner_consumer::execute_inputs_for_plan_with_pins(
                 &inputs,
-                analysis.params.len(),
+                &analysis.params,
                 config.default_execute_plan.as_ref(),
+                native_pins_arg,
             )?;
             let feedback_inputs = crate::planner_consumer::strategy_feedback_inputs_for_plan(
                 execute_inputs.inputs(),
@@ -2379,6 +2474,14 @@ async fn explore_function_with_observer_pool(
                     meta_strategy.record_outcome(idx, outcome.is_new_path);
                 }
             }
+            ObserverMessage::Unsupported(reason) => {
+                // str-303gg review fix: record but do not abort — the function is
+                // reclassified Unsupported at finalize only if nothing was ever
+                // observed. Count it toward the budget so an all-not_supported
+                // function terminates.
+                unsupported_seen = unsupported_seen.saturating_add(1);
+                unsupported_reason.get_or_insert(reason);
+            }
             ObserverMessage::Failed(error) => {
                 drop(job_tx);
                 for handle in handles {
@@ -2392,6 +2495,19 @@ async fn explore_function_with_observer_pool(
     drop(job_tx);
     for handle in handles {
         let _ = handle.await;
+    }
+
+    // str-303gg review fix: reclassify Unsupported only when no successful
+    // observation was aggregated. A function that observed any coverage keeps it,
+    // even if some iterations returned not_supported.
+    if let Some(reason) = crate::observe::aggregate_unsupported_reason(
+        unsupported_reason,
+        aggregator.iterations() > 0,
+    ) {
+        // str-mt78j: see explore_function.
+        let reason = crate::input_gen::attribute_prefetch_failure(&reason, &prefetch_failures)
+            .unwrap_or(reason);
+        return Err(ExploreError::Unsupported(reason));
     }
 
     let total_lines = instrumentable_line_count
@@ -2570,8 +2686,17 @@ async fn run_observer_worker_inner(
         let exec_result = match response.result {
             ResponseResult::Execute(result) => *result,
             ResponseResult::Error { code, message, .. } => {
+                // str-303gg review fix: a response-level NotSupported is an
+                // unsupported iteration, not a fatal error — report it and keep
+                // observing so a partially-covered function is not aborted.
                 if code == crate::protocol::ErrorCode::NotSupported {
-                    return Err(ExploreError::Unsupported(message));
+                    if result_tx
+                        .send(ObserverMessage::Unsupported(message))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
                 }
                 return Err(ExploreError::UnexpectedResponse(format!(
                     "execute error ({code:?}): {message}"
@@ -2583,6 +2708,19 @@ async fn run_observer_worker_inner(
                 )));
             }
         };
+
+        // str-303gg: a `not_supported` thrown_error nested in an Ok execute
+        // result is an unsupported iteration. Report it without aborting so
+        // coverage collected on other iterations is preserved.
+        if let Some(reason) = crate::observe::thrown_not_supported_reason(&exec_result) {
+            if result_tx
+                .send(ObserverMessage::Unsupported(reason))
+                .is_err()
+            {
+                break;
+            }
+            continue;
+        }
 
         if options.per_execution_setup
             && !options.skip_setup
@@ -4563,7 +4701,7 @@ for line in sys.stdin:
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: vec![],
@@ -4926,12 +5064,13 @@ for line in sys.stdin:
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
         let method_inputs = vec![serde_json::json!("default")];
         let prefixed =
-            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, 1, Some(&plan))
+            crate::planner_consumer::execute_inputs_for_plan(&method_inputs, &[crate::types::ParamInfo { name: String::new(), typ: crate::types::TypeInfo::Str, type_name: None }], Some(&plan))
                 .expect("constructor path seed should materialize");
         assert_eq!(prefixed.inputs().len(), 2);
         assert_eq!(
@@ -4957,7 +5096,7 @@ for line in sys.stdin:
             "directory-like constructor prefix should be a usable directory",
         );
         let refreshed =
-            crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), 1, Some(&plan))
+            crate::planner_consumer::execute_inputs_for_plan(prefixed.inputs(), &[crate::types::ParamInfo { name: String::new(), typ: crate::types::TypeInfo::Str, type_name: None }], Some(&plan))
                 .expect("already-prefixed inputs should refresh constructor scratch");
         assert_eq!(refreshed.inputs().len(), 2);
         assert_eq!(
@@ -5070,6 +5209,149 @@ for line in sys.stdin:
         assert_eq!(custom_generator_prefetch_budget(&sources, Some(5)), 10);
         assert_eq!(custom_generator_prefetch_budget(&sources, None), 2);
         assert_eq!(custom_generator_prefetch_budget(&[], Some(5)), 1);
+    }
+
+    /// Frontend that fails every `generate` and rejects every `execute` as an
+    /// unsupported extractor type — the shape of a config-bound generator whose
+    /// prefetch dies under DB pressure (str-mt78j).
+    fn failing_generator_frontend_config() -> crate::frontend::FrontendConfig {
+        use crate::frontend::FrontendConfig;
+        use std::path::{Path, PathBuf};
+        use std::time::Duration;
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = manifest_dir.join("../protocol/failing-generator-frontend.sh");
+        let mut config = FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![script.to_string_lossy().into_owned()];
+        config.request_timeout = Duration::from_secs(5);
+        config
+    }
+
+    fn prefetch_failure_explore_config(observer_pool: usize) -> ExploreConfig {
+        let mut capabilities = FrontendCapabilities::default();
+        capabilities.commands.insert("generate".to_string());
+        capabilities.commands.insert("execute".to_string());
+        capabilities.commands.insert("instrument".to_string());
+
+        ExploreConfig {
+            file: "handlers.rs".into(),
+            max_iterations: Some(2),
+            observer_pool,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![ValueSource::CustomGenerator {
+                generator_name: "CurrentAccount".into(),
+                param_name: None,
+                generator_file: PathBuf::from("/gen/current_account.rs"),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            }],
+            capabilities,
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        }
+    }
+
+    fn extractor_analysis() -> FunctionAnalysis {
+        use crate::types::{ParamInfo, TypeInfo};
+        let mut analysis = stub_analysis();
+        analysis.name = "list_tags".into();
+        analysis.params = vec![ParamInfo {
+            name: "current".into(),
+            typ: TypeInfo::Unknown,
+            type_name: Some("CurrentAccount".into()),
+        }];
+        analysis
+    }
+
+    /// str-mt78j: the random explorer path must blame the generator prefetch
+    /// failure, not the extractor type it starved.
+    #[tokio::test]
+    async fn random_explore_attributes_unsupported_extractor_to_generator_prefetch_failure() {
+        let config = failing_generator_frontend_config();
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("spawn failing generator frontend");
+
+        let error = explore_function(
+            &mut frontend,
+            &extractor_analysis(),
+            &prefetch_failure_explore_config(1),
+            None,
+            None,
+        )
+        .await
+        .expect_err("all-not_supported exploration should classify Unsupported");
+        let _ = frontend.shutdown().await;
+
+        let ExploreError::Unsupported(reason) = error else {
+            panic!("expected ExploreError::Unsupported, got {error:?}");
+        };
+        assert!(
+            reason.contains("custom generator prefetch failed for CurrentAccount"),
+            "failure reason must name the generator prefetch failure; got {reason}"
+        );
+        assert!(
+            reason.contains("PoolTimedOut"),
+            "failure reason must carry the generator's own error; got {reason}"
+        );
+        assert!(
+            reason.contains("axum handler has unsupported extractor types"),
+            "the original frontend message must be preserved as context; got {reason}"
+        );
+    }
+
+    /// str-mt78j: parallel-path parity — the pooled observer path prefetches
+    /// through the same helper and must attribute identically.
+    #[tokio::test]
+    async fn pooled_explore_attributes_unsupported_extractor_to_generator_prefetch_failure() {
+        let config = failing_generator_frontend_config();
+        let mut frontend = Frontend::spawn(&config)
+            .await
+            .expect("spawn failing generator frontend");
+
+        let mut explore_config = prefetch_failure_explore_config(2);
+        explore_config.observer_frontend_config = Some(config.clone());
+
+        let error = explore_function(
+            &mut frontend,
+            &extractor_analysis(),
+            &explore_config,
+            None,
+            None,
+        )
+        .await
+        .expect_err("all-not_supported exploration should classify Unsupported");
+        let _ = frontend.shutdown().await;
+
+        let ExploreError::Unsupported(reason) = error else {
+            panic!("expected ExploreError::Unsupported, got {error:?}");
+        };
+        assert!(
+            reason.contains("custom generator prefetch failed for CurrentAccount"),
+            "pooled path must attribute prefetch failures too; got {reason}"
+        );
     }
 
     #[test]

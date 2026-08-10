@@ -95,6 +95,7 @@ fn explore_quiet_stdout_text_emits_report() {
     let target = format!("{}:Classify", target_file.display());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(&fixture)
         .args([
             "--quiet",
@@ -150,6 +151,7 @@ fn explore_quiet_stdout_json_remains_rejected() {
     prepare_project(tmp.path());
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(tmp.path())
         .args([
             "--quiet",
@@ -186,6 +188,7 @@ fn scan_quiet_stdout_text_emits_report() {
     let (_tmp, fixture) = stage_go_fixture();
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(&fixture)
         .args([
             "--quiet",
@@ -234,6 +237,7 @@ fn scan_quiet_stdout_json_emits_report() {
     let (_tmp, fixture) = stage_go_fixture();
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .current_dir(&fixture)
         .args([
             "--quiet",

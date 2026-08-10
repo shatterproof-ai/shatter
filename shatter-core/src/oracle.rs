@@ -159,11 +159,9 @@ impl OracleSlotMap {
                         // Use try_recv via a noop waker to avoid requiring a
                         // runtime context (the JoinHandle is done, so this
                         // resolves immediately without async scheduling).
-                        use std::task::{Context, Poll, Wake, Waker};
-                        struct NoopWake;
-                        impl Wake for NoopWake { fn wake(self: Arc<Self>) {} }
-                        let waker = Waker::from(Arc::new(NoopWake));
-                        let mut cx = Context::from_waker(&waker);
+                        use std::task::{Context, Poll, Waker};
+                        let waker = Waker::noop();
+                        let mut cx = Context::from_waker(waker);
                         let result = std::pin::Pin::new(&mut handle).poll(&mut cx);
                         let join_result = match result {
                             Poll::Ready(r) => r,

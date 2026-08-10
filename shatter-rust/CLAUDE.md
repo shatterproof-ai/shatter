@@ -24,9 +24,66 @@ Captured: `console_output` (fd redirection via libc dup/dup2 in standalone/dispa
 
 Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-side-effects-not-captured` (status: resolved).
 
+## Crate-Bridge Dispatch Contract (str-303gg)
+
+`execute_function_crate_bridge` (`executor.rs`) builds **one dispatch harness per
+file that registers every statically-compatible function**, not just the
+requested one — mirroring the crate-backed filter in
+`execute_function_crate_backed`. A function is registered when it is non-generic
+and `crate_bridge_unsupported_reason()` returns `None` (no trait-object,
+raw-pointer, or unconstructible-extractor parameters). Requesting any registered
+sibling is then served by the running harness (real coverage) instead of hitting
+the wrapper's "unknown" arm, which emits a `not_supported` thrown_error
+("function not in crate_bridge dispatch table: …") that the engine previously
+recorded as **completed/0%**.
+
+**No-poisoning guarantee.** The registration predicate is *static*; a sibling can
+still fail to *compile* (e.g. a parameter type that does not implement
+`DeserializeOwned`). The whole-file harness is the first build candidate; on
+`CompilationFailed` it degrades to a single-function fallback harness for just
+the requested target, so one bad sibling never breaks the others. When the
+requested function fails to compile *on its own*, the failure is reported as
+`NonExecutable` / "not JSON-harness compatible" only when it is a
+serde-bound/`DeserializeOwned` incompatibility (recognised by
+`crate_bridge_serde_bound_failure_reason`); any other solo compile failure
+surfaces as `CompilationFailed` (→ `build_failed`), not `NonExecutable`. Locked
+by `crate_bridge_unsupported_sibling_does_not_poison_requested_function` and
+`crate_bridge_executes_private_function` in `executor.rs`.
+
+When any native replay is present the whole-file candidate is skipped entirely
+(the replay is positional to the requested call and would miscompile against
+siblings); the build goes straight to the single-function harness (str-303gg).
+
+**Engine-side defense-in-depth.** `shatter-core` reclassifies a `not_supported`
+thrown_error nested in an Ok execute result to `Unsupported`
+(`observe::thrown_not_supported_reason`, applied in `observe.rs`, `explorer.rs`,
+and `orchestrator.rs`; the concolic `ExploreError` gained an `Unsupported`
+variant surfaced in `scan_orchestrator.rs`), so such a placeholder is never
+scored as completed/0%.
+
+`HARNESS_CACHE_VERSION` was bumped to invalidate stale single-function bridge
+harness binaries cached before this change.
+
 ## Loop Snapshot Parity Contract
 
 Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map because the runtime hook observes loop entry without a source-level symbolic environment or local flow map.
+
+## Enum Value-Domain Parity Contract (str-2nfoe)
+
+For a parameter whose type resolves to a **fieldless enum defined in the analyzed file**, the analyzer emits a `TypeInfo::Union` carrying an `enum_values` value domain over a single base variant, matching Go's `union`+`enum_values` wire shape (str-pjlc1). The core input generator (`generate_union`) then draws valid members so validating decoders accept the input and every match arm executes; off-domain probes still come from the base variant.
+
+- **Default serde (string domain):** base variant `Str`; members are each variant's serde-facing JSON key — variant-level `#[serde(rename = "…")]` wins, else enum-level `#[serde(rename_all = "…")]` applied with serde's *variant* rule (PascalCase split on case boundaries, via `apply_rename_all_variant` — distinct from the struct-field `apply_rename_all` which splits snake_case on underscores), else the raw variant name.
+- **serde_repr (integer domain):** when the enum derives `Serialize_repr`/`Deserialize_repr` and has an integer `#[repr(iN/uN)]`, base variant is the sized `Int`; members are the discriminants (explicit integer literals or C-style sequential fill). Plain `#[repr(iN)]` WITHOUT serde_repr keeps the string domain — default serde still accepts variant names.
+- **Governing invariant:** every emitted member must be accepted by serde deserialization of the enum as written. When the accepted values cannot be proven (data-carrying variants, enum-level serde args outside `rename_all`, variant serde args outside `rename`, an unrecognized `rename_all` rule, an unevaluable discriminant, or serde_repr without an int repr), the analyzer emits NO `enum_values` and falls back to the plain per-variant type union — never guess.
+- **Truncation:** capped at `MAX_ENUM_VALUES` (64) with one WARN line to stderr per truncated type, mirroring Go.
+- **Out of scope:** cross-file/cross-crate enum resolution (single-file constraint) and data-carrying variants. Authoritative matrix: `protocol/parity-matrix.yaml` `shared_wire_types.type_info_enum_values` (rust, go, typescript: all implemented; the `enum-value-domain-partial` divergence is resolved and removed). E2E: `e2e_rust_enum_value_domain_reaches_all_arms` in `shatter-core/tests/e2e_concolic_rust.rs` over `examples/rust/enum-color/src/color.rs`.
+
+**Concolic and mutation parity (str-mambd).** `enum_values` reaching the input generator (`generate_union`) is not enough on its own — two parallel paths needed their own fix in `shatter-core`:
+
+- **Concolic solving** (`solver.rs`, `assert_enum_param_domains`): negating a branch on a closed-domain field must stay within `enum_values` and must actually exclude values already tried, or Z3 returns an out-of-domain string ("unknown variant ``") or deterministically re-derives the same value forever. `instrument.rs`'s match-arm constraint names its `Param` from `syn::to_token_stream().to_string()` (spaces every token, e.g. `t.purpose` → `"t . purpose"`) and its constant from the raw arm-pattern text (e.g. `"TripPurpose :: Personal"`, not `"personal"`) — both get resolved back to the clean var name / wire value via alphanumeric, case-insensitive matching rather than requiring `instrument.rs` to resolve cross-file `rename_all` rules itself. `Z3SolverStrategy` (`strategy.rs`) accumulates tried wire values across `feedback()` calls so re-solving from a different arm's own single-constraint observation doesn't oscillate between two variants forever.
+- **Mutation** (`input_gen.rs`, `mutate_union`): the fuzzer strategy's union mutator ignored `enum_values` entirely (delegating to generic per-variant mutation), so any mutation-sourced candidate for a closed-domain field was effectively guaranteed invalid. Fixed to mirror `generate_union`'s policy (draw from `enum_values` most of the time, occasional off-domain probe via `ENUM_INVALID_PROBE_PERCENT`).
+
+E2E: `e2e_rust_nested_enum_field_domain_reaches_several_arms` in `shatter-core/tests/e2e_concolic_rust.rs` — a NESTED, cross-file enum field (unlike `enum-color`'s top-level, same-file case), which is what actually exercises the raw-token-name and raw-pattern-value gaps above.
 
 ## Prepare Parity Contract
 

@@ -40,7 +40,7 @@ const (
 	// reference state consists only of maps by allocating those maps in the
 	// same-package wrapper before invoking the method.
 	ReceiverPlanKindInitializedMaps ReceiverPlanKind = "initialized_maps"
-	// ReceiverPlanKindHint applies an operator-supplied override.
+	// ReceiverPlanKindHint applies an explicit configured receiver recipe.
 	ReceiverPlanKindHint ReceiverPlanKind = "hint"
 )
 
@@ -100,8 +100,9 @@ var UsefulZeroValueTypes = map[string]struct{}{
 // PlanOptions.MaxPlans is zero.
 const DefaultMaxReceiverPlans = 3
 
-// ReceiverHint is an operator-supplied override, typically sourced from
-// .shatter/config.yaml hints.
+// ReceiverHint is an explicit receiver recipe, currently sourced from
+// .shatter/config.yaml. It is planned before auto-discovered receiver
+// strategies so configured recipes cannot be capped out by MaxPlans.
 type ReceiverHint struct {
 	// ReceiverKind is the wrapper-facing token to emit (e.g. "zero_value"
 	// or "constructor:NewThing").
@@ -128,8 +129,9 @@ type PlanOptions struct {
 	// non-pointer struct whose exported fields are all primitives; the
 	// planner may then emit a composite-literal plan.
 	ReceiverIsCompositeLiteralSafe bool
-	// Hint is a caller-supplied receiver-kind override; lowest-priority
-	// fallback other than no-plan.
+	// Hint is a caller-supplied receiver-kind override. Explicit hints are
+	// emitted before auto-discovered strategies so config-backed receiver
+	// recipes are not dropped by MaxPlans.
 	Hint *ReceiverHint
 	// ReceiverRequiresConstruction signals that the receiver type's zero
 	// value is not meaningful — the struct holds unexported reference-typed
@@ -159,8 +161,8 @@ type PlanOptions struct {
 
 // PlanReceivers returns a prioritised list of receiver plans for the method
 // target t, capped at opts.MaxPlans (or DefaultMaxReceiverPlans). Strategy
-// order is: adapter, same-package constructor, nearby-package constructor,
-// composite literal, useful zero value, hint.
+// order is: hint, adapter, same-package constructor, nearby-package
+// constructor, composite literal, useful zero value.
 //
 // When the target is not a method, PlanReceivers returns (nil, nil): free
 // functions do not require a receiver plan.
@@ -205,6 +207,14 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 		p.Priority = len(plans)
 		plans = append(plans, p)
 		return true
+	}
+
+	if opts.Hint != nil {
+		add(ReceiverPlan{
+			Kind:         ReceiverPlanKindHint,
+			ReceiverKind: opts.Hint.ReceiverKind,
+			Label:        defaultHintLabel(opts.Hint, "hint"),
+		})
 	}
 
 	if opts.Adapter != nil {
@@ -282,14 +292,6 @@ func PlanReceivers(t protocol.DiscoveredTarget, opts PlanOptions) ([]ReceiverPla
 			Kind:         ReceiverPlanKindInitializedMaps,
 			ReceiverKind: WrapperReceiverKindInitializedMaps,
 			Label:        "initialized_maps_" + toSnakeCase(t.Receiver.TypeName),
-		})
-	}
-
-	if opts.Hint != nil {
-		add(ReceiverPlan{
-			Kind:         ReceiverPlanKindHint,
-			ReceiverKind: opts.Hint.ReceiverKind,
-			Label:        defaultHintLabel(opts.Hint, "hint"),
 		})
 	}
 

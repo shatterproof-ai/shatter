@@ -11,11 +11,6 @@
 # protocol/parity-matrix.yaml in the `reason` text so a future reader can
 # find the owning bd issue and resolution condition (str-1hlk.12).
 known_drifts:
-  # Go handler includes a "functions" field in responses where other
-  # frontends do not. Tracked for future alignment.
-  - pattern: ".functions: missing in"
-    reason: "Go handler includes extra 'functions' field in all responses"
-
   # Side effect capture divergences across frontends.
   # See protocol/parity-matrix.yaml side_effect_capabilities for the full matrix.
   - pattern: "side_effects.*thrown_error"

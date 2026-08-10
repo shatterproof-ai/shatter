@@ -70,6 +70,7 @@ fn scan_with_no_cache_no_seeds_does_not_dirty_target_project() {
     let command_tmp = tempfile::tempdir().expect("create command tmpdir");
     let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(binary)
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .env("TMPDIR", command_tmp.path())
         .current_dir(&fixture)
         .args([

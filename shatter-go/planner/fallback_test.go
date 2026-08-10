@@ -36,8 +36,12 @@ func funcParam(name, typeName string) protocol.ParamInfo {
 	}
 }
 
-// AC1: error param emits at least two ValuePlans: nil and fmt.Errorf("err").
-func TestPlanParam_Error_EmitsNilAndFmtErrorf(t *testing.T) {
+// str-kvzh7: an error param emits tagged-error Literal ValuePlans — a nil
+// (JSON null) candidate and an errors.New("shatter") candidate via the
+// {"__complex_type":"error",...} shape. These are Literal (not runtime_value)
+// so the core's materialize_value passes them through instead of collapsing
+// every candidate to null.
+func TestPlanParam_Error_EmitsNilAndTaggedError(t *testing.T) {
 	plans, u := planner.PlanParam(testTargetID, 0, errorParam("err"), planner.ParamPlanOptions{})
 	if u != nil {
 		t.Fatalf("unexpected unsatisfied: %+v", u)
@@ -45,10 +49,10 @@ func TestPlanParam_Error_EmitsNilAndFmtErrorf(t *testing.T) {
 	if len(plans) < 2 {
 		t.Fatalf("len(plans) = %d, want >= 2; plans=%+v", len(plans), plans)
 	}
-	var nilFound, errorfFound bool
+	var nilFound, errorNewFound bool
 	for _, p := range plans {
-		if p.Kind != protocol.ValuePlanKindRuntimeValue {
-			t.Errorf("plan Kind = %q, want %q", p.Kind, protocol.ValuePlanKindRuntimeValue)
+		if p.Kind != protocol.ValuePlanKindLiteral {
+			t.Errorf("plan Kind = %q, want %q", p.Kind, protocol.ValuePlanKindLiteral)
 		}
 		if p.TypeHint != "error" {
 			t.Errorf("plan TypeHint = %q, want %q", p.TypeHint, "error")
@@ -56,23 +60,48 @@ func TestPlanParam_Error_EmitsNilAndFmtErrorf(t *testing.T) {
 		if p.ParamIndex != 0 || p.ParamName != "err" {
 			t.Errorf("plan identity = (%d,%q), want (0,%q)", p.ParamIndex, p.ParamName, "err")
 		}
-		expr, err := decodeExpression(p.Literal)
-		if err != nil {
-			t.Errorf("Literal is not a JSON string: %v (%s)", err, string(p.Literal))
-			continue
-		}
-		switch expr {
-		case "nil":
+		switch strings.TrimSpace(string(p.Literal)) {
+		case "null":
 			nilFound = true
-		case `fmt.Errorf("err")`:
-			errorfFound = true
+		case `{"__complex_type":"error","message":"shatter"}`:
+			errorNewFound = true
 		}
 	}
 	if !nilFound {
-		t.Errorf("missing nil ValuePlan")
+		t.Errorf("missing nil (null) ValuePlan; plans=%+v", plans)
 	}
-	if !errorfFound {
-		t.Errorf("missing fmt.Errorf ValuePlan")
+	if !errorNewFound {
+		t.Errorf("missing errors.New tagged ValuePlan; plans=%+v", plans)
+	}
+}
+
+// str-kvzh7: an error param with mined sentinels emits one
+// {"__complex_type":"error","sentinel":N} Literal per index in [0, count),
+// on top of the nil and errors.New candidates, and never fewer than the count
+// (sentinels are known-answer candidates that must not be evicted by the cap).
+func TestPlanParam_Error_EmitsSentinelSelectors(t *testing.T) {
+	opts := planner.ParamPlanOptions{
+		ErrorSentinelCountsByParam: map[string]int{"err": 2},
+		MaxPlansPerParam:           1, // deliberately below the sentinel count.
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, errorParam("err"), opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	seen := make(map[string]bool)
+	for _, p := range plans {
+		if p.Kind != protocol.ValuePlanKindLiteral {
+			t.Errorf("plan Kind = %q, want Literal", p.Kind)
+		}
+		seen[strings.TrimSpace(string(p.Literal))] = true
+	}
+	for _, want := range []string{
+		`{"__complex_type":"error","sentinel":0}`,
+		`{"__complex_type":"error","sentinel":1}`,
+	} {
+		if !seen[want] {
+			t.Errorf("missing sentinel selector %s; plans=%+v", want, plans)
+		}
 	}
 }
 
@@ -295,11 +324,13 @@ func TestPlanParams_MixedChanSupport(t *testing.T) {
 func TestPlanParam_FallbackNeverCollidesWithPrimitive(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		primitiveKinds := []string{"str", "int", "float", "bool"}
+		// str-kvzh7: `error` params now take the tagged-error Literal path
+		// (planErrorParam), not the runtime_value fallback, so they are covered
+		// by the dedicated error tests rather than this runtime_value property.
 		fallbackChoices := []struct {
 			builder  func() protocol.ParamInfo
 			typeHint string
 		}{
-			{func() protocol.ParamInfo { return errorParam("err") }, "error"},
 			{func() protocol.ParamInfo { return chanParam("ch", "chan int") }, "chan int"},
 			{func() protocol.ParamInfo { return funcParam("cb", "func()") }, "func()"},
 		}
@@ -337,12 +368,10 @@ func TestPlanParam_FallbackNeverCollidesWithPrimitive(t *testing.T) {
 	})
 }
 
-// Regression: hints on an error parameter still take top priority — the
-// hint path runs in the primitive-family branch and produces a literal
-// ValuePlan, but an error param has no primitive family, so a hint alone
-// cannot produce a ValuePlan; instead the fallback still applies.
-// This test documents that behaviour: hints are silently ignored for
-// fallback-shaped params today.
+// Regression: hints on an error parameter do not apply — the hint path runs
+// in the primitive-family branch, and an error param has no primitive family,
+// so the tagged-error Literal path (str-kvzh7) applies regardless. This test
+// documents that hints are silently ignored for error-shaped params.
 func TestPlanParam_ErrorHint_IgnoredButStillPlans(t *testing.T) {
 	p := errorParam("err")
 	opts := planner.ParamPlanOptions{
@@ -358,16 +387,19 @@ func TestPlanParam_ErrorHint_IgnoredButStillPlans(t *testing.T) {
 		t.Fatalf("len(plans) = %d, want >= 2", len(plans))
 	}
 	for _, pl := range plans {
-		if pl.Kind != protocol.ValuePlanKindRuntimeValue {
-			t.Errorf("plan Kind = %q, want runtime_value", pl.Kind)
+		if pl.Kind != protocol.ValuePlanKindLiteral {
+			t.Errorf("plan Kind = %q, want literal", pl.Kind)
 		}
 	}
 }
 
-// Regression: maxPlans cap applies to fallback plans.
+// Regression: the maxPlans cap applies to the runtime_value fallback path
+// (chan/func). str-kvzh7: error params take the known-answer Literal path
+// (planErrorParam) which, like the enum path, raises the cap to fit its
+// candidates, so this cap regression uses a chan param.
 func TestPlanParam_Fallback_RespectsMaxPlans(t *testing.T) {
 	opts := planner.ParamPlanOptions{MaxPlansPerParam: 1}
-	plans, u := planner.PlanParam(testTargetID, 0, errorParam("err"), opts)
+	plans, u := planner.PlanParam(testTargetID, 0, chanParam("ch", "chan int"), opts)
 	if u != nil {
 		t.Fatalf("unexpected unsatisfied: %+v", u)
 	}

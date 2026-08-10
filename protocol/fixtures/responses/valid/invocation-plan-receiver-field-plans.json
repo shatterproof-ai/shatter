@@ -1,0 +1,43 @@
+{
+  "protocol_version": "0.1.0",
+  "id": 22,
+  "status": "invocation_plan",
+  "invocation_plans": [
+    {
+      "target_id": "pkg/graph.(*queryResolver).Search",
+      "receiver_kind": "constructor:NewQueryResolver",
+      "argument_plans": [
+        {
+          "param_index": 0,
+          "param_name": "query",
+          "kind": "symbolic",
+          "type_hint": "string"
+        }
+      ],
+      "constructor_arg_plans": [
+        {
+          "param_index": 0,
+          "param_name": "cfg",
+          "kind": "zero",
+          "type_hint": "Config"
+        }
+      ],
+      "receiver_field_plans": [
+        {
+          "path": ["Resolver", "SearchBackend"],
+          "kind": "runtime_value",
+          "literal": "newFakeSearchBackend()",
+          "type_hint": "*SearchBackend"
+        },
+        {
+          "path": ["MaxResults"],
+          "kind": "literal",
+          "literal": 10,
+          "type_hint": "int"
+        }
+      ],
+      "priority": 0,
+      "label": "resolver_with_backend"
+    }
+  ]
+}

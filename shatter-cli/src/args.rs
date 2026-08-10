@@ -99,9 +99,24 @@ pub(crate) fn infer_output_format(path: &std::path::Path) -> Result<StdoutFormat
     }
 }
 
+/// Long `--version` output: the package version plus the build-time hashes of
+/// each embedded frontend. The hashes make a stale binary self-describing — a
+/// developer (or `shatter doctor`) can compare the Go source hash here against
+/// a freshly computed hash of `shatter-go/` to detect an out-of-date embed
+/// (str-o09e).
+pub(crate) const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\ngo-frontend-source-hash: ",
+    env!("GO_FRONTEND_SOURCE_HASH"),
+    "\ngo-frontend-binary-hash: ",
+    env!("GO_FRONTEND_HASH"),
+    "\nts-frontend-bundle-hash: ",
+    env!("FRONTEND_BUNDLE_HASH"),
+);
+
 /// Shatter: automatic exploratory testing via concolic execution.
 #[derive(Parser, Debug)]
-#[command(name = "shatter", version, about)]
+#[command(name = "shatter", version, long_version = LONG_VERSION, about)]
 pub(crate) struct Cli {
     /// Log verbosity level: error, warn, info (default), debug, trace.
     #[arg(long, global = true, default_value = "info")]
@@ -144,6 +159,18 @@ pub(crate) struct Cli {
     /// Override auto-detected project root directory.
     #[arg(long, global = true, value_name = "DIR")]
     pub(crate) project_dir: Option<std::path::PathBuf>,
+
+    /// Permit executing target functions on the host without an OS sandbox.
+    ///
+    /// By default (str-gg9v) Shatter refuses to execute target functions when no
+    /// sandbox backend is configured, because a target can create, modify, or
+    /// delete files by relative path in the invoking repository. Pass this flag
+    /// (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in,
+    /// targets still run in a throwaway working directory so relative-path writes
+    /// do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap`
+    /// is the safer alternative and does not require this flag.
+    #[arg(long, global = true)]
+    pub(crate) allow_host_writes: bool,
 
     /// Override config values using dotted-path key=value pairs (repeatable).
     ///
@@ -459,11 +486,13 @@ pub(crate) struct ExploreArgs {
     #[arg(long)]
     pub(crate) strategy_weights: Option<String>,
 
-    /// Select a frontend-provided invocation planner by name. When set to
-    /// `go`, consults the Go frontend's invocation planner
-    /// (get_invocation_plan) before exploring each target. The returned
-    /// InvocationPlan is fed as seeds and attached to every Execute request
-    /// so method targets dispatch into a real constructor.
+    /// Select a frontend-provided invocation planner by name. The invocation
+    /// planner (get_invocation_plan) is consulted automatically whenever the
+    /// frontend advertises that capability, so this flag is not required to
+    /// pick up `.shatter/config.yaml` `defaults`/`generators`; set it to `go`
+    /// only to force consultation explicitly. The returned InvocationPlan is
+    /// fed as seeds and attached to every Execute request so method targets
+    /// dispatch into a real constructor.
     #[arg(long)]
     pub(crate) planner: Option<String>,
 
@@ -760,7 +789,9 @@ pub(crate) struct ScanArgs {
     pub(crate) dry_run: bool,
 
     /// Resume a previous scan from a checkpoint file, or pass "auto" to
-    /// discover the checkpoint from the scan artifact directory.
+    /// discover the checkpoint from the scan artifact directory. Pass "off"
+    /// (or no/none/false/disabled) to disable resume. A nonexistent explicit
+    /// path is reported before a fresh checkpoint is created there.
     #[arg(long)]
     pub(crate) resume: Option<String>,
 
@@ -1189,6 +1220,13 @@ pub(crate) enum CliCommand {
         #[arg(long)]
         analyze_only: bool,
 
+        /// Use the concolic (Z3-backed) explorer instead of the random explorer.
+        /// Routes every function through the concolic orchestrator (the same
+        /// path as `explore --concolic` / `scan --concolic`); pair with
+        /// `--solver-timeout` to bound per-query Z3 time.
+        #[arg(long)]
+        concolic: bool,
+
         /// Per-request timeout in seconds (how long to wait for a single frontend response).
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
@@ -1555,6 +1593,21 @@ pub(crate) enum CliCommand {
     /// change tracking in CI.
     #[command(name = "list-targets")]
     ListTargets(ListTargetsArgs),
+
+    /// Diagnose the local Shatter install.
+    ///
+    /// Reports the embedded frontend hashes and, in a source checkout, whether
+    /// the embedded Go frontend is stale relative to the current `shatter-go/`
+    /// sources (str-o09e). Also checks the target project for any configured
+    /// output path (cache, seeds, artifacts, report) that its `.gitignore`
+    /// fails to cover (str-1fwt). Exits non-zero if a stale embed or an
+    /// un-ignored generated path is detected.
+    Doctor {
+        /// Project directory to check for un-ignored generated paths
+        /// (default: auto-detected project root).
+        #[arg(short, long)]
+        directory: Option<PathBuf>,
+    },
 }
 
 /// Arguments for `shatter list-targets`.
@@ -3244,6 +3297,42 @@ mod tests {
                 assert!(analyze_only);
                 assert_eq!(request_timeout, 30);
             }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_run_with_concolic_flag() {
+        // str-yhsp: `--concolic` (and its companion `--solver-timeout`) must be
+        // accepted on `run` and routed to the concolic orchestrator path.
+        let cli = Cli::parse_from([
+            "shatter",
+            "run",
+            "--concolic",
+            "--solver-timeout",
+            "7",
+            ".",
+        ]);
+        match cli.command {
+            CliCommand::Run {
+                path,
+                concolic,
+                solver_timeout,
+                ..
+            } => {
+                assert_eq!(path, ".");
+                assert!(concolic);
+                assert_eq!(solver_timeout, Some(7));
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_run_concolic_defaults_off() {
+        let cli = Cli::parse_from(["shatter", "run", "."]);
+        match cli.command {
+            CliCommand::Run { concolic, .. } => assert!(!concolic),
             _ => panic!("expected Run command"),
         }
     }

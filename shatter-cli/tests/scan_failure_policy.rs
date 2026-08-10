@@ -45,6 +45,7 @@ fn write_fixture() -> tempfile::TempDir {
 #[test]
 fn scan_help_documents_failure_policy_flags() {
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args(["scan", "--help"])
         .output()
         .expect("invoke shatter scan --help");
@@ -72,6 +73,7 @@ fn scan_summary_names_all_buckets() {
 
     let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .env("TMPDIR", command_tmp.path())
         .args([
             "scan",
@@ -121,6 +123,7 @@ fn scan_dry_run_with_threshold_form_parses() {
     // (the policy itself is unit-tested at the core layer).
     let project = write_fixture();
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args([
             "scan",
             project.path().to_str().expect("utf8 project path"),
@@ -152,6 +155,7 @@ fn scan_dry_run_with_strict_policy_exits_zero() {
     let project = write_fixture();
 
     let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .args([
             "scan",
             project.path().to_str().expect("utf8 project path"),

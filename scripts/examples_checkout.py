@@ -17,10 +17,26 @@ DEFAULT_BRANCH = "main"
 DEFAULT_DIR = Path(tempfile.gettempdir()) / "shatter-examples-main"
 
 
+def _sanitized_git_env() -> dict[str, str]:
+    # actions/checkout injects the job's GITHUB_TOKEN as an http.extraheader
+    # override via GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n env
+    # vars so it's inherited by later steps. Since examples.git is a
+    # different, public repo, that leaked auth header gets sent anyway and
+    # is rejected, producing a bogus "could not read Username" failure.
+    env = os.environ.copy()
+    env.pop("GIT_CONFIG_COUNT", None)
+    for key in list(env):
+        if key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
+            del env[key]
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
 def run_git(args: list[str], cwd: Path | None = None) -> None:
     completed = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=_sanitized_git_env(),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

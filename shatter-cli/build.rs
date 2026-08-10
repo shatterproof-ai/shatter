@@ -10,14 +10,99 @@ fn main() {
     build_go_frontend(&manifest_dir, &out_dir);
 }
 
+/// Whether a file under an embedded-frontend source tree contributes to the
+/// built artifact and should therefore drive rebuilds and the source hash.
+///
+/// Test files (`*_test.go`) are excluded: `go build .` ignores them, so a
+/// change to a test must not trigger an embedded rebuild or flip the staleness
+/// hash (which would produce false "stale binary" reports in `doctor`).
+fn is_go_source_file(path: &Path) -> bool {
+    let name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    if name == "go.mod" || name == "go.sum" {
+        return true;
+    }
+    name.ends_with(".go") && !name.ends_with("_test.go")
+}
+
+/// Whether a file under the TypeScript `src/` tree contributes to the bundle.
+/// All files under `src/` are bundle inputs; the predicate exists for symmetry
+/// with the Go side and to keep the walk explicit.
+fn is_ts_source_file(_path: &Path) -> bool {
+    true
+}
+
+/// Recursively collect every source file under `root` matching `predicate`,
+/// returned sorted by path for a stable hash, alongside the set of directories
+/// walked. Symlinks are not followed.
+fn collect_source_tree(root: &Path, predicate: &dyn Fn(&Path) -> bool) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        dirs.push(dir.clone());
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() && predicate(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    dirs.sort();
+    (files, dirs)
+}
+
+/// Compute a deterministic content hash over a sorted set of files.
+///
+/// For each file the relative path and its contents are folded into the digest
+/// so the hash changes on edits, renames, additions, and removals. This is the
+/// algorithm `commands::doctor` re-implements at runtime to detect staleness —
+/// keep the two in lockstep.
+fn hash_source_tree(root: &Path, files: &[PathBuf]) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    for file in files {
+        let rel = file.strip_prefix(root).unwrap_or(file);
+        buf.extend_from_slice(rel.to_string_lossy().as_bytes());
+        buf.push(0);
+        let bytes = std::fs::read(file)
+            .unwrap_or_else(|e| panic!("failed to read {} for hashing: {e}", file.display()));
+        buf.extend_from_slice(&bytes.len().to_le_bytes());
+        buf.extend_from_slice(&bytes);
+        buf.push(0);
+    }
+    sha256_hex(&buf)
+}
+
 fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
     let ts_dir = manifest_dir.join("..").join("shatter-ts");
 
     let bundle_src = ts_dir.join("dist").join("bundle.js");
     let worker_bundle_src = ts_dir.join("dist").join("worker-bundle.js");
 
-    // Re-run if any TS source files change
-    println!("cargo:rerun-if-changed={}", ts_dir.join("src").display());
+    // Re-run if any TS source file changes. As with the Go tree (str-o09e),
+    // the directory form of `rerun-if-changed` misses in-place edits to
+    // existing files, so enumerate each source file and emit the directories
+    // too (to catch additions/removals).
+    let (ts_files, ts_dirs) = collect_source_tree(&ts_dir.join("src"), &is_ts_source_file);
+    for dir in &ts_dirs {
+        println!("cargo:rerun-if-changed={}", dir.display());
+    }
+    for file in &ts_files {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
     println!(
         "cargo:rerun-if-changed={}",
         ts_dir.join("package.json").display()
@@ -77,52 +162,34 @@ fn build_ts_frontend(manifest_dir: &Path, out_dir: &Path) {
 fn build_go_frontend(manifest_dir: &Path, out_dir: &Path) {
     let go_dir = manifest_dir.join("..").join("shatter-go");
 
-    // Re-run if any Go source files change
+    // Track every Go source file individually. Cargo's directory-form
+    // `rerun-if-changed=<dir>` does NOT detect in-place edits to files already
+    // inside the directory (str-o09e) — editing an existing `.go` file then
+    // left the embedded frontend stale. Emitting one `rerun-if-changed=<file>`
+    // per source file makes Cargo re-run this script on any edit. We ALSO emit
+    // the directory paths so that adding or removing a file (which the
+    // file-level set cannot anticipate) still re-triggers the build.
+    let (go_files, go_dirs) = collect_source_tree(&go_dir, &is_go_source_file);
+    for dir in &go_dirs {
+        println!("cargo:rerun-if-changed={}", dir.display());
+    }
+    for file in &go_files {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+
+    // Hash the Go source tree (not the built binary) so the staleness check in
+    // `shatter doctor` can recompute the same value from a checkout and compare
+    // it against what this binary was built from. The binary hash below is
+    // non-reproducible across machines; the source hash is.
+    let source_hash = hash_source_tree(&go_dir, &go_files);
+    println!("cargo:rustc-env=GO_FRONTEND_SOURCE_HASH={source_hash}");
+    // Record the source directory so `doctor` can locate the tree to re-hash in
+    // a dev checkout. Absent (or pointing nowhere) in an installed binary, in
+    // which case the staleness check is skipped.
     println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("main.go").display()
+        "cargo:rustc-env=GO_FRONTEND_SOURCE_DIR={}",
+        go_dir.display()
     );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("protocol").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("instrument").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("wrapper").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("planner").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("runtimeval").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("launcher").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("build").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("overlay").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("harness").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        go_dir.join("sandbox").display()
-    );
-    println!("cargo:rerun-if-changed={}", go_dir.join("go.mod").display());
 
     let go_binary = out_dir.join("shatter-go");
 

@@ -562,6 +562,8 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
             // degrading to a random string that fails strong-typed deser.
             "complex_type:uuid".to_string(),
             "complex_type:url".to_string(),
+            "complex_type:date".to_string(),
+            "complex_type:date_time".to_string(),
         ]);
         resp
     }

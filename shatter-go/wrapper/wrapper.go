@@ -17,6 +17,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -49,6 +50,15 @@ type WrapperParam struct {
 	// import paths are added to the owning WrapperTarget.Imports list.
 	// Empty for parameters that follow the JSON-input path.
 	RuntimeValueExpr string
+	// ErrorSentinels carries the mined errors.Is/errors.As sentinel targets
+	// for a bare `error` parameter (str-kvzh7). When non-empty, the wrapper
+	// bakes a `[]error{...}` table and lets an
+	// `{"__complex_type":"error","sentinel":N}` input select a sentinel by
+	// index, so a synthesized error value can satisfy sentinel-comparison
+	// branches (errors.Is(err, pkg.ErrX)) that errors.New can never match.
+	// The sentinels' import paths are added to WrapperTarget.Imports. Nil for
+	// non-error params and error params with no mined sentinels.
+	ErrorSentinels []ErrorSentinel
 }
 
 // TypeParamInfo describes one generic type parameter declared by a wrapper target.
@@ -60,18 +70,19 @@ type TypeParamInfo struct {
 // WrapperTarget is an enriched description of a discovered invocation target
 // with Go-level type information for code generation.
 type WrapperTarget struct {
-	ID                string // stable target ID, e.g. "example.com/pkg:Add"
-	SymbolName        string // bare function or method name
-	Kind              TargetKind
-	ReceiverType      string // bare type name (without *) for method targets
-	IsPointerRecv     bool   // true for (*T).Method receivers
-	ReceiverMapFields []ReceiverMapField
-	Parameters        []WrapperParam
-	TypeParams        []TypeParamInfo
-	HasResult         bool
-	ResultGoType      string // Go type string for the first return value
-	ResultGoTypes     []string
-	ResultCount       int // total number of return values (0 when HasResult is false)
+	ID                  string // stable target ID, e.g. "example.com/pkg:Add"
+	SymbolName          string // bare function or method name
+	Kind                TargetKind
+	ReceiverType        string // bare type name (without *) for method targets
+	IsPointerRecv       bool   // true for (*T).Method receivers
+	ReceiverMapFields   []ReceiverMapField
+	ConfiguredReceivers []ConfiguredReceiver
+	Parameters          []WrapperParam
+	TypeParams          []TypeParamInfo
+	HasResult           bool
+	ResultGoType        string // Go type string for the first return value
+	ResultGoTypes       []string
+	ResultCount         int // total number of return values (0 when HasResult is false)
 	// Imports lists the import paths required by qualified type names that the
 	// generated wrapper source actually references. Today that means parameter
 	// types such as `context.Context`, `*pgx.Conn`, or `gqlerror.Error`; result
@@ -90,6 +101,13 @@ type ReceiverMapField struct {
 	GoType string
 }
 
+// ConfiguredReceiver describes a config-backed receiver construction case.
+type ConfiguredReceiver struct {
+	ReceiverKind string
+	Expression   string
+	Imports      []string
+}
+
 const (
 	// WrapperKindZeroValue selects zero-value receiver construction.
 	WrapperKindZeroValue = "zero_value"
@@ -106,7 +124,7 @@ const (
 // inputs (new code paths, changed deserialization templates, etc.).
 // Including it in DiscoveryHash ensures that stale cached wrappers from a
 // previous generator revision are never reused. str-5ac4.
-const generatorVersion = "gen-v11"
+const generatorVersion = "gen-v12"
 
 // DiscoveryHash returns a 16-character hex prefix of the SHA-256 over the
 // full target signatures (parameters, results, receiver shape, imports,
@@ -164,6 +182,17 @@ func targetSignature(t WrapperTarget) string {
 		b.WriteString(f.Name)
 		b.WriteByte('/')
 		b.WriteString(f.GoType)
+	}
+	b.WriteByte(':')
+	for i, r := range t.ConfiguredReceivers {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(r.ReceiverKind)
+		b.WriteByte('/')
+		b.WriteString(r.Expression)
+		b.WriteByte('/')
+		b.WriteString(strings.Join(sortedStrings(r.Imports), ","))
 	}
 	b.WriteByte(':')
 	// Parameter signatures: type, variadic flag, and runtime-value expression.
@@ -319,6 +348,13 @@ func GenerateWrapper(
 		filteredExtra = appendStringIfMissing(filteredExtra, "time")
 		sort.Strings(filteredExtra)
 	}
+	// str-jn9r0: bare builtin `error` params decode via errors.New in
+	// writeErrorParamDeserialization, so thread the "errors" import when any
+	// target or constructor takes an error param.
+	if wrapperNeedsErrorImport(sorted, sortedCtors) {
+		filteredExtra = appendStringIfMissing(filteredExtra, "errors")
+		sort.Strings(filteredExtra)
+	}
 	needsMapNormalizer := wrapperNeedsMapInputNormalizer(sorted) || constructorsNeedMapInputNormalizer(sortedCtors)
 	needsFuncNormalizer := wrapperNeedsFuncInputNormalizer(sorted)
 	needsRuntimeValueNormalizer := wrapperNeedsRuntimeValueInputNormalizer(sorted)
@@ -422,6 +458,16 @@ func writeTargetCase(b *strings.Builder, t WrapperTarget, ctorsByType map[string
 			writeReceiverMapFieldInitializers(b, t.ReceiverMapFields, "\t\t\t\t")
 			b.WriteString("\t\t\t}\n")
 		}
+		writeParamDeserialization(b, t.Parameters, "\t\t\t")
+		writeCall(b, t, "_recv", nil, "\t\t\t")
+	}
+
+	for _, receiver := range t.ConfiguredReceivers {
+		if strings.TrimSpace(receiver.ReceiverKind) == "" || strings.TrimSpace(receiver.Expression) == "" {
+			continue
+		}
+		fmt.Fprintf(b, "\t\tcase %q:\n", receiver.ReceiverKind)
+		fmt.Fprintf(b, "\t\t\t_recv := %s\n", strings.TrimSpace(receiver.Expression))
 		writeParamDeserialization(b, t.Parameters, "\t\t\t")
 		writeCall(b, t, "_recv", nil, "\t\t\t")
 	}
@@ -556,8 +602,16 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 		fmt.Fprintf(b, "%svar %s %s = %s\n", indent, p.Name, p.GoType, p.RuntimeValueExpr)
 		return
 	}
+	if isSymbolicHTTPRequestParam(p.GoType) {
+		writeSymbolicHTTPRequestDeserialization(b, p.Name, inputIndex, indent)
+		return
+	}
 	if p.GoType == "time.Duration" {
 		writeDurationParamDeserialization(b, p.Name, inputIndex, indent)
+		return
+	}
+	if p.GoType == "error" {
+		writeErrorParamDeserialization(b, p.Name, inputIndex, indent, p.ErrorSentinels)
 		return
 	}
 	fmt.Fprintf(b, "%svar %s %s\n", indent, p.Name, p.GoType)
@@ -589,6 +643,40 @@ func writeParamDeserializationAtInputIndex(b *strings.Builder, p WrapperParam, i
 	fmt.Fprintf(b, "%s}\n", indent)
 }
 
+// isSymbolicHTTPRequestParam reports whether goType is a direct *http.Request
+// parameter. str-e41w synthesizes these from a symbolic request body input so
+// the solver can drive request payloads into HTTP handlers, instead of binding
+// the fixed empty-body runtime value. The check is intentionally narrow:
+// *http.Request used as a constructor argument or struct field still uses the
+// runtimeval registry's fixed expression (per-input variation there is out of
+// scope and routed through different machinery).
+func isSymbolicHTTPRequestParam(goType string) bool {
+	return strings.TrimSpace(goType) == "*http.Request"
+}
+
+// writeSymbolicHTTPRequestDeserialization emits a *http.Request whose body is
+// read from the param's symbolic input slot (str-e41w). The method, path, and
+// auth headers are fixed so httptest.NewRequest cannot panic on an invalid
+// verb and handlers do not return before reading the body. The three common
+// API auth conventions are stubbed (`x-api-key`, `Authorization: Bearer`,
+// and Google-style `x-goog-api-key`) so a presence-check on any passes. Only the body is symbolic, which is what
+// handler bodies read and branch on. Making method/path/headers symbolic is
+// deferred follow-up work.
+func writeSymbolicHTTPRequestDeserialization(b *strings.Builder, name string, inputIndex int, indent string) {
+	bodyVar := fmt.Sprintf("_shatterReqBody%d", inputIndex)
+	fmt.Fprintf(b, "%svar %s string\n", indent, bodyVar)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, inputIndex)
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, inputIndex, bodyVar)
+	fmt.Fprintf(b, "%s\t\treturn nil, fmt.Errorf(\"param %s body: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+	fmt.Fprintf(b, "%svar %s *http.Request = httptest.NewRequest(\"POST\", \"/\", strings.NewReader(%s))\n", indent, name, bodyVar)
+	fmt.Fprintf(b, "%s%s.Header.Set(\"x-api-key\", \"shatter\")\n", indent, name)
+	fmt.Fprintf(b, "%s%s.Header.Set(\"Authorization\", \"Bearer shatter\")\n", indent, name)
+	fmt.Fprintf(b, "%s%s.Header.Set(\"x-goog-api-key\", \"shatter\")\n", indent, name)
+	fmt.Fprintf(b, "%s%s.Header.Set(\"Content-Type\", \"application/json\")\n", indent, name)
+}
+
 func wrapperNeedsMapInputNormalizer(targets []WrapperTarget) bool {
 	for _, t := range targets {
 		for _, p := range t.Parameters {
@@ -608,6 +696,36 @@ func constructorsNeedMapInputNormalizer(constructors []ConstructorCandidate) boo
 	for _, c := range constructors {
 		for _, p := range c.Parameters {
 			if strings.Contains(p.GoType, "map[") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// wrapperNeedsErrorImport reports whether any target or constructor parameter
+// is a bare builtin `error` that the wrapper will actually decode via
+// errors.New in writeErrorParamDeserialization (str-jn9r0), and therefore
+// require the "errors" import. Threaded through the import block the same way
+// "time" is for Duration params. The predicate must match the emission path
+// exactly: params satisfied by a runtime-value expression emit a direct Go
+// expression instead of the errors.New block (writeParamDeserialization*
+// short-circuits on RuntimeValueExpr), so those must NOT thread the import —
+// otherwise the generated wrapper carries an unused "errors" import and fails
+// `go build`. Targets short-circuit on p.RuntimeValueExpr; constructor params
+// resolve through constructorParamRuntimeValueExpr, which also consults the
+// runtimeval registry, so use that predicate for the ctor side.
+func wrapperNeedsErrorImport(targets []WrapperTarget, constructors []ConstructorCandidate) bool {
+	for _, t := range targets {
+		for _, p := range t.Parameters {
+			if p.RuntimeValueExpr == "" && p.GoType == "error" {
+				return true
+			}
+		}
+	}
+	for _, c := range constructors {
+		for _, p := range c.Parameters {
+			if p.GoType == "error" && constructorParamRuntimeValueExpr(p) == "" {
 				return true
 			}
 		}
@@ -1245,6 +1363,87 @@ func writeDurationParamDeserialization(b *strings.Builder, name string, idx int,
 	fmt.Fprintf(b, "%s}\n", indent)
 }
 
+// writeErrorParamDeserialization emits a decode block for a bare builtin
+// `error`-interface parameter (str-jn9r0), mirroring
+// writeDurationParamDeserialization. The Go analyzer maps builtin `error` to
+// ComplexKind "error" (analyzer.go complexKindFromNamed) and the Rust core's
+// random generator emits the cross-frontend shape
+// `{"__complex_type":"error","class":...,"message":m}` (input_gen.rs
+// generate_error). A bare `error` interface cannot be json.Unmarshaled
+// directly, so this block: (a) tries a plain decode first — JSON `null`
+// decodes into the interface as a nil error with no error, giving the caller
+// the nil branch for free; (b) on any decode error, falls back to reading the
+// tagged object and reconstructing `errors.New(message)` (the `class` field is
+// intentionally ignored — no typed-error reconstruction yet, str-kvzh7).
+// Any other shape preserves the original plain-decode error so the failure
+// message stays specific.
+//
+// str-kvzh7: when sentinels is non-empty the tagged object may also carry a
+// `sentinel` index, in which case the parameter is assigned the corresponding
+// baked sentinel variable (`err = _shatterErrSentinels_<name>[N]`). This lets a
+// synthesized error satisfy `errors.Is(err, pkg.ErrX)` branches — which require
+// pointer identity with the sentinel var and can never be matched by
+// errors.New. The `class` field is still ignored (no typed reconstruction).
+func writeErrorParamDeserialization(b *strings.Builder, name string, idx int, indent string, sentinels []ErrorSentinel) {
+	if len(sentinels) == 0 {
+		writeErrorParamPlainDeserialization(b, name, idx, indent)
+		return
+	}
+	fmt.Fprintf(b, "%svar %s error\n", indent, name)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, idx)
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, idx, name)
+	fmt.Fprintf(b, "%s\t\tvar _shatterErr struct {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tComplexType string  `json:\"__complex_type\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tMessage     *string `json:\"message\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tSentinel    *int    `json:\"sentinel\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\tif _e2 := json.Unmarshal(_shatterInputs[%d], &_shatterErr); _e2 != nil || _shatterErr.ComplexType != \"error\" {\n", indent, idx)
+	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	sentinelVar := "_shatterErrSentinels_" + name
+	fmt.Fprintf(b, "%s\t\tif _shatterErr.Sentinel != nil {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\t%s := []error{", indent, sentinelVar)
+	for i, s := range sentinels {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(s.Expr)
+	}
+	b.WriteString("}\n")
+	fmt.Fprintf(b, "%s\t\t\tif _si := *_shatterErr.Sentinel; _si >= 0 && _si < len(%s) {\n", indent, sentinelVar)
+	fmt.Fprintf(b, "%s\t\t\t\t%s = %s[_si]\n", indent, name, sentinelVar)
+	fmt.Fprintf(b, "%s\t\t\t} else {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\t\treturn nil, fmt.Errorf(\"param %s: sentinel index %%d out of range\", *_shatterErr.Sentinel)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\t} else if _shatterErr.Message != nil {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\t%s = errors.New(*_shatterErr.Message)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t} else {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+// writeErrorParamPlainDeserialization emits the original error decode block for
+// an error parameter with no mined sentinels (str-jn9r0). Kept byte-identical to
+// the pre-str-kvzh7 output so wrappers for sentinel-free error params are
+// unchanged.
+func writeErrorParamPlainDeserialization(b *strings.Builder, name string, idx int, indent string) {
+	fmt.Fprintf(b, "%svar %s error\n", indent, name)
+	fmt.Fprintf(b, "%sif %d < len(_shatterInputs) {\n", indent, idx)
+	fmt.Fprintf(b, "%s\tif _e := json.Unmarshal(_shatterInputs[%d], &%s); _e != nil {\n", indent, idx, name)
+	fmt.Fprintf(b, "%s\t\tvar _shatterErr struct {\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tComplexType string  `json:\"__complex_type\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t\tMessage     *string `json:\"message\"`\n", indent)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\tif _e2 := json.Unmarshal(_shatterInputs[%d], &_shatterErr); _e2 != nil || _shatterErr.Message == nil || _shatterErr.ComplexType != \"error\" {\n", indent, idx)
+	fmt.Fprintf(b, "%s\t\t\treturn nil, fmt.Errorf(\"param %s: %%w\", _e)\n", indent, name)
+	fmt.Fprintf(b, "%s\t\t}\n", indent)
+	fmt.Fprintf(b, "%s\t\t%s = errors.New(*_shatterErr.Message)\n", indent, name)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
 func writeGenericTargetCase(b *strings.Builder, t WrapperTarget) {
 	if t.Kind != TargetKindFunction {
 		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"shatter: generic method targets are not supported: %s\")\n", t.ID)
@@ -1347,6 +1546,16 @@ func wrapperTargetResultTypes(t WrapperTarget) []string {
 // `init()` call sites and collide on a single switch case for
 // "<pkg>:init", making the wrapper file uncompilable.
 func BuildWrapperTargets(pkg *packages.Package) []WrapperTarget {
+	return buildWrapperTargets(pkg, "")
+}
+
+// BuildWrapperTargetsForSource extracts wrapper targets while preserving the
+// original source path for loaders that materialize synthetic package copies.
+func BuildWrapperTargetsForSource(pkg *packages.Package, originalSourceFile string) []WrapperTarget {
+	return buildWrapperTargets(pkg, originalSourceFile)
+}
+
+func buildWrapperTargets(pkg *packages.Package, originalSourceFile string) []WrapperTarget {
 	if pkg == nil || pkg.TypesInfo == nil {
 		return nil
 	}
@@ -1363,7 +1572,7 @@ func BuildWrapperTargets(pkg *packages.Package) []WrapperTarget {
 			if isSyntheticPackageInit(fn) {
 				continue
 			}
-			if t := buildWrapperTarget(fn, pkg); t != nil {
+			if t := buildWrapperTarget(fn, pkg, originalSourceFile); t != nil {
 				targets = append(targets, *t)
 			}
 		}
@@ -1447,7 +1656,7 @@ func isSyntheticPackageInit(fn *ast.FuncDecl) bool {
 	return fn.Name.Name == "init"
 }
 
-func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget {
+func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) *WrapperTarget {
 	qualName := wrapperQualifiedName(fn)
 	id := pkg.PkgPath + ":" + qualName
 
@@ -1485,6 +1694,17 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 		pkgTypesPath = pkg.Types.Path()
 	}
 	receiverMapFields := collectReceiverMapFields(pkg, recvType, pkgTypesPath, importSet)
+	var configuredReceivers []ConfiguredReceiver
+	if kind == TargetKindMethod {
+		configuredReceivers = configuredReceiversForFunc(fn, pkg, originalSourceFile)
+	}
+	for _, receiver := range configuredReceivers {
+		for _, importPath := range receiver.Imports {
+			if trimmed := strings.TrimSpace(importPath); trimmed != "" {
+				importSet[trimmed] = struct{}{}
+			}
+		}
+	}
 	params := extractWrapperParams(fn, pkg.TypesInfo, pkg.Name, pkgTypesPath, importSet)
 	// str-gxjs.1: bind runtime-value expressions for parameter types the
 	// planner's registry can satisfy (context.Context → context.Background(),
@@ -1494,8 +1714,9 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	// json.Unmarshal block. Without this, a target taking context.Context
 	// would compile and link but the param would be the zero interface
 	// value (`nil`), panicking on first use.
-	applyRuntimeValueBindingsForPackage(params, importSet, configuredRuntimeValuesForFunc(fn, pkg), pkg.Name)
+	applyRuntimeValueBindingsForPackage(params, importSet, configuredRuntimeValuesForFunc(fn, pkg, originalSourceFile), pkg.Name)
 	applyImportedConstructorBindingsForPackage(fn, pkg, params, importSet, pkgTypesPath)
+	applyErrorSentinelBindings(fn, pkg, params, importSet, pkgTypesPath)
 	typeParams := extractWrapperTypeParams(fn)
 
 	hasResult := false
@@ -1526,19 +1747,20 @@ func buildWrapperTarget(fn *ast.FuncDecl, pkg *packages.Package) *WrapperTarget 
 	sort.Strings(imports)
 
 	return &WrapperTarget{
-		ID:                id,
-		SymbolName:        fn.Name.Name,
-		Kind:              kind,
-		ReceiverType:      recvType,
-		IsPointerRecv:     isPtr,
-		ReceiverMapFields: receiverMapFields,
-		Parameters:        params,
-		TypeParams:        typeParams,
-		HasResult:         hasResult,
-		ResultGoType:      resultGoType,
-		ResultGoTypes:     resultGoTypes,
-		ResultCount:       resultCount,
-		Imports:           imports,
+		ID:                  id,
+		SymbolName:          fn.Name.Name,
+		Kind:                kind,
+		ReceiverType:        recvType,
+		IsPointerRecv:       isPtr,
+		ReceiverMapFields:   receiverMapFields,
+		ConfiguredReceivers: configuredReceivers,
+		Parameters:          params,
+		TypeParams:          typeParams,
+		HasResult:           hasResult,
+		ResultGoType:        resultGoType,
+		ResultGoTypes:       resultGoTypes,
+		ResultCount:         resultCount,
+		Imports:             imports,
 	}
 }
 
@@ -1626,6 +1848,18 @@ func applyRuntimeValueBindingsForPackage(
 		if params[i].IsVariadic {
 			continue
 		}
+		if isSymbolicHTTPRequestParam(params[i].GoType) {
+			// str-e41w: a direct *http.Request parameter is constructed from a
+			// symbolic body input in writeParamDeserializationAtInputIndex,
+			// rather than bound to the fixed empty-body runtime value
+			// (httptest.NewRequest("GET","/",nil)). Leave RuntimeValueExpr empty
+			// so the param consumes its input slot, and record the imports the
+			// construction needs.
+			for _, imp := range []string{"net/http", "net/http/httptest", "strings"} {
+				importSet[imp] = struct{}{}
+			}
+			continue
+		}
 		candidates := runtimeval.Lookup(params[i].GoType)
 		if len(candidates) == 0 {
 			if rv, ok := configuredRuntimeValue(params[i].GoType, configured, pkgName); ok {
@@ -1660,6 +1894,49 @@ func applyRuntimeValueBindingsForPackage(
 	}
 }
 
+// applyErrorSentinelBindings mines errors.Is/errors.As sentinel targets for the
+// target's bare `error` parameters and records them on the matching WrapperParam
+// so writeErrorParamDeserialization can bake a sentinel table. Each sentinel's
+// import path is threaded into importSet so the generated file can reference the
+// sentinel variable (str-kvzh7). No-op when the target has no error params or no
+// mineable sentinels.
+func applyErrorSentinelBindings(
+	fn *ast.FuncDecl,
+	pkg *packages.Package,
+	params []WrapperParam,
+	importSet map[string]struct{},
+	pkgPath string,
+) {
+	if fn == nil || fn.Body == nil || pkg == nil {
+		return
+	}
+	errorParamNames := make(map[string]bool)
+	for i := range params {
+		if params[i].GoType == "error" && !params[i].IsVariadic {
+			errorParamNames[params[i].Name] = true
+		}
+	}
+	if len(errorParamNames) == 0 {
+		return
+	}
+	sentinelsByParam := MineErrorSentinels(fn.Body, pkg.TypesInfo, pkgPath, errorParamNames)
+	if len(sentinelsByParam) == 0 {
+		return
+	}
+	for i := range params {
+		sentinels := sentinelsByParam[params[i].Name]
+		if len(sentinels) == 0 {
+			continue
+		}
+		params[i].ErrorSentinels = sentinels
+		for _, s := range sentinels {
+			if s.ImportPath != "" {
+				importSet[s.ImportPath] = struct{}{}
+			}
+		}
+	}
+}
+
 type constructorRuntimeBinding struct {
 	Expression string
 	Imports    []string
@@ -1685,6 +1962,10 @@ func applyImportedConstructorBindingsForPackage(
 		for range wrapperParamFieldCount(field) {
 			if paramIndex >= len(params) {
 				return
+			}
+			if isSymbolicHTTPRequestParam(params[paramIndex].GoType) {
+				paramIndex++
+				continue
 			}
 			if params[paramIndex].RuntimeValueExpr == "" {
 				if binding, ok := importedParameterConstructorBinding(fieldType, pkg, pkgPath); ok {
@@ -2021,11 +2302,11 @@ func wrapperIsErrorExpr(expr ast.Expr, info *types.Info) bool {
 	return tv.Type == types.Universe.Lookup("error").Type()
 }
 
-func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map[string]config.GoRuntimeValueConfig {
+func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) map[string]config.GoRuntimeValueConfig {
 	if fn == nil || pkg == nil || pkg.Fset == nil {
 		return nil
 	}
-	sourceFile := pkg.Fset.Position(fn.Pos()).Filename
+	sourceFile := configSourceFileForFunc(fn, pkg, originalSourceFile)
 	if sourceFile == "" {
 		return nil
 	}
@@ -2034,6 +2315,40 @@ func configuredRuntimeValuesForFunc(fn *ast.FuncDecl, pkg *packages.Package) map
 		return nil
 	}
 	return file.GoRuntimeValues
+}
+
+func configuredReceiversForFunc(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) []ConfiguredReceiver {
+	if fn == nil || pkg == nil || pkg.Fset == nil {
+		return nil
+	}
+	sourceFile := configSourceFileForFunc(fn, pkg, originalSourceFile)
+	if sourceFile == "" {
+		return nil
+	}
+	file, err := config.Load(sourceFile)
+	if err != nil {
+		return nil
+	}
+	entry := file.MatchTarget(config.TargetRelpath(sourceFile), wrapperQualifiedName(fn))
+	if entry.Receiver == nil || strings.TrimSpace(entry.Receiver.Expression) == "" {
+		return nil
+	}
+	return []ConfiguredReceiver{{
+		ReceiverKind: entry.Receiver.ReceiverKind(),
+		Expression:   entry.Receiver.Expression,
+		Imports:      append([]string(nil), entry.Receiver.Imports...),
+	}}
+}
+
+func configSourceFileForFunc(fn *ast.FuncDecl, pkg *packages.Package, originalSourceFile string) string {
+	sourceFile := pkg.Fset.Position(fn.Pos()).Filename
+	if strings.TrimSpace(originalSourceFile) == "" || sourceFile == "" {
+		return sourceFile
+	}
+	if filepath.Base(sourceFile) == filepath.Base(originalSourceFile) {
+		return originalSourceFile
+	}
+	return sourceFile
 }
 
 func configuredRuntimeValue(typeName string, configured map[string]config.GoRuntimeValueConfig, pkgName string) (config.GoRuntimeValueConfig, bool) {

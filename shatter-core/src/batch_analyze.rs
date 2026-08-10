@@ -150,10 +150,17 @@ pub enum BatchAnalyzeError {
 /// For each `(file_path, language)` pair, sends an Analyze request to the corresponding
 /// frontend and aggregates results. Files are grouped by language to minimize frontend
 /// switching overhead.
+/// `analyzer_versions` maps each language to its frontend analyzer version
+/// (source/bundle hash). It is folded into the analysis cache key so that a
+/// frontend whose analyze behavior changed for unchanged source — a new build
+/// without a protocol bump — invalidates prior cached entries rather than
+/// serving stale results (str-2cihu). Languages absent from the map use an
+/// empty version, preserving the pre-str-2cihu keying.
 pub async fn batch_analyze(
     frontends: &mut HashMap<Language, Frontend>,
     files: &[(PathBuf, Language)],
     analysis_cache: Option<&AnalysisCache>,
+    analyzer_versions: &HashMap<Language, String>,
     project_root: Option<&str>,
 ) -> Result<FunctionRegistry, BatchAnalyzeError> {
     let mut entries = Vec::new();
@@ -170,9 +177,16 @@ pub async fn batch_analyze(
     };
 
     for (file_path, language) in files {
+        // Frontend analyzer version for this file's language, folded into the
+        // cache key so a changed analyzer contract invalidates stale entries.
+        let analyzer_version = analyzer_versions
+            .get(language)
+            .map(String::as_str)
+            .unwrap_or("");
+
         // Check the analysis cache before calling the frontend.
         if let Some(cache) = analysis_cache
-            && let Ok(Some(cached_functions)) = cache.lookup(file_path)
+            && let Ok(Some(cached_functions)) = cache.lookup(file_path, analyzer_version)
         {
             for func in cached_functions {
                 let analysis_for_storage = func.clone();
@@ -257,7 +271,7 @@ pub async fn batch_analyze(
 
         // Store fresh analysis results in the cache.
         if let Some(cache) = analysis_cache
-            && let Err(e) = cache.store(file_path, &functions)
+            && let Err(e) = cache.store(file_path, &functions, analyzer_version)
         {
             log::warn!("failed to cache analysis for {}: {e}", file_path.display());
         }
@@ -345,7 +359,7 @@ mod tests {
             exported,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: (0..branch_count)
@@ -358,7 +372,7 @@ mod tests {
                 })
                 .collect(),
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 10,
             literals: vec![],
@@ -394,7 +408,7 @@ mod tests {
             params: vec![
                 ParamInfo {
                     name: "a".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
                 ParamInfo {
@@ -423,8 +437,8 @@ mod tests {
                 kind: DependencyKind::FunctionCall,
                 symbol: "helper".into(),
                 source_module: "./utils".into(),
-                return_type: TypeInfo::Int,
-                param_types: vec![TypeInfo::Int],
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
+                param_types: vec![TypeInfo::Int { int_width: None, int_signed: None }],
                 call_sites: vec![7],
             }],
             return_type: TypeInfo::Bool,
@@ -507,7 +521,7 @@ mod tests {
             name: "funcA".into(),
             exported: true,
             params: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             dependencies: vec![],
             branch_count: 2,
             start_line: 1,
@@ -572,7 +586,7 @@ mod tests {
             name: "funcA".into(),
             exported: true,
             params: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             dependencies: vec![],
             branch_count: 3,
             start_line: 1,
@@ -739,7 +753,7 @@ mod tests {
             (PathBuf::from("src/utils.ts"), Language::TypeScript),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None, None)
+        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze failed");
 
@@ -768,7 +782,7 @@ mod tests {
 
         let files = vec![(PathBuf::from("src/app.ts"), Language::TypeScript)];
 
-        let result = batch_analyze(&mut frontends.into_iter().collect(), &files, None, None).await;
+        let result = batch_analyze(&mut frontends.into_iter().collect(), &files, None, &HashMap::new(), None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(
@@ -783,7 +797,7 @@ mod tests {
 
         let files: Vec<(PathBuf, Language)> = vec![];
 
-        let registry = batch_analyze(&mut frontends, &files, None, None)
+        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze failed");
 
@@ -807,7 +821,7 @@ mod tests {
             (PathBuf::from("pkg/handler.go"), Language::Go),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None, None)
+        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze failed");
 
@@ -819,6 +833,76 @@ mod tests {
                 .len(),
             1
         );
+
+        for (_, frontend) in frontends {
+            frontend.shutdown().await.expect("shutdown failed");
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_analyze_keys_cache_by_per_language_analyzer_version() {
+        // str-2cihu: batch_analyze must key each file's cached analysis on the
+        // analyzer version of *that file's language*, and fall back to an empty
+        // version for languages absent from the map. Uses a real on-disk cache
+        // and asserts the stored entries against each language's own version.
+        use crate::analysis_cache::AnalysisCache;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Files must exist on disk — the cache hashes their contents on store.
+        let go_file = dir.path().join("handler.go");
+        let ts_file = dir.path().join("app.ts");
+        let rs_file = dir.path().join("lib.rs");
+        std::fs::write(&go_file, "package main").unwrap();
+        std::fs::write(&ts_file, "export const x = 1;").unwrap();
+        std::fs::write(&rs_file, "pub fn f() {}").unwrap();
+
+        let mut frontends = HashMap::new();
+        frontends.insert(
+            Language::Go,
+            Frontend::spawn(&noop_config()).await.expect("spawn go"),
+        );
+        frontends.insert(
+            Language::TypeScript,
+            Frontend::spawn(&noop_config()).await.expect("spawn ts"),
+        );
+        frontends.insert(
+            Language::Rust,
+            Frontend::spawn(&noop_config()).await.expect("spawn rust"),
+        );
+
+        let files = vec![
+            (go_file.clone(), Language::Go),
+            (ts_file.clone(), Language::TypeScript),
+            // Rust is intentionally omitted from the analyzer_versions map.
+            (rs_file.clone(), Language::Rust),
+        ];
+
+        let cache = AnalysisCache::new(dir.path().join("cache")).unwrap();
+        let mut analyzer_versions = HashMap::new();
+        analyzer_versions.insert(Language::Go, "go-analyzer-v1".to_string());
+        analyzer_versions.insert(Language::TypeScript, "ts-analyzer-v1".to_string());
+
+        batch_analyze(
+            &mut frontends,
+            &files,
+            Some(&cache),
+            &analyzer_versions,
+            None,
+        )
+        .await
+        .expect("batch analyze failed");
+
+        // The Go entry keys on the Go version, not the TS version.
+        assert!(cache.lookup(&go_file, "go-analyzer-v1").unwrap().is_some());
+        assert!(cache.lookup(&go_file, "ts-analyzer-v1").unwrap().is_none());
+
+        // The TS entry keys on the TS version, not the Go version.
+        assert!(cache.lookup(&ts_file, "ts-analyzer-v1").unwrap().is_some());
+        assert!(cache.lookup(&ts_file, "go-analyzer-v1").unwrap().is_none());
+
+        // Rust, absent from the map, keys on the empty (legacy) version.
+        assert!(cache.lookup(&rs_file, "").unwrap().is_some());
+        assert!(cache.lookup(&rs_file, "go-analyzer-v1").unwrap().is_none());
 
         for (_, frontend) in frontends {
             frontend.shutdown().await.expect("shutdown failed");
@@ -838,7 +922,7 @@ mod tests {
             (PathBuf::from("pkg/handler.go"), Language::Go),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None, None)
+        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze should soft-skip unsupported files");
 

@@ -18,7 +18,6 @@ import type {
   ExecuteResponse,
   ErrorInfo,
   ErrorCategory,
-  AdapterHint,
   PerformanceMetrics,
   BranchDecision,
   SymConstraint,
@@ -36,7 +35,6 @@ import type {
   LoopInfo,
   InvocationOutcome,
 } from "./protocol.js";
-import { detectRuntimeHints } from "./runtime-hints.js";
 import { WEB_GLOBALS, DEFAULT_IMPORT_META_ENV } from "./web-globals.js";
 import type {
   SandboxProvider,
@@ -57,7 +55,11 @@ import {
   buildSymExprWithFlow,
 } from "./instrumentor.js";
 import type { MockConfig, ExternalCall } from "./protocol.js";
-import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
+import {
+  REACT_MODULE_NAMES,
+  NATIVE_REACT_ALIAS_NAMES,
+  getReactShim,
+} from "./react-shim.js";
 import {
   DEFAULT_JSX_RUNTIME_OPTIONS,
   loadJsxRuntimeOptions,
@@ -632,11 +634,163 @@ export function setProjectRoot(projectRoot: string | null | undefined): void {
       // Force Node to re-read NODE_PATH for future require calls
       require("module").Module._initPaths();
     }
+    installNativeReactAliases(projectRoot);
   }
   // Resolve and cache the project's JSX runtime configuration so subsequent
   // transpiles honor `jsx` / `jsxImportSource`. Falls back to the default
   // automatic-React runtime when no project root or no tsconfig is present.
   currentJsxRuntimeOptions = loadJsxRuntimeOptions(projectRoot);
+}
+
+/** Marker set on synthetic Module cache entries we install as React aliases. */
+const SHATTER_REACT_ALIAS = Symbol("shatterReactAlias");
+
+/** Resolution bases already processed, so seeding runs at most once per base. */
+const reactAliasedBases = new Set<string>();
+
+/**
+ * Seed Node's native module cache so that dependencies loaded from
+ * `node_modules` via `createRequire` (the executor's native fall-through in
+ * `resolveModuleWithAdapters`) receive Shatter's React shim when they
+ * internally `require('react')` / `react-dom` / the automatic JSX runtimes —
+ * instead of the project's real React.
+ *
+ * Why this is needed: target and instrumented code route react-family
+ * specifiers to the shim through the adapter-aware require
+ * (`getDefaultResolverAdapters` / the stateful adapter). But a third-party
+ * dependency loaded natively runs entirely inside Node's module system; its
+ * transitive `require('react')` resolves to the *real* package and returns a
+ * live React whose hook dispatcher is null outside a renderer — producing
+ * "Cannot read properties of null (reading 'useCallback')"-style crashes even
+ * for components correctly executed under the react-hook adapter (kapow:
+ * zustand/react.js, Mantine).
+ *
+ * Aliasing at the *resolved filename* of each react-family module in
+ * `Module._cache` is a single choke point that covers arbitrarily deep
+ * transitive requires: every `require('react')` under a given dependency tree
+ * resolves to the same file and hits the cached shim. Native resolution is
+ * preserved for every other specifier (perf + fidelity).
+ *
+ * Resolution base: we seed from the *importer's own location* (the target
+ * source file), not just the CLI project root. In pnpm workspaces / monorepos
+ * react is often installed only in a sub-package's `node_modules` (kapow:
+ * `web/node_modules/.pnpm/react@…`), which a project-root require cannot
+ * resolve. Resolving from the source file walks the same `node_modules` chain
+ * the dependency itself uses, so the seeded filename matches. Seeding is
+ * idempotent per resolved file, so repeated bases are cheap.
+ *
+ * Version-mismatch note: we deliberately force the shim onto dependencies
+ * regardless of the React major they were compiled against. The shim
+ * implements the stable hook / createElement surface, and the goal is
+ * exploration fidelity (executing component branches), not React-runtime
+ * fidelity. Transitive dependencies get the default (non-stateful) shim — the
+ * per-invocation stateful hook semantics apply only to the target component,
+ * which is resolved to the shim through the adapter-aware require instead.
+ */
+/**
+ * Minimal shape of the Node `Module` API and cache we touch. We obtain these
+ * from a *native* require (see below) rather than an `import`, so the cache we
+ * seed is the exact one that `createRequire`-created requires read from — even
+ * under test runners (e.g. jest) that swap the module registry seen by imports.
+ */
+interface NativeModuleEntry {
+  id: string;
+  filename: string | null;
+  loaded: boolean;
+  exports: unknown;
+  children: NativeModuleEntry[];
+  paths: string[];
+  [SHATTER_REACT_ALIAS]?: boolean;
+}
+interface NativeModuleApi {
+  new (id: string): NativeModuleEntry;
+  _cache: Record<string, NativeModuleEntry>;
+}
+
+/**
+ * Seed the native module cache with React shims, resolving specifiers through
+ * `baseRequire`. `baseRequire` MUST be a genuine Node require created via
+ * `createRequire(<real file>)`: its `.resolve` then walks the real
+ * `node_modules` chain, and its `.Module._cache` is the exact cache the
+ * dependency's transitive `require('react')` reads from.
+ */
+function installNativeReactAliasesVia(
+  baseRequire: NodeRequire,
+  dedupeKey: string,
+): void {
+  if (reactAliasedBases.has(dedupeKey)) return;
+
+  const nativeModule = baseRequire("module") as { Module: NativeModuleApi };
+  const ModuleApi = nativeModule.Module;
+  const moduleCache = ModuleApi._cache;
+
+  let resolvedAny = false;
+  for (const specifier of NATIVE_REACT_ALIAS_NAMES) {
+    const shim = getReactShim(specifier);
+    if (!shim) continue;
+    let resolved: string;
+    try {
+      resolved = baseRequire.resolve(specifier);
+    } catch {
+      // Package not installed relative to this base — nothing to alias.
+      continue;
+    }
+    resolvedAny = true;
+    // Idempotent across bases that resolve to the same file.
+    if (moduleCache[resolved]?.[SHATTER_REACT_ALIAS]) continue;
+
+    const aliasModule = new ModuleApi(resolved);
+    aliasModule.filename = resolved;
+    aliasModule.loaded = true;
+    aliasModule.exports = shim;
+    aliasModule[SHATTER_REACT_ALIAS] = true;
+    moduleCache[resolved] = aliasModule;
+  }
+
+  // Only mark this base processed once at least one react-family specifier
+  // actually resolved. If none did, we leave the key absent so a later call
+  // from a base that *can* reach react (e.g. the per-file seeding after the
+  // project-root seeding found nothing in a monorepo) is not permanently
+  // blocked from installing the aliases.
+  if (resolvedAny) {
+    reactAliasedBases.add(dedupeKey);
+  } else {
+    // Expected for non-react targets and for the project root in a workspace
+    // where react lives only in a sub-package (per-file seeding covers it), so
+    // this is debug- rather than warn-level to avoid drowning real signal —
+    // but it is logged so a genuine "react unreachable, components will hit
+    // null-dispatcher crashes" case is diagnosable with verbose logging.
+    logger.debug(
+      "react native-alias seeding: no react-family module resolved from %s",
+      dedupeKey,
+    );
+  }
+}
+
+/**
+ * Best-effort seed from the CLI project root (covers the common single-package
+ * layout). When react lives only in a sub-package (pnpm workspace / monorepo),
+ * resolution here finds nothing; the per-target seeding in `loadModule` /
+ * `buildInstrumentedSandbox` — resolved from the actual source file — does the
+ * real work.
+ */
+function installNativeReactAliases(projectRoot: string): void {
+  const resolvedRoot = path.resolve(projectRoot);
+  installNativeReactAliasesVia(
+    createRequire(path.join(resolvedRoot, "__shatter_react_alias__.js")),
+    `root:${resolvedRoot}`,
+  );
+}
+
+/**
+ * Seed React aliases resolved from a specific source file's location. Called on
+ * every native-require creation so transitive `require('react')` in
+ * dependencies of that file (however deep) hits the shim, regardless of where
+ * react is installed in a workspace.
+ */
+function installNativeReactAliasesForFile(sourceFile: string): void {
+  const abs = path.resolve(sourceFile);
+  installNativeReactAliasesVia(createRequire(abs), `file:${abs}`);
 }
 
 /**
@@ -879,6 +1033,10 @@ function loadModule(
     });
   }
 
+  // Route this file's dependencies' transitive `require('react')` &c. to the
+  // shim (see installNativeReactAliasesForFile). Resolves react from this file's
+  // own node_modules chain so pnpm / workspace layouts are covered.
+  installNativeReactAliasesForFile(absolutePath);
   const targetRequire = createAdapterAwareRequire(
     createRequire(absolutePath),
     absolutePath,
@@ -1110,7 +1268,6 @@ interface RawExecuteResult {
   discovered_dependencies: DiscoveredDependency[];
   connection_failures: ConnectionFailure[];
   runtime_crypto_boundaries: RuntimeCryptoBoundary[];
-  adapter_hints: AdapterHint[];
 }
 
 function extractLoopBodyStates(
@@ -1977,9 +2134,6 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: metrics.thrownError
-        ? detectRuntimeHints(metrics.thrownError)
-        : [],
     };
   } else {
     // No-capture fast path: skip all capture infrastructure.
@@ -2008,11 +2162,50 @@ export async function executeFunction(
       discovered_dependencies: [],
       connection_failures: [],
       runtime_crypto_boundaries: [],
-      adapter_hints: metrics.thrownError
-        ? detectRuntimeHints(metrics.thrownError)
-        : [],
     };
   }
+}
+
+/**
+ * Assemble the coverage/trace subset of a `RawExecuteResult` from collector
+ * arrays. Shared by the direct instrumented path (`executeInstrumented`) and
+ * the adapter-owned path (`executeAdapterOwned`) so the two never drift on how
+ * these fields are derived — in particular, `path_constraints` is always the
+ * per-branch constraints of `branch_path` (1:1), so callers scope both together
+ * by passing the desired `branchPath` slice.
+ */
+function assembleCoverageFields(c: {
+  branchPath: BranchDecision[];
+  linesExecuted: number[];
+  externalCalls: ExternalCall[];
+  scopeEvents: TraceEvent[];
+  loopBodyStates: LoopBodyState[];
+  discoveredDeps: DiscoveredDependency[];
+  connectionFailures: ConnectionFailure[];
+  cryptoBoundaries: RuntimeCryptoBoundary[];
+}): Pick<
+  RawExecuteResult,
+  | "branch_path"
+  | "path_constraints"
+  | "lines_executed"
+  | "calls_to_external"
+  | "scope_events"
+  | "loop_body_states"
+  | "discovered_dependencies"
+  | "connection_failures"
+  | "runtime_crypto_boundaries"
+> {
+  return {
+    branch_path: c.branchPath,
+    path_constraints: c.branchPath.map((bd) => bd.constraint),
+    lines_executed: c.linesExecuted,
+    calls_to_external: c.externalCalls,
+    scope_events: c.scopeEvents,
+    loop_body_states: c.loopBodyStates,
+    discovered_dependencies: c.discoveredDeps,
+    connection_failures: c.connectionFailures,
+    runtime_crypto_boundaries: c.cryptoBoundaries,
+  };
 }
 
 /**
@@ -2026,9 +2219,12 @@ export async function executeFunction(
  * is funnelled into a `RawExecuteResult` so the response wire shape stays
  * identical to direct-call execution — no new ExecuteResponse fields.
  *
- * Branch decisions, line coverage, path constraints, and call traces are
- * empty: adapter-owned execution is opaque to the instrumentor for now.
- * Surface them later when an instrumented adapter mode is required.
+ * When `instrumentedSource` is supplied, the hook loads the target's
+ * instrumented body in-process via `ctx.loadInstrumentedExports`, so
+ * adapter-owned execution now surfaces the SAME `branch_path` /
+ * `lines_executed` / `path_constraints` (and external-call / crypto / scope
+ * traces) that direct calls produce (str-26fhi). Without instrumented source
+ * the hook falls back to loading the raw module and coverage fields stay empty.
  */
 export async function executeAdapterOwned(args: {
   hook: InvocationHook;
@@ -2038,6 +2234,11 @@ export async function executeAdapterOwned(args: {
   inputs: unknown[];
   capture?: boolean;
   timing?: TimingCollector;
+  instrumentedSource?: string;
+  mocks?: MockConfig[];
+  cacheKey?: string;
+  resolverAdapters?: ResolverAdapter[];
+  sandboxProviders?: SandboxProvider[];
 }): Promise<RawExecuteResult> {
   const capture = args.capture ?? true;
   const sideEffects: SideEffect[] = [];
@@ -2045,12 +2246,77 @@ export async function executeAdapterOwned(args: {
   consoleTarget = capture ? createCapturingConsole(sideEffects) : NOOP_CONSOLE;
 
   const reconstructedInputs = args.inputs.map(reconstructValue);
+
+  // When instrumented source is available, hand the hook a loader that mounts
+  // the instrumented module in a sandbox wired with coverage callbacks. The
+  // loader stores its result so we can read the accumulated collectors after
+  // the hook finishes driving the target.
+  //
+  // Note: unlike the raw module load (which caches exports per session), this
+  // re-runs the target module's top level on every execute so each invocation
+  // gets fresh collectors. Modules with one-shot top-level side effects should
+  // be idempotent; if the instrumented load throws, the hook falls back to the
+  // raw module (coverage unavailable but the target still runs).
+  let load: InstrumentedModuleLoad | undefined;
+  // Branch-decision count at the end of the target's initial, props-driven
+  // render. `branch_path` / `path_constraints` are scoped to this prefix so
+  // state-driven rerenders (which can flip a branch and emit contradictory
+  // `X ∧ ¬X` constraints along one path) cannot make the conjoined path UNSAT
+  // for the core's negation search. Undefined ⇒ single-render adapter; the
+  // whole accumulated path is used. `lines_executed` and the other traces stay
+  // as the full cross-render union for coverage reporting.
+  let initialRenderBranchCount: number | undefined;
+  const loadInstrumentedExports = args.instrumentedSource
+    ? (scenarioAdapters?: ResolverAdapter[]): Record<string, unknown> => {
+        if (load !== undefined) {
+          // Single-call contract: the hook loads the instrumented module once
+          // per invocation and drives all renders against it. A second call
+          // would strand the first sandbox's collectors.
+          throw new Error(
+            "loadInstrumentedExports must be called at most once per adapter invocation",
+          );
+        }
+        // Compose the scenario's shim(s) (or the default React shim for the
+        // target file when the hook passes none) FIRST, then the
+        // execution-profile resolver adapters. The raw path always applies the
+        // shim, so composing rather than replacing avoids a regression where a
+        // profile carrying a resolver adapter (e.g. tsconfig-paths) would
+        // displace the shim and route `require("react")` to real React. Shims
+        // lead so React module ids resolve to the shim while profile adapters
+        // still handle path aliases etc.
+        const shims =
+          scenarioAdapters ?? getDefaultResolverAdapters(args.fileForExec);
+        const composedAdapters = [...shims, ...(args.resolverAdapters ?? [])];
+        load = loadInstrumentedModuleInSandbox({
+          instrumentedSource: args.instrumentedSource!,
+          mocks: args.mocks,
+          sourceFilePath: args.fileForExec,
+          capture,
+          cacheKey: args.cacheKey,
+          resolverAdapters: composedAdapters,
+          sandboxProviders: args.sandboxProviders,
+          timing: args.timing,
+        });
+        return load.exports;
+      }
+    : undefined;
+
+  const markInitialRenderComplete = args.instrumentedSource
+    ? (): void => {
+        if (initialRenderBranchCount === undefined && load) {
+          initialRenderBranchCount = load.branchDecisions.length;
+        }
+      }
+    : undefined;
+
   const ctx: InvocationContext = {
     fileForExec: args.fileForExec,
     functionName: args.functionName,
     invocationModel: args.invocationModel,
     inputs: reconstructedInputs,
     capture,
+    ...(loadInstrumentedExports ? { loadInstrumentedExports } : {}),
+    ...(markInitialRenderComplete ? { markInitialRenderComplete } : {}),
   };
 
   let returnValue: unknown = null;
@@ -2131,68 +2397,105 @@ export async function executeAdapterOwned(args: {
     sideEffects.push(...outcomeSideEffects);
   }
 
+  // Instrumented adapter execution captures console output through its own
+  // sandbox console (into `load.sideEffects`); surface those ahead of the
+  // outer-captured / structured effects so ordering matches the direct path.
+  const mergedSideEffects =
+    capture && load ? [...load.sideEffects, ...sideEffects] : sideEffects;
+
+  // Scope branch_path / path_constraints to the initial props-driven render so
+  // rerender branch flips can't produce an UNSAT conjunction; lines_executed
+  // and the other traces stay the full cross-render union (see
+  // assembleCoverageFields / initialRenderBranchCount). loop_body_states is
+  // intentionally not emitted on the adapter path — see the parity contract.
+  const branchDecisions = load ? load.branchDecisions : [];
+  const scopedBranchPath =
+    initialRenderBranchCount !== undefined
+      ? branchDecisions.slice(0, initialRenderBranchCount)
+      : branchDecisions;
+
   return {
     return_value: thrownError ? null : returnValue,
     thrown_error: thrownError,
-    side_effects: sideEffects,
-    branch_path: [],
-    path_constraints: [],
-    lines_executed: [],
+    side_effects: mergedSideEffects,
     performance,
-    calls_to_external: [],
-    scope_events: [],
-    loop_body_states: [],
-    discovered_dependencies: [],
-    connection_failures: [],
-    runtime_crypto_boundaries: [],
-    adapter_hints: thrownError ? detectRuntimeHints(thrownError) : [],
+    ...assembleCoverageFields({
+      branchPath: scopedBranchPath,
+      linesExecuted: load ? load.linesExecuted : [],
+      externalCalls: load ? load.externalCalls : [],
+      scopeEvents: load ? load.scopeEvents : [],
+      loopBodyStates: [],
+      discoveredDeps: load ? load.discoveredDeps : [],
+      connectionFailures: load ? load.connectionFailures : [],
+      cryptoBoundaries: load ? load.cryptoBoundaries : [],
+    }),
   };
 }
 
 /**
- * Execute instrumented TypeScript source code with branch-recording callbacks.
- *
- * The instrumented source must contain __shatter_record() and __shatter_branch()
- * calls inserted by the instrumentor. This function defines those callbacks,
- * executes the code, and collects the branch decisions.
+ * Transpile + compile instrumented TypeScript into a reusable vm.Script,
+ * reusing a cached script when `cacheKey` is present. The instrumented source
+ * for a given function is fixed after instrumentation, so both the TypeScript
+ * transpile and the JS bytecode compile are amortized across execute calls for
+ * the same function. Shared by the direct instrumented path and the
+ * adapter-owned path so the two never diverge on transpile options / caching.
  */
-export async function executeInstrumented(
+function compileInstrumentedSource(
   instrumentedSource: string,
-  functionName: string,
-  inputs: unknown[],
-  mocks: MockConfig[] = [],
-  sourceFilePath?: string,
+  sourceFilePath: string | undefined,
+  cacheKey: string | undefined,
   timing?: TimingCollector,
-  capture = true,
-  cacheKey?: string,
-  resolverAdapters?: ResolverAdapter[],
-  sandboxProviders?: SandboxProvider[],
-  loops: LoopInfo[] = [],
-): Promise<RawExecuteResult> {
-  // Transpile instrumented TS to JS, reusing a cached vm.Script when available.
-  // The instrumented source for a given function is fixed after instrumentation,
-  // so we can amortize both the TypeScript transpile and the JS bytecode compile
-  // across all execute calls for the same function.
+): vm.Script {
   const cachedScript = cacheKey ? compiledScriptCache.get(cacheKey) : undefined;
-  let compiledScript: vm.Script;
   if (cachedScript) {
-    compiledScript = cachedScript;
     // execute.transpile is intentionally absent from timing on cache hits
-  } else {
-    const compile = () =>
-      transpileAndCompile(
-        instrumentedSource,
-        sourceFilePath,
-        sourceFilePath ?? "instrumented.js",
-      );
-    compiledScript = timing
-      ? timing.sync("execute.transpile", compile)
-      : compile();
-    if (cacheKey) {
-      compiledScriptCache.set(cacheKey, compiledScript);
-    }
+    return cachedScript;
   }
+  const compile = () =>
+    transpileAndCompile(
+      instrumentedSource,
+      sourceFilePath,
+      sourceFilePath ?? "instrumented.js",
+    );
+  const compiledScript = timing
+    ? timing.sync("execute.transpile", compile)
+    : compile();
+  if (cacheKey) {
+    compiledScriptCache.set(cacheKey, compiledScript);
+  }
+  return compiledScript;
+}
 
+/**
+ * Build a VM sandbox wired with the full instrumentation runtime — the
+ * __shatter_record / __shatter_branch / __shatter_scope_event / mock / crypto
+ * callbacks bound to fresh collector arrays — plus the adapter-aware require,
+ * capturing console/process, and any sandbox providers. Shared by the direct
+ * instrumented path (executeInstrumented) and the adapter-owned path
+ * (executeAdapterOwned via loadInstrumentedModuleInSandbox) so both capture
+ * coverage identically. Callers run the compiled script in the returned
+ * sandbox, then read the collector arrays.
+ */
+function buildInstrumentedSandbox(params: {
+  mocks: MockConfig[];
+  sourceFilePath?: string;
+  capture: boolean;
+  resolverAdapters?: ResolverAdapter[];
+  sandboxProviders?: SandboxProvider[];
+}): {
+  sandbox: vm.Context;
+  linesExecuted: number[];
+  branchDecisions: BranchDecision[];
+  sideEffects: SideEffect[];
+  externalCalls: ExternalCall[];
+  connectionFailures: ConnectionFailure[];
+  cryptoBoundaries: RuntimeCryptoBoundary[];
+  scopeEvents: TraceEvent[];
+  loopBodyStates: LoopBodyState[];
+  discoveredDeps: DiscoveredDependency[];
+} {
+  const { mocks, sourceFilePath, capture, resolverAdapters, sandboxProviders } =
+    params;
   const linesExecuted: number[] = [];
   const branchDecisions: BranchDecision[] = [];
   const sideEffects: SideEffect[] = [];
@@ -2449,6 +2752,12 @@ export async function executeInstrumented(
   const sandboxProc = capture
     ? createCapturingProcess(sideEffects)
     : NOOP_PROCESS;
+  if (sourceFilePath) {
+    // Seed React aliases from the target file's location so its dependencies'
+    // transitive `require('react')` hits the shim on the direct (instrumented)
+    // execution path too — not just the adapter path.
+    installNativeReactAliasesForFile(sourceFilePath);
+  }
   const rawRequire = sourceFilePath
     ? createRequire(path.resolve(sourceFilePath))
     : require;
@@ -2557,6 +2866,142 @@ export async function executeInstrumented(
     }
   }
 
+  return {
+    sandbox,
+    linesExecuted,
+    branchDecisions,
+    sideEffects,
+    externalCalls,
+    connectionFailures,
+    cryptoBoundaries,
+    scopeEvents,
+    loopBodyStates,
+    discoveredDeps,
+  };
+}
+
+/** Result of loading an instrumented module into a live instrumented sandbox. */
+export interface InstrumentedModuleLoad {
+  exports: Record<string, unknown>;
+  linesExecuted: number[];
+  branchDecisions: BranchDecision[];
+  scopeEvents: TraceEvent[];
+  externalCalls: ExternalCall[];
+  connectionFailures: ConnectionFailure[];
+  cryptoBoundaries: RuntimeCryptoBoundary[];
+  discoveredDeps: DiscoveredDependency[];
+  sideEffects: SideEffect[];
+}
+
+/**
+ * Load an instrumented module into a fresh instrumented sandbox and return its
+ * exports together with the coverage collectors wired into that sandbox.
+ *
+ * Used by the adapter-owned path so adapter hooks (e.g. react-hook) can invoke
+ * the target's instrumented body in-process and surface the SAME
+ * lines_executed / branch_path / path_constraints that direct calls produce.
+ *
+ * Unlike executeInstrumented, this does not resolve or call a named export —
+ * the adapter hook drives invocation (mount, callable, rerender). Every call
+ * the hook makes into the returned exports fires the __shatter_* callbacks, so
+ * the returned collectors accumulate coverage across the whole scenario.
+ *
+ * `resolverAdapters` follows the same override semantics as loadModuleExports:
+ * when omitted, the default React shims are applied for .tsx targets; when
+ * provided (e.g. the stateful rerender shim), it fully replaces the defaults.
+ */
+export function loadInstrumentedModuleInSandbox(args: {
+  instrumentedSource: string;
+  mocks?: MockConfig[];
+  sourceFilePath?: string;
+  capture: boolean;
+  cacheKey?: string;
+  resolverAdapters?: ResolverAdapter[];
+  sandboxProviders?: SandboxProvider[];
+  timing?: TimingCollector;
+}): InstrumentedModuleLoad {
+  const compiledScript = compileInstrumentedSource(
+    args.instrumentedSource,
+    args.sourceFilePath,
+    args.cacheKey,
+    args.timing,
+  );
+  const built = buildInstrumentedSandbox({
+    mocks: args.mocks ?? [],
+    sourceFilePath: args.sourceFilePath,
+    capture: args.capture,
+    resolverAdapters: args.resolverAdapters,
+    sandboxProviders: args.sandboxProviders,
+  });
+  const load = () =>
+    compiledScript.runInContext(built.sandbox, { timeout: getExecTimeoutMs() });
+  if (args.timing) {
+    args.timing.sync("execute.module_load", load);
+  } else {
+    load();
+  }
+  const finalExports = (built.sandbox as Record<string, unknown>)["module"] as {
+    exports: Record<string, unknown>;
+  };
+  return {
+    exports: finalExports.exports,
+    linesExecuted: built.linesExecuted,
+    branchDecisions: built.branchDecisions,
+    scopeEvents: built.scopeEvents,
+    externalCalls: built.externalCalls,
+    connectionFailures: built.connectionFailures,
+    cryptoBoundaries: built.cryptoBoundaries,
+    discoveredDeps: built.discoveredDeps,
+    sideEffects: built.sideEffects,
+  };
+}
+
+/**
+ * Execute instrumented TypeScript source code with branch-recording callbacks.
+ *
+ * The instrumented source must contain __shatter_record() and __shatter_branch()
+ * calls inserted by the instrumentor. This function defines those callbacks,
+ * executes the code, and collects the branch decisions.
+ */
+export async function executeInstrumented(
+  instrumentedSource: string,
+  functionName: string,
+  inputs: unknown[],
+  mocks: MockConfig[] = [],
+  sourceFilePath?: string,
+  timing?: TimingCollector,
+  capture = true,
+  cacheKey?: string,
+  resolverAdapters?: ResolverAdapter[],
+  sandboxProviders?: SandboxProvider[],
+  loops: LoopInfo[] = [],
+): Promise<RawExecuteResult> {
+  const compiledScript = compileInstrumentedSource(
+    instrumentedSource,
+    sourceFilePath,
+    cacheKey,
+    timing,
+  );
+
+  const {
+    sandbox,
+    linesExecuted,
+    branchDecisions,
+    sideEffects,
+    externalCalls,
+    connectionFailures,
+    cryptoBoundaries,
+    scopeEvents,
+    loopBodyStates,
+    discoveredDeps,
+  } = buildInstrumentedSandbox({
+    mocks,
+    sourceFilePath,
+    capture,
+    resolverAdapters,
+    sandboxProviders,
+  });
+
   const loadModule = (): void => {
     compiledScript.runInContext(sandbox, { timeout: getExecTimeoutMs() });
   };
@@ -2649,9 +3094,6 @@ export async function executeInstrumented(
     }
   }
 
-  // Build path_constraints: the conjunction of constraints along the taken path
-  const pathConstraints = branchDecisions.map((bd) => bd.constraint);
-
   if (sourceFilePath && loops.length > 0) {
     const sourceText = fs.readFileSync(sourceFilePath, "utf-8");
     loopBodyStates.push(
@@ -2669,19 +3111,17 @@ export async function executeInstrumented(
     return_value: metrics.returnValue ?? null,
     thrown_error: metrics.thrownError,
     side_effects: capture ? sideEffects : [],
-    branch_path: branchDecisions,
-    path_constraints: pathConstraints,
-    lines_executed: linesExecuted,
     performance: metrics.performance,
-    calls_to_external: externalCalls,
-    scope_events: scopeEvents,
-    loop_body_states: loopBodyStates,
-    discovered_dependencies: discoveredDeps,
-    connection_failures: connectionFailures,
-    runtime_crypto_boundaries: cryptoBoundaries,
-    adapter_hints: metrics.thrownError
-      ? detectRuntimeHints(metrics.thrownError)
-      : [],
+    ...assembleCoverageFields({
+      branchPath: branchDecisions,
+      linesExecuted,
+      externalCalls,
+      scopeEvents,
+      loopBodyStates,
+      discoveredDeps,
+      connectionFailures,
+      cryptoBoundaries,
+    }),
   };
 }
 
@@ -2738,10 +3178,6 @@ export function buildExecuteResponse(
 
   if (rawResult.runtime_crypto_boundaries.length > 0) {
     response.runtime_crypto_boundaries = rawResult.runtime_crypto_boundaries;
-  }
-
-  if (rawResult.adapter_hints.length > 0) {
-    response.adapter_hints = rawResult.adapter_hints;
   }
 
   response.outcome = deriveOutcome(rawResult);

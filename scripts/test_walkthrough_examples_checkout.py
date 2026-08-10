@@ -24,6 +24,34 @@ SPEC.loader.exec_module(examples_checkout)
 
 
 class WalkthroughExamplesCheckoutTest(unittest.TestCase):
+    def test_run_git_strips_leaked_actions_checkout_credentials(self) -> None:
+        leaked_env = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+            "GIT_CONFIG_VALUE_0": "AUTHORIZATION: basic ***",
+        }
+        original_environ = os.environ.copy()
+        os.environ.update(leaked_env)
+        captured: dict[str, object] = {}
+
+        def fake_subprocess_run(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        original_run = subprocess.run
+        subprocess.run = fake_subprocess_run
+        try:
+            examples_checkout.run_git(["status"])
+        finally:
+            subprocess.run = original_run
+            os.environ.clear()
+            os.environ.update(original_environ)
+
+        passed_env = captured["env"]
+        self.assertIsNotNone(passed_env)
+        for key in leaked_env:
+            self.assertNotIn(key, passed_env)
+
     def test_refresh_checkout_accepts_existing_git_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkout_dir = Path(tmp) / "examples"

@@ -13,7 +13,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-HOOKS_DIR="${REPO_ROOT}/.git/hooks"
+# Resolve the real hooks dir via git so this works from linked worktrees too,
+# where ${REPO_ROOT}/.git is a gitdir-pointer file rather than a directory.
+GIT_COMMON_DIR="$(git -C "${REPO_ROOT}" rev-parse --git-common-dir)"
+case "${GIT_COMMON_DIR}" in
+  /*) ;; # already absolute
+  *) GIT_COMMON_DIR="${REPO_ROOT}/${GIT_COMMON_DIR}" ;;
+esac
+HOOKS_DIR="${GIT_COMMON_DIR}/hooks"
 
 CHECK_ONLY=false
 FORCE=false

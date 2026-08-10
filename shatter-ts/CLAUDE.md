@@ -33,6 +33,12 @@ When adding a new AST node type or protocol message, add corresponding fast-chec
 
 TS serializes `bigint` values as `{"__complex_type": "big_int", "value": "<decimal string>"}` in all protocol responses. The `serializeReplacer` in `src/serialize.ts` is wired into `sendResponse()` in `main.ts` and into internal `JSON.stringify` calls in `executor.ts` (console capture, before/after state snapshots). The inverse operation (`reconstructValue` in `src/reconstruct.ts`) converts tagged objects back to native `BigInt` for function inputs. Go and Rust frontends do not produce `bigint` values natively; the Rust core accepts tagged objects as `serde_json::Value` and `export.rs` already formats them for test generation.
 
+## Closure Complex Type Contract (str-ya5dx)
+
+Lib-less type-checking (no `lib.d.ts`) degrades function-typed params/fields and built-in class references (`Date`, `RegExp`, etc.) to `unknown` — the global symbols `convertType`'s normal symbol-name matching relies on aren't present. `convertTypeWithNode`/`convertType`/`convertObjectType` in `analyzer.ts` recover these syntactically: call-signature types (standalone function params and object method fields, at every recursion depth) map to `{kind: "complex", complex_kind: "closure"}`; type-reference nodes matching a built-in name recover via `complexKindFromSymbol`. `reconstruct.ts` materializes `closure` into a recording stub function (`identity`/`constant`/`thrower` variants, `.calls` records invocations) — the previous `unknown` treatment produced a non-callable shape-mock that crashed target code invoking the param. `closure` **must** be advertised in `SUPPORTED_CAPABILITIES` (`handlers.ts`) and `protocol/registry.yaml`'s `typescript.complex_type_capabilities` — the core only generates a complex value for kinds the frontend declares support for (`input_gen.rs`), otherwise it falls back to a random primitive.
+
+A companion `iterator` complex kind (real-array materialization for `Iterable<T>`/`Map`/`Set`-shaped params) was considered but not implemented — no analyzer producer exists for it, so `parity-matrix.yaml`'s `iterator` capability stays `not_supported` for TypeScript. Do not advertise `complex_type:iterator` or add a decode branch for it without an analyzer path producing `{kind: "complex", complex_kind: "iterator"}` first — an advertised-but-unproduced capability silently misrepresents the parity contract.
+
 ## Ite SymExpr Parity Contract
 
 TS is the only frontend that produces `ite` SymExpr nodes — SSA phi-node merges from conditional variable reassignment (str-4kop). Go and Rust deserialize `ite` but do not produce it. See `protocol/parity-matrix.yaml` `ite-symexpr-production-partial`.
@@ -65,9 +71,78 @@ TS is the reference implementation for invocation model dispatch (Go/Rust will r
 - `{ kind: "adapter", adapter_id, ... }` → `executeAdapterOwned` → `InvocationHook` resolved from `RuntimeHooks.invocation_hooks` by `adapter_id` (supplied via `RuntimeHookFactory` whose `id` matches an `ExecutionProfile.adapters` entry)
 - `{ kind: "adapter", ... }` with no matching hook → `not_supported` error: `"execution adapter not supported by TypeScript frontend: <id>"`
 
-Synthetic parameters and structured outcomes ride through existing wire fields (`inputs`, `return_value`, `thrown_error`, `side_effects`). **No new protocol fields.** Adapter-owned calls return empty `branch_path` / `lines_executed` / `path_constraints` / `calls_to_external` — instrumented adapter execution is a follow-up.
+Synthetic parameters and structured outcomes ride through existing wire fields (`inputs`, `return_value`, `thrown_error`, `side_effects`). **No new protocol fields.**
 
-Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts`, `executeAdapterOwned` in `src/executor.ts`, dispatch site in `src/handlers.ts` execute case. Analyses cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}`, cleared on shutdown / function-level teardown / `clearInstrumentedSources`.
+**Adapter-owned instrumentation coverage (str-26fhi).** Adapter-owned calls now populate `branch_path` / `path_constraints` / `lines_executed` / `calls_to_external` / `scope_events` — no longer empty by construction. When instrumented source is available for the target, `handlers.ts` threads it (plus `mocks` / cache key / resolver adapters / sandbox providers) into `executeAdapterOwned`, which hands the hook a `ctx.loadInstrumentedExports(resolverAdapters?)` loader. The react-hook adapter mounts/rerenders the target's **instrumented** body through that loader instead of the raw module, so every call the hook makes fires the `__shatter_record` / `__shatter_branch` callbacks and coverage accumulates in the sandbox. The direct and adapter paths share one instrumentation runtime via `buildInstrumentedSandbox` / `loadInstrumentedModuleInSandbox` and one result assembler via `assembleCoverageFields` (executor.ts) — do not fork the callback or field-derivation logic.
+
+Precise semantics (differ from direct calls; keep this list honest):
+
+- **Resolver-adapter composition.** The loader composes the scenario's shim(s) (or the default React shim for the target file when the hook passes none) FIRST with the execution-profile resolver adapters — it does **not** replace one with the other. This keeps `require("react")` resolving to the shim (as the raw path always did) even when a profile supplies its own resolver adapter (e.g. `tsconfig-paths`), while still honoring that adapter. Mount and rerender scenarios use the same composition rule.
+- **`branch_path` / `path_constraints` are scoped to the initial, props-driven render** for multi-render scenarios. A multi-render adapter calls `ctx.markInitialRenderComplete()` after the mount (and its effects); the executor then scopes the negation set to that prefix. Without this, a state-driven rerender that flips a branch would emit both polarities (`X ∧ ¬X`) along one path → UNSAT for the core's negation search, silently starving input generation. `path_constraints` is always the per-branch constraint of `branch_path` (1:1); adapter-owned calls have no separate solver input-path constraints.
+- **`lines_executed` (and `scope_events` / `calls_to_external`) are the full cross-render union** for coverage reporting, not scoped.
+- **`loop_body_states` is not emitted on the adapter path** (always `[]`). Canonical counted-loop snapshotting is direct-path-only; multi-render accumulation would make per-iteration locals ambiguous. See the parity divergence entry.
+- **Top-level re-execution + raw fallback.** The instrumented loader re-runs the target module's top level on every execute (the raw path caches exports per session). Modules with one-shot top-level side effects should be idempotent; if the instrumented load throws, the hook logs, falls back to the raw module (so the target still runs), and surfaces a `console_output` warning side effect so the resulting empty coverage is attributable. `loadInstrumentedExports` must be called at most once per invocation (it throws on re-entry).
+
+When no instrumented source is available the loader is absent and the hook falls back to the raw module, yielding empty coverage (backward-compatible).
+
+The **browser-globals (`browser-dom`) adapter is a `SandboxProvider`, not an `InvocationHook`**: its targets keep `invocation_model: direct` and execute through `executeInstrumented` with the provider augmenting the sandbox, so they have **always** reported real coverage. Only the react-hook adapter is invocation-owned in TS.
+
+Implementation: `chooseInvocationStrategy` in `src/runtime-hooks.ts`, `executeAdapterOwned` / `loadInstrumentedModuleInSandbox` / `buildInstrumentedSandbox` in `src/executor.ts`, `InvocationContext.loadInstrumentedExports` in `src/runtime-hooks.ts`, react-hook usage in `src/react-hook-invocation.ts`, dispatch site in `src/handlers.ts` execute case. Analyses cached in `cachedAnalyses` keyed by `${resolvedFile}:${functionName}`, cleared on shutdown / function-level teardown / `clearInstrumentedSources`.
+
+## Native React Aliasing Contract (str-rzsej)
+
+Target and instrumented code route react-family specifiers to the shim through
+the adapter-aware require (`getDefaultResolverAdapters` / the stateful adapter).
+But a third-party dependency loaded from `node_modules` via `createRequire` runs
+inside Node's *native* module system; its transitive `require('react')` would
+otherwise resolve to the project's real React, whose hook dispatcher is null
+outside a renderer → `Cannot read properties of null (reading 'use…')` crashes
+(kapow: zustand v5 `useStore` → `react.development.js` useCallback; Mantine).
+
+Fix: `installNativeReactAliasesForFile` (`src/executor.ts`) seeds Node's
+`Module._cache` with the shim at the *resolved filename* of each
+`NATIVE_REACT_ALIAS_NAMES` specifier (`react`, `react-dom`, `react-dom/client`,
+`react/jsx-runtime`, `react/jsx-dev-runtime`). This is a single choke point
+covering arbitrarily deep transitive requires. It is called from **both**
+native-require creation sites — `loadModule` and `buildInstrumentedSandbox` — so
+the direct (instrumented) and adapter paths are both covered. Resolution is
+done from the **target source file's** own `node_modules` chain (not just the
+CLI project root) so pnpm workspaces / monorepo sub-packages
+(`web/node_modules/.pnpm/react@…`) are covered; a root-only resolve misses them.
+
+`NATIVE_REACT_ALIAS_NAMES` is derived from `shimRegistry`'s keys (react-shim.ts)
+so a new shim entry is automatically eligible for native aliasing — do not
+maintain a second hand-written list.
+
+Notes: (1) the Module class + cache are obtained from the native require itself,
+not an ESM import, because jest replaces the imported module registry — the
+native-require path is only exercised in a real `node` subprocess (see the
+str-rzsej test, which bundles the executor via esbuild and spawns node; jest
+cannot exercise it in-process). (2) The shim is forced onto dependencies
+regardless of the React major they were compiled against — exploration fidelity,
+not React-runtime fidelity, is the goal. (3) Because the shim now *replaces*
+real React for **every** react-family require (not just hook-using components),
+it must cover the surface any loaded dependency touches at module-load or
+render time — not only hooks. This change added the hook surface
+(`useSyncExternalStore` for zustand v5, `useDeferredValue`, `useTransition`,
+`useInsertionEffect`, `useImperativeHandle`, `useDebugValue`) **and** the
+non-hook surface class/Suspense/lazy dependencies rely on (`Component`,
+`PureComponent`, `Suspense`, `StrictMode`, `lazy`, `cloneElement`,
+`isValidElement`, `createRef`, `startTransition`, `version`); omitting these
+turns a previously-working class-component dependency into a `not a constructor`
+crash. (4) Seeding never overwrites an already-installed alias and only marks a
+resolution base "done" once react actually resolved from it, so a project-root
+seed that finds nothing in a monorepo does not block the later per-file seed;
+a base where nothing resolved is logged at `debug`. No protocol/wire change —
+JSON output shape is unchanged, so no parity-matrix update is required.
+
+**Known limitation.** Seeding keys off the *target file's* own react resolution.
+A dependency with its own **nested/duplicate** react copy (pnpm version-conflict
+layout: `web/node_modules/.pnpm/react@18…` vs `…/react@19…`) resolves that
+transitive `require('react')` to a *different* filename that was never seeded, so
+the null-dispatcher crash can still occur for that dependency. Solving it fully
+would require patching `Module._load` globally (out of scope here). Tracked as
+follow-up `str-bt7sm`.
 
 ## Feature Capability Parity
 
@@ -174,6 +249,95 @@ Order of checks (first match wins):
 Authoritative matrix entry: `protocol/parity-matrix.yaml`
 `shared_wire_types.no_target_reason.frontends.typescript:
 implemented_via_cli_classifier`.
+
+## Enum Value-Domain Contract (str-knf0v)
+
+The analyzer emits the optional `enum_values` field on a param's TypeInfo
+`union` variant when the declared type resolves to a concrete value domain,
+matching Go's named-type → const-set contract (`enumValuesFromNamed` in
+`shatter-go/protocol/analyzer.go`). Fires for:
+
+1. A TS `enum` declaration — string and numeric enums. Member **values**, not
+   names; numeric enums forward the number only (`enum E { A = 1 }` → `[1]`,
+   never `"A"` — TypeScript's runtime reverse mappings never appear in the
+   param's union type).
+2. A type alias whose definition is a union of string/number/boolean literal
+   types (`type Mode = "fast" | "slow"`), including nested alias resolution
+   (the checker flattens these for free).
+
+Wire shape mirrors Go: a `union` with the distinct base primitive variant(s)
+(`str` / `float` / `bool`) plus `enum_values`, capped at `MAX_ENUM_VALUES`
+(64) with one WARN-level `logger.warn` line per truncated type. Unresolvable
+nesting (circular aliases, generics, conditional types) or any non-literal
+member falls back to a plain union with no `enum_values` — never guessed.
+
+Implementation: `literalEnumDomain` in `src/analyzer.ts`, called from both
+`convertType` (single-member enum literals, checked **before** the
+primitive-literal flag branches) and `convertUnionType` (multi-member enums and
+literal-union aliases, after the nullable and `true|false`→bool short-circuits).
+The core consumer is `generate_union` in `shatter-core/src/input_gen.rs` (85%
+valid-member draw, 15% off-domain probe) — no core changes. Parity: `implemented`
+on `protocol/parity-matrix.yaml` `type_info_enum_values`; all three frontends now
+implement it and the `enum-value-domain-partial` divergence has been removed.
+Tests: `src/analyzer.test.ts` +
+`src/protocol.test.ts` (emitted domains) and
+`e2e_ts_enum_value_domain_reaches_all_arms` in
+`shatter-core/tests/e2e_concolic.rs`. Note the e2e reads `raw_results`, not
+`result.executions`: TS `switch` records case *lines* but emits no `branch_path`
+decisions, so path-dedup collapses switch executions to one entry.
+
+## Opaque-Param Stub Registry Contract (str-syj9b)
+
+Framework "handle" params (Playwright `Page`/`Locator`, and any type registered
+via config) are supplied a structurally-valid **stub** instead of being skipped
+as `kind:"opaque"`. The TS analogue of Go's `runtimeval` / `go_runtime_values`.
+Entirely frontend-local — **no wire schema change**, no new protocol field.
+
+Registry: `src/opaque-stub-registry.ts`. Built-in keys `@playwright/test:Page`
+and `@playwright/test:Locator`; user-extensible via `.shatter/config.yaml`
+`ts_runtime_values` (keyed `<module>:<Type>` for precision, or a bare `<Type>`
+that matches by type name — the escape hatch for project-local types). Each entry
+carries an `overrides` map: dotted call paths (`"locator.count"`) or bare method
+names rotate through a scalar list for calls whose **return value gates a branch**
+(e.g. `count()` → `{0,1,3}`, `isVisible()` → `{true,false}`).
+
+Flow (three seams; keep them in step):
+
+1. **Analyze** (`convertType` in `src/analyzer.ts`): a registry-covered param type
+   short-circuits to an internal sentinel opaque label (`STUB_SENTINEL_LABEL_PREFIX`).
+   `extractStubParams` (run once in `src/worker.ts`, the single top-level choke
+   point) rewrites every sentinel to `{kind:"object", fields:[]}` — so the core
+   no longer skips the function — and collects `{functionName, paramIndex, stubKey}`
+   bindings. The sentinel never reaches the wire. **Binding scope:** a param binds
+   when a single stub can stand in for its *whole value* — the handle directly, or
+   wrapped in `nullable`/`union` (`page: Page | undefined`, `p: Page | Widget`),
+   which `bindableStubKey` unwraps. A handle nested in an `array`/`object`/`complex`
+   (`Locator[]`, `{ page: Page }`) is scrubbed to the safe empty-object fallback but
+   **not** bound — the execute-time overlay replaces the whole positional argument
+   and cannot substitute one stub for an array element or object field. Full
+   element/field-level stubbing is a tracked follow-up.
+2. **Worker→main**: bindings ride `AnalyzeWorkerResponse.stubParams` (internal
+   `worker-protocol.ts` channel only) → cached in `handlers.ts`
+   `stubParamsByFunction`, keyed identically to `cachedAnalyses`.
+3. **Execute** (`handlers.ts`): `overlayStubInputs` replaces the generated argument
+   at each bound index with a tagged input (`STUB_INPUT_TAG`); `reconstructValue`
+   (`src/reconstruct.ts`) turns it into a recording proxy via `buildStubValue`. The
+   proxy is chainable and deliberately **not thenable**, so both sync
+   (`page.locator(x)`) and async (`await page.goto(x)`) calls work without the proxy
+   knowing which methods return promises. Override rotation cursors are module-level
+   (process-lifetime), so repeated executions of the same input explore both sides
+   of a stub-gated branch.
+
+Both the analyzer (worker bundle) and executor (main bundle) load the merged
+registry independently via `getStubRegistry(projectRoot)` (fs-read of
+`.shatter/config.yaml`, cached per root) — keep them consistent.
+
+Parity: TS-only capability `ts-opaque-param-stub-registry` in
+`protocol/parity-matrix.yaml` (config schema is language-neutral; Go/Rust supply
+their own per-language mechanisms). Tests: `src/opaque-stub-registry.test.ts`,
+`src/opaque-stub-analyzer.test.ts`, `src/reconstruct.test.ts`, and
+`e2e_ts_opaque_param_stub_registry_explores_both_branches` in
+`shatter-core/tests/e2e_concolic.rs`.
 
 ## Timeout Contract
 

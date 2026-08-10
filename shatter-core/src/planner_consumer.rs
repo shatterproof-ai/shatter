@@ -7,13 +7,15 @@
 //! preserving the single-source-of-truth rule for parallel explorer/
 //! orchestrator code paths (see project-wide "parallel paths" contract).
 //!
-//! Scope: this pass materializes `Literal` and `Zero` `ValuePlanKind`s only.
-//! `Random`, `Symbolic`, and `RuntimeValue` plan entries yield no seed for
-//! the current target and fall through to the normal random / concolic input
-//! generation (or, for `RuntimeValue`, to the producing frontend's own
-//! runtime-value resolution at execute time). Callers that need to surface
-//! planner ordering should pass plans in priority order; seeds are produced
-//! in the order the frontend returned them.
+//! Scope: this pass materializes `Literal`, `Zero`, and `RuntimeValue`
+//! `ValuePlanKind`s. `Random` and `Symbolic` entries yield no seed and fall
+//! through to normal random / concolic input generation. `RuntimeValue`
+//! entries (e.g. `context.Context` params) are materialized as `null` — the
+//! Go wrapper bakes the runtime expression at wrapper-compile time (str-gxjs.1)
+//! and ignores the JSON input slot entirely, so `null` is always safe and
+//! allows sibling `Literal`/`Zero` plans on the same function to survive.
+//! Callers that need to surface planner ordering should pass plans in priority
+//! order; seeds are produced in the order the frontend returned them.
 
 use serde_json::Value;
 
@@ -135,11 +137,12 @@ pub async fn fetch_planner_seeds(
 /// Map planner outputs to ready-to-execute argument vectors.
 ///
 /// One seed is produced per `InvocationPlan` whose every `ValuePlan` is
-/// directly materializable (`Literal` or `Zero`). Plans containing `Random`,
-/// `Symbolic`, or `RuntimeValue` entries are skipped — those strategies are
-/// already covered by the explorer's random generator, the orchestrator's
-/// Z3 path, or the producing frontend's runtime-value resolution at execute
-/// time, respectively.
+/// directly materializable. `Literal` plans produce their stored value;
+/// `Zero` plans produce the zero value for their type; `RuntimeValue` plans
+/// produce `null` (the Go wrapper bakes the runtime expression at compile
+/// time and ignores the JSON slot, so null is always safe there). Plans
+/// containing `Random` or `Symbolic` entries are skipped — those strategies
+/// are driven by the explorer's random generator or the orchestrator's Z3 path.
 #[must_use]
 pub fn materialize_seeds(plans: &[InvocationPlan], param_infos: &[ParamInfo]) -> Vec<Vec<Value>> {
     let mut seeds = Vec::new();
@@ -173,6 +176,40 @@ pub fn materialize_seed_for_plan(
         values.push(v);
     }
     Some(values)
+}
+
+/// Select the `InvocationPlan` to install as a target's default execute plan.
+///
+/// A receiver-construction plan (non-empty `receiver_kind`, e.g.
+/// `constructor:NewThing`) is preferred whenever the frontend emits one, even
+/// when its method-argument seed cannot be fully materialized. Method targets
+/// with an unsatisfiable parameter yield a receiver-only fallback plan whose
+/// `argument_plans` is empty but whose `constructor_arg_plans` still describes
+/// the constructor input prefix. That prefix MUST be threaded to
+/// [`execute_inputs_for_plan`]; otherwise no prefix is materialized at execute
+/// time and generated method arguments leak into the wrapper's constructor-arg
+/// slots, so the wrapper's positional decode fails before the target method
+/// runs (`json: cannot unmarshal object into Go value of type string`,
+/// str-ozjv).
+///
+/// Free-function targets carry an empty `receiver_kind`, so they fall through
+/// to the historical behavior: the first plan whose seed fully materializes.
+///
+/// Selecting a plan whose `argument_plans` do not line up with `param_infos`
+/// is safe for execution: [`execute_inputs_for_plan`] derives the method-arg
+/// arity from `param_infos` (not from the plan) and only consumes the plan's
+/// `constructor_arg_plans` for the prefix.
+#[must_use]
+pub fn select_execute_plan(
+    plans: &[InvocationPlan],
+    param_infos: &[ParamInfo],
+) -> Option<InvocationPlan> {
+    if let Some(receiver_plan) = plans.iter().find(|plan| !plan.receiver_kind.is_empty()) {
+        return Some(receiver_plan.clone());
+    }
+    plans
+        .iter()
+        .find_map(|plan| materialize_seed_for_plan(plan, param_infos).map(|_| plan.clone()))
 }
 
 /// Materialize all seeds that can safely execute under `selected_plan`.
@@ -234,34 +271,74 @@ fn plan_requires_execution_scoped_constructor_scratch(plan: &InvocationPlan) -> 
 /// execution.
 pub fn execute_inputs_for_plan(
     inputs: &[Value],
-    method_param_count: usize,
+    param_infos: &[ParamInfo],
     plan: Option<&InvocationPlan>,
 ) -> Result<PlannedExecuteInputs, PlannerConsumerError> {
-    let Some(plan) = plan else {
-        return Ok(PlannedExecuteInputs {
-            inputs: inputs.to_vec(),
-            _scratch: Vec::new(),
-        });
+    execute_inputs_for_plan_with_pins(inputs, param_infos, plan, None)
+}
+
+/// Like [`execute_inputs_for_plan`], but re-emits native-replay markers for
+/// custom-generator/extractor parameter slots (str-6cdp).
+///
+/// `native_pins` is method-parameter indexed. After type repair, each pinned
+/// slot is overwritten with its captured native-replay marker so the extractor
+/// param (axum `State<AppState>`, `FromRequestParts`) carries its native value on
+/// EVERY Execute — regardless of how the method vector was produced (fresh
+/// random generation, mutation, crossover, seeding, or prefetch exhaustion).
+/// This is the single funnel for all execute paths, so pinning here guarantees
+/// 100% coverage in one place.
+pub fn execute_inputs_for_plan_with_pins(
+    inputs: &[Value],
+    param_infos: &[ParamInfo],
+    plan: Option<&InvocationPlan>,
+    native_pins: Option<&crate::input_gen::NativePins>,
+) -> Result<PlannedExecuteInputs, PlannerConsumerError> {
+    let method_param_count = param_infos.len();
+    // Repair a parameter-aligned input slice against its declared types so eroded
+    // struct inputs (missing required fields, malformed uuids) still deserialize
+    // and the function actually executes (str-kn3f). This is the single funnel
+    // point for ALL execute paths — both the orchestrator's observe loop and the
+    // explorer's strategy loops route through here. Purely additive on objects.
+    // After repair, re-apply native-replay markers for custom-generator slots
+    // (str-6cdp) so the extractor param is never a mutated/generated scalar.
+    let repair = |method: &[Value]| -> Vec<Value> {
+        let mut repaired: Vec<Value> = method
+            .iter()
+            .enumerate()
+            .map(|(i, value)| match param_infos.get(i) {
+                Some(param) => crate::input_gen::repair_required_fields(value, &param.typ),
+                None => value.clone(),
+            })
+            .collect();
+        if let Some(pins) = native_pins {
+            pins.apply(&mut repaired);
+        }
+        repaired
     };
-    let constructor_arg_count = plan.constructor_arg_plans.len();
-    if constructor_arg_count == 0 {
+
+    let constructor_arg_count = plan.map_or(0, |p| p.constructor_arg_plans.len());
+    if plan.is_none() || constructor_arg_count == 0 {
+        // No constructor prefix: every input is a method argument.
         return Ok(PlannedExecuteInputs {
-            inputs: inputs.to_vec(),
+            inputs: repair(inputs),
             _scratch: Vec::new(),
         });
     }
+    let plan = plan.expect("checked plan.is_some above");
     let method_inputs = if inputs.len() == method_param_count {
         inputs
     } else if inputs.len() == method_param_count + constructor_arg_count {
         &inputs[constructor_arg_count..]
     } else {
+        // Arity mismatch — best-effort positional repair, no prefix surgery.
         return Ok(PlannedExecuteInputs {
-            inputs: inputs.to_vec(),
+            inputs: repair(inputs),
             _scratch: Vec::new(),
         });
     };
+    let repaired_method = repair(method_inputs);
     let (mut prefixed, scratch) = materialize_execute_constructor_arg_values(plan)?;
-    prefixed.extend_from_slice(method_inputs);
+    prefixed.extend_from_slice(&repaired_method);
     Ok(PlannedExecuteInputs {
         inputs: prefixed,
         _scratch: scratch,
@@ -291,7 +368,13 @@ fn materialize_value(value_plan: &ValuePlan, param: &ParamInfo) -> Option<Value>
     match value_plan.kind {
         ValuePlanKind::Literal => value_plan.literal.clone(),
         ValuePlanKind::Zero => Some(zero_value(&param.typ)),
-        ValuePlanKind::Random | ValuePlanKind::Symbolic | ValuePlanKind::RuntimeValue => None,
+        // str-r2q7: RuntimeValue params (e.g. context.Context) are baked into the Go
+        // launcher wrapper as direct assignments at compile time (str-gxjs.1). The
+        // corresponding JSON input slot is ignored by the wrapper, so null is safe. We
+        // emit null rather than dropping the entire plan so that sibling Literal/Zero
+        // plans (e.g. an upstream URL hint on the same function) survive materialization.
+        ValuePlanKind::RuntimeValue => Some(Value::Null),
+        ValuePlanKind::Random | ValuePlanKind::Symbolic => None,
     }
 }
 
@@ -352,7 +435,7 @@ fn materialize_execute_constructor_value(
 /// `null`, letting the downstream input generator refine them.
 fn zero_value(typ: &TypeInfo) -> Value {
     match typ {
-        TypeInfo::Int => Value::from(0),
+        TypeInfo::Int { .. } => Value::from(0),
         TypeInfo::Float => Value::from(0.0),
         TypeInfo::Str => Value::from(""),
         TypeInfo::Bool => Value::from(false),
@@ -478,7 +561,7 @@ mod tests {
     fn int_param(name: &str) -> ParamInfo {
         ParamInfo {
             name: name.to_string(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: Some("int".into()),
         }
     }
@@ -489,6 +572,64 @@ mod tests {
             typ: TypeInfo::Str,
             type_name: Some("string".into()),
         }
+    }
+
+    /// str-6cdp: the execute funnel must re-emit the native-replay marker for a
+    /// custom-generator/extractor slot even when the incoming method vector
+    /// carries a NON-native scalar there (the actual failure mode: fresh random
+    /// generation / prefetch exhaustion produced e.g. `1`/`null`/`"test"`).
+    #[test]
+    fn funnel_reapplies_native_marker_for_pinned_slot() {
+        use crate::input_gen::{NativePins, ValueSource};
+
+        let params = vec![
+            // Slot 0: extractor param (custom generator / native replay).
+            ParamInfo {
+                name: "state".into(),
+                typ: TypeInfo::Opaque {
+                    label: "AppState".into(),
+                    static_opacity: None,
+                    medium_opacity: None,
+                },
+                type_name: Some("AppState".into()),
+            },
+            // Slot 1: ordinary built-in int param.
+            int_param("id"),
+        ];
+        let sources = vec![
+            ValueSource::CustomGenerator {
+                generator_name: "AppState".into(),
+                param_name: None,
+                generator_file: "/gen/state.rs".into(),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            },
+            ValueSource::BuiltIn,
+        ];
+        let marker = json!({
+            "__shatter_native": true,
+            "__shatter_replay": {"file": "state.rs", "name": "AppState", "recipe": {}}
+        });
+        // Pins captured from a candidate vector that DID carry the marker.
+        let pins = NativePins::capture_from_inputs(&sources, &[vec![marker.clone(), json!(7)]]);
+        assert!(!pins.is_empty(), "pins should capture the marker from candidates");
+
+        // The vector reaching execute has a NON-native scalar in the pinned slot.
+        let eroded = vec![json!(1), json!(42)];
+        let out = execute_inputs_for_plan_with_pins(&eroded, &params, None, Some(&pins))
+            .expect("funnel succeeds")
+            .inputs()
+            .to_vec();
+
+        assert_eq!(out[0], marker, "pinned slot must be restored to the native marker");
+        assert_eq!(out[1], json!(42), "built-in slot must pass through unchanged");
+
+        // Without pins, the funnel leaves the eroded non-native scalar in place
+        // (proves the pin is what restores the marker, not repair).
+        let unpinned = execute_inputs_for_plan_with_pins(&eroded, &params, None, None)
+            .expect("funnel succeeds")
+            .inputs()
+            .to_vec();
+        assert_eq!(unpinned[0], json!(1), "without pins the slot stays non-native");
     }
 
     fn literal_plan(param_index: u32, param_name: &str, literal: Value) -> ValuePlan {
@@ -511,6 +652,119 @@ mod tests {
         }
     }
 
+    fn runtime_plan(param_index: u32, param_name: &str, type_hint: &str) -> ValuePlan {
+        ValuePlan {
+            param_index,
+            param_name: param_name.to_string(),
+            kind: ValuePlanKind::RuntimeValue,
+            literal: Some(json!("runtime")),
+            type_hint: type_hint.to_string(),
+        }
+    }
+
+    fn ctor_zero_plan(param_index: u32, param_name: &str, type_hint: &str) -> ValuePlan {
+        ValuePlan {
+            param_index,
+            param_name: param_name.to_string(),
+            kind: ValuePlanKind::Zero,
+            literal: None,
+            type_hint: type_hint.to_string(),
+        }
+    }
+
+    fn opaque_param(name: &str) -> ParamInfo {
+        ParamInfo {
+            name: name.to_string(),
+            typ: TypeInfo::Opaque {
+                label: "Aggregate".into(),
+                static_opacity: None,
+                medium_opacity: None,
+            },
+            type_name: None,
+        }
+    }
+
+    /// str-ozjv: a method whose parameter cannot be seeded still yields a
+    /// receiver-only construction plan (empty `argument_plans`) that carries
+    /// the primitive constructor input prefix. `select_execute_plan` must pick
+    /// it so the prefix is materialized; the prior explore selection —
+    /// `find_map(materialize_seed_for_plan)` — dropped it because
+    /// `argument_plans.len() != param count`, losing the constructor prefix and
+    /// leaking the method argument into the wrapper's constructor-arg slot
+    /// (`json: cannot unmarshal object into Go value of type string`).
+    #[test]
+    fn select_execute_plan_keeps_receiver_only_plan_with_primitive_ctor_prefix() {
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewMatcher".into(),
+            generic_type_args: vec![],
+            // Method parameter is unsatisfiable, so no argument plan is emitted.
+            argument_plans: vec![],
+            constructor_arg_plans: vec![
+                ctor_zero_plan(0, "label", "string"),
+                ctor_zero_plan(1, "weight", "float64"),
+                ctor_zero_plan(2, "timeout", "time.Duration"),
+            ],
+            receiver_field_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+        let params = vec![opaque_param("call")];
+
+        // Regression witness: the old selection dropped this plan because its
+        // per-argument seed cannot materialize against the method params.
+        assert!(
+            materialize_seed_for_plan(&plan, &params).is_none(),
+            "receiver-only plan has no fully-materializable method-arg seed",
+        );
+
+        // The fix: the receiver plan is still selected as the execute plan.
+        let selected = select_execute_plan(std::slice::from_ref(&plan), &params)
+            .expect("receiver-construction plan must be selected");
+        assert_eq!(selected.receiver_kind, "constructor:NewMatcher");
+
+        // And its primitive constructor prefix materializes to primitive JSON
+        // zero values — string "", float64 0.0, time.Duration 0 — not `{}`.
+        let planned = execute_inputs_for_plan(&[json!({})], &params, Some(&selected))
+            .expect("primitive constructor prefix must materialize");
+        assert_eq!(
+            &planned.inputs()[..3],
+            &[json!(""), json!(0.0), json!(0)],
+            "constructor prefix must be primitive zero values, got {:?}",
+            planned.inputs(),
+        );
+    }
+
+    /// A free-function target (empty `receiver_kind`) keeps the historical
+    /// behavior: the first plan whose seed fully materializes is selected.
+    #[test]
+    fn select_execute_plan_free_function_prefers_materializable_plan() {
+        let unmaterializable = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![ValuePlan {
+                param_index: 0,
+                param_name: "a".into(),
+                kind: ValuePlanKind::Symbolic,
+                literal: None,
+                type_hint: String::new(),
+            }],
+            constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+        let good = InvocationPlan {
+            argument_plans: vec![literal_plan(0, "a", json!(7))],
+            priority: 1,
+            ..unmaterializable.clone()
+        };
+        let selected = select_execute_plan(&[unmaterializable, good.clone()], &[int_param("a")])
+            .expect("a materializable free-function plan must be selected");
+        assert_eq!(selected.argument_plans, good.argument_plans);
+    }
+
     #[test]
     fn materialize_literal_and_zero_produces_seed() {
         let plan = InvocationPlan {
@@ -519,6 +773,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7)), zero_plan(1, "b")],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -534,6 +789,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![zero_plan(0, "s")],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -555,17 +811,20 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
         let compatible = InvocationPlan {
             argument_plans: vec![literal_plan(0, "event", json!("second"))],
+            receiver_field_plans: vec![],
             priority: 1,
             ..selected.clone()
         };
         let incompatible = InvocationPlan {
             receiver_kind: "constructor:OtherThing".into(),
             argument_plans: vec![literal_plan(0, "event", json!("wrong"))],
+            receiver_field_plans: vec![],
             priority: 2,
             ..selected.clone()
         };
@@ -593,10 +852,11 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
-        let planned = execute_inputs_for_plan(&[json!("default")], 1, Some(&plan))
+        let planned = execute_inputs_for_plan(&[json!("default")], &[ParamInfo { name: String::new(), typ: TypeInfo::Str, type_name: None }], Some(&plan))
             .expect("constructor directory seed should materialize");
         assert_eq!(planned.inputs().len(), 2);
         assert_eq!(planned.inputs().get(1), Some(&json!("default")));
@@ -611,7 +871,7 @@ mod tests {
             dir.is_dir(),
             "directory-like constructor string should materialize as a usable directory",
         );
-        let refreshed = execute_inputs_for_plan(planned.inputs(), 1, Some(&plan))
+        let refreshed = execute_inputs_for_plan(planned.inputs(), &[ParamInfo { name: String::new(), typ: TypeInfo::Str, type_name: None }], Some(&plan))
             .expect("stale constructor prefix should rematerialize");
         assert_eq!(refreshed.inputs().len(), 2);
         assert_eq!(refreshed.inputs().get(1), Some(&json!("default")));
@@ -656,13 +916,14 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
         let first =
-            execute_inputs_for_plan(&[], 0, Some(&plan)).expect("first file seed materializes");
+            execute_inputs_for_plan(&[], &[], Some(&plan)).expect("first file seed materializes");
         let second =
-            execute_inputs_for_plan(&[], 0, Some(&plan)).expect("second file seed materializes");
+            execute_inputs_for_plan(&[], &[], Some(&plan)).expect("second file seed materializes");
         let paths: Vec<std::path::PathBuf> = [first.inputs(), second.inputs()]
             .into_iter()
             .map(|seed| {
@@ -707,6 +968,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -732,6 +994,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -753,10 +1016,11 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
-        let planned = execute_inputs_for_plan(&[], 0, Some(&plan))
+        let planned = execute_inputs_for_plan(&[], &[], Some(&plan))
             .expect("constructor directory seed should materialize");
         let path = std::path::PathBuf::from(
             planned
@@ -782,6 +1046,7 @@ mod tests {
                 literal: None,
                 type_hint: "string".into(),
             }],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -803,6 +1068,7 @@ mod tests {
                 type_hint: String::new(),
             }],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -811,12 +1077,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_value_plan_is_skipped() {
-        // Mirrors the Go planner's runtimeValuePlans output: kind=runtime_value,
-        // literal carries a JSON-encoded source expression, type_hint names the
-        // registered Go type. The consumer must accept the wire form
-        // (str-1hlk.4) but skip materialization — the Go launcher resolves the
-        // value at execute time via planner.LookupRuntimeValue.
+    fn runtime_value_plan_materializes_as_null() {
+        // str-r2q7: RuntimeValue params (e.g. context.Context) used to return
+        // None and drop the entire seed. Now they materialize as null — the Go
+        // wrapper bakes context.Background() at wrapper-compile time (str-gxjs.1)
+        // and ignores the JSON slot, so null is safe.
         let plan = InvocationPlan {
             target_id: "t".into(),
             receiver_kind: String::new(),
@@ -829,14 +1094,74 @@ mod tests {
                 type_hint: "context.Context".into(),
             }],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
         let seeds = materialize_seeds(&[plan], &[int_param("ctx")]);
-        assert!(
-            seeds.is_empty(),
-            "runtime_value plan should not materialize in core consumer",
+        assert_eq!(
+            seeds,
+            vec![vec![Value::Null]],
+            "runtime_value param should materialize as null so the seed survives",
         );
+    }
+
+    #[test]
+    fn runtime_value_sibling_literal_survives() {
+        // str-r2q7: when a function has a RuntimeValue param (e.g. ctx) alongside
+        // a Literal param (e.g. upstream URL hint), the entire seed must survive.
+        // Previously, RuntimeValue => None caused the ? in materialize_seed_for_plan
+        // to drop the whole seed, silently discarding the sibling Literal hint.
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: String::new(),
+            generic_type_args: vec![],
+            argument_plans: vec![
+                ValuePlan {
+                    param_index: 0,
+                    param_name: "ctx".into(),
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(json!("context.Background()")),
+                    type_hint: "context.Context".into(),
+                },
+                literal_plan(1, "upstream", json!("http://localhost:11434")),
+            ],
+            constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+        let seeds =
+            materialize_seeds(&[plan], &[int_param("ctx"), str_param("upstream")]);
+        assert_eq!(
+            seeds,
+            vec![vec![Value::Null, json!("http://localhost:11434")]],
+            "sibling Literal hint must survive when ctx is RuntimeValue",
+        );
+    }
+
+    #[test]
+    fn runtime_value_placeholder_keeps_literal_method_seed() {
+        let body = json!(
+            r#"{"model":"claude-3-5-sonnet-20241022","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}"#
+        );
+        let plan = InvocationPlan {
+            target_id: "t".into(),
+            receiver_kind: "constructor:NewHandler".into(),
+            generic_type_args: vec![],
+            argument_plans: vec![
+                runtime_plan(0, "w", "http.ResponseWriter"),
+                literal_plan(1, "r", body.clone()),
+            ],
+            constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
+            priority: 0,
+            label: String::new(),
+        };
+
+        let seeds = materialize_seeds(&[plan], &[int_param("w"), str_param("r")]);
+
+        assert_eq!(seeds, vec![vec![Value::Null, body]]);
     }
 
     #[test]
@@ -847,6 +1172,7 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(7))],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
@@ -863,10 +1189,234 @@ mod tests {
             generic_type_args: vec![],
             argument_plans: vec![literal_plan(0, "a", json!(v))],
             constructor_arg_plans: vec![],
+            receiver_field_plans: vec![],
             priority: 0,
             label: String::new(),
         };
         let seeds = materialize_seeds(&[mk(1), mk(2), mk(3)], &[int_param("a")]);
         assert_eq!(seeds, vec![vec![json!(1)], vec![json!(2)], vec![json!(3)]]);
+    }
+
+    // ── Property tests ──────────────────────────────────────────────────────
+    // Covers materialize_seeds invariants for all plan-kind combinations.
+
+    #[cfg(test)]
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+        use serde_json::json;
+
+        fn arb_value_plan(index: u32) -> impl Strategy<Value = ValuePlan> {
+            prop_oneof![
+                // Literal
+                any::<i64>().prop_map(move |n| ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Literal,
+                    literal: Some(json!(n)),
+                    type_hint: String::new(),
+                }),
+                // Zero
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Zero,
+                    literal: None,
+                    type_hint: String::new(),
+                }),
+                // RuntimeValue (str-r2q7: must materialize as null)
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::RuntimeValue,
+                    literal: Some(json!("context.Background()")),
+                    type_hint: "context.Context".into(),
+                }),
+                // Random/Symbolic (must drop the entire plan)
+                Just(ValuePlan {
+                    param_index: index,
+                    param_name: format!("p{index}"),
+                    kind: ValuePlanKind::Random,
+                    literal: None,
+                    type_hint: String::new(),
+                }),
+            ]
+        }
+
+        proptest! {
+            /// Every produced seed has exactly as many slots as param_infos.
+            #[test]
+            fn seed_length_equals_param_count(
+                plans in prop::collection::vec(
+                    (0u32..4).prop_flat_map(|n| {
+                        let slots: u32 = n + 1;
+                        prop::collection::vec(arb_value_plan(0), slots as usize)
+                            .prop_map(move |args| InvocationPlan {
+                                target_id: "t".into(),
+                                receiver_kind: String::new(),
+                                generic_type_args: vec![],
+                                argument_plans: args,
+                                constructor_arg_plans: vec![],
+                                receiver_field_plans: vec![],
+                                priority: 0,
+                                label: String::new(),
+                            })
+                    }),
+                    0..5,
+                )
+            ) {
+                for plan in &plans {
+                    let arity = plan.argument_plans.len();
+                    let params: Vec<_> = (0..arity)
+                        .map(|i| int_param(&format!("p{i}")))
+                        .collect();
+                    let seeds = materialize_seeds(std::slice::from_ref(plan), &params);
+                    for seed in &seeds {
+                        prop_assert_eq!(seed.len(), arity,
+                            "seed length must equal param count");
+                    }
+                }
+            }
+
+            /// A plan with any Random entry never produces a seed.
+            #[test]
+            fn random_plan_never_materializes(extra_literal in any::<i64>()) {
+                let plan = InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: String::new(),
+                    generic_type_args: vec![],
+                    argument_plans: vec![
+                        ValuePlan {
+                            param_index: 0,
+                            param_name: "ctx".into(),
+                            kind: ValuePlanKind::RuntimeValue,
+                            literal: Some(json!("context.Background()")),
+                            type_hint: "context.Context".into(),
+                        },
+                        ValuePlan {
+                            param_index: 1,
+                            param_name: "rnd".into(),
+                            kind: ValuePlanKind::Random,
+                            literal: None,
+                            type_hint: String::new(),
+                        },
+                        ValuePlan {
+                            param_index: 2,
+                            param_name: "lit".into(),
+                            kind: ValuePlanKind::Literal,
+                            literal: Some(json!(extra_literal)),
+                            type_hint: String::new(),
+                        },
+                    ],
+                    constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                };
+                let seeds = materialize_seeds(
+                    &[plan],
+                    &[int_param("ctx"), int_param("rnd"), int_param("lit")],
+                );
+                prop_assert!(seeds.is_empty(),
+                    "plan with Random must not produce a seed");
+            }
+
+            /// RuntimeValue slots always materialize as null (never drop the plan).
+            #[test]
+            fn runtime_value_slot_is_always_null(literal_val in any::<i64>()) {
+                let plan = InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: String::new(),
+                    generic_type_args: vec![],
+                    argument_plans: vec![
+                        ValuePlan {
+                            param_index: 0,
+                            param_name: "ctx".into(),
+                            kind: ValuePlanKind::RuntimeValue,
+                            literal: Some(json!("context.Background()")),
+                            type_hint: "context.Context".into(),
+                        },
+                        ValuePlan {
+                            param_index: 1,
+                            param_name: "v".into(),
+                            kind: ValuePlanKind::Literal,
+                            literal: Some(json!(literal_val)),
+                            type_hint: String::new(),
+                        },
+                    ],
+                    constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                };
+                let seeds = materialize_seeds(
+                    &[plan],
+                    &[int_param("ctx"), int_param("v")],
+                );
+                prop_assert_eq!(seeds.len(), 1, "plan with RuntimeValue + Literal must produce one seed");
+                prop_assert_eq!(&seeds[0][0], &Value::Null, "RuntimeValue slot must be null");
+                prop_assert_eq!(&seeds[0][1], &json!(literal_val), "Literal slot must keep its value");
+            }
+
+            /// str-ozjv core invariant: whenever ANY plan carries a
+            /// receiver-construction kind, `select_execute_plan` returns the
+            /// FIRST such plan — never dropping it — even when every argument
+            /// seed is unsatisfiable (Random/Symbolic) so no seed materializes.
+            /// This is precisely the property whose absence let the constructor
+            /// input prefix leak: the old `find_map(materialize_seed_for_plan)`
+            /// selection dropped receiver plans whose method-arg seed could not
+            /// materialize. When no plan carries a receiver, the selection falls
+            /// back to a materializable plan that must be a member of the input.
+            #[test]
+            fn select_execute_plan_never_drops_receiver_plan(
+                plans in prop::collection::vec(arb_plan_with_optional_receiver(), 1..6),
+            ) {
+                let params = vec![int_param("p0")];
+                let selected = select_execute_plan(&plans, &params);
+                match plans.iter().find(|p| !p.receiver_kind.is_empty()) {
+                    Some(expected) => {
+                        let sel = selected
+                            .expect("a receiver plan must always be selected");
+                        prop_assert!(!sel.receiver_kind.is_empty(),
+                            "selected plan must carry a receiver kind");
+                        prop_assert_eq!(&sel, expected,
+                            "must select the FIRST receiver-construction plan");
+                    }
+                    None => {
+                        // No receiver plan: selection mirrors the historical
+                        // free-function behavior — the first materializable plan,
+                        // which must be a member of the input (or None).
+                        if let Some(sel) = &selected {
+                            prop_assert!(plans.iter().any(|p| p == sel),
+                                "selected free-function plan must be a member of the input");
+                        }
+                    }
+                }
+            }
+        }
+
+        /// A plan carrying either an empty or a constructor receiver kind, with
+        /// 0..2 argument slots whose value plans may be unsatisfiable. Drives
+        /// [`select_execute_plan_never_drops_receiver_plan`].
+        fn arb_plan_with_optional_receiver() -> impl Strategy<Value = InvocationPlan> {
+            (
+                any::<bool>(),
+                prop::collection::vec(arb_value_plan(0), 0..2),
+            )
+                .prop_map(|(has_receiver, args)| InvocationPlan {
+                    target_id: "t".into(),
+                    receiver_kind: if has_receiver {
+                        "constructor:NewThing".into()
+                    } else {
+                        String::new()
+                    },
+                    generic_type_args: vec![],
+                    argument_plans: args,
+                    constructor_arg_plans: vec![],
+                    receiver_field_plans: vec![],
+                    priority: 0,
+                    label: String::new(),
+                })
+        }
     }
 }

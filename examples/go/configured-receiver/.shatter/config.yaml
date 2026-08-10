@@ -1,0 +1,6 @@
+functions:
+  "service.go:(*Service).Classify":
+    receiver:
+      label: seeded_backend
+      expression: |
+        &Service{backend: configuredBackend{}}

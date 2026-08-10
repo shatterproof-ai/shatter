@@ -33,8 +33,8 @@ use crate::boundary_dict::generate_boundary_inputs;
 use crate::coverage_metrics::DiscoveryMethod;
 use crate::execution_record::SymConstraint;
 use crate::input_gen::{
-    crossover_inputs, generate_random_inputs, havoc_mutate_inputs, literals_to_candidate_inputs,
-    mutate_inputs,
+    crossover_inputs_with_sources, generate_random_inputs, havoc_mutate_inputs_with_sources,
+    literals_to_candidate_inputs, mutate_inputs_with_sources,
 };
 use crate::orchestrator::FrontendCapabilities;
 use crate::protocol::{ExecuteResult, LiteralValue, LoopInfo};
@@ -58,6 +58,11 @@ pub struct StrategyContext {
     pub literals: Vec<LiteralValue>,
     /// Frontend capabilities (used to gate complex-type generation).
     pub capabilities: FrontendCapabilities,
+    /// Per-parameter value source (custom generator vs built-in). Custom-generator
+    /// slots carry native-replay markers and must never be mutated (str-6cdp).
+    /// Empty when no generators are configured, in which case every slot is
+    /// treated as built-in and eligible for mutation.
+    pub value_sources: Vec<crate::input_gen::ValueSource>,
 }
 
 impl StrategyContext {
@@ -1054,13 +1059,30 @@ impl FuzzerStrategy {
         let base = self.interesting[idx].clone();
 
         let params: Vec<ParamInfo> = ctx.params.clone();
+        // Pin custom-generator/extractor slots so their native-replay markers
+        // survive mutation (str-6cdp).
+        let sources = ctx.value_sources.as_slice();
 
         // 1. Gentle type-aware mutation for diversity.
-        let gentle_mutated = mutate_inputs(&base, &params, FUZZER_GENTLE_RATE, &[], &mut self.rng);
+        let gentle_mutated = mutate_inputs_with_sources(
+            &base,
+            &params,
+            sources,
+            FUZZER_GENTLE_RATE,
+            &[],
+            &mut self.rng,
+        );
         self.pending.push_back(gentle_mutated);
 
         // 2. Aggressive type-aware mutation via input_gen.
-        let mutated = mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
+        let mutated = mutate_inputs_with_sources(
+            &base,
+            &params,
+            sources,
+            FUZZER_MUTATION_RATE,
+            &[],
+            &mut self.rng,
+        );
         self.pending.push_back(mutated);
 
         // 3. Crossover when at least two interesting inputs exist.
@@ -1071,10 +1093,11 @@ impl FuzzerStrategy {
                     break candidate;
                 }
             };
-            let (child_a, _child_b) = crossover_inputs(
+            let (child_a, _child_b) = crossover_inputs_with_sources(
                 &base,
                 &self.interesting[other_idx],
                 &params,
+                sources,
                 FUZZER_CROSSOVER_RATE,
                 &mut self.rng,
             );
@@ -1082,7 +1105,14 @@ impl FuzzerStrategy {
         }
 
         // 4. Havoc — compound multi-mutation sequence for escaping local optima.
-        let havoc = havoc_mutate_inputs(&base, &params, FUZZER_MUTATION_RATE, &[], &mut self.rng);
+        let havoc = havoc_mutate_inputs_with_sources(
+            &base,
+            &params,
+            sources,
+            FUZZER_MUTATION_RATE,
+            &[],
+            &mut self.rng,
+        );
         self.pending.push_back(havoc);
     }
 }
@@ -1153,6 +1183,12 @@ pub struct Z3SolverStrategy {
     pending: VecDeque<Vec<Value>>,
     /// Canonical loop metadata from static analysis, used to collapse backedge constraints.
     loops: Vec<crate::protocol::LoopInfo>,
+    /// Wire values already tried per closed-domain enum var, accumulated
+    /// across `feedback()` calls (str-mambd). A single call's own constraints
+    /// only ever carry ONE observation per Rust match-arm var, so excluding
+    /// just that isn't enough to avoid the solver oscillating between two
+    /// variants forever — see `solver::assert_enum_param_domains`'s doc.
+    enum_history: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Z3SolverStrategy {
@@ -1166,6 +1202,7 @@ impl Z3SolverStrategy {
             param_infos,
             pending: VecDeque::new(),
             loops,
+            enum_history: std::collections::HashMap::new(),
         }
     }
 }
@@ -1191,24 +1228,41 @@ impl InputStrategy for Z3SolverStrategy {
             return;
         }
 
+        // Record this execution's enum-var observations before solving, so the
+        // very negation that targets this decision already excludes the value
+        // it's negating (str-mambd).
+        for (var_name, value) in solver::extract_enum_observations(&solvable, &self.param_infos) {
+            let seen = self.enum_history.entry(var_name).or_default();
+            if !seen.contains(&value) {
+                seen.push(value);
+            }
+        }
+
         let param_names: Vec<String> = self.param_infos.iter().map(|p| p.name.clone()).collect();
 
         for solve_idx in 0..solvable.len() {
             // solve_for_new_path may fail (unsupported expressions, type mismatches,
             // or constraint/param misalignment). Treat all failures as "no solution".
+            let enum_history = &self.enum_history;
             let solve_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                solver::solve_for_new_path(
+                solver::solve_for_new_path_with_enum_history(
                     &solvable,
                     solve_idx,
                     self.solver_timeout_ms,
                     &self.param_infos,
+                    enum_history,
                 )
             }));
 
             match solve_result {
                 Ok(Ok(SolveResult::Sat(values))) => {
-                    let new_inputs =
-                        crate::orchestrator::overlay_solved_values(inputs, &values, &param_names);
+                    let param_types = crate::orchestrator::param_types_of(&self.param_infos);
+                    let new_inputs = crate::orchestrator::overlay_solved_values(
+                        inputs,
+                        &values,
+                        &param_names,
+                        &param_types,
+                    );
                     self.pending.push_back(new_inputs);
                 }
                 _ => {
@@ -1295,11 +1349,12 @@ mod tests {
         StrategyContext {
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         }
     }
 
@@ -1583,7 +1638,7 @@ mod tests {
     fn random_explorer_registry_includes_random_when_no_custom_fallback() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let meta = build_random_explorer_meta_strategy(
@@ -1612,7 +1667,7 @@ mod tests {
     fn random_explorer_registry_omits_random_when_custom_fallback_is_enabled() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let meta = build_random_explorer_meta_strategy(
@@ -1644,7 +1699,7 @@ mod tests {
     fn concolic_registry_registers_expected_order() {
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }];
         let meta = build_concolic_meta_strategy(
@@ -1679,7 +1734,7 @@ mod tests {
 
     #[test]
     fn concolic_meta_strategy_drains_user_inputs_before_adaptive_fallbacks() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let expected = vec![Value::from(777)];
 
         for seed in 0..32 {
@@ -1696,6 +1751,7 @@ mod tests {
                 params: params.clone(),
                 literals: vec![],
                 capabilities: FrontendCapabilities::default(),
+                value_sources: vec![],
             };
             let mut rng = StdRng::seed_from_u64(seed);
 
@@ -1732,6 +1788,7 @@ mod tests {
                 params: params.clone(),
                 literals: literals.clone(),
                 capabilities: FrontendCapabilities::default(),
+                value_sources: vec![],
             };
             let mut rng = StdRng::seed_from_u64(seed);
 
@@ -1752,7 +1809,7 @@ mod tests {
     fn concolic_meta_strategy_prioritizes_z3_after_first_user_seed_feedback() {
         use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
 
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let mut meta = build_concolic_meta_strategy(
             vec![vec![Value::from(5)], vec![Value::from(6)]],
             vec![],
@@ -1766,6 +1823,7 @@ mod tests {
             params,
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -1871,10 +1929,10 @@ mod tests {
 
     #[test]
     fn boundary_seeds_single_int_param() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let mut bs = BoundarySeeds::new(&params);
         let ctx = empty_ctx();
-        let expected = get_boundary_values(&TypeInfo::Int).len();
+        let expected = get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None }).len();
         assert_eq!(bs.estimated_size(), Some(expected as u64));
 
         let mut count = 0;
@@ -1903,11 +1961,11 @@ mod tests {
 
     #[test]
     fn boundary_seeds_multi_param_pairwise() {
-        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
         let mut bs = BoundarySeeds::new(&params);
         let ctx = empty_ctx();
         let expected =
-            get_boundary_values(&TypeInfo::Int).len() + get_boundary_values(&TypeInfo::Str).len();
+            get_boundary_values(&TypeInfo::Int { int_width: None, int_signed: None }).len() + get_boundary_values(&TypeInfo::Str).len();
         assert_eq!(bs.estimated_size(), Some(expected as u64));
 
         let mut count = 0;
@@ -1963,6 +2021,7 @@ mod tests {
             params,
             literals: vec![],
             capabilities: FrontendCapabilities::default(),
+            value_sources: vec![],
         };
         let mut rng = rand::rngs::StdRng::seed_from_u64(7);
 
@@ -2105,7 +2164,7 @@ mod tests {
 
     #[test]
     fn literals_strategy_exhausts_then_none() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let literals = vec![LiteralValue::Int { value: 42 }];
         let mut strat = LiteralsStrategy::new(&params, &literals);
         let ctx = empty_ctx();
@@ -2117,7 +2176,7 @@ mod tests {
 
     #[test]
     fn literals_strategy_empty_literals() {
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         let mut strat = LiteralsStrategy::new(&params, &[]);
         let ctx = empty_ctx();
         assert_eq!(strat.estimated_size(), Some(0));
@@ -2143,7 +2202,7 @@ mod tests {
 
     #[test]
     fn literals_strategy_estimated_size_matches_drain() {
-        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
         let literals = vec![
             LiteralValue::Int { value: 1 },
             LiteralValue::Int { value: 2 },
@@ -2182,11 +2241,12 @@ mod tests {
         let int_ctx = StrategyContext {
             params: vec![ParamInfo {
                 name: "n".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         };
         for _ in 0..20 {
             let vals = s.next(&int_ctx).unwrap();
@@ -2206,6 +2266,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         };
         for _ in 0..20 {
             let vals = s.next(&str_ctx).unwrap();
@@ -2225,6 +2286,7 @@ mod tests {
             }],
             literals: vec![],
             capabilities: FrontendCapabilities::from_raw(&[]),
+            value_sources: vec![],
         };
         for _ in 0..20 {
             let vals = s.next(&bool_ctx).unwrap();
@@ -2367,7 +2429,7 @@ mod tests {
     fn int_param(name: &str) -> ParamInfo {
         ParamInfo {
             name: name.into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int { int_width: None, int_signed: None },
             type_name: None,
         }
     }
@@ -2557,7 +2619,7 @@ mod tests {
                 let params: Vec<ParamInfo> = (0..len)
                     .map(|i| ParamInfo {
                         name: format!("p{i}"),
-                        typ: TypeInfo::Int,
+                        typ: TypeInfo::Int { int_width: None, int_signed: None },
                         type_name: None,
                     })
                     .collect();
@@ -2576,7 +2638,7 @@ mod tests {
                 let params: Vec<ParamInfo> = (0..len)
                     .map(|i| ParamInfo {
                         name: format!("p{i}"),
-                        typ: TypeInfo::Int,
+                        typ: TypeInfo::Int { int_width: None, int_signed: None },
                         type_name: None,
                     })
                     .collect();
@@ -2585,6 +2647,7 @@ mod tests {
                     params: params.clone(),
                     literals: vec![],
                     capabilities: FrontendCapabilities::from_raw(&[]),
+                    value_sources: vec![],
                 };
                 let mut s = Z3SolverStrategy::new(Some(500), params, vec![]);
                 s.feedback(&inputs, &er, false);

@@ -870,7 +870,7 @@ mod tests {
     fn pool_entry_serde_round_trip() {
         let entry = PoolEntry {
             value: serde_json::json!(42),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: "mod.bar".into(),
                 branch_id: 1,
@@ -962,7 +962,7 @@ mod tests {
     fn make_entry(value: serde_json::Value, function: &str, severity: Severity) -> PoolEntry {
         PoolEntry {
             value: value.clone(),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: function.into(),
                 branch_id: 1,
@@ -983,7 +983,7 @@ mod tests {
         // Same value, different behavior — should merge
         let e2 = PoolEntry {
             value: serde_json::json!(42),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: "bar".into(),
                 branch_id: 2,
@@ -995,7 +995,7 @@ mod tests {
         };
         assert!(pool.insert(e2));
 
-        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int { int_width: None, int_signed: None })];
         assert_eq!(bucket.len(), 1);
         assert_eq!(bucket[0].behaviors.len(), 2);
         assert_eq!(bucket[0].last_hit_epoch, 1);
@@ -1016,7 +1016,7 @@ mod tests {
         let inserted = pool.insert(make_entry(serde_json::json!(3), "bar", Severity::RarePath));
 
         assert!(inserted);
-        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int { int_width: None, int_signed: None })];
         assert_eq!(bucket.len(), 2);
     }
 
@@ -1054,7 +1054,7 @@ mod tests {
         pool.insert(make_entry(serde_json::json!(42), "foo", Severity::RarePath));
         pool.insert(make_entry(serde_json::json!(99), "bar", Severity::Crash));
 
-        let values = pool.values_for_type(&TypeInfo::Int);
+        let values = pool.values_for_type(&TypeInfo::Int { int_width: None, int_signed: None });
         assert_eq!(values.len(), 2);
         assert!(values.contains(&serde_json::json!(42)));
         assert!(values.contains(&serde_json::json!(99)));
@@ -1075,7 +1075,7 @@ mod tests {
         pool.insert(make_entry(serde_json::json!(42), "foo", Severity::RarePath));
         pool.insert(make_entry(serde_json::json!(99), "bar", Severity::Crash));
 
-        let entries = pool.entries_for_type(&TypeInfo::Int);
+        let entries = pool.entries_for_type(&TypeInfo::Int { int_width: None, int_signed: None });
         assert_eq!(entries.len(), 2);
         // Verify behavior metadata is accessible.
         let functions: Vec<&str> = entries
@@ -1182,7 +1182,7 @@ mod tests {
         let count = harvest_from_exploration(
             &mut pool,
             &[],
-            &make_params(&[TypeInfo::Int]),
+            &make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]),
             "f",
             CoverageMode::Branch,
         );
@@ -1196,7 +1196,7 @@ mod tests {
             epoch: 1,
             ..Default::default()
         };
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         // Value 999 is not a boundary value for Int
         let raw = vec![(
             vec![serde_json::json!(999)],
@@ -1206,7 +1206,7 @@ mod tests {
         let count =
             harvest_from_exploration(&mut pool, &raw, &params, "myFunc", CoverageMode::Branch);
         assert_eq!(count, 1);
-        let key = type_key(&TypeInfo::Int);
+        let key = type_key(&TypeInfo::Int { int_width: None, int_signed: None });
         let bucket = &pool.buckets[&key];
         assert_eq!(bucket.len(), 1);
         assert_eq!(bucket[0].value, serde_json::json!(999));
@@ -1238,7 +1238,7 @@ mod tests {
             epoch: 1,
             ..Default::default()
         };
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         // Same branch path for all 3 executions → count = 3 > threshold
         let exec = make_exec_result_ok(1);
         let raw = vec![
@@ -1256,7 +1256,7 @@ mod tests {
             epoch: 1,
             ..Default::default()
         };
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         // 0 and -1 are boundary values for Int; should be skipped even on error paths
         let raw = vec![
             (
@@ -1280,7 +1280,7 @@ mod tests {
             epoch: 1,
             ..Default::default()
         };
-        let params = make_params(&[TypeInfo::Int, TypeInfo::Str]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
         let raw = vec![(
             vec![serde_json::json!(42), serde_json::json!("hello")],
             vec![],
@@ -1289,7 +1289,7 @@ mod tests {
         let count = harvest_from_exploration(&mut pool, &raw, &params, "f", CoverageMode::Branch);
         // 42 is not a boundary Int, "hello" is not a boundary Str → both inserted
         assert_eq!(count, 2);
-        let int_key = type_key(&TypeInfo::Int);
+        let int_key = type_key(&TypeInfo::Int { int_width: None, int_signed: None });
         let str_key = type_key(&TypeInfo::Str);
         assert_eq!(pool.buckets[&int_key].len(), 1);
         assert_eq!(pool.buckets[&str_key].len(), 1);
@@ -1301,7 +1301,7 @@ mod tests {
             epoch: 1,
             ..Default::default()
         };
-        let params = make_params(&[TypeInfo::Int]);
+        let params = make_params(&[TypeInfo::Int { int_width: None, int_signed: None }]);
         // Same value (999) from two different error executions
         let raw = vec![
             (
@@ -1318,7 +1318,7 @@ mod tests {
         let count = harvest_from_exploration(&mut pool, &raw, &params, "f", CoverageMode::Branch);
         // Both insert calls succeed (second merges), so count = 2
         assert_eq!(count, 2);
-        let key = type_key(&TypeInfo::Int);
+        let key = type_key(&TypeInfo::Int { int_width: None, int_signed: None });
         // But only one entry in the bucket (merged)
         assert_eq!(pool.buckets[&key].len(), 1);
         assert_eq!(pool.buckets[&key][0].behaviors.len(), 2);
@@ -1348,7 +1348,7 @@ mod tests {
     ) -> PoolEntry {
         PoolEntry {
             value: serde_json::json!(value),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: function.into(),
                 branch_id,
@@ -1479,7 +1479,7 @@ mod tests {
             mode: CoverageMode::Branch,
         });
         assert!(pool.insert(merged));
-        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int { int_width: None, int_signed: None })];
         let first = bucket
             .iter()
             .find(|e| e.value == serde_json::json!(0))
@@ -1580,7 +1580,7 @@ mod tests {
     ) -> PoolEntry {
         PoolEntry {
             value,
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: function.into(),
                 branch_id,
@@ -1622,7 +1622,7 @@ mod tests {
         );
 
         // Verify the string is now in the pool.
-        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int { int_width: None, int_signed: None })];
         assert!(
             bucket.iter().any(|e| e.value == json!("hello")),
             "distinct value should be present after eviction"
@@ -1690,7 +1690,7 @@ mod tests {
             pool.insert(behavior_entry(i as i64, "foo", 1, Severity::Crash));
         }
         // Make value 8 the sole witness for sig_b by adding a second behavior.
-        let bucket = pool.buckets.get_mut(&type_key(&TypeInfo::Int)).unwrap();
+        let bucket = pool.buckets.get_mut(&type_key(&TypeInfo::Int { int_width: None, int_signed: None })).unwrap();
         let entry_8 = bucket.iter_mut().find(|e| e.value == json!(8)).unwrap();
         entry_8.behaviors.push(BehaviorObservation {
             function: "bar".into(),
@@ -1709,7 +1709,7 @@ mod tests {
         ));
 
         // Value 8 must still be present (sole witness for sig_b is protected).
-        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int { int_width: None, int_signed: None })];
         assert!(
             bucket.iter().any(|e| e.value == json!(8)),
             "sole witness for sig_b should be protected from diversity eviction"
@@ -1740,7 +1740,7 @@ mod tests {
         // Give value 9 a second behavior for sig_c (with another witness so
         // it's not sole witness and not protected).
         {
-            let bucket = pool.buckets.get_mut(&type_key(&TypeInfo::Int)).unwrap();
+            let bucket = pool.buckets.get_mut(&type_key(&TypeInfo::Int { int_width: None, int_signed: None })).unwrap();
             let entry_9 = bucket.iter_mut().find(|e| e.value == json!(9)).unwrap();
             entry_9.behaviors.push(BehaviorObservation {
                 function: "baz".into(),
@@ -1769,7 +1769,7 @@ mod tests {
         // sig_a cap holds.
         assert_eq!(pool.witness_count(&sig_a), MAX_REPRESENTATIVES_PER_BEHAVIOR);
         // If value 9 was evicted from sig_a, it should still witness sig_c.
-        let bucket = &pool.buckets[&type_key(&TypeInfo::Int)];
+        let bucket = &pool.buckets[&type_key(&TypeInfo::Int { int_width: None, int_signed: None })];
         let evicted_9 = !bucket.iter().any(|e| {
             e.value == json!(9) && e.behaviors.iter().any(|o| BehaviorSig::from(o) == sig_a)
         });
@@ -1815,7 +1815,7 @@ mod tests {
         // MC/DC-mode observation should still be admitted.
         let mcdc_entry = PoolEntry {
             value: serde_json::json!(100),
-            ty: TypeInfo::Int,
+            ty: TypeInfo::Int { int_width: None, int_signed: None },
             behaviors: vec![BehaviorObservation {
                 function: "foo".into(),
                 branch_id: 1,
@@ -1997,7 +1997,7 @@ mod tests {
             for (value, func, branch, severity, mode) in &ops {
                 let entry = PoolEntry {
                     value: value.clone(),
-                    ty: TypeInfo::Int, // all in same bucket
+                    ty: TypeInfo::Int { int_width: None, int_signed: None }, // all in same bucket
                     behaviors: vec![BehaviorObservation {
                         function: func.clone(),
                         branch_id: *branch,

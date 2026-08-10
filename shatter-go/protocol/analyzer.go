@@ -3,9 +3,11 @@ package protocol
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/printer"
 	"go/token"
 	"go/types"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -771,6 +773,24 @@ func stringBasicLiteral(expr ast.Expr) (string, bool) {
 
 // --- Parameter and Return Type Extraction ---
 
+// isASTHTTPRequestPointer reports whether expr is spelled `*http.Request` in
+// source, without consulting the type checker. It mirrors the wrapper's
+// AST-derived GoType fallback so the analyzer's symbolic-body decision
+// (str-e41w) and the wrapper's slot consumption cannot diverge when the type
+// checker has no entry for the expression.
+func isASTHTTPRequestPointer(expr ast.Expr) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "http" && sel.Sel.Name == "Request"
+}
+
 func extractParams(fn *ast.FuncDecl, info *types.Info) []ParamInfo {
 	return extractParamsWithContext(fn, info, nil)
 }
@@ -797,6 +817,25 @@ func extractParamsWithContext(fn *ast.FuncDecl, info *types.Info, fc *fileContex
 					synthSpelling = configuredRuntimeValueSpelling(tv.Type, fc)
 				}
 			}
+		}
+		// str-e41w: a direct *http.Request param is synthesized from a symbolic
+		// request body (a string input) rather than the fixed empty-body runtime
+		// value httptest.NewRequest("GET","/",nil). Report it as a string so the
+		// explorer/solver generate body payloads that drive handlers past their
+		// decode/validation guards; the wrapper recognizes the *http.Request
+		// TypeName (carried below) and wraps the symbolic string via
+		// httptest.NewRequest. Nested *http.Request (struct fields, slice
+		// elements) keep the runtime-value path in goTypeToTypeInfoRec.
+		//
+		// The AST-spelling fallback mirrors the wrapper's AST-derived GoType
+		// (used when the type checker has no entry for the expression):
+		// analyzer and wrapper MUST agree on whether this param consumes a
+		// symbolic input slot, or every subsequent param's input index shifts.
+		if synthSpelling == "" && isASTHTTPRequestPointer(field.Type) {
+			synthSpelling = "*http.Request"
+		}
+		if synthSpelling == "*http.Request" {
+			ti = TypeInfo{Kind: "str", Label: "*http.Request"}
 		}
 		for _, name := range field.Names {
 			param := ParamInfo{
@@ -1263,6 +1302,17 @@ func goTypeToTypeInfoRec(t types.Type, fc *fileContext, visited map[types.Type]b
 			return TypeInfo{Kind: "opaque", Label: label, MediumOpacity: reason}
 		}
 	}
+	// str-pjlc1: named string/int types with a constant set (Go "enums", e.g.
+	// gqlgen string enums) carry a concrete value domain. Emit a union whose
+	// enum_values lets the core generate valid members that pass validating
+	// decoders (UnmarshalJSON/IsValid), instead of only generic "a"/"hello"
+	// candidates that are 100% rejected. Checked after the opaque/complex
+	// heuristics so those higher-confidence classifications win.
+	if named, ok := t.(*types.Named); ok {
+		if values, base, ok := enumValuesFromNamed(named); ok {
+			return TypeInfo{Kind: "union", Variants: []TypeInfo{base}, EnumValues: values}
+		}
+	}
 	switch typ := t.Underlying().(type) {
 	case *types.Basic:
 		return basicTypeInfo(typ)
@@ -1347,6 +1397,81 @@ func complexKindFromNamed(named *types.Named) string {
 	}
 }
 
+// maxEnumValues caps the collected value domain for a single named enum type.
+// Domains larger than this are truncated (with a warn-level note) to bound the
+// wire payload; the generator still probes off-domain values regardless.
+const maxEnumValues = 64
+
+// enumValuesFromNamed collects the constant value set of a named string or
+// integer type (a Go "enum") from its defining package's scope. Returns the
+// JSON scalar domain plus the base TypeInfo ("str"/"int") used for off-domain
+// probe generation. Reports ok=false when the type is not a named string/int,
+// is a builtin with no package scope, or has no constants of its exact type.
+//
+// The defining package's scope is populated even for imported types (the
+// loader runs with NeedDeps|NeedTypes), so gqlgen enums declared in an
+// excluded generated package are still enumerable via the type-checked import.
+// (str-pjlc1)
+func enumValuesFromNamed(named *types.Named) (values []interface{}, base TypeInfo, ok bool) {
+	obj := named.Obj()
+	if obj == nil || obj.Pkg() == nil {
+		return nil, TypeInfo{}, false
+	}
+	basic, isBasic := named.Underlying().(*types.Basic)
+	if !isBasic {
+		return nil, TypeInfo{}, false
+	}
+	info := basic.Info()
+	isString := info&types.IsString != 0
+	isInteger := info&types.IsInteger != 0
+	isUnsigned := info&types.IsUnsigned != 0
+	if !isString && !isInteger {
+		return nil, TypeInfo{}, false
+	}
+
+	scope := obj.Pkg().Scope()
+	for _, name := range scope.Names() { // Names() is sorted → deterministic domain
+		c, isConst := scope.Lookup(name).(*types.Const)
+		if !isConst || !types.Identical(c.Type(), named) {
+			continue
+		}
+		switch {
+		case isString:
+			values = append(values, constant.StringVal(c.Val()))
+		case isUnsigned:
+			// Uint64Val, not Int64Val: unsigned enum constants above
+			// math.MaxInt64 (bitmask-style domains) would otherwise be
+			// silently dropped from the domain (cross-review, str-pjlc1).
+			if uv, exact := constant.Uint64Val(c.Val()); exact {
+				values = append(values, uv)
+			}
+		case isInteger:
+			if iv, exact := constant.Int64Val(c.Val()); exact {
+				values = append(values, iv)
+			}
+		}
+	}
+	if len(values) == 0 {
+		return nil, TypeInfo{}, false
+	}
+	if len(values) > maxEnumValues {
+		slog.Warn("enum value domain truncated",
+			"type", obj.Pkg().Name()+"."+obj.Name(),
+			"found", len(values), "cap", maxEnumValues)
+		values = values[:maxEnumValues]
+	}
+
+	// The base variant drives off-domain probe generation; reuse the standard
+	// basic-kind mapping so unsigned enums probe via go_uint (non-negative,
+	// decodes into uint params) instead of a signed int that fails unmarshal.
+	if isString {
+		base = TypeInfo{Kind: "str"}
+	} else {
+		base = basicTypeInfo(basic)
+	}
+	return values, base, true
+}
+
 func basicTypeInfo(b *types.Basic) TypeInfo {
 	// Check for rune (int32) and byte (uint8) aliases
 	switch b.Kind() {
@@ -1364,7 +1489,7 @@ func basicTypeInfo(b *types.Basic) TypeInfo {
 	// str-cfsa: unsigned integer types (excluding uint8/byte, handled above
 	// as GoByte) map to the go_uint complex kind so generated values stay
 	// non-negative and json.Unmarshal into uint/uint16/uint32/uint64 succeeds.
-	if k := b.Kind(); k == types.Uint || k == types.Uint16 || k == types.Uint32 || k == types.Uint64 {
+	if k := b.Kind(); k == types.Uint || k == types.Uint16 || k == types.Uint32 || k == types.Uint64 || k == types.Uintptr {
 		return TypeInfo{Kind: "complex", ComplexKind: "go_uint"}
 	}
 	switch {

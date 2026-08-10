@@ -57,6 +57,7 @@ All complex type capabilities are **optional**. Frontends advertise which types 
 | `buffer` | ✅ |
 | `error` | ✅ |
 | `symbol` | ✅ |
+| `closure` | ✅ |
 
 ### Go
 
@@ -153,6 +154,8 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 - an id appears in this document but not in `parity-matrix.yaml`, or vice versa;
 - a `resolved` entry remains in either file more than 30 days past its `resolved_at` date.
 
+While a `resolved` entry sits inside its 30-day grace window the validator only emits a warning ("schedule removal within N day(s)"). Because that warning is otherwise seen only by whoever happens to run `task parity` locally, the hard failure can first surface as a red gate on an unrelated parity-touching branch. The **Parity Expiry Watch** scheduled workflow (`.github/workflows/parity-expiry.yml`) closes that governance gap (str-5dx0): it runs `scripts/validate-parity.py --warn-as-error-within-days 14` weekly, escalating any resolved entry within 14 days of its removal deadline to a failure. The red *scheduled* run (and its failure notification) is the owner-actionable signal to remove the entry before the deadline blocks someone else's change. Run the same check locally at any time with `python3 scripts/validate-parity.py --warn-as-error-within-days N`.
+
 ### `ts-rust-execute-plan-not-implemented`
 
 **Description:** The `Command::Execute.plan` field carries an optional `InvocationPlan` that Go consumes for method-receiver invocation. TypeScript and Rust accept the field on the wire but do not consume it; Execute behavior on those frontends is unchanged. Method targets observe a second axis: Go yields `runtime_failed`/`completed` based on plan presence; TS/Rust always yield `unsupported`/`method_not_supported`.
@@ -190,6 +193,46 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 **Resolution condition:** Go continues to emit the supported stdlib call shapes and this matrix names the lower-level surfaces that the overlay AST mechanism does not attempt to capture.
 
 **Resolution:** Keep Go capture source-level and deterministic. Do not add ptrace, eBPF, LD_PRELOAD, or platform-specific syscall interception unless a future issue explicitly introduces an OS-observation backend with a portability and sandboxing design.
+
+---
+
+### `go-symbolic-http-request-body`
+
+**Description:** A direct `*http.Request` parameter in the Go frontend is analyzed as `{kind: "str", label: "*http.Request"}` and consumes one string input slot: the generated wrapper builds the request via `httptest.NewRequest("POST", "/", strings.NewReader(<body>))` with stub `x-api-key`, `Authorization: Bearer`, `x-goog-api-key`, and `Content-Type: application/json` headers, so the explorer/solver drive symbolic JSON bodies into HTTP handlers instead of a constant empty-body runtime value (str-e41w). The Go planner also seeds schema-agnostic JSON bodies ordered after project config hints. Nested `*http.Request` occurrences keep the fixed runtime-value expression. TypeScript and Rust have no equivalent native-request synthesis.
+
+**Affected frontends:** typescript, rust
+
+**Affected commands:** analyze, execute
+
+**Status:** tracked
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-e41w
+
+**Resolution condition:** TS/Rust gain an equivalent symbolic-request-body synthesis for their native HTTP request types (e.g. express `Request`, `http::Request`), reporting the body param as a symbolic string in analyze output, or this stays a documented Go-only capability alongside `adapter_http_nethttp`.
+
+**Resolution:** Mirror the design when TS/Rust handler exploration becomes a priority: analyzer reports the request param as a symbolic string body; the execution shim constructs the framework request around it; planner seeds stay schema-agnostic with config hints taking precedence.
+
+---
+
+### `ts-opaque-param-stub-registry`
+
+**Description:** The TypeScript frontend carries a typed opaque-param stub registry (str-syj9b) — the TS analogue of Go's `runtimeval` registry / `go_runtime_values` config. A parameter whose declared type matches a registry entry (built-in `@playwright/test:Page` / `:Locator`, or a project `ts_runtime_values` entry in `.shatter/config.yaml`) is analyzed as `{kind: "object", fields: []}` instead of `{kind: "opaque"}`, so the Rust core no longer skips the function as unexecutable; at execute time the frontend overlays the generated argument with a structurally-valid recording proxy (per-type override map rotates the return values of branch-gating calls such as `locator().count()`). Entirely frontend-local: no wire schema change, no new protocol field — stub bindings travel analyzer→executor on the internal worker channel only. The only observable analyze-output change is for registry-covered handle params (object instead of opaque); no shared conformance fixture exercises such a type. Go has `runtimeval`; Rust has native-replay generators; neither reads `ts_runtime_values`.
+
+**Affected frontends:** go, rust
+
+**Affected commands:** analyze, execute
+
+**Status:** accepted
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-syj9b
+
+**Resolution condition:** Permanent by design — the config key is language-neutral (`type key + language-specific factory payload`) so Go/Rust/other frontends could adopt the same `*_runtime_values` shape, but each frontend supplies its own per-language stub/expression mechanism. No cross-frontend wire contract is implied.
+
+**Resolution:** If another frontend needs handle-param stubbing, mirror this design in that frontend: analyzer stops emitting bare opaque for registry-covered types and the execution shim supplies a structurally-valid value, keeping the config schema language-neutral.
 
 ---
 
@@ -233,23 +276,83 @@ Every entry below mirrors a record in `parity-matrix.yaml` `allowed_divergences:
 
 ---
 
-### `error-code-preflight-failed-typescript-only`
+### `adapter-owned-instrumentation-coverage-partial`
 
-**Description:** The `preflight_failed` error code is declared in all three frontend bindings for wire compatibility, but only TypeScript currently runs an environment preflight that emits it. Go and Rust accept and round-trip the code on the wire but never produce it.
+**Description:** Adapter-owned Execute responses (`invocation_model = adapter`) originally returned empty `branch_path` / `lines_executed` / `path_constraints` / `calls_to_external` by construction, so targets invoked through invocation-model adapters contributed zero line coverage (epic str-j49xg). TypeScript now closes this for its only invocation-owned adapter, the react-hook adapter (str-26fhi): `executeAdapterOwned` threads the instrumented source through a shared instrumentation sandbox (`buildInstrumentedSandbox` / `loadInstrumentedModuleInSandbox`) that the adapter mounts/rerenders via `ctx.loadInstrumentedExports`, so adapter-owned coverage now matches direct calls. TS specifics kept honest: `branch_path` / `path_constraints` are scoped to the initial props-driven render (via `ctx.markInitialRenderComplete`) so state-driven rerender branch flips don't emit contradictory `X ∧ ¬X` constraints (UNSAT for the core's negation search); `path_constraints` is the per-branch constraint of `branch_path` (1:1). `lines_executed` / `scope_events` / `calls_to_external` are the full cross-render union. `loop_body_states` is intentionally **not** emitted on the adapter path (direct-path-only). The TS browser-globals adapter is a `SandboxProvider`, not an `InvocationHook`, so its targets stay `direct` and have always reported real coverage. Go (net/http, gin) and Rust (axum) adapter-owned launchers still return empty instrumentation fields.
 
 **Affected frontends:** go, rust
 
-**Affected commands:** analyze, instrument, prepare, execute, setup
+**Affected commands:** execute
 
 **Status:** tracked
 
 **Owner:** Ketan Gangatirkar
 
-**Tracking issue:** str-1hlk.18
+**Tracking issue:** str-j49xg
 
-**Resolution condition:** Go and Rust frontends emit `preflight_failed` for equivalent missing-dependency or missing-toolchain conditions (missing `go.sum` / module cache for Go; missing toolchain or target dir for Rust).
+**Resolution condition:** Go and Rust adapter-owned executions propagate `branch_path` / `lines_executed` from their instrumented launcher/overlay builds into `ExecuteResult`, matching the TypeScript react-hook adapter.
 
-**Resolution:** Add an environment preflight in the Go and Rust frontends that emits `preflight_failed` for the equivalent conditions.
+**Resolution:** Implement instrumentation propagation in the Go adapter launchers (str-1qd5i) and audit/fix the Rust axum adapter (str-3eki5).
+
+---
+
+### `rust-execute-response-fields-partial`
+
+**Description:** The Rust frontend `Response` flattens the execute result and carries `return_value`, `thrown_error`, `branch_path`, `lines_executed`, `calls_to_external`, `path_constraints`, `side_effects`, `loop_body_states`, `performance`, and `outcome`, but omits five `ExecuteResult` fields the core defines: `scope_events` (scope-annotated trace for scope-aware path collapsing), `capture_truncation` (`TruncationInfo` for captured side effects), `discovered_dependencies` (deps observed at execution time that static analysis missed), `connection_failures` (drives the core's LiveFirst fallback), and `runtime_crypto_boundaries` (runtime-intercepted encrypt/decrypt APIs for boundary splitting). Genuine capability gaps, not wire bugs: the Rust execute path never produces these signals, and the core deserializes each via `#[serde(default)]` / omit-when-empty, so the absence is tolerated. TS/Go emit the subset each supports.
+
+**Affected frontends:** rust
+
+**Affected commands:** execute
+
+**Status:** tracked
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-924ca
+
+**Resolution condition:** The Rust execute/instrument path produces and emits `scope_events`, `capture_truncation`, `discovered_dependencies`, `connection_failures`, and `runtime_crypto_boundaries` where the language allows, matching TS/Go capture; `e2e_concolic_rust` covers at least `scope_events`.
+
+**Resolution:** Implement per-field capture in the Rust frontend (str-924ca). Remove this entry once the Rust frontend emits the fields it can support and this matrix names any that stay permanently unsupported.
+
+---
+
+### `rust-protocol-enum-vocabulary-narrower`
+
+**Description:** Three Rust frontend protocol enums are narrower than their `shatter-core` counterparts, so the Rust analyzer can never emit the missing variants: `ConstValue` lacks `Undefined` and `Complex` (core `sym_expr.rs`); `BranchType` lacks `Select` (core `protocol.rs`); `TypeInfo::Opaque` carries only `label`, omitting the optional `static_opacity` (`StaticOpacityReason`) discriminator. Emit-only limitations — the Rust frontend produces these types in its analyze output and never deserializes them from the core, so the narrower vocabulary is a capability gap, not a wire-compat bug. The related `medium_opacity` Opaque field is tracked separately as `medium-opacity-analyze-partial`.
+
+**Affected frontends:** rust
+
+**Affected commands:** analyze
+
+**Status:** tracked
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** str-dcelm
+
+**Resolution condition:** Rust `ConstValue`/`BranchType`/`TypeInfo::Opaque` are widened to match the core vocabularies and the Rust analyzer emits the variants where applicable (select branches, static-opacity reasons, undefined/complex constants), with round-trip coverage.
+
+**Resolution:** Widen the Rust enums and add emission in the Rust analyzer (str-dcelm). Remove this entry once the vocabularies match.
+
+---
+
+### `rust-error-details-not-emitted`
+
+**Description:** The core Error response variant (`ResponseResult::Error`) carries an optional `details` field for structured enrichment (stack trace, source location). The Rust frontend `Response` emits only `code` and `message` on error responses and never populates `details`. The field is optional on the core wire contract (`Option<serde_json::Value>`), so absence is tolerated; an accepted enrichment gap, not a wire bug. TS/Go likewise treat `details` as best-effort.
+
+**Affected frontends:** rust
+
+**Affected commands:** analyze, instrument, execute, setup, generate
+
+**Status:** accepted
+
+**Owner:** Ketan Gangatirkar
+
+**Tracking issue:** none (accepted enrichment gap)
+
+**Resolution condition:** Accepted while the Rust frontend surfaces errors as code + message only. If it gains structured error enrichment, it should populate `details` and this entry should be removed.
+
+**Resolution:** Intentional divergence for the current Rust frontend. Error responses remain code + message; structured `details` is an optional enrichment not produced today.
 
 ---
 
@@ -267,4 +370,4 @@ When resolving a divergence:
 1. Set `status: resolved` and add `resolved_at: YYYY-MM-DD` in `parity-matrix.yaml`. Mirror in this document.
 2. Remove the matching `known_drifts` entry from `conformance_cases.yaml`.
 3. Verify conformance harness passes without warnings.
-4. Delete both entries within 30 days of `resolved_at` — the validator fails after the grace window expires.
+4. Delete both entries within 30 days of `resolved_at` — the validator fails after the grace window expires. The weekly **Parity Expiry Watch** workflow (`.github/workflows/parity-expiry.yml`) turns red ~2 weeks before that deadline so the owner is notified in advance rather than discovering the failure on an unrelated branch.

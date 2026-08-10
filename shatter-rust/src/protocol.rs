@@ -55,7 +55,14 @@ pub enum ComplexKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeInfo {
-    Int,
+    Int {
+        /// Bit width of the integer type (8/16/32/64/128). `None` = unspecified.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        int_width: Option<u8>,
+        /// Whether the integer type is signed. `None` = unspecified.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        int_signed: Option<bool>,
+    },
     Float,
     Str,
     Bool,
@@ -67,6 +74,12 @@ pub enum TypeInfo {
     },
     Union {
         variants: Vec<TypeInfo>,
+        /// Optional concrete value domain for named enum-like types (str-pjlc1).
+        /// Additive wire field. The Rust analyzer populates it for fieldless
+        /// enums defined in the analyzed file (str-2nfoe); see
+        /// `shatter-rust/CLAUDE.md`'s Enum Value-Domain Parity Contract.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enum_values: Vec<serde_json::Value>,
     },
     Nullable {
         inner: Box<TypeInfo>,
@@ -570,6 +583,14 @@ pub struct Request {
     /// `"bin_only"` (default) uses the standalone/crate-backed dispatch harness.
     /// `"crate_bridge"` injects a feature-gated wrapper module into the library crate
     /// and routes execution through it, enabling calls to crate-private functions.
+    ///
+    /// Consumed by this frontend (see `handler.rs`/`executor.rs`) as an explicit
+    /// override, but no producer currently sets it on the wire: the core never
+    /// emits `harness_mode`, and the frontend auto-selects `crate_bridge` as a
+    /// fallback when the default harness reports the target non-executable
+    /// (`executor.rs`, `NonExecutable if harness_mode.is_none()`). The field is
+    /// therefore a forward-looking override retained for when a producer needs
+    /// to force a specific harness; it is not dead. (str-nryo audit.)
     #[serde(default)]
     pub harness_mode: Option<String>,
     /// Stack of active setup contexts from enclosing Setup commands, if any.
@@ -814,23 +835,89 @@ mod tests {
 
     #[test]
     fn existing_typeinfo_variants_still_round_trip() {
-        round_trip(&TypeInfo::Int);
+        round_trip(&TypeInfo::Int {
+            int_width: None,
+            int_signed: None,
+        });
         round_trip(&TypeInfo::Float);
         round_trip(&TypeInfo::Str);
         round_trip(&TypeInfo::Bool);
         round_trip(&TypeInfo::Unknown);
         round_trip(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Int),
+            element: Box::new(TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            }),
         });
         round_trip(&TypeInfo::Nullable {
             inner: Box::new(TypeInfo::Str),
         });
         round_trip(&TypeInfo::Object {
-            fields: vec![("x".into(), TypeInfo::Int)],
+            fields: vec![(
+                "x".into(),
+                TypeInfo::Int {
+                    int_width: None,
+                    int_signed: None,
+                },
+            )],
         });
         round_trip(&TypeInfo::Union {
-            variants: vec![TypeInfo::Str, TypeInfo::Int],
+            variants: vec![
+                TypeInfo::Str,
+                TypeInfo::Int {
+                    int_width: None,
+                    int_signed: None,
+                },
+            ],
+            enum_values: Vec::new(),
         });
+        // str-pjlc1: a union carrying a concrete enum value domain must survive
+        // the wire round-trip with enum_values intact.
+        round_trip(&TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: vec![
+                serde_json::json!("RED"),
+                serde_json::json!("GREEN"),
+                serde_json::json!("BLUE"),
+            ],
+        });
+    }
+
+    #[test]
+    fn sized_int_round_trips() {
+        round_trip(&TypeInfo::Int {
+            int_width: Some(8),
+            int_signed: Some(false),
+        });
+        round_trip(&TypeInfo::Int {
+            int_width: Some(32),
+            int_signed: Some(true),
+        });
+    }
+
+    #[test]
+    fn bare_int_deserializes_to_unspecified() {
+        // Backward-compat: the bare wire form `{"kind":"int"}` (emitted by
+        // TS/Go frontends and all existing fixtures) must still deserialize.
+        let parsed: TypeInfo = serde_json::from_str(r#"{"kind":"int"}"#).expect("deserialize");
+        assert_eq!(
+            parsed,
+            TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            }
+        );
+    }
+
+    #[test]
+    fn sized_int_wire_form_carries_fields() {
+        let json = serde_json::to_string(&TypeInfo::Int {
+            int_width: Some(8),
+            int_signed: Some(false),
+        })
+        .expect("serialize");
+        assert!(json.contains("\"int_width\":8"), "json: {json}");
+        assert!(json.contains("\"int_signed\":false"), "json: {json}");
     }
 
     #[test]

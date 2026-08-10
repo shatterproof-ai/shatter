@@ -3,6 +3,7 @@
     "analyze",
     "complex_type:big_int",
     "complex_type:buffer",
+    "complex_type:closure",
     "complex_type:date",
     "complex_type:date_time",
     "complex_type:duration",

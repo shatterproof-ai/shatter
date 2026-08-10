@@ -1,7 +1,7 @@
 //! str-m0ta: Oracle unit tests exercising the slot-map machinery with
 //! MockSeedOracle. All tests use the mock — no real LLM API key required.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -59,6 +59,46 @@ impl SeedOracle for ScriptedOracle {
         let mut g = self.responses.lock().unwrap();
         g.pop_front()
             .unwrap_or_else(|| Err(anyhow::anyhow!("no more canned responses")))
+    }
+}
+
+/// Oracle that returns a response keyed by the condition's predicate.
+///
+/// Unlike `ScriptedOracle`, which hands out responses in FIFO order to
+/// whichever async query task reaches it first, this oracle deterministically
+/// maps each condition (by predicate text) to its own response. This makes
+/// tests that fire queries for multiple independent slots insensitive to the
+/// order in which tokio schedules those tasks — the arrival race can reorder
+/// which task hits the oracle first, but each still gets the response for its
+/// own condition.
+struct KeyedOracle {
+    responses: Mutex<HashMap<String, anyhow::Result<OracleResponse>>>,
+}
+
+impl KeyedOracle {
+    fn new(responses: Vec<(&str, anyhow::Result<OracleResponse>)>) -> Self {
+        Self {
+            responses: Mutex::new(
+                responses
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl SeedOracle for KeyedOracle {
+    async fn query(&self, ctx: OracleContext) -> anyhow::Result<OracleResponse> {
+        let mut g = self.responses.lock().unwrap();
+        match g.remove(&ctx.condition.predicate) {
+            Some(r) => r,
+            None => Err(anyhow::anyhow!(
+                "no canned response for predicate {:?}",
+                ctx.condition.predicate
+            )),
+        }
     }
 }
 
@@ -314,15 +354,25 @@ fn t06_concurrency_cap_blocks_when_permits_exhausted() {
 
 #[test]
 fn t07_multiple_conditions_independent_slots() {
-    let oracle = Arc::new(ScriptedOracle::new(vec![
-        Ok(OracleResponse {
-            candidates: vec![vec![json!("a")]],
-            tokens_used: 10,
-        }),
-        Ok(OracleResponse {
-            candidates: vec![vec![json!("b")]],
-            tokens_used: 20,
-        }),
+    // Each condition maps to its own response by predicate text, so the
+    // assertions hold regardless of the order in which tokio schedules the two
+    // independent query tasks. A FIFO oracle would let the second task dequeue
+    // the first response under scheduler pressure (see str-5ts6k).
+    let oracle = Arc::new(KeyedOracle::new(vec![
+        (
+            "x > 0",
+            Ok(OracleResponse {
+                candidates: vec![vec![json!("a")]],
+                tokens_used: 10,
+            }),
+        ),
+        (
+            "y < 5",
+            Ok(OracleResponse {
+                candidates: vec![vec![json!("b")]],
+                tokens_used: 20,
+            }),
+        ),
     ]));
     let rt = make_runtime();
     let mut map = OracleSlotMap::new(oracle, LlmConfig::default(), rt);
@@ -332,7 +382,8 @@ fn t07_multiple_conditions_independent_slots() {
     map.poll(200, make_ctx("y < 5"));
     assert_eq!(map.stats().queries_fired, 2);
 
-    // Both should eventually return their respective results.
+    // Each independent slot resolves to the response for its own condition,
+    // regardless of which query task reached the oracle first.
     let v1 = poll_until_ready(&mut map, 100, make_ctx("x > 0"), Duration::from_secs(5));
     let v2 = poll_until_ready(&mut map, 200, make_ctx("y < 5"), Duration::from_secs(5));
     assert_eq!(v1, Some(vec![json!("a")]));

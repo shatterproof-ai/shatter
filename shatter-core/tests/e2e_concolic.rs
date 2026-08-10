@@ -15,7 +15,7 @@ use shatter_core::genetic_explorer;
 use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities};
 use shatter_core::protocol::{
     Command as ProtoCommand, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile,
-    ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
+    InvocationModel, ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
 };
 use shatter_core::setup_manager::SetupManager;
 
@@ -137,6 +137,222 @@ fn return_value_set(result: &ExploreResult) -> HashSet<String> {
         .collect()
 }
 
+/// Array-typed parameters must materialize as real, iterable arrays through the
+/// full pipeline (str-ya5dx). `computeStats(items: number[])` throws on an empty
+/// array, iterates with `for..of`, and throws again on a negative element. If the
+/// TS input generator filled the array param as `{}` (the pickpackit bug class),
+/// `items.length` would read `undefined` / `for..of` would throw "items is not
+/// iterable" on every input and no interior branch could be reached. Discovering
+/// both the empty-array path and the negative-value path proves empty AND
+/// populated arrays flow end-to-end: analyze (array TypeInfo) → generate → execute
+/// (real iteration) → solve.
+#[tokio::test]
+async fn concolic_computestats_materializes_iterable_array_param() {
+    let file = examples_dir().join("04-errors.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "computeStats").await;
+    assert_eq!(analysis.params.len(), 1, "computeStats takes 1 param");
+    // The param must be recognized as an array, not a bare object/unknown —
+    // otherwise the generator emits `{}` and the body cannot iterate.
+    assert!(
+        matches!(analysis.params[0].typ, TypeInfo::Array { .. }),
+        "computeStats param must be an array TypeInfo; got {:?}",
+        analysis.params[0].typ
+    );
+
+    instrument_function(&mut frontend, &file_str, "computeStats").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(25),
+        max_executions: Some(150),
+        plateau_threshold: 20,
+        ..Default::default()
+    };
+
+    // Seed with a populated array and an empty array so both the iteration path
+    // and the empty-array guard are exercised; the solver explores from there.
+    let seed_inputs = vec![
+        vec![serde_json::json!([5, 10, 20])],
+        vec![serde_json::json!([])],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "computeStats",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+
+    // The empty-array guard must be reachable (proves `items.length === 0`
+    // evaluated on a real array).
+    let has_empty = return_values
+        .iter()
+        .any(|v| v.contains("empty array"));
+    assert!(
+        has_empty,
+        "should discover the 'empty array' path; found: {return_values:?}"
+    );
+
+    // A non-throwing statistics result must be reachable (proves a populated
+    // array iterated cleanly through `for..of` without an "is not iterable"
+    // TypeError). Successful returns are JSON objects carrying `avg`. This is the
+    // core assertion for str-ya5dx: an array param fills as a real, iterable
+    // array whose elements the body can read — not the `{}` shape that made
+    // `for..of` throw on every input in the pickpackit corpus.
+    let has_stats = return_values.iter().any(|v| v.contains("\"avg\""));
+    assert!(
+        has_stats,
+        "should compute stats over a populated iterable array; found: {return_values:?}"
+    );
+
+    // NOTE: we deliberately do NOT assert the absence of "is not iterable" here.
+    // The TS frontend now reports the param as `array` (asserted above) and the
+    // generator seeds real arrays, but the concolic solver's input
+    // reconstruction can still occasionally emit a non-array value for an
+    // unconstrained array param — that residual lives in shatter-core input
+    // generation / solving, not the TS frontend. Tracking it belongs to the core
+    // path, so this frontend-scoped e2e only locks that iterable arrays DO flow
+    // end-to-end (has_stats + the empty/negative interior paths above).
+
+    assert!(
+        result.unique_paths >= 2,
+        "should have at least 2 unique paths; got {}",
+        result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// A function-typed param must materialize as a real, invocable callback
+/// through the full pipeline (str-ya5dx), not the previous `unknown` shape-mock
+/// whose methods were non-callable. `invokeCallback(cb: (n: number) => number)`
+/// calls `cb(7)` and branches on the result, so each `closure` stub variant the
+/// core can generate (`identity`/`constant`/`thrower` — see
+/// `input_gen.rs::generate_closure`) drives target code down a distinct path:
+/// - `identity` returns its argument -> `cb(7) === 7` -> the "identity" arm
+/// - `constant` returns a fixed value -> the "other" arm
+/// - `thrower` throws on invocation -> the catch block's "threw" arm
+///
+/// Exercising all three end-to-end proves the round trip that unit tests
+/// cannot: core emits the `{"__complex_type":"closure","variant":...}`
+/// envelope -> JSON over stdio to the real TS frontend subprocess ->
+/// `reconstructValue` builds a callable recording stub -> target code invokes
+/// it and observes the real return value / thrown error. Seeded directly
+/// (rather than relying on the solver to pick a variant) so the test is
+/// deterministic; `closure` is otherwise unconstrained by any branch predicate
+/// Z3 could negate.
+const TS_CLOSURE_FIXTURE: &str = r#"
+export function invokeCallback(cb: (n: number) => number): string {
+  let result: number;
+  try {
+    result = cb(7);
+  } catch (e) {
+    return "closure threw";
+  }
+  if (result === 7) {
+    return "closure identity";
+  }
+  return "closure other: " + result;
+}
+"#;
+
+#[tokio::test]
+async fn concolic_invokecallback_materializes_callable_closure_param() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("invoke-callback.ts");
+    std::fs::write(&file, TS_CLOSURE_FIXTURE).expect("write closure fixture");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "invokeCallback").await;
+    assert_eq!(analysis.params.len(), 1, "invokeCallback takes 1 param");
+    // The param must be recognized as a closure complex type — otherwise the
+    // generator falls back to a non-callable primitive and `cb(7)` throws on
+    // every input before any interior branch is reachable.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Complex { kind, .. } => {
+            assert_eq!(
+                *kind,
+                shatter_core::types::ComplexKind::Closure,
+                "invokeCallback param must be complex_kind Closure; got {kind:?}"
+            );
+        }
+        other => panic!("invokeCallback param should be Complex/Closure; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "invokeCallback").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(10),
+        max_executions: Some(30),
+        plateau_threshold: 5,
+        ..Default::default()
+    };
+
+    // Seed all three canned variants directly so the test is deterministic
+    // rather than depending on the solver to pick each one by chance.
+    let seed_inputs = vec![
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "identity"})],
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "constant"})],
+        vec![serde_json::json!({"__complex_type": "closure", "variant": "thrower"})],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "invokeCallback",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let mut return_values: HashSet<String> = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            return_values.insert(v.to_string());
+        }
+    }
+
+    assert!(
+        return_values
+            .iter()
+            .any(|v| v.contains("closure identity")),
+        "the identity-variant stub must return its argument, reaching the identity arm; found: {return_values:?}"
+    );
+    assert!(
+        return_values.iter().any(|v| v.contains("closure other")),
+        "the constant-variant stub must return a fixed non-7 value, reaching the other arm; found: {return_values:?}"
+    );
+    assert!(
+        return_values.iter().any(|v| v.contains("closure threw")),
+        "the thrower-variant stub must throw on invocation, reaching the catch arm; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// Test that concolic exploration of classifyNumber discovers all 4 branches.
 ///
 /// classifyNumber(n: number) has 4 paths:
@@ -226,6 +442,144 @@ async fn concolic_classifynumber_discovers_all_branches() {
         result.unique_paths >= 4,
         "should have at least 4 unique paths; got {}",
         result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// Regression for str-4o07: the concolic explore path must (a) carry concrete
+/// call inputs into every rendered path execution and (b) report the same
+/// `total_lines` denominator as the random explorer on the same function.
+///
+/// Before the fix, the concolic path reconciled coverage against the raw source
+/// span (`end_line - start_line + 1`) instead of the frontend's instrumentable
+/// line count, so a function the random explorer reported at 100% (7/7) showed
+/// up at 58% (7/12) under `--concolic`. It also dropped the input witnesses,
+/// rendering every Call→Outcome row with an empty argument list.
+#[tokio::test]
+async fn concolic_matches_random_line_totals_and_keeps_inputs() {
+    use shatter_core::explorer::{LoopBuckets, ObservationOutput};
+    use shatter_core::observe::{ObserveConfig, observe_function, reconcile_observation_coverage};
+
+    let file = examples_dir().join("01-arithmetic.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyNumber").await;
+
+    // Capture the frontend's instrumentable line count — the denominator the
+    // random explorer uses and the value the concolic path previously ignored.
+    let instrument_resp = frontend
+        .send(ProtoCommand::Instrument {
+            file: file_str.clone(),
+            function: "classifyNumber".to_string(),
+            mocks: vec![],
+            project_root: None,
+            execution_profile: None,
+        })
+        .await
+        .expect("instrument command failed");
+    let instrumentable_line_count = match instrument_resp.result {
+        ResponseResult::Instrument {
+            instrumented,
+            instrumentable_line_count,
+            ..
+        } => {
+            assert!(instrumented, "instrumentation returned false");
+            instrumentable_line_count
+        }
+        other => panic!("expected Instrument response, got: {other:?}"),
+    };
+
+    // --- Concolic path: mirror pipeline_orchestrator::run_concolic_observe. ---
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(100),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+    let seed_inputs = vec![
+        vec![serde_json::json!(5)],
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(2)],
+    ];
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "classifyNumber",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let mut concolic_obs: ObservationOutput = result.into();
+    reconcile_observation_coverage(
+        &mut concolic_obs,
+        analysis.start_line,
+        analysis.end_line,
+        instrumentable_line_count,
+    );
+
+    // --- Random path: observe_function instruments and reconciles internally. ---
+    let observe_config = ObserveConfig {
+        file: file_str.clone(),
+        mocks: vec![],
+        setup_file: None,
+        setup_level: SetupLevel::Function,
+        capabilities: FrontendCapabilities {
+            commands: HashSet::new(),
+            complex_types: HashSet::new(),
+        },
+        project_root: None,
+        execution_profile: None,
+        loop_buckets: LoopBuckets::none(),
+        timeout: None,
+        skip_instrument: false,
+        capture_side_effects: false,
+    };
+    // Inputs that exercise all four branches so coverage matches the concolic run.
+    let random_inputs = vec![
+        vec![serde_json::json!(0)],
+        vec![serde_json::json!(5)],
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(2)],
+    ];
+    let random_obs = observe_function(&mut frontend, &analysis, random_inputs, &observe_config)
+        .await
+        .expect("random observation failed");
+
+    // (a) Line totals must agree across the two explorer paths.
+    assert_eq!(
+        concolic_obs.total_lines, random_obs.total_lines,
+        "concolic total_lines ({}) must match random total_lines ({})",
+        concolic_obs.total_lines, random_obs.total_lines,
+    );
+
+    // (b) Every rendered path execution must carry its concrete call inputs.
+    assert!(
+        !concolic_obs.new_path_executions.is_empty(),
+        "concolic run produced no path executions"
+    );
+    for exec in &concolic_obs.new_path_executions {
+        assert!(
+            !exec.inputs.is_empty(),
+            "concolic path execution dropped its call inputs: {exec:?}"
+        );
+    }
+
+    // classifyNumber has four semantic paths; all four should be rendered.
+    assert!(
+        concolic_obs.new_path_executions.len() >= 4,
+        "expected >= 4 rendered paths, got {}",
+        concolic_obs.new_path_executions.len()
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");
@@ -565,6 +919,146 @@ async fn concolic_validateemail_with_literal_seeds() {
         "str-omrx: expected >=3 unique paths with boundary + literal seeds; got {}. \
          return_values: {return_values:?}",
         result.unique_paths
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Adapter-owned instrumentation coverage E2E (str-26fhi)
+// ---------------------------------------------------------------------------
+
+/// A self-contained React component whose rendered branch is selected by its
+/// props. It calls `useMemo`, so the TS analyzer recognizes it as react-hook
+/// adapter-owned. Kept inline (not in the shared examples repo) so the
+/// known-answer coverage assertions below can't drift.
+const REACT_GREETING_FIXTURE: &str = r#"import { useMemo } from "react";
+
+interface User {
+  name: string;
+  role: string;
+}
+
+export function UserGreeting(props: { user: User }) {
+  const displayName = useMemo(
+    () => (props.user.name ? props.user.name : "there"),
+    [props.user.name],
+  );
+
+  if (props.user.role === "admin") {
+    return { kind: "admin", label: "Admin", greeting: `Welcome back, ${displayName}!` };
+  }
+
+  if (props.user.role === "member") {
+    return { kind: "member", greeting: `Hello, ${displayName}!` };
+  }
+
+  return { kind: "guest", greeting: `Hi ${displayName}, please sign up.` };
+}
+"#;
+
+/// Send an adapter-owned Execute (execution_profile None → the frontend bridges
+/// the react-hook invocation hooks from the cached analysis) and return the
+/// ExecuteResult.
+async fn execute_adapter_owned(
+    frontend: &mut Frontend,
+    function: &str,
+    inputs: Vec<serde_json::Value>,
+) -> shatter_core::protocol::ExecuteResult {
+    let response = frontend
+        .send(ProtoCommand::Execute {
+            function: function.to_string(),
+            inputs,
+            mocks: vec![],
+            setup_context: None,
+            capture: true,
+            prepare_id: None,
+            execution_profile: None,
+            plan: None,
+        })
+        .await
+        .expect("adapter-owned execute transport failed");
+
+    match response.result {
+        ResponseResult::Execute(result) => *result,
+        ResponseResult::Error { code, message, .. } => {
+            panic!("adapter-owned execute returned error ({code:?}): {message}")
+        }
+        other => panic!("expected Execute response, got: {other:?}"),
+    }
+}
+
+/// str-26fhi: adapter-owned React execution reports real coverage.
+///
+/// Before str-26fhi, `executeAdapterOwned` returned empty
+/// `lines_executed` / `branch_path` / `path_constraints` by construction, so
+/// every React target executed through the react-hook adapter contributed zero
+/// line coverage. This asserts the adapter now threads the SAME instrumentation
+/// capture that direct calls use: coverage is non-empty and consistent with the
+/// prop-selected branch.
+#[tokio::test]
+async fn adapter_owned_react_execution_reports_coverage() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("react-greeting.tsx");
+    std::fs::write(&file, REACT_GREETING_FIXTURE).expect("write react fixture");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    // Analyze caches the react-hook invocation model for the target.
+    let analysis = analyze_function(&mut frontend, &file_str, "UserGreeting").await;
+    assert!(
+        matches!(analysis.invocation_model, InvocationModel::Adapter { .. }),
+        "UserGreeting should be react-hook adapter-owned; got {:?}",
+        analysis.invocation_model
+    );
+
+    instrument_function(&mut frontend, &file_str, "UserGreeting").await;
+
+    // Admin props → the first branch renders.
+    let admin = execute_adapter_owned(
+        &mut frontend,
+        "UserGreeting",
+        vec![serde_json::json!({ "user": { "name": "Ada", "role": "admin" } })],
+    )
+    .await;
+
+    assert!(
+        admin.thrown_error.is_none(),
+        "admin execute errored: {:?}",
+        admin.thrown_error
+    );
+    assert!(
+        !admin.lines_executed.is_empty(),
+        "adapter-owned lines_executed must be non-empty (str-26fhi)"
+    );
+    assert!(
+        !admin.branch_path.is_empty(),
+        "adapter-owned branch_path must be non-empty (str-26fhi)"
+    );
+    assert_eq!(
+        admin.path_constraints.len(),
+        admin.branch_path.len(),
+        "path_constraints must mirror branch_path length, as on the direct path"
+    );
+
+    // Guest props → a different branch renders, so a different line set runs.
+    let guest = execute_adapter_owned(
+        &mut frontend,
+        "UserGreeting",
+        vec![serde_json::json!({ "user": { "name": "", "role": "guest" } })],
+    )
+    .await;
+    assert!(
+        !guest.lines_executed.is_empty(),
+        "adapter-owned lines_executed must be non-empty for the guest branch"
+    );
+
+    let admin_lines: HashSet<u32> = admin.lines_executed.iter().copied().collect();
+    let guest_lines: HashSet<u32> = guest.lines_executed.iter().copied().collect();
+    assert_ne!(
+        admin_lines, guest_lines,
+        "different props should drive different line coverage; admin={admin_lines:?} guest={guest_lines:?}"
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");
@@ -1668,6 +2162,17 @@ async fn mcdc_compound_or_discovers_all_branches() {
 /// build into a per-process tmpdir keyed on a stable name so repeat
 /// invocations within one `cargo test` invocation reuse the binary.
 fn ensure_go_frontend_binary() -> PathBuf {
+    if let Ok(prebuilt) = env::var("SHATTER_GO_FRONTEND_BIN") {
+        if !prebuilt.is_empty() {
+            let prebuilt = PathBuf::from(prebuilt);
+            assert!(
+                prebuilt.exists(),
+                "SHATTER_GO_FRONTEND_BIN set but missing: {}",
+                prebuilt.display()
+            );
+            return prebuilt;
+        }
+    }
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let go_dir = manifest_dir.join("..").join("shatter-go");
     assert!(
@@ -2142,6 +2647,7 @@ async fn genetic_opaque_predicate_runs_and_produces_result() {
         ga_seed_inputs,
         targets,
         &analysis.params,
+        &[],
         &ga_config,
     )
     .await
@@ -2388,6 +2894,275 @@ async fn concolic_tsconfig_at_alias_executes() {
             || return_values.contains("\"pos:zero\""),
         "expected at least one alias-resolved return value among the executions; \
          got: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test: enum value-domain extraction (str-knf0v), TypeScript, concolic path.
+//
+// Mirrors `e2e_go_enum_value_domain_reaches_all_arms`. `classifyColor(c: Color)`
+// where `Color` is a string-literal union alias ("RED" | "GREEN" | "BLUE")
+// switches over all three members plus a default arm:
+//   "RED"   -> "warm"
+//   "GREEN" -> "cool-green"
+//   "BLUE"  -> "cool-blue"
+//   *       -> "invalid"
+//
+// The three valid arms are reachable ONLY when the generator produces valid
+// enum members. We seed a single OFF-domain string ("zzz") so the run starts
+// without a valid answer; the analyzer's enum_values domain on the param's
+// union TypeInfo is what lets the core draw RED/GREEN/BLUE and reach every valid
+// arm. Before str-knf0v the TS param was a plain union and only the "invalid"
+// default arm was ever hit. The `switch` (rather than an if-chain) is
+// deliberate: the concolic solver has no branch constraint to negate here
+// (z3_generated stays 0), so reaching the valid arms proves enum_values drove
+// generation, not Z3 string solving — mirroring the Go fixture's intent.
+//
+// We collect return values from `raw_results` (every executed input) rather
+// than `result.executions`: the TS instrumentor records switch-case *lines* but
+// emits no `branch_path` decisions, so the orchestrator's path-based dedup
+// collapses all switch executions into one empty-path entry. `raw_results`
+// preserves each generated input's outcome, which is the signal under test
+// (this matches how the Go random-explorer enum test reads its results).
+// ---------------------------------------------------------------------------
+
+const TS_ENUM_FIXTURE: &str = r#"
+export type Color = "RED" | "GREEN" | "BLUE";
+
+export function classifyColor(c: Color): string {
+  switch (c) {
+    case "RED":
+      return "warm";
+    case "GREEN":
+      return "cool-green";
+    case "BLUE":
+      return "cool-blue";
+    default:
+      return "invalid";
+  }
+}
+"#;
+
+#[tokio::test]
+async fn e2e_ts_enum_value_domain_reaches_all_arms() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("enum-color.ts");
+    std::fs::write(&file, TS_ENUM_FIXTURE).expect("write enum fixture");
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classifyColor").await;
+    assert_eq!(analysis.params.len(), 1, "classifyColor takes 1 param");
+    // The analyzer must surface the value domain as a union with enum_values.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Union {
+            variants,
+            enum_values,
+        } => {
+            assert!(
+                !enum_values.is_empty(),
+                "analyzer should carry a non-empty enum_values domain for Color; got {enum_values:?}"
+            );
+            assert_eq!(
+                variants.len(),
+                1,
+                "Color union should have a single str base variant; got {variants:?}"
+            );
+        }
+        other => panic!("Color param should be a union with enum_values; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classifyColor").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(60),
+        max_executions: Some(120),
+        plateau_threshold: 40,
+        ..Default::default()
+    };
+
+    // Deliberately off-domain seed: generation from enum_values must find the
+    // valid members on its own.
+    let seed_inputs = vec![vec![serde_json::json!("zzz")]];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "classifyColor",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    // Enum generation must not have leaned on Z3 — with a switch there is no
+    // branch constraint to solve, so any valid arm reached came from the
+    // enum_values value domain.
+    assert_eq!(
+        result.z3_generated, 0,
+        "switch fixture should give the solver nothing to negate; z3_generated={}",
+        result.z3_generated
+    );
+
+    let mut return_values: HashSet<String> = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            return_values.insert(v.to_string());
+        }
+    }
+    for expected in ["\"warm\"", "\"cool-green\"", "\"cool-blue\""] {
+        assert!(
+            return_values.contains(expected),
+            "enum value-domain generation should reach valid arm {expected}; found: {return_values:?}"
+        );
+    }
+    // The off-domain probe path (default arm) should also stay covered.
+    assert!(
+        return_values.contains("\"invalid\""),
+        "off-domain probes should still reach the default arm; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test: typed opaque-param stub registry (str-syj9b), TypeScript, concolic path.
+//
+// `go(page: Page, n: number)` takes a framework "handle" (`Page`) whose methods
+// the body calls (`page.goto`, `page.locator(sel).count()`). Before str-syj9b the
+// analyzer marked `page` as `kind:"opaque"` and the core skipped the whole
+// function. With a `ts_runtime_values` entry registering `Page`, the analyzer now
+// emits a plain empty object for the param and the frontend overlays a
+// structurally-valid recording stub at execute time. This proves end-to-end that:
+//   1. the function is NOT skipped — its `page` param analyzes as a plain object,
+//   2. it executes past the first `page.*` call (no "is not a function" error),
+//   3. the stub's `locator(...).count()` override rotates {0,2} across executions,
+//      so the `count > 0` branch reaches BOTH the "present" and "absent" arms.
+// The `n > 5` branch is solver-driven and guarantees multiple executions, over
+// which the stub rotation advances.
+// ---------------------------------------------------------------------------
+
+const TS_STUB_FIXTURE: &str = r##"
+interface Locator {
+  count(): Promise<number>;
+  isVisible(): Promise<boolean>;
+}
+interface Page {
+  locator(selector: string): Locator;
+  goto(url: string): Promise<void>;
+}
+export async function go(page: Page, n: number): Promise<string> {
+  await page.goto("/");
+  const c = await page.locator("#target").count();
+  const has = c > 0 ? "present" : "absent";
+  const size = n > 5 ? "big" : "small";
+  return `${has}:${size}`;
+}
+"##;
+
+const TS_STUB_CONFIG: &str = r#"
+ts_runtime_values:
+  Page:
+    stub: proxy
+    overrides:
+      "locator.count": [0, 2]
+"#;
+
+#[tokio::test]
+async fn e2e_ts_opaque_param_stub_registry_explores_both_branches() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("handler.ts"), TS_STUB_FIXTURE).expect("write stub fixture");
+    let shatter_dir = root.join(".shatter");
+    std::fs::create_dir_all(&shatter_dir).expect("create .shatter dir");
+    std::fs::write(shatter_dir.join("config.yaml"), TS_STUB_CONFIG).expect("write config");
+    // Preflight requires a node_modules/ directory to exist under project_root.
+    std::fs::create_dir_all(root.join("node_modules")).expect("create node_modules");
+
+    let file_str = root.join("handler.ts").to_string_lossy().to_string();
+    let root_str = root.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+
+    let analysis =
+        analyze_function_with_profile(&mut frontend, &file_str, "go", Some(&root_str), None).await;
+    assert_eq!(analysis.params.len(), 2, "go takes 2 params");
+    // The handle param must no longer be opaque — it analyzes as a plain object,
+    // which is what keeps the core from skipping the function.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert!(
+                fields.is_empty(),
+                "stubbed Page param should be an empty object; got fields {fields:?}"
+            );
+        }
+        other => panic!("stubbed Page param should analyze as an empty object; got {other:?}"),
+    }
+
+    instrument_function_with_profile(&mut frontend, &file_str, "go", Some(&root_str), None).await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 30,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![
+        vec![serde_json::json!({}), serde_json::json!(0)],
+        vec![serde_json::json!({}), serde_json::json!(9)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "go",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    // No execution should have failed because the stub was missing a method —
+    // that is the exact "page.locator is not a function" cluster str-syj9b fixes.
+    for (_, _, exec) in &result.raw_results {
+        if let Some(err) = &exec.thrown_error {
+            assert!(
+                !err.message.contains("is not a function"),
+                "stub should supply every called method; got thrown_error: {}",
+                err.message
+            );
+        }
+    }
+
+    let mut return_values: HashSet<String> = HashSet::new();
+    for (_, _, exec) in &result.raw_results {
+        if let Some(v) = &exec.return_value {
+            return_values.insert(v.to_string());
+        }
+    }
+
+    let has_present = return_values.iter().any(|v| v.contains("present"));
+    let has_absent = return_values.iter().any(|v| v.contains("absent"));
+    assert!(
+        has_present && has_absent,
+        "stub locator().count() rotation should drive the count>0 branch to BOTH \
+         arms; got return values: {return_values:?}"
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");

@@ -44,6 +44,11 @@ import {
   classifyMissingBrowserGlobal,
   formatMissingBrowserGlobalMessage,
 } from "./browser-globals-recognizer.js";
+import {
+  getStubRegistry,
+  makeStubInput,
+  type StubParamRecord,
+} from "./opaque-stub-registry.js";
 // Type-only imports for lazy-loaded modules — erased at compile time, no runtime cost.
 import type { SetupModule } from "./setup-loader.js";
 
@@ -53,6 +58,13 @@ const SUPPORTED_CAPABILITIES = [
   "complex_type:date", "complex_type:date_time", "complex_type:duration",
   "complex_type:reg_exp", "complex_type:url", "complex_type:big_int",
   "complex_type:buffer", "complex_type:error", "complex_type:symbol",
+  // str-ya5dx: the analyzer now maps function-typed params/fields to `closure`
+  // and the reconstructor materializes the envelope into a callable stub.
+  // MUST be advertised — the core only generates a complex value for kinds
+  // the frontend supports (input_gen.rs), otherwise it falls back to a
+  // random primitive and the callback param crashes with `x is not a
+  // function`.
+  "complex_type:closure",
 ];
 
 // ---------------------------------------------------------------------------
@@ -244,6 +256,34 @@ const instrumentedSources = new Map<string, string>();
 const cachedAnalyses = new Map<string, FunctionAnalysis>();
 
 /**
+ * Opaque-param stub bindings (str-syj9b), keyed "resolvedFile:functionName" to
+ * match `cachedAnalyses`. Populated by the analyze handler from the worker's
+ * internal `stubParams`; consumed by execute to overlay structurally-valid
+ * stubs onto the generated arguments. Frontend-internal — never on the wire.
+ */
+const stubParamsByFunction = new Map<string, StubParamRecord[]>();
+
+/**
+ * Replace generated arguments at stub-bound parameter indices with tagged stub
+ * inputs (`reconstructValue` builds the actual recording proxy). Returns the
+ * original array untouched when the function has no stub bindings.
+ */
+function overlayStubInputs(
+  inputs: unknown[],
+  records: StubParamRecord[] | undefined,
+  projectRoot: string | null | undefined,
+): unknown[] {
+  if (!records || records.length === 0) return inputs;
+  const registry = getStubRegistry(projectRoot ?? null);
+  const out = [...inputs];
+  for (const rec of records) {
+    while (out.length <= rec.paramIndex) out.push(null);
+    out[rec.paramIndex] = makeStubInput(rec.stubKey, registry);
+  }
+  return out;
+}
+
+/**
  * Loaded setup modules, keyed by file path.
  * Cached so teardown can use the same module instance as setup.
  */
@@ -429,6 +469,21 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       const resolvedAnalyzedFile = path.resolve(request.file);
       for (const fn of functions) {
         cachedAnalyses.set(`${resolvedAnalyzedFile}:${fn.name}`, fn);
+      }
+
+      // Cache opaque-param stub bindings (str-syj9b), grouped by the same
+      // function key so execute can overlay stubs onto generated arguments.
+      for (const fn of functions) {
+        stubParamsByFunction.delete(`${resolvedAnalyzedFile}:${fn.name}`);
+      }
+      for (const rec of analyzeResult.stubParams ?? []) {
+        const key = `${resolvedAnalyzedFile}:${rec.functionName}`;
+        const existing = stubParamsByFunction.get(key);
+        if (existing) {
+          existing.push(rec);
+        } else {
+          stubParamsByFunction.set(key, [rec]);
+        }
       }
 
       return {
@@ -640,6 +695,17 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         // symbol directly. Direct-call remains the default whenever the
         // analysis is absent or reports kind: "direct".
         const cachedAnalysis = cachedAnalyses.get(`${fileForExec}:${funcName}`);
+
+        // Overlay structurally-valid stubs onto generated arguments for any
+        // opaque-param stub bindings recorded at analyze time (str-syj9b). The
+        // tagged inputs are turned into recording proxies by reconstructValue in
+        // the executor; functions with no bindings pass through unchanged.
+        const execInputs = overlayStubInputs(
+          request.inputs,
+          stubParamsByFunction.get(`${fileForExec}:${funcName}`),
+          lastProjectRoot,
+        );
+
         let strategy = chooseInvocationStrategy(
           cachedAnalysis?.invocation_model,
           runtimeHooks.invocation_hooks,
@@ -680,9 +746,18 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
             invocationModel: strategy.model,
             fileForExec,
             functionName: funcName,
-            inputs: request.inputs,
+            inputs: execInputs,
             capture,
             timing,
+            // Thread the instrumented source so the adapter records real
+            // coverage (lines_executed / branch_path / path_constraints)
+            // identically to direct calls (str-26fhi). Absent when the target
+            // was never instrumented — the adapter then yields empty coverage.
+            instrumentedSource,
+            mocks: request.mocks ?? [],
+            cacheKey: instrumentKey,
+            resolverAdapters,
+            sandboxProviders,
           });
           return {
             response: finalizeResponse(
@@ -699,7 +774,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
               executor.executeInstrumented(
                 instrumentedSource,
                 funcName,
-                request.inputs,
+                execInputs,
                 request.mocks ?? [],
                 fileForExec,
                 timing,
@@ -712,7 +787,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
             : await executor.executeInstrumented(
               instrumentedSource,
               funcName,
-              request.inputs,
+              execInputs,
               request.mocks ?? [],
               fileForExec,
               undefined,
@@ -728,7 +803,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
               executor.executeFunction(
                 fileForExec,
                 funcRef,
-                request.inputs,
+                execInputs,
                 timing,
                 capture,
                 resolverAdapters,
@@ -737,7 +812,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
             : await executor.executeFunction(
               fileForExec,
               funcRef,
-              request.inputs,
+              execInputs,
               undefined,
               capture,
               resolverAdapters,
@@ -883,6 +958,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
         setupContexts.delete(ctxKey);
         instrumentedSources.clear();
         cachedAnalyses.clear();
+        stubParamsByFunction.clear();
         preparedKeys.clear();
         preparedTargets.clear();
         // Only clear executor caches if executor was loaded this session.
@@ -972,6 +1048,7 @@ export async function handleRequest(request: Request): Promise<{ response: Respo
       if (_wasmGenerator) await _wasmGenerator.clearWasmCache();
       instrumentedSources.clear();
       cachedAnalyses.clear();
+      stubParamsByFunction.clear();
       preparedKeys.clear();
       preparedTargets.clear();
       if (_executor) {
@@ -1088,6 +1165,7 @@ export function parseRequest(line: string): { request: Request } | { error: Erro
 export function clearInstrumentedSources(): void {
   instrumentedSources.clear();
   cachedAnalyses.clear();
+  stubParamsByFunction.clear();
   preparedKeys.clear();
   preparedTargets.clear();
   if (_executor) _executor.clearCompiledScriptCache();

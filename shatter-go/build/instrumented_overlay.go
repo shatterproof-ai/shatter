@@ -17,6 +17,21 @@ import (
 
 const packageMain = "main"
 
+// wireShimMocks returns the subset of mocks that require a generated
+// ShatterMock shim: wire mocks whose behavior is driven by ReturnValues.
+// Expression-only mocks (str-c8djq call-site substitution) are excluded — a
+// shim for them is never called (review fix 8).
+func wireShimMocks(mocks []instrument.MockConfig) []instrument.MockConfig {
+	var out []instrument.MockConfig
+	for _, m := range mocks {
+		if strings.TrimSpace(m.Expression) != "" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func normalizedPackageName(name string) string {
 	if name == packageMain {
 		return "shattertarget"
@@ -50,6 +65,38 @@ func (b *Builder) writeOverlayManifest(
 				}
 			}
 		}
+
+		// Execute-time mock substitution (str-c8djq): replace call sites of
+		// configured mock symbols with their Go-source expressions in the
+		// already-instrumented target sources, so `go build -overlay`
+		// compiles the substituted bodies. Applies to expression-bearing
+		// mocks only (hint_config_v1 `.shatter/config.yaml` `mocks`); wire
+		// mocks carrying only return_values are untouched here.
+		//
+		// Prefer the pre-resolved MockSubstitutions (type-checked against the
+		// loaded package so only genuine package-qualified call sites match);
+		// fall back to syntactic substitutions derived from Mocks for callers
+		// (e.g. tests) that don't pre-resolve.
+		//
+		// INVARIANT: len(subs) == 0 here means "the caller never resolved",
+		// NOT "resolution proved nothing matches" — resolveMockSubstitutionScopes
+		// deliberately returns resolved entries with empty allow-lists rather
+		// than filtering them out. Do not "optimize" that away upstream: a
+		// filtered-empty resolved set would fall back to syntactic matching
+		// for exactly the symbols type resolution proved must not be
+		// rewritten.
+		subs := req.MockSubstitutions
+		if len(subs) == 0 {
+			subs = instrument.MockSubstitutionsFromConfigs(req.Mocks)
+		}
+		if len(subs) > 0 {
+			for _, file := range instrumentedFiles {
+				if _, err := instrument.RewriteMockCallSitesInFile(file.InstrumentedPath, subs); err != nil {
+					return "", "", fmt.Errorf("build: mock substitution %q: %w", file.InstrumentedPath, err)
+				}
+			}
+		}
+
 		if err := instrument.RegisterInstrumentedOverlay(builder, instrumentedFiles); err != nil {
 			return "", "", fmt.Errorf("build: register instrumented overlay: %w", err)
 		}
@@ -87,16 +134,21 @@ func (b *Builder) writeOverlayManifest(
 		if err != nil {
 			return "", "", fmt.Errorf("build: analyze globals: %w", err)
 		}
+		// Only wire mocks (ReturnValues-backed, empty Expression) need the
+		// generated ShatterMock shim file; expression-only mocks (str-c8djq)
+		// are substituted directly at the call site, so emitting shims for them
+		// is dead code in every harness (review fix 8).
+		shimMocks := wireShimMocks(req.Mocks)
 		runtimePath := filepath.Join(generatedDir, "runtime-support", "shatter_runtime_"+hash+".go")
-		if err := writeGeneratedSource(runtimePath, generateRuntimeHelper(packageName, globalVars, len(req.Mocks) > 0)); err != nil {
+		if err := writeGeneratedSource(runtimePath, generateRuntimeHelper(packageName, globalVars, len(shimMocks) > 0)); err != nil {
 			return "", "", fmt.Errorf("build: write runtime helper: %w", err)
 		}
 		if err := builder.Add(filepath.Join(req.TargetPackageDir, "shatter_runtime_"+hash+".go"), runtimePath); err != nil {
 			return "", "", fmt.Errorf("build: overlay runtime helper: %w", err)
 		}
 
-		if len(req.Mocks) > 0 {
-			mockSource := instrument.GenerateLoopMockFile(req.Mocks)
+		if len(shimMocks) > 0 {
+			mockSource := instrument.GenerateLoopMockFile(shimMocks)
 			mockSource = strings.Replace(mockSource, "package main", "package "+packageName, 1)
 			mockPath := filepath.Join(generatedDir, "runtime-support", "shatter_mocks_"+hash+".go")
 			if err := writeGeneratedSource(mockPath, mockSource); err != nil {
@@ -258,6 +310,16 @@ func exportedGlobalVars(sourcePath string) ([]string, error) {
 }
 
 func generateRuntimeHelper(packageName string, globalVars []string, hasMocks bool) string {
+	return generateRuntimeSupport(packageName) + generateExecuteEntrypoint(globalVars, hasMocks)
+}
+
+// generateRuntimeSupport emits the shared runtime helper types and functions
+// (console capture, perf measurement, panic recovery, side-effect and console
+// recorders) that instrumented target code references. It deliberately
+// excludes the ShatterExecute wrapper entrypoint so the adapter launcher path
+// (str-1qd5i) can reuse the same support code without depending on the
+// wrapper-provided ShatterInvoke.
+func generateRuntimeSupport(packageName string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "package %s\n\n", packageName)
@@ -547,6 +609,18 @@ func generateRuntimeHelper(packageName string, globalVars []string, hasMocks boo
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn effects\n")
 	b.WriteString("}\n\n")
+
+	return b.String()
+}
+
+// generateExecuteEntrypoint emits the ShatterExecute wrapper that drives the
+// instrumented target through the wrapper-provided ShatterInvoke and collects
+// recorder results into a ShatterResponse. Only the wrapper build path uses
+// this; the adapter launcher path drives the target directly and drains the
+// recorder itself (str-1qd5i).
+func generateExecuteEntrypoint(globalVars []string, hasMocks bool) string {
+	var b strings.Builder
+
 	b.WriteString("func ShatterExecute(planJSON json.RawMessage, inputs []json.RawMessage, capture bool) ShatterResponse {\n")
 	b.WriteString("\tvar plan PlanDescriptor\n")
 	b.WriteString("\tif err := json.Unmarshal(planJSON, &plan); err != nil {\n")
@@ -660,5 +734,123 @@ func generateRuntimeHelper(packageName string, globalVars []string, hasMocks boo
 	b.WriteString("\n\treturn _resp\n")
 	b.WriteString("}\n")
 
+	return b.String()
+}
+
+// BuildAdapterInstrumentationOverlay instruments the package at packageDir and
+// assembles an overlay manifest that an adapter launcher main can build
+// against to drive the instrumented target and drain branch_path /
+// lines_executed (str-1qd5i). It mirrors the instrumentation half of
+// writeOverlayManifest — instrumented sources, recorder, and runtime support —
+// but omits the wrapper/ShatterExecute and mock machinery. It additionally
+// emits an exported adapter bridge (ShatterAdapterReset / ShatterAdapterResults)
+// so the out-of-package launcher main can reset recorder state and read the
+// recorded results across the package boundary.
+//
+// generatedDir is the workspace generated root; artifacts are written under
+// <generatedDir>/<hash>/. originalPackageName is the target package's source
+// name; when it must be renamed to stay importable (e.g. "main" →
+// "shattertarget") the instrumented files, recorder, runtime support, and
+// bridge all adopt the renamed package. Returns the overlay manifest path and
+// the harness runtime module directory for launcher.BuildOptions.
+func BuildAdapterInstrumentationOverlay(packageDir, originalPackageName, hash, generatedDir string) (overlayPath string, harnessRuntimeDir string, err error) {
+	targetPackageName := normalizedPackageName(originalPackageName)
+
+	overlaysDir := filepath.Join(generatedDir, hash, "adapter-overlays")
+	builder := overlay.NewBuilder(overlaysDir, hash)
+
+	instrumentedFiles, err := instrument.InstrumentPackageForOverlay(packageDir, hash, generatedDir)
+	if err != nil {
+		return "", "", fmt.Errorf("build: instrument adapter package: %w", err)
+	}
+	if targetPackageName != originalPackageName {
+		for _, file := range instrumentedFiles {
+			if err := rewriteFilePackage(file.InstrumentedPath, targetPackageName); err != nil {
+				return "", "", fmt.Errorf("build: rewrite instrumented package %q: %w", file.InstrumentedPath, err)
+			}
+		}
+	}
+	if err := instrument.RegisterInstrumentedOverlay(builder, instrumentedFiles); err != nil {
+		return "", "", fmt.Errorf("build: register instrumented overlay: %w", err)
+	}
+
+	// When the package was renamed, `_test.go` siblings still declare the
+	// original package name and Go's directory loader rejects the mixed set.
+	// Stage rewritten stubs so the directory has a single primary package
+	// (mirrors writeOverlayManifest / str-x0sv).
+	if targetPackageName != originalPackageName {
+		testStubs, err := stageRenamedTestSiblings(packageDir, hash, generatedDir, originalPackageName, targetPackageName)
+		if err != nil {
+			return "", "", fmt.Errorf("build: stage test siblings: %w", err)
+		}
+		for _, stub := range testStubs {
+			if err := builder.Add(stub.OriginalPath, stub.OverlayPath); err != nil {
+				return "", "", fmt.Errorf("build: overlay test sibling %q: %w", stub.OriginalPath, err)
+			}
+		}
+	}
+
+	supportDir := filepath.Join(generatedDir, hash, "adapter-support")
+
+	recorderPath := filepath.Join(supportDir, "shatter_recorder_"+hash+".go")
+	if err := writeGeneratedSource(recorderPath, instrument.GenerateRecorder(targetPackageName)); err != nil {
+		return "", "", fmt.Errorf("build: write recorder: %w", err)
+	}
+	if err := builder.Add(filepath.Join(packageDir, "shatter_recorder_"+hash+".go"), recorderPath); err != nil {
+		return "", "", fmt.Errorf("build: overlay recorder: %w", err)
+	}
+
+	runtimePath := filepath.Join(supportDir, "shatter_runtime_"+hash+".go")
+	if err := writeGeneratedSource(runtimePath, generateRuntimeSupport(targetPackageName)); err != nil {
+		return "", "", fmt.Errorf("build: write runtime support: %w", err)
+	}
+	if err := builder.Add(filepath.Join(packageDir, "shatter_runtime_"+hash+".go"), runtimePath); err != nil {
+		return "", "", fmt.Errorf("build: overlay runtime support: %w", err)
+	}
+
+	bridgePath := filepath.Join(supportDir, "shatter_adapter_bridge_"+hash+".go")
+	if err := writeGeneratedSource(bridgePath, generateAdapterBridge(targetPackageName)); err != nil {
+		return "", "", fmt.Errorf("build: write adapter bridge: %w", err)
+	}
+	if err := builder.Add(filepath.Join(packageDir, "shatter_adapter_bridge_"+hash+".go"), bridgePath); err != nil {
+		return "", "", fmt.Errorf("build: overlay adapter bridge: %w", err)
+	}
+
+	harnessRuntimeDir, err = instrument.EnsureHarnessRuntimeDir()
+	if err != nil {
+		return "", "", fmt.Errorf("build: harness runtime: %w", err)
+	}
+
+	overlayPath, err = builder.Write()
+	if err != nil {
+		return "", "", fmt.Errorf("build: write overlay manifest: %w", err)
+	}
+	return overlayPath, harnessRuntimeDir, nil
+}
+
+// generateAdapterBridge emits an exported bridge, in the instrumented target's
+// package, over the unexported recorder and runtime-support drain functions.
+// The adapter launcher main lives in a separate `package main` and cannot call
+// the `__shatter_*` symbols directly, so it resets and reads recorder state
+// through these exported wrappers (str-1qd5i).
+func generateAdapterBridge(packageName string) string {
+	var b strings.Builder
+	b.WriteString("// Code generated by Shatter. DO NOT EDIT.\n")
+	fmt.Fprintf(&b, "package %s\n\n", packageName)
+	b.WriteString("// ShatterAdapterReset clears recorder, side-effect, console, and\n")
+	b.WriteString("// goroutine-panic state before an adapter-driven invocation so results do\n")
+	b.WriteString("// not accumulate across the harness loop's iterations.\n")
+	b.WriteString("func ShatterAdapterReset() {\n")
+	b.WriteString("\t__shatter_reset()\n")
+	b.WriteString("\t_ = shatterDrainSideEffects()\n")
+	b.WriteString("\t_ = shatterDrainConsoleEffects()\n")
+	b.WriteString("\t_ = shatterDrainGoroutinePanics()\n")
+	b.WriteString("}\n\n")
+	b.WriteString("// ShatterAdapterResults returns the recorder's branch_path, lines_executed,\n")
+	b.WriteString("// and scope_events as a JSON object for the adapter launcher main to\n")
+	b.WriteString("// propagate into the execute response.\n")
+	b.WriteString("func ShatterAdapterResults() ([]byte, error) {\n")
+	b.WriteString("\treturn __shatter_get_results()\n")
+	b.WriteString("}\n")
 	return b.String()
 }

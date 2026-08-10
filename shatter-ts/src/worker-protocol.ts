@@ -8,6 +8,7 @@
 
 import type { FunctionAnalysis, MockConfig, TimingPhaseSummary } from "./protocol.js";
 import type { InstrumentResult } from "./instrumentor.js";
+import type { StubParamRecord } from "./opaque-stub-registry.js";
 
 // --- Main thread → Worker ---
 
@@ -36,6 +37,12 @@ export interface AnalyzeWorkerResponse {
   readonly id: number;
   readonly type: "analyze";
   readonly functions: FunctionAnalysis[];
+  /**
+   * Opaque-param stub bindings (str-syj9b). Frontend-internal only — carried
+   * from the analyzer worker to the main thread so execute can overlay stubs;
+   * never serialized onto the stdio wire.
+   */
+  readonly stubParams?: StubParamRecord[];
   readonly timingPhases?: TimingPhaseSummary[];
   readonly error?: string;
 }

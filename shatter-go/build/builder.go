@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +61,11 @@ type BuildRequest struct {
 	// uses it when generating loop-harness support files and when deriving a
 	// cache key for mock-sensitive launcher binaries.
 	Mocks []instrument.MockConfig
+	// MockSubstitutions carries execute-time call-site substitutions
+	// (str-c8djq), pre-resolved against the loaded package's TypesInfo so the
+	// overlay build rewrites only genuine package-qualified call sites. When
+	// empty, the builder derives syntactic-fallback substitutions from Mocks.
+	MockSubstitutions []instrument.MockSubstitution
 }
 
 // BuildResult is returned by Builder.Build on success.
@@ -289,11 +295,63 @@ func cacheKey(req BuildRequest) string {
 	}
 
 	h := sha256.New()
-	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00")
-	for _, mock := range req.Mocks {
-		fmt.Fprint(h, mock.Symbol, "\x00")
-	}
+	// Include the full mock fingerprint (symbol + expression + behavior +
+	// return values) so any mock change invalidates the cached binary. Shared
+	// with computePrepareID via instrument.MockFingerprint (str-c8djq).
+	// Also include the PACKAGE source content, not just paths: mock
+	// substitution rewrites call sites in every instrumented file of the
+	// package, so a body edit anywhere in it that adds/removes/shadows a
+	// mocked call must miss the cache even when target signatures and mock
+	// config are unchanged. And include the resolved substitution set: the
+	// binary bakes in which sites were rewritten, and a type-load failure
+	// flips resolution to the syntactic fallback — that binary must not be
+	// served under the clean-resolution key.
+	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00",
+		packageSourceDigest(req.TargetPackageDir, req.InstrumentedSourceFile), "\x00",
+		instrument.MockFingerprint(req.Mocks), "\x00",
+		instrument.SubstitutionsFingerprint(req.MockSubstitutions))
 	return base + "-" + hex.EncodeToString(h.Sum(nil))[:8]
+}
+
+// packageSourceDigest hashes the names and bytes of every non-test .go file
+// in the package directory (sorted by name) for cacheKey. When the directory
+// is unavailable it falls back to hashing just the instrumented source file.
+// Unreadable entries contribute a sentinel that never matches a real digest,
+// so a key computed while a file is missing can't collide with one computed
+// after it appears.
+func packageSourceDigest(pkgDir, instrumentedSourceFile string) string {
+	h := sha256.New()
+	hashFile := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprint(h, filepath.Base(path), "\x00", "unreadable", "\x00")
+			return
+		}
+		sum := sha256.Sum256(data)
+		fmt.Fprint(h, filepath.Base(path), "\x00", hex.EncodeToString(sum[:]), "\x00")
+	}
+
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		if instrumentedSourceFile == "" {
+			return "no-source"
+		}
+		hashFile(instrumentedSourceFile)
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		hashFile(filepath.Join(pkgDir, name))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // launchBuildWithLog builds the launcher and writes go build output to logPath.

@@ -46,8 +46,6 @@ export const FRONTEND_LANGUAGE = "typescript";
 // Request: Core → Frontend
 // ---------------------------------------------------------------------------
 
-export type SetupMode = "per_function" | "per_execution";
-
 export interface SetupContextEntry {
   level: SetupLevel;
   context: unknown;
@@ -241,8 +239,6 @@ export interface ExecuteResponse extends BaseResponse {
    *  When non-empty, the function called a known encrypt or decrypt API;
    *  the core engine can use this for boundary splitting. */
   runtime_crypto_boundaries?: RuntimeCryptoBoundary[];
-  /** Runtime-detected adapter hints for failures that suggest a missing adapter. */
-  adapter_hints?: AdapterHint[];
   /** Standardized invocation outcome (str-hy9b.A1/A5). Always emitted by this frontend
    *  for execute responses. Status is one of completed | runtime_failed | timed_out
    *  on the executor's primary success/failure paths; build_failed and unsupported
@@ -461,7 +457,15 @@ export type TypeInfo =
   | { kind: "unknown" }
   | { kind: "array"; element: TypeInfo }
   | { kind: "object"; fields: [string, TypeInfo][] }
-  | { kind: "union"; variants: TypeInfo[] }
+  | {
+      kind: "union";
+      variants: TypeInfo[];
+      // str-pjlc1: concrete value domain for named enum-like types (Go const
+      // sets, TS string-literal unions and enum declarations, Rust fieldless
+      // enums). When present the core draws valid members directly. Go and TS
+      // (str-knf0v) emit it from the analyzer; Rust still round-trips only.
+      enum_values?: (string | number | boolean)[];
+    }
   | { kind: "nullable"; inner: TypeInfo }
   | {
       kind: "complex";

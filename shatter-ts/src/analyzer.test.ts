@@ -1,5 +1,6 @@
 import * as path from "node:path";
-import { analyzeFile } from "./analyzer.js";
+import * as ts from "typescript";
+import { analyzeFile, convertTypeWithNode } from "./analyzer.js";
 import type { TypeInfo } from "./protocol.js";
 
 const fixtures = path.join(__dirname, "__fixtures__");
@@ -100,10 +101,11 @@ describe("analyzeFile", () => {
       });
     });
 
-    it("treats optional callback fields as nullable(unknown) and required string fields normally", () => {
-      // str-49k: functions with callback-typed options should not produce only TypeError paths.
-      // The optional `transform` field must become nullable(unknown) so input_gen can omit it;
-      // the required `prefix` field must keep its concrete str type.
+    it("treats optional callback fields as nullable(closure) and required string fields normally", () => {
+      // str-49k / str-ya5dx: functions with callback-typed options should not
+      // produce only TypeError paths. The optional `transform` field becomes
+      // nullable(closure) so input_gen can omit it (~30%) yet supply a callable
+      // stub when present; the required `prefix` field keeps its concrete str type.
       const results = analyzeFile(
         path.join(fixtures, "callback-options.ts"),
         "process",
@@ -112,25 +114,30 @@ describe("analyzeFile", () => {
       const fn = results[0]!;
       // param 0: input — plain string
       expect(fn.params[0]!.type).toEqual({ kind: "str" });
-      // param 1: options object — transform optional callable → nullable(unknown), prefix → str
+      // param 1: options object — transform optional callable → nullable(closure), prefix → str
       expect(fn.params[1]!.type).toEqual({
         kind: "object",
         fields: [
-          ["transform", { kind: "nullable", inner: { kind: "unknown" } }],
+          [
+            "transform",
+            { kind: "nullable", inner: { kind: "complex", complex_kind: "closure" } },
+          ],
           ["prefix", { kind: "str" }],
         ],
       });
     });
 
-    it("keeps pure function parameters as unknown (regression guard for early-return path)", () => {
-      // The early return in convertObjectType for pure callable types must stay intact.
+    it("maps pure function parameters to closure so callbacks are invocable (str-ya5dx)", () => {
+      // Function-typed params generate a callable recording stub instead of a
+      // non-callable `unknown` primitive, so target code doing `fn(...)` no
+      // longer crashes with `x is not a function`.
       const results = analyzeFile(
         path.join(fixtures, "callback-options.ts"),
         "applyFn",
       );
       expect(results).toHaveLength(1);
       const fn = results[0]!;
-      expect(fn.params[0]!.type).toEqual({ kind: "unknown" });
+      expect(fn.params[0]!.type).toEqual({ kind: "complex", complex_kind: "closure" });
       expect(fn.params[1]!.type).toEqual({ kind: "float" });
     });
   });
@@ -249,6 +256,486 @@ describe("analyzeFile", () => {
     });
   });
 
+  describe("array element fidelity (str-9cqde)", () => {
+    // Change 1 acceptance: a props field typed `Widget[]` where Widget is
+    // declared in another file must resolve to array<object> with the element's
+    // fields, not degrade to unknown.
+    it("resolves a cross-file array element interface", () => {
+      const results = analyzeFile(
+        path.join(fixtures, "cross-file-array/props.ts"),
+        "renderWidgets",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "object",
+        fields: [
+          [
+            "items",
+            {
+              kind: "array",
+              element: {
+                kind: "object",
+                fields: [
+                  ["id", { kind: "float" }],
+                  ["label", { kind: "str" }],
+                ],
+              },
+            },
+          ],
+          ["title", { kind: "str" }],
+        ],
+      });
+    });
+
+    // Change 2 (fallback hardening): when the SAME array type instance recurs
+    // (mutually recursive interfaces), the re-encountered array field must keep
+    // its `array` kind with a degraded element, NOT collapse to bare unknown —
+    // otherwise the core may realize a non-array value and target code doing
+    // `.map`/`.find` on the field crashes.
+    it("keeps array kind when a recursive array field trips the cycle guard", () => {
+      const results = analyzeFile(
+        path.join(fixtures, "recursive-array-types.ts"),
+        "renderWorkspaces",
+      );
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "object",
+        fields: [
+          [
+            "workspaces",
+            {
+              kind: "array",
+              element: {
+                kind: "object",
+                fields: [
+                  ["id", { kind: "float" }],
+                  [
+                    "members",
+                    {
+                      kind: "array",
+                      element: {
+                        kind: "object",
+                        fields: [
+                          ["name", { kind: "str" }],
+                          // Workspace[] recurs here — the cycle guard fires but
+                          // the field stays array<unknown>, never bare unknown.
+                          [
+                            "workspaces",
+                            { kind: "array", element: { kind: "unknown" } },
+                          ],
+                        ],
+                      },
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+          ["title", { kind: "str" }],
+        ],
+      });
+    });
+
+    // Real-world regression: the bundled frontend runs without lib.d.ts, so
+    // `checker.isArrayType` returns false and every `T[]` collapses to an empty
+    // object — the exact failure that made kapow's FitChoiceChips generate
+    // `choices: {}` and crash with `choices.map is not a function`. We reproduce
+    // the lib-less environment with a compiler host that resolves no lib files,
+    // then assert array-ness is recovered from the declared type node.
+    describe("recovers arrays when lib.d.ts is unavailable", () => {
+      // Convert the sole parameter's type of `entry` in `src`, compiled with a
+      // host that provides NO standard library (noLib + a host that only knows
+      // the virtual source file). This makes `checker.isArrayType` false for
+      // `T[]`, exactly like the extracted esbuild bundle.
+      function convertEntryParamNoLib(src: string): TypeInfo {
+        const fileName = "/virtual/entry.tsx";
+        const sf = ts.createSourceFile(
+          fileName,
+          src,
+          ts.ScriptTarget.ES2022,
+          true,
+          ts.ScriptKind.TSX,
+        );
+        const host: ts.CompilerHost = {
+          getSourceFile: (fn) => (fn === fileName ? sf : undefined),
+          writeFile: () => {},
+          getDefaultLibFileName: () => "lib.d.ts",
+          getCurrentDirectory: () => "/virtual",
+          getCanonicalFileName: (f) => f,
+          useCaseSensitiveFileNames: () => true,
+          getNewLine: () => "\n",
+          fileExists: (fn) => fn === fileName,
+          readFile: () => undefined,
+        };
+        const program = ts.createProgram(
+          [fileName],
+          { noLib: true, target: ts.ScriptTarget.ES2022 },
+          host,
+        );
+        const checker = program.getTypeChecker();
+        let result: TypeInfo | undefined;
+        const visit = (node: ts.Node): void => {
+          if (ts.isFunctionDeclaration(node) && node.name?.text === "entry") {
+            const param = node.parameters[0]!;
+            const type = checker.getTypeAtLocation(param);
+            // Mirror analyzeParameter: recover from the declared node so both
+            // the direct-array-param and props-field paths are exercised.
+            result = convertTypeWithNode(type, param.type, checker, sf, new Set());
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(sf);
+        if (!result) throw new Error("entry not found");
+        return result;
+      }
+
+      it("sanity: without recovery lib is truly absent (isArrayType is false)", () => {
+        // Guard the test's own premise: if a future TS/host change made the lib
+        // resolvable here, isArrayType would pass and this suite would no longer
+        // exercise the degraded path — so assert the degradation precondition.
+        const fileName = "/virtual/entry.tsx";
+        const sf = ts.createSourceFile(
+          fileName,
+          "interface P { xs: string[]; }\nexport function entry(p: P): void {}\n",
+          ts.ScriptTarget.ES2022,
+          true,
+          ts.ScriptKind.TSX,
+        );
+        const host: ts.CompilerHost = {
+          getSourceFile: (fn) => (fn === fileName ? sf : undefined),
+          writeFile: () => {},
+          getDefaultLibFileName: () => "lib.d.ts",
+          getCurrentDirectory: () => "/virtual",
+          getCanonicalFileName: (f) => f,
+          useCaseSensitiveFileNames: () => true,
+          getNewLine: () => "\n",
+          fileExists: (fn) => fn === fileName,
+          readFile: () => undefined,
+        };
+        const program = ts.createProgram(
+          [fileName],
+          { noLib: true, target: ts.ScriptTarget.ES2022 },
+          host,
+        );
+        const checker = program.getTypeChecker();
+        let isArr = true;
+        const visit = (node: ts.Node): void => {
+          if (ts.isInterfaceDeclaration(node) && node.name.text === "P") {
+            const t = checker.getTypeAtLocation(node);
+            const sym = t.getProperties().find((s) => s.name === "xs")!;
+            isArr = checker.isArrayType(checker.getTypeOfSymbol(sym));
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(sf);
+        expect(isArr).toBe(false);
+      });
+
+      it("recovers a primitive array props field", () => {
+        const t = convertEntryParamNoLib(
+          "interface P { choices: string[]; title: string; }\n" +
+            "export function entry(p: P): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [
+            ["choices", { kind: "array", element: { kind: "str" } }],
+            ["title", { kind: "str" }],
+          ],
+        });
+      });
+
+      it("recovers a cross-file-style interface array element", () => {
+        const t = convertEntryParamNoLib(
+          "interface Widget { id: number; label: string; }\n" +
+            "interface P { widgets: Widget[]; }\n" +
+            "export function entry(p: P): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [
+            [
+              "widgets",
+              {
+                kind: "array",
+                element: {
+                  kind: "object",
+                  fields: [
+                    ["id", { kind: "float" }],
+                    ["label", { kind: "str" }],
+                  ],
+                },
+              },
+            ],
+          ],
+        });
+      });
+
+      it("recovers nested, readonly, and Array<T> generic forms", () => {
+        const t = convertEntryParamNoLib(
+          "interface P {\n" +
+            "  nested: number[][];\n" +
+            "  ro: readonly string[];\n" +
+            "  gen: Array<boolean>;\n" +
+            "  roGen: ReadonlyArray<string>;\n" +
+            "}\n" +
+            "export function entry(p: P): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [
+            [
+              "nested",
+              {
+                kind: "array",
+                element: { kind: "array", element: { kind: "float" } },
+              },
+            ],
+            ["ro", { kind: "array", element: { kind: "str" } }],
+            ["gen", { kind: "array", element: { kind: "bool" } }],
+            ["roGen", { kind: "array", element: { kind: "str" } }],
+          ],
+        });
+      });
+
+      it("recovers a direct array parameter (not just props fields)", () => {
+        const t = convertEntryParamNoLib(
+          "interface Widget { id: number; }\n" +
+            "export function entry(items: Widget[]): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "array",
+          element: { kind: "object", fields: [["id", { kind: "float" }]] },
+        });
+      });
+
+      // str-ya5dx residual sites: each previously degraded to `{}` and crashed
+      // target `.map` / `for..of` code in the pickpackit web corpus.
+      it("recovers an array union member (Widget[] | null | undefined)", () => {
+        const t = convertEntryParamNoLib(
+          "interface Widget { id: number; }\n" +
+            "export function entry(items: Widget[] | null | undefined): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "nullable",
+          inner: {
+            kind: "array",
+            element: { kind: "object", fields: [["id", { kind: "float" }]] },
+          },
+        });
+      });
+
+      it("recovers an array-typed alias (type Widgets = Widget[])", () => {
+        const t = convertEntryParamNoLib(
+          "interface Widget { id: number; }\n" +
+            "type Widgets = Widget[];\n" +
+            "export function entry(items: Widgets): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "array",
+          element: { kind: "object", fields: [["id", { kind: "float" }]] },
+        });
+      });
+
+      it("tuple parameters already realize as iterable arrays (behavior lock)", () => {
+        // Tuples never needed the syntactic recovery — the checker resolves
+        // them positionally even lib-less. Locked here so a regression to `{}`
+        // (which breaks target iteration) is caught.
+        const t = convertEntryParamNoLib(
+          "export function entry(pair: [string, number]): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "array",
+          element: {
+            kind: "union",
+            variants: [{ kind: "str" }, { kind: "float" }],
+          },
+        });
+      });
+
+      // str-ya5dx: built-in and callable params degrade to `unknown` lib-less
+      // (no global symbol), so the core generated a random primitive and target
+      // code doing `d.getFullYear()` / `cb()` crashed with `x is not a function`.
+      it("recovers a Date param to complex/date (built-in reference recovery)", () => {
+        const t = convertEntryParamNoLib(
+          "export function entry(d: Date): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "date" });
+      });
+
+      it("recovers a RegExp param to complex/reg_exp", () => {
+        const t = convertEntryParamNoLib(
+          "export function entry(r: RegExp): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "reg_exp" });
+      });
+
+      it("recovers a function-typed param to complex/closure", () => {
+        const t = convertEntryParamNoLib(
+          "export function entry(cb: (x: number) => string): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "closure" });
+      });
+
+      it("recovers a callable field inside a props object to closure", () => {
+        const t = convertEntryParamNoLib(
+          "interface P { onClose: () => void; label: string; }\n" +
+            "export function entry(p: P): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [
+            ["onClose", { kind: "complex", complex_kind: "closure" }],
+            ["label", { kind: "str" }],
+          ],
+        });
+      });
+    });
+
+    // Review finding (Merge-with-fixes): the syntactic recovery in
+    // convertTypeWithNode must fire ONLY on the degraded shapes a lib-LESS
+    // checker produces for an array (bare `unknown` / empty-`fields` object).
+    // With lib.d.ts present it must stay inert; a looser "not already array"
+    // guard would misfire in two ways proven below.
+    describe("recovery stays inert when lib.d.ts is present (str-9cqde review)", () => {
+      // Compile `src` WITH the real standard library — lib.d.ts resolves from
+      // disk while the virtual entry file is served in-memory — then return the
+      // TypeInfo of `entry`'s sole parameter via the production convertTypeWithNode.
+      function convertEntryParamWithLib(src: string): TypeInfo {
+        const fileName = "/virtual/entry.ts";
+        const sf = ts.createSourceFile(
+          fileName,
+          src,
+          ts.ScriptTarget.ES2022,
+          true,
+        );
+        // strictNullChecks so an optional `items?: T[]` carries `| undefined`
+        // in its *type* while the declared type *node* stays a bare `T[]` — the
+        // exact combination that produces `nullable{array}` from convertType and
+        // would trip a loose recovery guard into stripping the nullable wrapper.
+        const options: ts.CompilerOptions = {
+          target: ts.ScriptTarget.ES2022,
+          strictNullChecks: true,
+        };
+        const host = ts.createCompilerHost(options, true);
+        const origGetSourceFile = host.getSourceFile.bind(host);
+        host.getSourceFile = (fn, v, onError, shouldCreate) =>
+          fn === fileName ? sf : origGetSourceFile(fn, v, onError, shouldCreate);
+        const origFileExists = host.fileExists.bind(host);
+        host.fileExists = (fn) => fn === fileName || origFileExists(fn);
+        const program = ts.createProgram([fileName], options, host);
+        const checker = program.getTypeChecker();
+        let result: TypeInfo | undefined;
+        const visit = (node: ts.Node): void => {
+          if (ts.isFunctionDeclaration(node) && node.name?.text === "entry") {
+            const param = node.parameters[0]!;
+            const type = checker.getTypeAtLocation(param);
+            result = convertTypeWithNode(type, param.type, checker, sf, new Set());
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(sf);
+        if (!result) throw new Error("entry not found");
+        return result;
+      }
+
+      it("sanity: lib IS resolvable here (isArrayType true for T[])", () => {
+        // Guard the premise: if lib stopped resolving, isArrayType would be
+        // false and the no-misfire assertions below would become vacuous.
+        const fileName = "/virtual/entry.ts";
+        const sf = ts.createSourceFile(
+          fileName,
+          "export function entry(xs: string[]): void {}\n",
+          ts.ScriptTarget.ES2022,
+          true,
+        );
+        const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022 };
+        const host = ts.createCompilerHost(options, true);
+        const orig = host.getSourceFile.bind(host);
+        host.getSourceFile = (fn, v, e, s) =>
+          fn === fileName ? sf : orig(fn, v, e, s);
+        const origExists = host.fileExists.bind(host);
+        host.fileExists = (fn) => fn === fileName || origExists(fn);
+        const program = ts.createProgram([fileName], options, host);
+        const checker = program.getTypeChecker();
+        let isArr = false;
+        const visit = (node: ts.Node): void => {
+          if (ts.isFunctionDeclaration(node) && node.name?.text === "entry") {
+            isArr = checker.isArrayType(
+              checker.getTypeAtLocation(node.parameters[0]!),
+            );
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(sf);
+        expect(isArr).toBe(true);
+      });
+
+      // Misfire (a): an OPTIONAL array param converts to `nullable{array}`.
+      // The loose guard would strip the nullable wrapper (recovery returns a
+      // bare `array`), a double conversion masked only because analyzeParameter
+      // re-wraps on the `?` token. The degraded-shape gate leaves it untouched.
+      it("keeps an optional array parameter nullable (no wrapper stripping)", () => {
+        const t = convertEntryParamWithLib(
+          "interface Widget { id: number; }\n" +
+            "export function entry(items?: Widget[]): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "nullable",
+          inner: {
+            kind: "array",
+            element: { kind: "object", fields: [["id", { kind: "float" }]] },
+          },
+        });
+      });
+
+      // Misfire (b): a user type literally named `Array` (shadowing the global
+      // in a namespace, so no declaration merging) resolves to a real object.
+      // `arrayElementTypeNode` keys off the identifier text `Array`, so the
+      // loose guard would override the object to a bogus `array` kind. The
+      // degraded-shape gate returns the object unchanged.
+      it("does not override a user type named Array<T> to array kind", () => {
+        const t = convertEntryParamWithLib(
+          "namespace Shadow {\n" +
+            "  export interface Array<T> { widgets: T }\n" +
+            "  export function entry(x: Array<number>): void {}\n" +
+            "}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [["widgets", { kind: "float" }]],
+        });
+      });
+
+      // str-ya5dx: with lib present, a standalone function param and a callable
+      // object method field both resolve to `closure` (the checker exposes the
+      // call signature), so the core generates an invocable stub instead of the
+      // old non-callable `unknown` shape-mock that crashed `response.text()`.
+      it("maps a lib-present function param to closure", () => {
+        const t = convertEntryParamWithLib(
+          "export function entry(cb: (x: number) => string): void {}\n",
+        );
+        expect(t).toEqual({ kind: "complex", complex_kind: "closure" });
+      });
+
+      it("maps a lib-present callable method field to closure", () => {
+        const t = convertEntryParamWithLib(
+          "interface Api { text: () => string; ok: boolean; }\n" +
+            "export function entry(a: Api): void {}\n",
+        );
+        expect(t).toEqual({
+          kind: "object",
+          fields: [
+            ["text", { kind: "complex", complex_kind: "closure" }],
+            ["ok", { kind: "bool" }],
+          ],
+        });
+      });
+    });
+  });
+
   describe("union and nullable types", () => {
     it("extracts string | number union", () => {
       const results = analyzeFile(path.join(fixtures, "unions.ts"), "format");
@@ -298,6 +785,64 @@ describe("analyzeFile", () => {
         kind: "nullable",
         inner: { kind: "union", variants: [{ kind: "str" }, { kind: "float" }] },
       });
+    });
+  });
+
+  describe("enum and literal-union value domains (str-knf0v)", () => {
+    it("emits enum_values for a literal-union alias parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "pickMode");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "str" }],
+        enum_values: ["fast", "slow", "off"],
+      });
+    });
+
+    it("emits enum_values for a string enum parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "classify");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "str" }],
+        enum_values: ["RED", "GREEN", "BLUE"],
+      });
+    });
+
+    it("emits forward numeric member values for a numeric enum parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "rank");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "float" }],
+        enum_values: [1, 2, 3],
+      });
+    });
+
+    it("emits enum_values for a single-member numeric enum parameter", () => {
+      const results = analyzeFile(path.join(fixtures, "enum-values.ts"), "solo");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      expect(fn.params[0]!.type).toEqual({
+        kind: "union",
+        variants: [{ kind: "float" }],
+        enum_values: [7],
+      });
+    });
+
+    it("does not emit enum_values for a widened primitive union", () => {
+      const results = analyzeFile(path.join(fixtures, "unions.ts"), "format");
+      expect(results).toHaveLength(1);
+      const fn = results[0]!;
+      const typ = fn.params[0]!.type;
+      expect(typ).toEqual({
+        kind: "union",
+        variants: [{ kind: "str" }, { kind: "float" }],
+      });
+      expect(typ.kind === "union" && typ.enum_values).toBeUndefined();
     });
   });
 

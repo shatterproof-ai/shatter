@@ -219,7 +219,7 @@ fn json_matches_type(value: &Value, ty: &TypeInfo) -> bool {
     match (value, ty) {
         (Value::Null, TypeInfo::Nullable { .. }) => true,
         (_, TypeInfo::Nullable { inner }) => json_matches_type(value, inner),
-        (Value::Number(n), TypeInfo::Int) => n.as_i64().is_some(),
+        (Value::Number(n), TypeInfo::Int { .. }) => n.as_i64().is_some(),
         (Value::Number(n), TypeInfo::Float) => n.as_f64().is_some(),
         (Value::String(_), TypeInfo::Str) => true,
         (Value::Bool(_), TypeInfo::Bool) => true,
@@ -232,7 +232,7 @@ fn json_matches_type(value: &Value, ty: &TypeInfo) -> bool {
                     .is_some_and(|v| json_matches_type(v, field_ty))
             })
         }
-        (_, TypeInfo::Union { variants }) => variants.iter().any(|v| json_matches_type(value, v)),
+        (_, TypeInfo::Union { variants, .. }) => variants.iter().any(|v| json_matches_type(value, v)),
         // Unknown/Complex/Opaque — can't validate statically, accept anything.
         (_, TypeInfo::Unknown | TypeInfo::Complex { .. } | TypeInfo::Opaque { .. }) => true,
         _ => false,
@@ -471,7 +471,7 @@ mod tests {
             },
             return_values: Some(vec![json!({"id": 1}), json!({"id": 2})]),
             return_type: Some(TypeInfo::Object {
-                fields: vec![("id".into(), TypeInfo::Int)],
+                fields: vec![("id".into(), TypeInfo::Int { int_width: None, int_signed: None })],
             }),
             expectations: Some(MockExpectations {
                 called_with: Some(vec![vec![ArgMatcher::Exact {
@@ -500,7 +500,7 @@ mod tests {
                     "db.query",
                     vec![json!({"id": 1, "name": "Alice"})],
                     TypeInfo::Object {
-                        fields: vec![("id".into(), TypeInfo::Int), ("name".into(), TypeInfo::Str)],
+                        fields: vec![("id".into(), TypeInfo::Int { int_width: None, int_signed: None }), ("name".into(), TypeInfo::Str)],
                     },
                 )],
             )],
@@ -655,7 +655,7 @@ mod tests {
             vec![fixture_with_values(
                 "db.query",
                 vec![json!(42), json!(-1)],
-                TypeInfo::Int,
+                TypeInfo::Int { int_width: None, int_signed: None },
             )],
             vec![],
             vec![],
@@ -671,7 +671,7 @@ mod tests {
             vec![fixture_with_values(
                 "db.query",
                 vec![json!(42), json!("not_an_int")],
-                TypeInfo::Int,
+                TypeInfo::Int { int_width: None, int_signed: None },
             )],
             vec![],
             vec![],
@@ -737,7 +737,8 @@ mod tests {
                 "parse",
                 vec![json!(42), json!("hello")],
                 TypeInfo::Union {
-                    variants: vec![TypeInfo::Int, TypeInfo::Str],
+                    variants: vec![TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str],
+                    enum_values: Vec::new(),
                 },
             )],
             vec![],
@@ -755,7 +756,7 @@ mod tests {
                 "getIds",
                 vec![json!([1, 2, 3]), json!([1, "oops"])],
                 TypeInfo::Array {
-                    element: Box::new(TypeInfo::Int),
+                    element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
                 },
             )],
             vec![],
@@ -777,7 +778,7 @@ mod tests {
                 "getUser",
                 vec![json!({"id": 1, "name": "Alice"}), json!({"id": "bad"})],
                 TypeInfo::Object {
-                    fields: vec![("id".into(), TypeInfo::Int)],
+                    fields: vec![("id".into(), TypeInfo::Int { int_width: None, int_signed: None })],
                 },
             )],
             vec![],
@@ -1035,9 +1036,9 @@ mod tests {
 
     #[test]
     fn json_matches_int() {
-        assert!(json_matches_type(&json!(42), &TypeInfo::Int));
-        assert!(!json_matches_type(&json!(2.5), &TypeInfo::Int));
-        assert!(!json_matches_type(&json!("hi"), &TypeInfo::Int));
+        assert!(json_matches_type(&json!(42), &TypeInfo::Int { int_width: None, int_signed: None }));
+        assert!(!json_matches_type(&json!(2.5), &TypeInfo::Int { int_width: None, int_signed: None }));
+        assert!(!json_matches_type(&json!("hi"), &TypeInfo::Int { int_width: None, int_signed: None }));
     }
 
     #[test]
@@ -1051,7 +1052,7 @@ mod tests {
     fn json_matches_nested_array() {
         let ty = TypeInfo::Array {
             element: Box::new(TypeInfo::Array {
-                element: Box::new(TypeInfo::Int),
+                element: Box::new(TypeInfo::Int { int_width: None, int_signed: None }),
             }),
         };
         assert!(json_matches_type(&json!([[1, 2], [3]]), &ty));
@@ -1085,7 +1086,7 @@ mod tests {
 
         fn arb_type_info_leaf() -> impl Strategy<Value = TypeInfo> {
             prop_oneof![
-                Just(TypeInfo::Int),
+                Just(TypeInfo::Int { int_width: None, int_signed: None }),
                 Just(TypeInfo::Float),
                 Just(TypeInfo::Str),
                 Just(TypeInfo::Bool),
@@ -1298,7 +1299,7 @@ mod tests {
                                 symbol: "x".into(),
                                 value_space: MockValueSpace::FixedSet { values: vec![json!(s.clone())] },
                                 return_values: Some(vec![json!(s)]),
-                                return_type: Some(TypeInfo::Int),
+                                return_type: Some(TypeInfo::Int { int_width: None, int_signed: None }),
                                 expectations: None,
                             },
                         )]

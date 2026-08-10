@@ -130,7 +130,7 @@ mod tests {
             },
         };
         let params = vec![
-            make_param("x", TypeInfo::Int),
+            make_param("x", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("y", TypeInfo::Str),
         ];
         assert_eq!(identify_blocking_params(&constraint, &params), vec![0]);
@@ -152,7 +152,7 @@ mod tests {
             },
         };
         let params = vec![
-            make_param("x", TypeInfo::Int),
+            make_param("x", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("y", TypeInfo::Bool),
             make_param("z", TypeInfo::Str),
         ];
@@ -164,7 +164,7 @@ mod tests {
         let constraint = SymConstraint::Unknown {
             hint: "opaque".into(),
         };
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
         assert_eq!(
             identify_blocking_params(&constraint, &params),
             Vec::<usize>::new()
@@ -179,7 +179,7 @@ mod tests {
                 path: vec![],
             },
         };
-        let params = vec![make_param("x", TypeInfo::Int)];
+        let params = vec![make_param("x", TypeInfo::Int { int_width: None, int_signed: None })];
         assert_eq!(
             identify_blocking_params(&constraint, &params),
             Vec::<usize>::new()
@@ -191,7 +191,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let best_prefix = vec![json!(10), json!("hello"), json!(true)];
         let params = vec![
-            make_param("a", TypeInfo::Int),
+            make_param("a", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("b", TypeInfo::Str),
             make_param("c", TypeInfo::Bool),
         ];
@@ -212,7 +212,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(99);
         let best_prefix = vec![json!(5), json!("test")];
         let params = vec![
-            make_param("a", TypeInfo::Int),
+            make_param("a", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("b", TypeInfo::Str),
         ];
 
@@ -231,7 +231,7 @@ mod tests {
     fn drilled_inputs_out_of_bounds_index_skipped() {
         let mut rng = StdRng::seed_from_u64(1);
         let best_prefix = vec![json!(1)];
-        let params = vec![make_param("a", TypeInfo::Int)];
+        let params = vec![make_param("a", TypeInfo::Int { int_width: None, int_signed: None })];
         // blocking index 5 is out of bounds
         let results = generate_drilled_inputs(&best_prefix, &[5], &params, 4, &mut rng);
         assert!(results.is_empty());
@@ -242,7 +242,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(77);
         let best_prefix = vec![json!(1), json!("a"), json!(false)];
         let params = vec![
-            make_param("x", TypeInfo::Int),
+            make_param("x", TypeInfo::Int { int_width: None, int_signed: None }),
             make_param("y", TypeInfo::Str),
             make_param("z", TypeInfo::Bool),
         ];

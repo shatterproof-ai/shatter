@@ -1,0 +1,16 @@
+# str-2nfoe end-to-end fixture crate for Rust enum value-domain extraction.
+#
+# This manifest exists only to bound the analyzer's crate-root walk to this
+# directory (see `find_crate_root` in shatter-rust): without it, analyzing the
+# fixture would resolve the crate root to the shatter workspace and scan every
+# `.rs` file in the repo. The crate is never built — the Rust frontend generates
+# its own harness crate from the analyzed source. `examples/rust` is excluded
+# from the workspace, so this manifest does not affect the workspace build.
+[package]
+name = "enum-color-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/color.rs"

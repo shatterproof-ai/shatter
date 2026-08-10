@@ -144,7 +144,7 @@ fn neutral_defaults(params: &[ParamInfo]) -> Vec<Value> {
     params
         .iter()
         .map(|p| match &p.typ {
-            TypeInfo::Int => json!(1),
+            TypeInfo::Int { .. } => json!(1),
             TypeInfo::Float => json!(1.0),
             TypeInfo::Str => json!("test"),
             TypeInfo::Bool => json!(true),
@@ -245,7 +245,7 @@ mod tests {
     fn float_param_indices_empty_when_no_floats() {
         let params = vec![
             make_param("name", TypeInfo::Str),
-            make_param("count", TypeInfo::Int),
+            make_param("count", TypeInfo::Int { int_width: None, int_signed: None }),
         ];
         assert!(float_param_indices(&params).is_empty());
     }

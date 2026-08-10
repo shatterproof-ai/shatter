@@ -343,7 +343,7 @@ pub fn arb_sym_expr(depth: u32) -> BoxedStrategy<SymExpr> {
 /// Arbitrary TypeInfo with bounded structural depth.
 pub fn arb_type_info(depth: u32) -> BoxedStrategy<TypeInfo> {
     let leaf = prop_oneof![
-        Just(TypeInfo::Int),
+        Just(TypeInfo::Int { int_width: None, int_signed: None }),
         Just(TypeInfo::Float),
         Just(TypeInfo::Str),
         Just(TypeInfo::Bool),
@@ -383,7 +383,10 @@ pub fn arb_type_info(depth: u32) -> BoxedStrategy<TypeInfo> {
                 )
                 .prop_map(|fields| TypeInfo::Object { fields }),
             1 => prop::collection::vec(arb_type_info(depth - 1), 2..=4)
-                .prop_map(|variants| TypeInfo::Union { variants }),
+                .prop_map(|variants| TypeInfo::Union {
+                    variants,
+                    enum_values: Vec::new(),
+                }),
             1 => arb_type_info(depth - 1)
                 .prop_map(|inner| TypeInfo::Nullable { inner: Box::new(inner) }),
         ]

@@ -137,9 +137,18 @@ fn sorts_compatible(a: Sort, b: Sort) -> bool {
 fn type_info_to_sort(ty: &TypeInfo) -> Sort {
     match ty {
         TypeInfo::Str => Sort::Str,
-        TypeInfo::Int => Sort::Int,
+        TypeInfo::Int { .. } => Sort::Int,
         TypeInfo::Float => Sort::Real,
         TypeInfo::Bool => Sort::Bool,
+        // A closed string-value domain (str-2nfoe fieldless enum / Go const set /
+        // TS string-literal union) is a Str at the Z3 level, not the Int default
+        // below. An int-domain `enum_values` (serde_repr) already falls through
+        // to the Int default correctly, so no extra arm is needed for it.
+        TypeInfo::Union { enum_values, .. }
+            if !enum_values.is_empty() && enum_values.iter().all(|v| v.is_string()) =>
+        {
+            Sort::Str
+        }
         // Nullable<inner> uses the inner type's sort for Z3 purposes
         TypeInfo::Nullable { inner } => type_info_to_sort(inner),
         // Default to Int for types Z3 can't represent (arrays, objects, unions, etc.)
@@ -153,6 +162,233 @@ fn build_param_sorts(param_infos: &[ParamInfo]) -> HashMap<String, Sort> {
         .iter()
         .map(|p| (p.name.clone(), type_info_to_sort(&p.typ)))
         .collect()
+}
+
+/// Assert the value-range bounds implied by each sized integer parameter
+/// (str-ddxe). Without these bounds Z3 would freely pick values like `926` for a
+/// `u8` param, which then fail to deserialize into the narrow field. Only widths
+/// whose range fits in `i64` are bounded (see [`TypeInfo::int_range`]); wider
+/// types stay unconstrained.
+fn assert_int_param_ranges(solver: &Solver, vars: &mut VarTable, param_infos: &[ParamInfo]) {
+    for p in param_infos {
+        if let Some((min, max)) = p.typ.int_range() {
+            let v = vars.get_or_create_int(&p.name);
+            solver.assert(v.ge(Int::from_i64(min)));
+            solver.assert(v.le(Int::from_i64(max)));
+        }
+    }
+}
+
+/// Collect the closed string-value domain of every `Union.enum_values` node
+/// reachable from `ty`, keyed by the flattened Z3 variable name (str-mambd).
+/// `enum_values` is the str-2nfoe concrete value domain (Go `const` sets, TS
+/// string-literal unions, Rust fieldless enums); only the all-string case has
+/// a clean Z3 domain here — an int-domain (`serde_repr`) `enum_values` is
+/// left unconstrained, a narrower but still correct scope than doing nothing.
+fn collect_enum_domains(
+    name: &str,
+    path: &mut Vec<String>,
+    ty: &TypeInfo,
+    out: &mut Vec<(String, Vec<String>)>,
+) {
+    match ty {
+        TypeInfo::Union { enum_values, .. } => {
+            if enum_values.is_empty() {
+                return;
+            }
+            let mut strs = Vec::with_capacity(enum_values.len());
+            for v in enum_values {
+                match v.as_str() {
+                    Some(s) => strs.push(s.to_string()),
+                    None => return,
+                }
+            }
+            out.push((param_var_name(name, path), strs));
+        }
+        TypeInfo::Nullable { inner } => collect_enum_domains(name, path, inner, out),
+        TypeInfo::Object { fields } => {
+            for (field, fty) in fields {
+                path.push(field.clone());
+                collect_enum_domains(name, path, fty, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Alphanumeric, lowercase-folded form of `s`, discarding whitespace,
+/// separators (`::`, `_`, `-`), and case — used to bridge the several raw
+/// textual spellings the Rust frontend emits for the same logical name/value
+/// (see `assert_enum_param_domains`'s doc for the concrete cases).
+fn normalize_ident(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Resolve a match-arm constraint's raw constant text (e.g. the syn tokens for
+/// `TripPurpose :: Personal`) to one of a closed enum's wire-value `variants`
+/// (e.g. `"personal"`). `rename_all` only changes case/separators, never
+/// reordering, so the wire value's characters always survive as a SUFFIX of
+/// the normalized raw text (which is `EnumName` + `VariantName` concatenated)
+/// — matching on that, rather than exact equality, works without needing to
+/// know which `rename_all` rule (if any) actually applies.
+fn resolve_raw_enum_value<'a>(raw: &str, variants: &'a [String]) -> Option<&'a str> {
+    let norm_raw = normalize_ident(raw);
+    variants.iter().map(String::as_str).find(|value| {
+        let norm_value = normalize_ident(value);
+        !norm_value.is_empty() && norm_raw.ends_with(&norm_value)
+    })
+}
+
+/// Extract `(clean_var_name, wire_value)` observations for closed-domain enum
+/// vars appearing in `constraints`, using [`resolve_raw_enum_value`] to link a
+/// match arm's raw pattern text back to its wire value. `Z3SolverStrategy`
+/// accumulates these across solve calls into the `enum_history` that
+/// [`solve_for_new_path_with_enum_history`] needs to avoid the two-value
+/// oscillation described in [`assert_enum_param_domains`]'s doc (str-mambd).
+pub(crate) fn extract_enum_observations(
+    constraints: &[SymExpr],
+    param_infos: &[ParamInfo],
+) -> Vec<(String, String)> {
+    let mut domains = Vec::new();
+    for p in param_infos {
+        let mut path = Vec::new();
+        collect_enum_domains(&p.name, &mut path, &p.typ, &mut domains);
+    }
+    if domains.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for c in constraints {
+        let SymExpr::BinOp {
+            op: BinOpKind::Eq | BinOpKind::Ne,
+            left,
+            right,
+        } = c
+        else {
+            continue;
+        };
+        let (param_name, const_side) = match (left.as_ref(), right.as_ref()) {
+            (SymExpr::Param { name, path }, SymExpr::Const(ConstValue::Str(s))) => {
+                (param_var_name(name, path), s)
+            }
+            (SymExpr::Const(ConstValue::Str(s)), SymExpr::Param { name, path }) => {
+                (param_var_name(name, path), s)
+            }
+            _ => continue,
+        };
+        let norm_param = normalize_ident(&param_name);
+        for (var_name, variants) in &domains {
+            if normalize_ident(var_name) != norm_param {
+                continue;
+            }
+            if let Some(value) = resolve_raw_enum_value(const_side, variants) {
+                out.push((var_name.clone(), value.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Constrain every closed string-value-domain param/field to its known
+/// members so Z3 cannot return an out-of-domain string when negating an
+/// equality on the discriminant (str-mambd). Without this, `match t.purpose
+/// { … }` negation can yield the empty string, which then fails to
+/// deserialize into the target enum ("unknown variant ``"). This is the
+/// concolic-path counterpart to the random generator drawing enum fields from
+/// `Union.enum_values` (str-2nfoe) — the parallel path the repo's completion
+/// checklist requires covering.
+///
+/// Only vars that already participate in the asserted constraints (present
+/// as string vars) are constrained: a field the path never touches keeps its
+/// seed value through the overlay and needs no solver domain. Must be called
+/// after all path constraints are asserted so `vars.strings` is populated.
+///
+/// The Rust frontend derives a match constraint's `Param` name from
+/// `syn::to_token_stream().to_string()` (`instrument.rs`), which inserts a
+/// space around every token — a field access `t.purpose` becomes the literal
+/// name `"t . purpose"`, not the clean `"t.purpose"` `param_var_name` builds
+/// from `(name, path)`. The rest of the pipeline already treats these two
+/// forms as the same variable (`solved_object_path` in `orchestrator.rs`
+/// splits on `.` and trims each segment), so domain lookup here must be
+/// whitespace-insensitive too — otherwise it silently misses the real var and
+/// either no-ops or creates an unrelated, unconstrained one under the clean
+/// name. `normalize_ident` (alphanumeric-only) subsumes that whitespace
+/// stripping.
+///
+/// `constraints` is also scanned (via [`extract_enum_observations`]) for
+/// equalities against an enum var whose constant is the RAW match-arm
+/// pattern text rather than the wire value (e.g. `t.purpose == "TripPurpose
+/// :: Personal"`, not `"personal"`) — the same `instrument.rs` quirk. Domain
+/// membership alone doesn't stop the solver from re-deriving the value the
+/// path already took: the negated condition never literally equals any wire
+/// value, so it excludes nothing, and Z3 returns the same deterministic model
+/// every call, wedging exploration on one arm forever. Excluding the
+/// resolved value forces re-solving toward a genuinely different one.
+///
+/// `enum_history`, when present, additionally excludes every wire value the
+/// caller has already tried for a var *across prior solve calls* (keyed by
+/// the clean `param_var_name` form). Excluding only THIS call's own
+/// constraint is not enough on its own: each match arm only ever produces a
+/// single-constraint observation for itself, so solving from the "personal"
+/// arm excludes "personal" and lands on e.g. "business", but the next solve
+/// (now observing the "business" arm) excludes only "business" and — with no
+/// memory of "personal" — cycles straight back to it, oscillating between two
+/// values forever instead of covering every variant. `Z3SolverStrategy` is
+/// the only caller with cross-call history to supply here.
+fn assert_enum_param_domains(
+    solver: &Solver,
+    vars: &mut VarTable,
+    param_infos: &[ParamInfo],
+    constraints: &[SymExpr],
+    enum_history: Option<&HashMap<String, Vec<String>>>,
+) {
+    let mut domains = Vec::new();
+    for p in param_infos {
+        let mut path = Vec::new();
+        collect_enum_domains(&p.name, &mut path, &p.typ, &mut domains);
+    }
+    if domains.is_empty() {
+        return;
+    }
+    let observed = extract_enum_observations(constraints, param_infos);
+    let actual_keys: Vec<String> = vars.strings.keys().cloned().collect();
+    for (var_name, variants) in domains {
+        let target = normalize_ident(&var_name);
+        let Some(actual_key) = actual_keys.iter().find(|k| normalize_ident(k) == target) else {
+            continue;
+        };
+        let var = vars.get_or_create_string(actual_key);
+        let eqs: Vec<Bool> = variants
+            .iter()
+            .filter_map(|value| Z3String::from_str(value).ok().map(|lit| var.eq(&lit)))
+            .collect();
+        if eqs.is_empty() {
+            continue;
+        }
+        let refs: Vec<&Bool> = eqs.iter().collect();
+        solver.assert(Bool::or(&refs));
+
+        let excluded = observed
+            .iter()
+            .filter(|(name, _)| name == &var_name)
+            .map(|(_, value)| value.as_str())
+            .chain(
+                enum_history
+                    .and_then(|h| h.get(&var_name))
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            );
+        for value in excluded {
+            if let Ok(lit) = Z3String::from_str(value) {
+                solver.assert(var.eq(&lit).not());
+            }
+        }
+    }
 }
 
 /// Infer the sort a `SymExpr` should have, based on the constants and operators it contains.
@@ -863,8 +1099,17 @@ fn concrete_value_matches_type(value: &ConcreteValue, ty: &TypeInfo) -> bool {
     match (value, ty) {
         // Numeric types are interchangeable — Z3 may solve a Float param as Int
         // when the constraints only use integer comparisons, and vice versa.
-        (ConcreteValue::Int(_) | ConcreteValue::Float(_), TypeInfo::Int | TypeInfo::Float) => true,
+        (ConcreteValue::Int(_) | ConcreteValue::Float(_), TypeInfo::Int { .. } | TypeInfo::Float) => {
+            true
+        }
         (ConcreteValue::Str(_), TypeInfo::Str) => true,
+        // A closed string-value domain is a Str at the Z3 level — see
+        // `type_info_to_sort`'s matching arm.
+        (ConcreteValue::Str(_), TypeInfo::Union { enum_values, .. })
+            if !enum_values.is_empty() && enum_values.iter().all(|v| v.is_string()) =>
+        {
+            true
+        }
         (ConcreteValue::Bool(_), TypeInfo::Bool) => true,
         // Nullable<inner> — the solved value should match the inner type
         (_, TypeInfo::Nullable { inner }) => concrete_value_matches_type(value, inner),
@@ -919,6 +1164,41 @@ pub fn solve_for_new_path(
     solver_timeout_ms: Option<u64>,
     param_infos: &[ParamInfo],
 ) -> Result<SolveResult, SolverError> {
+    solve_for_new_path_impl(constraints, negate_index, solver_timeout_ms, param_infos, None)
+}
+
+/// Same as [`solve_for_new_path`], but additionally excludes wire values
+/// already tried for closed-domain enum vars across prior solve calls in the
+/// same exploration session (str-mambd) — see [`assert_enum_param_domains`]'s
+/// doc for why a single call's own constraints aren't enough to avoid
+/// cycling between two variants forever. Only `Z3SolverStrategy`, which owns
+/// that session-scoped history, should call this.
+#[requires(negate_index < constraints.len(), "negate_index must be within constraints bounds")]
+#[contracts::ensures(solved_values_match_param_types(ret.as_ref(), param_infos),
+    "solved value types must be compatible with declared ParamInfo types")]
+pub(crate) fn solve_for_new_path_with_enum_history(
+    constraints: &[SymExpr],
+    negate_index: usize,
+    solver_timeout_ms: Option<u64>,
+    param_infos: &[ParamInfo],
+    enum_history: &HashMap<String, Vec<String>>,
+) -> Result<SolveResult, SolverError> {
+    solve_for_new_path_impl(
+        constraints,
+        negate_index,
+        solver_timeout_ms,
+        param_infos,
+        Some(enum_history),
+    )
+}
+
+fn solve_for_new_path_impl(
+    constraints: &[SymExpr],
+    negate_index: usize,
+    solver_timeout_ms: Option<u64>,
+    param_infos: &[ParamInfo],
+    enum_history: Option<&HashMap<String, Vec<String>>>,
+) -> Result<SolveResult, SolverError> {
     if negate_index >= constraints.len() {
         return Err(SolverError::Unsupported(format!(
             "negate_index {negate_index} out of bounds (len={})",
@@ -940,6 +1220,9 @@ pub fn solve_for_new_path(
         let solver = Solver::new();
         let mut vars = VarTable::new(param_sorts.clone());
 
+        // Constrain sized integer params to their type range (str-ddxe).
+        assert_int_param_ranges(&solver, &mut vars, param_infos);
+
         // Assert the prefix constraints as-is.
         for constraint in &constraints[..negate_index] {
             let sort = infer_operand_sort(constraint);
@@ -952,6 +1235,9 @@ pub fn solve_for_new_path(
         let sort = infer_operand_sort(target);
         let target_bool = to_z3_bool_constraint(&mut vars, target, sort)?;
         solver.assert(target_bool.not());
+
+        // Keep closed-domain enum fields within their known members (str-mambd).
+        assert_enum_param_domains(&solver, &mut vars, param_infos, constraints, enum_history);
 
         check_and_extract(&solver, &vars)
     })
@@ -974,11 +1260,17 @@ pub fn solve_constraints(
         let solver = Solver::new();
         let mut vars = VarTable::new(param_sorts.clone());
 
+        // Constrain sized integer params to their type range (str-ddxe).
+        assert_int_param_ranges(&solver, &mut vars, param_infos);
+
         for constraint in constraints {
             let sort = infer_operand_sort(constraint);
             let bool_expr = to_z3_bool_constraint(&mut vars, constraint, sort)?;
             solver.assert(&bool_expr);
         }
+
+        // Keep closed-domain enum fields within their known members (str-mambd).
+        assert_enum_param_domains(&solver, &mut vars, param_infos, constraints, None);
 
         check_and_extract(&solver, &vars)
     })
@@ -1058,6 +1350,9 @@ pub fn solve_for_mcdc_independence(
         let solver = Solver::new();
         let mut vars = VarTable::new(param_sorts.clone());
 
+        // Constrain sized integer params to their type range (str-ddxe).
+        assert_int_param_ranges(&solver, &mut vars, param_infos);
+
         // Assert all prefix constraints (path leading up to this decision).
         for constraint in prefix {
             let sort = infer_operand_sort(constraint);
@@ -1097,6 +1392,9 @@ pub fn solve_for_mcdc_independence(
         } else {
             solver.assert(&target_bool);
         }
+
+        // Keep closed-domain enum fields within their known members (str-mambd).
+        assert_enum_param_domains(&solver, &mut vars, param_infos, conditions, None);
 
         check_and_extract(&solver, &vars)
     })
@@ -1216,6 +1514,249 @@ mod tests {
             }
             SolveResult::Unsat => panic!("expected sat, got unsat"),
         }
+    }
+
+    fn enum_union(values: &[&str]) -> TypeInfo {
+        TypeInfo::Union {
+            variants: vec![TypeInfo::Str],
+            enum_values: values.iter().map(|v| serde_json::json!(v)).collect(),
+        }
+    }
+
+    #[test]
+    fn enum_param_domain_keeps_solver_within_variants() {
+        // str-mambd: negating `p == "personal"` on a closed-string-domain param
+        // (str-2nfoe `enum_values`) must flip to ANOTHER real member, never an
+        // out-of-domain string like "" that fails enum deserialization.
+        let variants = ["personal", "business", "medical", "family", "other"];
+        let param = ParamInfo {
+            name: "p".into(),
+            typ: enum_union(&variants),
+            type_name: None,
+        };
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(str_param("p")),
+            right: Box::new(SymExpr::Const(ConstValue::Str("personal".into()))),
+        };
+        let result =
+            solve_for_new_path(&[constraint], 0, None, &[param]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("p") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for p, got {other:?}"),
+                };
+                assert_ne!(s, "personal", "negation must flip away from the seed");
+                assert!(
+                    variants.contains(&s.as_str()),
+                    "solved value {s:?} must be a real variant, not out-of-domain"
+                );
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn enum_object_field_domain_keeps_solver_within_variants() {
+        // str-mambd: the same guarantee for a closed-domain enum FIELD of a
+        // struct param (Trip.purpose), whose flattened Z3 var is `t.purpose`.
+        let variants = ["personal", "business"];
+        let param = ParamInfo {
+            name: "t".into(),
+            typ: TypeInfo::Object {
+                fields: vec![("purpose".to_string(), enum_union(&variants))],
+            },
+            type_name: Some("Trip".into()),
+        };
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "t".into(),
+                path: vec!["purpose".into()],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("personal".into()))),
+        };
+        let result =
+            solve_for_new_path(&[constraint], 0, None, &[param]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("t.purpose") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for t.purpose, got {other:?}"),
+                };
+                assert!(
+                    variants.contains(&s.as_str()),
+                    "solved field value {s:?} must be a real variant, not out-of-domain"
+                );
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn enum_domain_matches_rust_match_arm_raw_token_name() {
+        // str-mambd: the Rust frontend's match-arm instrumentation names a Param
+        // from `syn::to_token_stream().to_string()`, which spaces every token —
+        // `t.purpose` becomes the literal name "t . purpose" with an EMPTY path,
+        // not the clean (name="t", path=["purpose"]) form other frontends use.
+        // Domain lookup must still find and constrain that variable.
+        let variants = ["personal", "business", "medical", "family", "other"];
+        let param = ParamInfo {
+            name: "t".into(),
+            typ: TypeInfo::Object {
+                fields: vec![("purpose".to_string(), enum_union(&variants))],
+            },
+            type_name: Some("Trip".into()),
+        };
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "t . purpose".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str("personal".into()))),
+        };
+        let result =
+            solve_for_new_path(&[constraint], 0, None, &[param]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("t . purpose") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for 't . purpose', got {other:?}"),
+                };
+                assert!(
+                    variants.contains(&s.as_str()),
+                    "solved value {s:?} must be a real variant, not out-of-domain"
+                );
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn enum_domain_resolves_raw_match_arm_pattern_to_wire_value() {
+        // str-mambd: a Rust match arm's constraint constant is the raw pattern
+        // text ("TripPurpose :: Personal"), not the wire value ("personal").
+        // Negating that constraint must still exclude the wire value it
+        // resolves to — otherwise domain membership alone lets Z3 trivially
+        // re-derive "personal" (the negated condition never literally equals
+        // any real wire value, so it excludes nothing on its own).
+        let variants = ["personal", "business", "medical", "family", "other"];
+        let param = ParamInfo {
+            name: "t".into(),
+            typ: TypeInfo::Object {
+                fields: vec![("purpose".to_string(), enum_union(&variants))],
+            },
+            type_name: Some("Trip".into()),
+        };
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "t . purpose".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str(
+                "TripPurpose :: Personal".into(),
+            ))),
+        };
+        let result =
+            solve_for_new_path(&[constraint], 0, None, &[param]).expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("t . purpose") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for 't . purpose', got {other:?}"),
+                };
+                assert_ne!(
+                    s, "personal",
+                    "negation must resolve the raw pattern text back to its wire value \
+                     and exclude it, not trivially re-derive it"
+                );
+                assert!(
+                    variants.contains(&s.as_str()),
+                    "solved value {s:?} must be a real variant, not out-of-domain"
+                );
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn enum_history_prevents_oscillation_between_two_variants() {
+        // str-mambd: a single call's own constraint only ever carries ONE
+        // observation for a Rust match-arm var (each arm's raw pattern text
+        // resolves to just that arm's wire value). Without cross-call history,
+        // negating from "business" (having previously excluded only "personal")
+        // can cycle straight back to "personal" forever. `enum_history` records
+        // wire values tried in EARLIER calls so a later call excludes them too.
+        let variants = ["personal", "business", "medical", "family", "other"];
+        let param = ParamInfo {
+            name: "t".into(),
+            typ: TypeInfo::Object {
+                fields: vec![("purpose".to_string(), enum_union(&variants))],
+            },
+            type_name: Some("Trip".into()),
+        };
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "t . purpose".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str(
+                "TripPurpose :: Business".into(),
+            ))),
+        };
+        let mut history = HashMap::new();
+        history.insert("t.purpose".to_string(), vec!["personal".to_string()]);
+        let result = solve_for_new_path_with_enum_history(&[constraint], 0, None, &[param], &history)
+            .expect("solver should not error");
+        match result {
+            SolveResult::Sat(values) => {
+                let s = match values.get("t . purpose") {
+                    Some(ConcreteValue::Str(v)) => v.clone(),
+                    other => panic!("expected Str for 't . purpose', got {other:?}"),
+                };
+                assert!(
+                    !["personal", "business"].contains(&s.as_str()),
+                    "history must exclude both the negated value (business) and the \
+                     earlier-tried value (personal), got {s:?}"
+                );
+                assert!(
+                    variants.contains(&s.as_str()),
+                    "solved value {s:?} must be a real variant, not out-of-domain"
+                );
+            }
+            SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    #[test]
+    fn extract_enum_observations_resolves_raw_pattern_text() {
+        let variants = ["personal", "business"];
+        let param = ParamInfo {
+            name: "t".into(),
+            typ: TypeInfo::Object {
+                fields: vec![("purpose".to_string(), enum_union(&variants))],
+            },
+            type_name: Some("Trip".into()),
+        };
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "t . purpose".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Str(
+                "TripPurpose :: Personal".into(),
+            ))),
+        };
+        let observed = extract_enum_observations(&[constraint], &[param]);
+        assert_eq!(
+            observed,
+            vec![("t.purpose".to_string(), "personal".to_string())]
+        );
     }
 
     #[test]
@@ -1492,7 +2033,10 @@ mod tests {
         }];
         let param_infos = vec![ParamInfo {
             name: "current".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            },
             type_name: None,
         }];
 
@@ -2484,7 +3028,10 @@ mod tests {
 
         fn type_info_for(sort: PrimSort) -> TypeInfo {
             match sort {
-                PrimSort::Int => TypeInfo::Int,
+                PrimSort::Int => TypeInfo::Int {
+                    int_width: None,
+                    int_signed: None,
+                },
                 PrimSort::Float => TypeInfo::Float,
                 PrimSort::Str => TypeInfo::Str,
                 PrimSort::Bool => TypeInfo::Bool,
@@ -2529,7 +3076,7 @@ mod tests {
 
         fn sort_for_type_info(ti: &TypeInfo) -> PrimSort {
             match ti {
-                TypeInfo::Int => PrimSort::Int,
+                TypeInfo::Int { .. } => PrimSort::Int,
                 TypeInfo::Float => PrimSort::Float,
                 TypeInfo::Str => PrimSort::Str,
                 TypeInfo::Bool => PrimSort::Bool,
@@ -2812,10 +3359,56 @@ mod tests {
         let result: Result<SolveResult, SolverError> = Ok(SolveResult::Sat(map));
         let params = vec![ParamInfo {
             name: "x".into(),
-            typ: TypeInfo::Int,
+            typ: TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            },
             type_name: None,
         }];
         assert!(solved_values_match_param_types(result.as_ref(), &params));
+    }
+
+    #[test]
+    fn u8_param_range_is_enforced() {
+        // x > 900 is UNSAT for a u8 (max 255); x == 200 is SAT in-range (str-ddxe).
+        let u8_param = vec![ParamInfo {
+            name: "x".into(),
+            typ: TypeInfo::Int {
+                int_width: Some(8),
+                int_signed: Some(false),
+            },
+            type_name: None,
+        }];
+
+        let gt_900 = vec![SymExpr::BinOp {
+            op: BinOpKind::Gt,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(900))),
+        }];
+        let res = solve_constraints(&gt_900, None, &u8_param).expect("solve");
+        assert!(
+            matches!(res, SolveResult::Unsat),
+            "x>900 must be UNSAT for u8, got {res:?}"
+        );
+
+        let eq_200 = vec![SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(200))),
+        }];
+        let res = solve_constraints(&eq_200, None, &u8_param).expect("solve");
+        match res {
+            SolveResult::Sat(map) => {
+                assert_eq!(map.get("x"), Some(&ConcreteValue::Int(200)));
+            }
+            other => panic!("x==200 must be SAT for u8, got {other:?}"),
+        }
     }
 
     #[test]

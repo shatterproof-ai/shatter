@@ -2566,3 +2566,119 @@ describe("property: InvocationModel", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Array type fidelity under recursive / cyclic type graphs (str-9cqde)
+// ---------------------------------------------------------------------------
+
+import { convertTypeWithNode } from "./analyzer.js";
+
+describe("convertTypeWithNode array fidelity on cyclic types (str-9cqde)", () => {
+  /**
+   * A single graph: N mutually-recursive interfaces, each with only array-typed
+   * fields referencing the next interface (the last wraps back to the first).
+   * Every field is syntactically an array, so a correct converter must yield a
+   * TypeInfo whose object fields are ALL `array` kind — never a bare `unknown` —
+   * no matter where the cycle guard fires. Compiling with `noLib` (below) also
+   * degrades `checker.isArrayType`, so this simultaneously exercises the
+   * syntactic array-recovery path.
+   */
+  const arbGraph = fc.record({
+    n: fc.integer({ min: 1, max: 6 }),
+    fieldsPer: fc.integer({ min: 1, max: 3 }),
+  });
+  // A batch of independent graphs emitted into one source string so a single
+  // TypeScript Program covers many graph shapes at once.
+  const arbBatch = fc.array(arbGraph, { minLength: 1, maxLength: 12 });
+
+  /** Emit one graph as a group of interfaces + an entry fn, namespaced by `g`. */
+  function emitGraph(g: number, n: number, fieldsPer: number): string {
+    const lines: string[] = [];
+    const name = (i: number): string => `G${g}T${i}`;
+    for (let i = 0; i < n; i++) {
+      const next = (i + 1) % n;
+      const fields: string[] = [];
+      for (let f = 0; f < fieldsPer; f++) {
+        fields.push(`  f${f}: ${name(next)}[];`);
+      }
+      lines.push(`interface ${name(i)} {\n${fields.join("\n")}\n}`);
+    }
+    lines.push(`export function entry${g}(root: ${name(0)}): void {}`);
+    return lines.join("\n\n");
+  }
+
+  /** All object-field values in the tree must be `array` kind; tree must be finite. */
+  function assertAllFieldsArray(t: TypeInfo, depth = 0): void {
+    // Finiteness: the tree is bounded (cycle guard terminates recursion).
+    expect(depth).toBeLessThan(64);
+    if (t.kind === "object") {
+      for (const [, value] of t.fields) {
+        expect(value.kind).toBe("array");
+        assertAllFieldsArray(value, depth + 1);
+      }
+    } else if (t.kind === "array") {
+      assertAllFieldsArray(t.element, depth + 1);
+    }
+  }
+
+  /**
+   * Convert every `entry*` function's sole parameter type in an in-memory,
+   * lib-less program (fast — no lib.d.ts load) via the real production entry
+   * point `convertTypeWithNode`, returning the resulting TypeInfos.
+   */
+  function convertEntryParamsNoLib(src: string): TypeInfo[] {
+    const fileName = "/virtual/graphs.ts";
+    const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.ES2022, true);
+    const host: ts.CompilerHost = {
+      getSourceFile: (fn) => (fn === fileName ? sf : undefined),
+      writeFile: () => {},
+      getDefaultLibFileName: () => "lib.d.ts",
+      getCurrentDirectory: () => "/virtual",
+      getCanonicalFileName: (f) => f,
+      useCaseSensitiveFileNames: () => true,
+      getNewLine: () => "\n",
+      fileExists: (fn) => fn === fileName,
+      readFile: () => undefined,
+    };
+    const program = ts.createProgram(
+      [fileName],
+      { noLib: true, target: ts.ScriptTarget.ES2022 },
+      host,
+    );
+    const checker = program.getTypeChecker();
+    const out: TypeInfo[] = [];
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isFunctionDeclaration(node) &&
+        node.name?.text.startsWith("entry")
+      ) {
+        const param = node.parameters[0]!;
+        const type = checker.getTypeAtLocation(param);
+        out.push(convertTypeWithNode(type, param.type, checker, sf, new Set()));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return out;
+  }
+
+  it("never collapses an array field to bare unknown, and always terminates", () => {
+    fc.assert(
+      fc.property(arbBatch, (graphs) => {
+        const source = graphs
+          .map((gr, i) => emitGraph(i, gr.n, gr.fieldsPer))
+          .join("\n\n");
+        // Termination: returning at all proves no unbounded recursion / stack
+        // overflow on the cyclic graphs.
+        const results = convertEntryParamsNoLib(source);
+        expect(results).toHaveLength(graphs.length);
+        for (const paramType of results) {
+          // root: an object whose every (transitive) field is an array.
+          expect(paramType.kind).toBe("object");
+          assertAllFieldsArray(paramType);
+        }
+      }),
+      { numRuns: 25 },
+    );
+  });
+});

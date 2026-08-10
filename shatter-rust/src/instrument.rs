@@ -563,6 +563,12 @@ fn constraint_for_expr(expr: &Expr) -> String {
                 escape_json_string(&name)
             )
         }
+        Expr::Field(_) => field_chain_param_json(expr).unwrap_or_else(|| {
+            format!(
+                r#"{{"kind":"unknown","hint":"{}"}}"#,
+                escape_json_string(&expr.to_token_stream().to_string())
+            )
+        }),
         Expr::Lit(lit) => constraint_for_lit(lit),
         Expr::MethodCall(mc) => {
             let name = mc.method.to_string();
@@ -597,6 +603,12 @@ fn constraint_for_operand(expr: &Expr) -> String {
                 escape_json_string(&name)
             )
         }
+        Expr::Field(_) => field_chain_param_json(expr).unwrap_or_else(|| {
+            format!(
+                r#"{{"kind":"unknown","hint":"{}"}}"#,
+                escape_json_string(&expr.to_token_stream().to_string())
+            )
+        }),
         Expr::Lit(lit) => constraint_for_lit(lit),
         // For compound expressions, recurse
         Expr::Binary(_) | Expr::Unary(_) => constraint_for_expr(expr),
@@ -607,6 +619,52 @@ fn constraint_for_operand(expr: &Expr) -> String {
             )
         }
     }
+}
+
+/// Lower a field-access chain rooted at a plain identifier (`w.size`,
+/// `w.dims.height`, `p.0`) into a `{"kind":"param","name":..,"path":[..]}`
+/// JSON object, mirroring the analyzer's `resolve_field_chain`
+/// (`analyzer.rs`). Returns `None` when the root is not a bare identifier so
+/// the caller can fall back to an `unknown` constraint.
+///
+/// Like the existing bare-`Expr::Path` arm, the instrumentor has no
+/// parameter-name set, so it optimistically treats the root identifier as the
+/// parameter. If the root is actually a local binding rather than a parameter,
+/// the emitted param simply becomes a Z3 variable the solver never otherwise
+/// constrains — harmless, and symmetric with how bare identifiers are already
+/// handled. This closes the parallel-path gap that left struct-FIELD branch
+/// conditions (e.g. cross-file synthesized structs, str-do53) reported as
+/// `SymConstraint::Unknown`, blocking Z3 from solving exact-equality branches
+/// over a field.
+fn field_chain_param_json(expr: &Expr) -> Option<String> {
+    fn collect(expr: &Expr, path: &mut Vec<String>) -> Option<String> {
+        match expr {
+            Expr::Field(field) => {
+                let base = collect(&field.base, path)?;
+                let field_name = match &field.member {
+                    syn::Member::Named(ident) => ident.to_string(),
+                    syn::Member::Unnamed(idx) => idx.index.to_string(),
+                };
+                path.push(field_name);
+                Some(base)
+            }
+            Expr::Path(p) => p.path.get_ident().map(|id| id.to_string()),
+            _ => None,
+        }
+    }
+
+    let mut path = Vec::new();
+    let name = collect(expr, &mut path)?;
+    let path_json = path
+        .iter()
+        .map(|segment| format!(r#""{}""#, escape_json_string(segment)))
+        .collect::<Vec<_>>()
+        .join(",");
+    Some(format!(
+        r#"{{"kind":"param","name":"{}","path":[{}]}}"#,
+        escape_json_string(&name),
+        path_json
+    ))
 }
 
 /// Build a constraint JSON for a literal expression.
@@ -923,6 +981,51 @@ fn example(x: i32) -> &'static str {
         let expr: Expr = syn::parse_str("a && b").expect("parse");
         let constraint = constraint_for_expr(&expr);
         assert!(constraint.contains("and"));
+    }
+
+    #[test]
+    fn constraint_for_struct_field_access() {
+        // A branch over a struct FIELD (`w.size == 4242`) must lower the field
+        // access to a param with a path (`{"kind":"param","name":"w",
+        // "path":["size"]}`), mirroring the analyzer's `resolve_field_chain`.
+        // Before this, `Expr::Field` fell to the `unknown` arm, so the runtime
+        // reported `SymConstraint::Unknown`, the orchestrator could not solve
+        // the constraint, and Z3 never closed exact-equality branches on a
+        // synthesized (e.g. cross-file, str-do53) struct field.
+        let expr: Expr = syn::parse_str("w.size == 4242").expect("parse");
+        let constraint = constraint_for_expr(&expr);
+        assert!(constraint.contains("bin_op"), "got: {constraint}");
+        assert!(constraint.contains("\"eq\""), "got: {constraint}");
+        assert!(
+            constraint.contains(r#""kind":"param","name":"w","path":["size"]"#),
+            "field access must lower to a param with path; got: {constraint}"
+        );
+        assert!(
+            !constraint.contains("unknown"),
+            "field access must not degrade to unknown; got: {constraint}"
+        );
+    }
+
+    #[test]
+    fn constraint_for_nested_struct_field_access() {
+        // Recursive field chains (`w.dims.height`) must produce the full path.
+        let expr: Expr = syn::parse_str("w.dims.height < 0").expect("parse");
+        let constraint = constraint_for_expr(&expr);
+        assert!(
+            constraint.contains(r#""kind":"param","name":"w","path":["dims","height"]"#),
+            "nested field access must lower to a param with a nested path; got: {constraint}"
+        );
+    }
+
+    #[test]
+    fn constraint_for_tuple_field_access() {
+        // Tuple-index access (`p.0`) uses the numeric index as the path segment.
+        let expr: Expr = syn::parse_str("p.0 > 5").expect("parse");
+        let constraint = constraint_for_expr(&expr);
+        assert!(
+            constraint.contains(r#""kind":"param","name":"p","path":["0"]"#),
+            "tuple field access must lower to a numeric-index path; got: {constraint}"
+        );
     }
 
     #[test]

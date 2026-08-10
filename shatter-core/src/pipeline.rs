@@ -472,7 +472,9 @@ fn solve_for_branch_direction(
     match solver::solve_for_new_path(&solvable, solvable_idx, solver_timeout_ms, param_infos) {
         Ok(SolveResult::Sat(solved_values)) => {
             let param_names: Vec<String> = param_infos.iter().map(|p| p.name.clone()).collect();
-            let inputs = overlay_solved_values(base_inputs, &solved_values, &param_names);
+            let param_types = crate::orchestrator::param_types_of(param_infos);
+            let inputs =
+                overlay_solved_values(base_inputs, &solved_values, &param_names, &param_types);
             metrics.sat_count += 1;
             SolveOutcome::Sat { inputs }
         }
@@ -952,7 +954,7 @@ mod tests {
             exported: true,
             params: vec![ParamInfo {
                 name: "x".into(),
-                typ: TypeInfo::Int,
+                typ: TypeInfo::Int { int_width: None, int_signed: None },
                 type_name: None,
             }],
             branches: (0..branch_count)

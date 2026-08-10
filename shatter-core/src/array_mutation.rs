@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn mutate_returns_none_for_non_array() {
         let mut rng = seeded_rng();
-        let result = mutate_array(&json!(42), &TypeInfo::Int, &mut rng);
+        let result = mutate_array(&json!(42), &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng);
         assert!(result.is_none());
     }
 
@@ -189,7 +189,7 @@ mod tests {
     fn mutate_empty_array_always_inserts() {
         let mut rng = seeded_rng();
         for _ in 0..20 {
-            let result = mutate_array(&json!([]), &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&json!([]), &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             assert_eq!(result.kind, ArrayMutationKind::Insert);
             let arr = result.value.as_array().expect("should be array");
@@ -204,7 +204,7 @@ mod tests {
         // Run enough times to hit insert at least once.
         let mut saw_insert = false;
         for _ in 0..50 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             if result.kind == ArrayMutationKind::Insert {
                 let arr = result.value.as_array().expect("should be array");
@@ -221,7 +221,7 @@ mod tests {
         let original = json!([1, 2, 3]);
         let mut saw_delete = false;
         for _ in 0..50 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             if result.kind == ArrayMutationKind::Delete {
                 let arr = result.value.as_array().expect("should be array");
@@ -238,7 +238,7 @@ mod tests {
         let original = json!([1, 2, 3]);
         let mut saw_swap = false;
         for _ in 0..50 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             if result.kind == ArrayMutationKind::Swap {
                 let arr = result.value.as_array().expect("should be array");
@@ -259,7 +259,7 @@ mod tests {
         let original = json!([1, 2, 3]);
         let mut saw_replace = false;
         for _ in 0..50 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             if result.kind == ArrayMutationKind::Replace {
                 let arr = result.value.as_array().expect("should be array");
@@ -276,7 +276,7 @@ mod tests {
         let original = json!([1, 2, 3, 4, 5]);
         let mut saw_truncate = false;
         for _ in 0..50 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             if result.kind == ArrayMutationKind::Truncate {
                 let arr = result.value.as_array().expect("should be array");
@@ -293,7 +293,7 @@ mod tests {
         let original = json!([1, 2, 3, 4]);
         let mut saw_splice = false;
         for _ in 0..50 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             if result.kind == ArrayMutationKind::Splice {
                 // Splice can change length in either direction
@@ -309,14 +309,14 @@ mod tests {
     fn batch_produces_requested_count() {
         let mut rng = seeded_rng();
         let original = json!([1, 2, 3]);
-        let mutations = mutate_array_batch(&original, &TypeInfo::Int, 10, &mut rng);
+        let mutations = mutate_array_batch(&original, &TypeInfo::Int { int_width: None, int_signed: None }, 10, &mut rng);
         assert_eq!(mutations.len(), 10);
     }
 
     #[test]
     fn batch_with_non_array_returns_empty() {
         let mut rng = seeded_rng();
-        let mutations = mutate_array_batch(&json!("not an array"), &TypeInfo::Int, 10, &mut rng);
+        let mutations = mutate_array_batch(&json!("not an array"), &TypeInfo::Int { int_width: None, int_signed: None }, 10, &mut rng);
         assert!(mutations.is_empty());
     }
 
@@ -326,7 +326,7 @@ mod tests {
         let original = json!([10, 20, 30, 40, 50]);
         let mut seen = std::collections::HashSet::new();
         for _ in 0..200 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             seen.insert(result.kind);
         }
@@ -349,7 +349,7 @@ mod tests {
         let mut rng = seeded_rng();
         let original = json!([42]);
         for _ in 0..100 {
-            let result = mutate_array(&original, &TypeInfo::Int, &mut rng)
+            let result = mutate_array(&original, &TypeInfo::Int { int_width: None, int_signed: None }, &mut rng)
                 .expect("should produce a mutation");
             assert_ne!(
                 result.kind,
@@ -375,7 +375,7 @@ mod tests {
         let elem_type = TypeInfo::Object {
             fields: vec![
                 ("name".into(), TypeInfo::Str),
-                ("value".into(), TypeInfo::Int),
+                ("value".into(), TypeInfo::Int { int_width: None, int_signed: None }),
             ],
         };
         let original = json!([{"name": "a", "value": 1}]);

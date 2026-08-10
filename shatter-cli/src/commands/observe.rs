@@ -117,13 +117,15 @@ pub(crate) async fn run_observe(
             branch_profile: None,
             meta_config: shatter_core::strategy::MetaConfig::default(),
             execution_profile: None,
-            loop_convergence_window: 3,
             refine_budget: None,
             shrink_budget: shatter_core::orchestrator::DEFAULT_SHRINK_BUDGET,
             mcdc: false,
             fuzz: shatter_core::config::FuzzConfig::default(),
             planner: None,
             default_execute_plan: None,
+            // This observe path does not resolve custom generators; all slots
+            // are built-in, so no pinning is required (str-6cdp).
+            value_sources: vec![],
         };
         // Instrument the function so the frontend has the source ready for prepare.
         if let Err(e) = frontend
@@ -200,6 +202,9 @@ pub(crate) async fn run_observe(
             ),
             Err(shatter_core::orchestrator::ExploreError::Planner(err)) => {
                 Err(shatter_core::explorer::ExploreError::Planner(err))
+            }
+            Err(shatter_core::orchestrator::ExploreError::Unsupported(reason)) => {
+                Err(shatter_core::explorer::ExploreError::Unsupported(reason))
             }
         }
     } else {

@@ -1,6 +1,28 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. See shared agent rules (`beads.md`) for basic commands, issue decomposition, batch commands, and git merge workflow. Below are Shatter-specific extensions.
+This project uses **bd** (beads) for issue tracking. The verified command basics live in the [bd Quick Reference](#bd-quick-reference) section below; the `bento:beads-issue-flow` skill covers the read → claim → update → close lifecycle. Below are Shatter-specific extensions.
+
+## bd Quick Reference
+
+These are the verified verbs for the lifecycle of an issue. There is **no `bd claim` subcommand** — claiming is a flag on `bd update`. Do not run `bd --help` to rediscover these; use the sequence below.
+
+```bash
+bd ready                       # list issues ready to work
+bd show <id>                   # inspect an issue before starting
+bd update <id> --claim         # atomically claim: sets assignee=you, status=in_progress (idempotent)
+bd update <id> --status <s>    # change status (e.g. in_progress, blocked)
+bd note <id> "..."             # append a progress note
+bd close <id>                  # close a finished issue
+```
+
+Notes:
+- `bd update <id> --claim` is the **only** correct way to claim. `bd claim`, `bd assign --self`, and `bd start` do not exist.
+- Pass `--json` to any read command for programmatic use.
+- bd writes can be slow; run them in the background when batching.
+
+## Searching and Reading Files
+
+Use the **Grep**, **Glob**, and **Read** tools — not shell `grep`/`cat`/`sed`/`find`/`ls` pipelines — for searching and reading files. The dedicated tools are faster, return structured results, respect `.gitignore`, and keep the context window clean. Reserve shell text utilities for cases where a dedicated tool genuinely cannot do the job (e.g. piping command output through a filter).
 
 ## Kapow Refute Workflow
 
@@ -200,6 +222,15 @@ agents is the primary cause of duplicate commits and orphan branches.
   different SHAs, making history confusing and leaving orphan branches that
   appear unmerged. Always merge or rebase entire branches instead.
 
+### Rebase Hygiene
+
+Rebasing a worktree with uncommitted runtime artifacts produces `error: Your local changes to the following files would be overwritten by merge` and leaves the rebase half-applied. To avoid it:
+
+- **Always run `git status --short` before `git rebase origin/main`** (or any merge/rebase). If the tree is dirty, deal with it deliberately — commit the changes that belong to your issue, or stash the rest — before rebasing.
+- **Never blindly retry `git stash pop` into a dirty tree.** A failed `stash pop` means there is a conflict or an untracked-file collision; retrying does not resolve it and can clobber work. Inspect the conflict, resolve it, then pop once.
+- The usual culprits are **build/run artifacts** that should not be committed: `target/`, `node_modules/`, `dist/`, `*.tsbuildinfo`, `.shatter/` run output, and demo/gauntlet scratch files. Add them to `.gitignore` or remove them; do not commit them just to make a rebase succeed.
+- **Do not blanket-ignore `.beads/`.** `bd sync` intentionally commits `.beads/*.jsonl` — those files are tracked on purpose. Ignore only the specific artifacts above, never the whole `.beads/` directory.
+
 ### Commit Early, Commit Often
 
 Sessions can be interrupted at any time — context window compaction, usage limits,
@@ -254,32 +285,52 @@ Issues: str-a1b, str-c2d
 
 For parallel work on multiple issues, use Claude Code's **agent teams** instead
 of manually running separate Claude instances in different worktrees. Teams
-coordinate through the Task tool and each teammate runs in an isolated worktree
-automatically (via `isolation: "worktree"` on the Task tool).
+coordinate through the Task tool and each teammate works on its own branch in a
+linked worktree under `~/.local/share/worktrees/shatter/`.
 
 **Why teams over manual worktrees:**
 - Claude manages concurrency — no Dolt database conflicts
 - Teammates coordinate via task lists and messages
-- Worktree lifecycle is fully automatic
 - The team lead merges results back to `main`
 
-**Supervision:** Always spawn teammates with `mode: "plan"`. Each teammate
-must write a plan and get approval from the team lead before implementing.
-This ensures the user can review proposed approaches before code is written.
+**Worktree setup is not automatic for background teammates.** `isolation:
+"worktree"` on a *background* Agent/Task call creates the worktree but does NOT
+set the agent's working directory to it — background agents wake up in the
+primary checkout on `main`. Always include explicit worktree setup in the
+teammate prompt (`git worktree add -b <branch> ~/.local/share/worktrees/shatter/<branch> main`,
+then `cd` into it) and have the teammate verify with
+`swarm-worktree-verify.py --require-linked-worktree` before making any edit.
+Foreground teammates spawned via `TeamCreate` land in their worktree directly.
 
-**Quick start:** Use `/swarm` to automate the full parallel workflow — triage,
-team setup, plan review, merge, quality gates, and close protocol.
+**Supervision:** For well-scoped issues with clear acceptance criteria, spawn
+teammates with `mode: "acceptEdits"` (or `"bypassPermissions"`) so they proceed
+without a serial plan-approval bottleneck. Reserve `mode: "plan"` for genuinely
+ambiguous or risky issues whose approach should be reviewed before code is
+written. Spawn teammates in the **foreground** so they appear as visible tmux
+panes; background agents silently stall on permission prompts.
 
-**Manual workflow (if not using `/swarm`):**
+**Team-lead liveness:** The team lead must actively poll teammate liveness
+(e.g. `Monitor` / heartbeat checks) and auto-resume or report a stalled or
+crashed teammate — never idle until the user notices. A swarm where the lead
+waits passively for teammates that have died is a stalled swarm; detect it and
+act.
+
+**Quick start:** Use the `bento:swarm` skill to automate the full parallel
+workflow — triage, team setup, worktree isolation, plan review, merge, quality
+gates, and close protocol.
+
+**Manual workflow (if not using `bento:swarm`):**
 ```
 1. Create tasks for each issue (TaskCreate)
-2. Spawn teammates with isolation: "worktree", mode: "plan" (Task tool)
+2. Spawn teammates in the foreground with mode: "acceptEdits", including
+   explicit worktree setup in the prompt (see above); one issue per teammate
 3. Each teammate works on exactly ONE issue on its own branch
-4. Each teammate researches and proposes a plan
-5. Team lead reviews and approves/rejects each plan
-6. Approved teammates implement, team lead merges results ONE AT A TIME
+4. Team lead polls teammate liveness and resumes any that stall
+5. Teammates implement; team lead merges results ONE AT A TIME
    (merge branch A → main → push, then merge branch B → main → push, etc.)
 ```
+For genuinely ambiguous issues, spawn with `mode: "plan"` instead and review
+each teammate's plan before it implements.
 
 **Preventing duplicate work across agents:**
 - The team lead must assign each issue to exactly one teammate. Never assign
@@ -293,7 +344,7 @@ team setup, plan review, merge, quality gates, and close protocol.
 After all teammates finish and their branches are merged, the team lead must:
 1. Delete all merged worktree branches: `git branch -d <branch>`
 2. Verify no orphan branches remain: `git branch --no-merged main`
-3. Clean up worktree directories if any remain under `.claude/worktrees/`
+3. Clean up worktree directories if any remain under `~/.local/share/worktrees/shatter/`
 
 If any branch appears in `git branch --no-merged main`, do not delete it unless
 the user explicitly approves that deletion.
@@ -323,12 +374,12 @@ copy of the repo. **Violating isolation corrupts other agents' work.**
 
 **Rules:**
 - **Never `cd` to the main repo**. Stay in your worktree directory (under
-  `.claude/worktrees/`). If unsure, run `git rev-parse --show-toplevel`.
+  `~/.local/share/worktrees/shatter/`). If unsure, run `git rev-parse --show-toplevel`.
 - **Never `git checkout`** to switch branches. You are already on your branch.
 - **Never run git commands with `-C` pointing to the main repo**. All git
   operations must target your worktree.
 - **Verify isolation** before critical operations: `git rev-parse --show-toplevel`
-  must return a path containing `.claude/worktrees/`.
+  must return a path containing `~/.local/share/worktrees/shatter/`.
 - **Commit and push only your branch**. The team lead merges to main.
 
 **Why this matters:** All worktrees share the same `.git` directory. Running
@@ -353,7 +404,7 @@ directory yourself — the user is prompted to keep or remove it when the sessio
 ends. Manually removing the worktree mid-session can break the working directory
 and cause confusing errors.
 
-<!-- Beads commands, types, priorities, workflow, and auto-sync are in shared agent rules (beads.md).
+<!-- Beads command basics are in the "bd Quick Reference" section above and the bento:beads-issue-flow skill.
      Shatter-specific beads extensions: issue types always specify -t, use discovered-from for linked bugs,
      always use --json for programmatic use. -->
 
@@ -364,6 +415,31 @@ and cause confusing errors.
 When running shell commands, **always prefix with `rtk`**. This reduces context
 usage by 60-90% with zero behavior change. If rtk has no filter for a command,
 it passes through unchanged — so it is always safe to use.
+
+## Shared-Machine Resource Etiquette (str-35vtk.5)
+
+Many agents build and test concurrently on one machine. Governance is wired
+into the repo — do not work around it:
+
+- **Heavyweight gates take a machine-wide slot.** `check`, `check-fast`,
+  `e2e*`, `conformance`, `parity`/golden, `walkthrough`, `gauntlet`, and
+  `core:test-ignored` run through `scripts/gate-wrapper.sh`: a counting
+  semaphore of `SHATTER_HEAVY_SLOTS` flock slots (default `nproc/8`, min 1)
+  under `${XDG_RUNTIME_DIR:-/tmp}/shatter-heavy-slots/`, plus `nice`/`ionice`.
+  A queued gate prints "waiting for a heavyweight slot" — that is normal;
+  do not kill it and do not bypass the wrapper by running the underlying
+  `cargo test --test e2e_*` / harness commands bare when an equivalent task
+  exists.
+- **Parallelism budgets.** `.cargo/config.toml` caps cargo at `jobs = 8` and
+  test threads at 4 (`force = false` — a pre-set `RUST_TEST_THREADS` wins);
+  the root Taskfile defaults `GOFLAGS=-p=4` and `GOMAXPROCS=8`. Solo humans
+  and CI reclaim the machine by exporting `CARGO_BUILD_JOBS`,
+  `RUST_TEST_THREADS`, `GOFLAGS`, `GOMAXPROCS`, or `SHATTER_HEAVY_SLOTS`.
+- **Gate timings are recorded** to `~/.cache/shatter/gate-times.csv`
+  (timestamp, worktree, gate, wall seconds, exit code, loadavg, slot,
+  seconds waited for a slot) — budgets live in `docs/perf/gate-budgets.md`.
+- Slow builds under load are contention, not code failure: re-run before
+  debugging (see docs/perf/gate-budgets.md for the baseline flake analysis).
 
 ## Key Commands
 ```bash

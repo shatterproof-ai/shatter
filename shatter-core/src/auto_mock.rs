@@ -241,7 +241,7 @@ fn default_for_db(symbol: &str) -> Value {
 /// Generate a type-appropriate default value from TypeInfo.
 fn default_for_type(typ: &TypeInfo) -> Value {
     match typ {
-        TypeInfo::Int => json!(0),
+        TypeInfo::Int { .. } => json!(0),
         TypeInfo::Float => json!(0.0),
         TypeInfo::Str => json!(""),
         TypeInfo::Bool => json!(false),
@@ -254,7 +254,7 @@ fn default_for_type(typ: &TypeInfo) -> Value {
             Value::Object(obj)
         }
         TypeInfo::Nullable { .. } => Value::Null,
-        TypeInfo::Union { variants } => {
+        TypeInfo::Union { variants, .. } => {
             if let Some(first) = variants.first() {
                 default_for_type(first)
             } else {
@@ -266,7 +266,16 @@ fn default_for_type(typ: &TypeInfo) -> Value {
 }
 
 /// User-provided mock override from `.shatter/config.yaml`.
+///
+/// Accepts two YAML forms (str-7lab0): the struct form
+/// (`{return_values: [...], behavior: ..., expression: ...}`) and a
+/// bare-string shorthand (`symbol: "pkg.Fake()"`) equivalent to
+/// `{expression: "pkg.Fake()"}`. The expression drives the Go frontend's
+/// execute-time call-site substitution (str-c8djq); the CLI parses and
+/// preserves it so one config file satisfies both consumers, but does not
+/// act on it — substitution is frontend-owned.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(from = "MockOverrideRepr")]
 pub struct MockOverride {
     /// Pre-configured return values, replacing auto-generated defaults.
     #[serde(default)]
@@ -274,6 +283,58 @@ pub struct MockOverride {
     /// Override the default behavior.
     #[serde(default)]
     pub behavior: Option<MockBehavior>,
+    /// Frontend-owned call-site substitution expression (str-c8djq).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+}
+
+impl MockOverride {
+    /// Whether this override carries anything the CLI itself acts on.
+    ///
+    /// An expression-only entry is frontend-owned: it is preserved and passed
+    /// through, but it must not change CLI mock-generation decisions. Callers
+    /// gating behavior on "did the operator configure this symbol?" must ask
+    /// this rather than testing for key presence in the overrides map.
+    pub fn has_cli_directives(&self) -> bool {
+        self.return_values.is_some() || self.behavior.is_some()
+    }
+}
+
+/// Wire representation for [`MockOverride`]: either the bare expression
+/// string or the full struct.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum MockOverrideRepr {
+    Expression(String),
+    Full {
+        #[serde(default)]
+        return_values: Option<Vec<Value>>,
+        #[serde(default)]
+        behavior: Option<MockBehavior>,
+        #[serde(default)]
+        expression: Option<String>,
+    },
+}
+
+impl From<MockOverrideRepr> for MockOverride {
+    fn from(repr: MockOverrideRepr) -> Self {
+        match repr {
+            MockOverrideRepr::Expression(expression) => MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some(expression),
+            },
+            MockOverrideRepr::Full {
+                return_values,
+                behavior,
+                expression,
+            } => MockOverride {
+                return_values,
+                behavior,
+                expression,
+            },
+        }
+    }
 }
 
 /// Generate auto-mocks for all dependencies of a function.
@@ -310,8 +371,20 @@ pub fn generate_auto_mocks(
 
         let category = classify_dependency(dep);
 
-        // Pure utilities default to passthrough — skip generating a mock
-        if category == IoCategory::PureUtility && !overrides.contains_key(&dep.symbol) {
+        // Pure utilities default to passthrough — skip generating a mock unless
+        // the operator supplied a CLI-actionable override. Key presence alone is
+        // not enough: since str-7lab0 the same `mocks` map also carries
+        // frontend-owned `expression` entries, and the CLI does not act on those
+        // (execute-time substitution is frontend-owned). Treating a bare
+        // expression string as "mock this" would pull pure utilities into
+        // auto-mocking with synthesized return values the operator never asked
+        // for — and that wire mock would then compete with the very expression
+        // it was derived from.
+        if category == IoCategory::PureUtility
+            && !overrides
+                .get(&dep.symbol)
+                .is_some_and(MockOverride::has_cli_directives)
+        {
             continue;
         }
 
@@ -670,7 +743,7 @@ mod tests {
 
     #[test]
     fn classify_unknown_module_as_external_other() {
-        let dep = make_dep("doSomething", "my-custom-lib", TypeInfo::Int);
+        let dep = make_dep("doSomething", "my-custom-lib", TypeInfo::Int { int_width: None, int_signed: None });
         assert_eq!(classify_dependency(&dep), IoCategory::ExternalOther);
     }
 
@@ -724,7 +797,7 @@ mod tests {
 
     #[test]
     fn default_mock_for_external_other_uses_type() {
-        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+        let dep = make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None });
         let mock = generate_default_mock(&dep, IoCategory::ExternalOther);
         assert_eq!(mock.return_values, vec![json!(0)]);
     }
@@ -734,7 +807,7 @@ mod tests {
         let typ = TypeInfo::Object {
             fields: vec![
                 ("name".to_string(), TypeInfo::Str),
-                ("age".to_string(), TypeInfo::Int),
+                ("age".to_string(), TypeInfo::Int { int_width: None, int_signed: None }),
             ],
         };
         let val = default_for_type(&typ);
@@ -771,12 +844,52 @@ mod tests {
             MockOverride {
                 return_values: Some(vec![json!({"rows": [{"id": 1}]})]),
                 behavior: None,
+                expression: None,
             },
         );
 
         let result = generate_auto_mocks(&deps, None, &overrides, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].return_values, vec![json!({"rows": [{"id": 1}]})]);
+    }
+
+    /// str-7lab0 review: one `.shatter/config.yaml` feeds both consumers, so the
+    /// `mocks` map now also carries frontend-owned bare-expression entries. The
+    /// CLI preserves those but must not act on them — an expression-only entry
+    /// must not drag a pure utility out of passthrough into auto-mocking with
+    /// synthesized return values the operator never asked for.
+    #[test]
+    fn generate_auto_mocks_ignores_expression_only_override_for_pure_utilities() {
+        let deps = vec![make_dep("map", "lodash", TypeInfo::Unknown)];
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "map".to_string(),
+            MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some("lodashFake()".to_string()),
+            },
+        );
+
+        let result = generate_auto_mocks(&deps, None, &overrides, &[]);
+        assert!(
+            result.is_empty(),
+            "expression-only override must not auto-mock a pure utility: {result:?}"
+        );
+
+        // A CLI-actionable override for the same symbol still opts it in.
+        let mut actionable = HashMap::new();
+        actionable.insert(
+            "map".to_string(),
+            MockOverride {
+                return_values: Some(vec![json!([])]),
+                behavior: None,
+                expression: Some("lodashFake()".to_string()),
+            },
+        );
+        let result = generate_auto_mocks(&deps, None, &actionable, &[]);
+        assert_eq!(result.len(), 1, "return_values override should opt the utility in");
+        assert_eq!(result[0].return_values, vec![json!([])]);
     }
 
     #[test]
@@ -806,7 +919,7 @@ mod tests {
             make_dep("get", "axios", TypeInfo::Unknown),
             make_dep("query", "pg", TypeInfo::Unknown),
             make_dep("map", "lodash", TypeInfo::Unknown),
-            make_dep("compute", "my-analytics-lib", TypeInfo::Int),
+            make_dep("compute", "my-analytics-lib", TypeInfo::Int { int_width: None, int_signed: None }),
         ];
 
         // User override: custom return value for the database query mock
@@ -816,6 +929,7 @@ mod tests {
             MockOverride {
                 return_values: Some(vec![json!({"rows": [{"id": 1, "name": "alice"}]})]),
                 behavior: None,
+                expression: None,
             },
         );
 
@@ -931,7 +1045,7 @@ mod tests {
         let dep5 = make_dep("strings.TrimSpace", "strings", TypeInfo::Str);
         assert_eq!(classify_dependency(&dep5), IoCategory::PureUtility);
 
-        let dep6 = make_dep("strconv.Atoi", "strconv", TypeInfo::Int);
+        let dep6 = make_dep("strconv.Atoi", "strconv", TypeInfo::Int { int_width: None, int_signed: None });
         assert_eq!(classify_dependency(&dep6), IoCategory::PureUtility);
 
         let dep7 = make_dep("fmt.Sprintf", "fmt", TypeInfo::Str);
@@ -944,7 +1058,7 @@ mod tests {
             make_dep("readFile", "fs", TypeInfo::Str),
             make_dep("get", "axios", TypeInfo::Unknown),
             make_dep("map", "lodash", TypeInfo::Unknown),
-            make_dep("compute", "my-lib", TypeInfo::Int),
+            make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None }),
         ];
 
         let result = generate_auto_mocks(&deps, None, &HashMap::new(), &[]);
@@ -1038,7 +1152,7 @@ mod tests {
             make_dep("get", "axios", TypeInfo::Unknown),
             make_dep("query", "pg", TypeInfo::Unknown),
             make_dep("map", "lodash", TypeInfo::Unknown),
-            make_dep("compute", "my-lib", TypeInfo::Int),
+            make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None }),
         ];
         let configs = vec![MockConfig {
             symbol: "query".to_string(),
@@ -1085,7 +1199,7 @@ mod tests {
             "axios",
             TypeInfo::Object {
                 fields: vec![
-                    ("status".to_string(), TypeInfo::Int),
+                    ("status".to_string(), TypeInfo::Int { int_width: None, int_signed: None }),
                     ("data".to_string(), TypeInfo::Unknown),
                 ],
             },
@@ -1107,7 +1221,7 @@ mod tests {
             "my-db",
             TypeInfo::Nullable {
                 inner: Box::new(TypeInfo::Object {
-                    fields: vec![("id".to_string(), TypeInfo::Int)],
+                    fields: vec![("id".to_string(), TypeInfo::Int { int_width: None, int_signed: None })],
                 }),
             },
         );
@@ -1147,7 +1261,7 @@ mod tests {
 
     #[test]
     fn error_variant_fallback_throws() {
-        let dep = make_dep("compute", "my-lib", TypeInfo::Int);
+        let dep = make_dep("compute", "my-lib", TypeInfo::Int { int_width: None, int_signed: None });
         let mock = generate_error_variant(&dep, IoCategory::ExternalOther);
 
         assert_eq!(mock.default_behavior, MockBehavior::ThrowError);

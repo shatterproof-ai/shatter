@@ -74,6 +74,70 @@ func TestPlanRequirements_FreeFunctionProducesPlans(t *testing.T) {
 	}
 }
 
+// TestPlanRequirements_FreeFunctionHTTPHandlerParamNotPreSkipped pins the
+// direct free-function feasibility path for a net/http.Handler parameter
+// (str-nzn3). The analyzer emits such a parameter as Kind="unknown" with the
+// canonical Go-source spelling on TypeName so it is not flagged opaque and not
+// pre-skipped; the planner must then satisfy it from the runtime-value registry
+// with `http.NewServeMux()` rather than reporting an UnsatisfiedRequirement.
+//
+// This mirrors the Zolem `startLocalHTTPServer(addr string, handler
+// http.Handler)` shape (multiple params, one an http.Handler) that the earlier
+// single-parameter coverage (TestAnalyzeSynthesizableStdlibTypes,
+// TestExecute_DefaultPolicy_AllowsHTTPHandlerRuntimeValueTarget) did not drive
+// end-to-end through PlanRequirements.
+func TestPlanRequirements_FreeFunctionHTTPHandlerParamNotPreSkipped(t *testing.T) {
+	t.Parallel()
+	const targetID = "example.com/pkg:startLocalHTTPServer"
+	analysis := &protocol.FunctionAnalysis{
+		Name: "startLocalHTTPServer",
+		Params: []protocol.ParamInfo{
+			{Name: "addr", Type: protocol.TypeInfo{Kind: "str"}},
+			{Name: "handler", Type: protocol.TypeInfo{Kind: "unknown", Label: "http.Handler"}, TypeName: strPtr("http.Handler")},
+		},
+	}
+	lookup := analysisLookup(func(id string) *protocol.FunctionAnalysis {
+		if id == targetID {
+			return analysis
+		}
+		return nil
+	})
+
+	plans, unsat := PlanRequirements(
+		[]protocol.InvocationRequirement{{TargetID: targetID}},
+		lookup,
+		PlanRequirementsOptions{},
+	)
+
+	if len(unsat) != 0 {
+		t.Fatalf("http.Handler param must not be pre-skipped/unsatisfied, got %+v", unsat)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan for free function with an http.Handler param")
+	}
+	for _, p := range plans {
+		if p.ReceiverKind != "" {
+			t.Errorf("free-function plan should have empty receiver_kind, got %q", p.ReceiverKind)
+		}
+		if len(p.ArgumentPlans) != 2 {
+			t.Fatalf("expected 2 argument plans (addr, handler), got %d: %+v", len(p.ArgumentPlans), p.ArgumentPlans)
+		}
+		handlerArg := p.ArgumentPlans[1]
+		if handlerArg.ParamName != "handler" {
+			t.Errorf("argument_plans[1] name = %q, want handler", handlerArg.ParamName)
+		}
+		if handlerArg.Kind != protocol.ValuePlanKindRuntimeValue {
+			t.Errorf("handler arg kind = %q, want %q (runtime-value registry)", handlerArg.Kind, protocol.ValuePlanKindRuntimeValue)
+		}
+		if handlerArg.TypeHint != "http.Handler" {
+			t.Errorf("handler arg type_hint = %q, want http.Handler", handlerArg.TypeHint)
+		}
+		if got := string(handlerArg.Literal); got != `"http.NewServeMux()"` {
+			t.Errorf("handler arg literal = %s, want %q", got, `"http.NewServeMux()"`)
+		}
+	}
+}
+
 func TestPlanRequirements_GenericFreeFunctionProducesInstantiatedPlans(t *testing.T) {
 	t.Parallel()
 	const targetID = "example.com/pkg:Identity"

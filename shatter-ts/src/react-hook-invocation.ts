@@ -20,6 +20,7 @@
  */
 
 import { loadModuleExports, type ResolverAdapter } from "./executor.js";
+import logger from "./logger.js";
 import { REACT_HOOK_ADAPTER_ID } from "./react-hook-recognizer.js";
 import { REACT_MODULE_NAMES, getReactShim } from "./react-shim.js";
 import type {
@@ -29,7 +30,7 @@ import type {
   RuntimeHookFactory,
   RuntimeHooks,
 } from "./runtime-hooks.js";
-import type { ErrorInfo } from "./protocol.js";
+import type { ErrorInfo, SideEffect } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Scenario schemas
@@ -449,6 +450,57 @@ function stripFunctions(value: unknown): unknown {
   return result;
 }
 
+/**
+ * Load the target module's exports for adapter execution.
+ *
+ * Prefers the executor-supplied instrumented loader (`ctx.loadInstrumentedExports`)
+ * so the mount/rerenders record real coverage. That loader re-runs the target
+ * module's top level on every invocation (unlike the raw path, which caches
+ * exports per session); if it throws — e.g. a module whose one-shot top-level
+ * action fails on re-execution — this logs and falls back to the raw module so
+ * the target still runs. Coverage is then unavailable, surfaced as a warning
+ * side effect so the empty coverage is attributable rather than silent.
+ *
+ * When no instrumented loader is present, loads the raw module directly.
+ * `resolverAdapters` are passed through unchanged (the executor composes them
+ * with the target's React shim; the raw path applies its own default shim when
+ * the list is omitted).
+ */
+function loadTargetExports(
+  ctx: InvocationContext,
+  resolverAdapters?: ResolverAdapter[],
+): { exports: Record<string, unknown>; loadSideEffects: SideEffect[] } {
+  if (!ctx.loadInstrumentedExports) {
+    return {
+      exports: loadModuleExports(ctx.fileForExec, resolverAdapters),
+      loadSideEffects: [],
+    };
+  }
+  try {
+    return {
+      exports: ctx.loadInstrumentedExports(resolverAdapters),
+      loadSideEffects: [],
+    };
+  } catch (e: unknown) {
+    logger.warn(
+      { err: e, file: ctx.fileForExec, function: ctx.functionName },
+      "instrumented adapter load failed; falling back to raw module (coverage unavailable)",
+    );
+    const message = e instanceof Error ? e.message : String(e);
+    const note: SideEffect = {
+      kind: "console_output",
+      level: "warn",
+      message:
+        `[shatter] adapter coverage unavailable: instrumented load failed for ` +
+        `${ctx.functionName} (${message}); fell back to raw module`,
+    };
+    return {
+      exports: loadModuleExports(ctx.fileForExec, resolverAdapters),
+      loadSideEffects: [note],
+    };
+  }
+}
+
 function executeRerenderScenario(
   ctx: InvocationContext,
   scenario: HookRerenderScenario,
@@ -456,10 +508,15 @@ function executeRerenderScenario(
   const hookCtx = new HookExecutionContext();
   const shimAdapter = createStatefulReactShimAdapter(hookCtx);
 
-  // Load module with stateful shim (bypasses cache since custom resolverAdapters)
+  // Load module with the stateful shim leading (the executor composes it with
+  // any execution-profile resolver adapters; the raw path uses it alone).
+  // Prefer the instrumented loader so rerenders record real coverage (str-26fhi).
   let moduleExports: Record<string, unknown>;
+  let loadSideEffects: SideEffect[];
   try {
-    moduleExports = loadModuleExports(ctx.fileForExec, [shimAdapter]);
+    const loaded = loadTargetExports(ctx, [shimAdapter]);
+    moduleExports = loaded.exports;
+    loadSideEffects = loaded.loadSideEffects;
   } catch (e: unknown) {
     return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
   }
@@ -501,6 +558,11 @@ function executeRerenderScenario(
     return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
   }
 
+  // Mark the props-driven render boundary: branch_path / path_constraints are
+  // scoped to the mount so the state-driven rerenders below (which can flip a
+  // branch) don't emit contradictory constraints along one path (str-26fhi).
+  ctx.markInitialRenderComplete?.();
+
   // Action-rerender loop
   for (let i = 0; i < maxRerenders; i++) {
     const found = findCallable(lastResult, scenario.callable_path);
@@ -535,7 +597,11 @@ function executeRerenderScenario(
     renders,
     rerender_count: renders.length - 1,
   };
-  return { status: "completed", return_value: outcome };
+  return {
+    status: "completed",
+    return_value: outcome,
+    ...(loadSideEffects.length > 0 ? { side_effects: loadSideEffects } : {}),
+  };
 }
 
 function createReactHookInvocationHook(): InvocationHook {
@@ -550,11 +616,17 @@ function createReactHookInvocationHook(): InvocationHook {
         return executeRerenderScenario(ctx, scenario);
       }
 
-      // All other scenarios use the default noop React shim
-      // 1. Load module (React shims applied automatically for .tsx)
+      // All other scenarios use the default noop React shim.
+      // 1. Load module (React shims applied automatically for .tsx). Prefer the
+      // instrumented loader so the mount records real coverage (str-26fhi).
+      // This is a single-render scenario, so branch_path is not scoped (no
+      // markInitialRenderComplete) — the mount path has no contradictions.
       let moduleExports: Record<string, unknown>;
+      let loadSideEffects: SideEffect[];
       try {
-        moduleExports = loadModuleExports(ctx.fileForExec);
+        const loaded = loadTargetExports(ctx);
+        moduleExports = loaded.exports;
+        loadSideEffects = loaded.loadSideEffects;
       } catch (e: unknown) {
         return { status: "runtime_failed", thrown_error: buildErrorInfo(e) };
       }
@@ -595,11 +667,23 @@ function createReactHookInvocationHook(): InvocationHook {
           }
         }
         // Return the mount result regardless — it describes hook behavior.
-        return { status: "completed", return_value: mountResult };
+        return {
+          status: "completed",
+          return_value: mountResult,
+          ...(loadSideEffects.length > 0
+            ? { side_effects: loadSideEffects }
+            : {}),
+        };
       }
 
       // No recognized scenario — return mount result directly
-      return { status: "completed", return_value: mountResult };
+      return {
+        status: "completed",
+        return_value: mountResult,
+        ...(loadSideEffects.length > 0
+          ? { side_effects: loadSideEffects }
+          : {}),
+      };
     },
   };
 }

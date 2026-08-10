@@ -444,6 +444,23 @@
       },
       "required": ["param_index", "param_name", "kind"]
     },
+    "receiver_field_plan": {
+      "type": "object",
+      "description": "Typed plan for populating one field on a constructed receiver before invocation (str-mhinv.1).",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["literal", "zero", "random", "symbolic", "runtime_value"]
+        },
+        "literal": {},
+        "type_hint": { "type": "string" }
+      },
+      "required": ["path", "kind"]
+    },
     "invocation_plan": {
       "type": "object",
       "properties": {
@@ -456,6 +473,14 @@
         "argument_plans": {
           "type": "array",
           "items": { "$ref": "#/$defs/value_plan" }
+        },
+        "constructor_arg_plans": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/value_plan" }
+        },
+        "receiver_field_plans": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/receiver_field_plan" }
         },
         "priority": { "type": "integer" },
         "label": { "type": "string" }

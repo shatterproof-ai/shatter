@@ -652,12 +652,12 @@ mod tests {
             params: vec![
                 ParamInfo {
                     name: "a".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
                 ParamInfo {
                     name: "b".into(),
-                    typ: TypeInfo::Int,
+                    typ: TypeInfo::Int { int_width: None, int_signed: None },
                     type_name: None,
                 },
             ],
@@ -669,7 +669,7 @@ mod tests {
                 branch_type: BranchType::If,
             }],
             dependencies: vec![],
-            return_type: TypeInfo::Int,
+            return_type: TypeInfo::Int { int_width: None, int_signed: None },
             start_line: 1,
             end_line: 5,
             literals: vec![],
@@ -1450,19 +1450,19 @@ mod tests {
 
     #[test]
     fn function_signature_from_analysis_extracts_param_types_in_order() {
-        let analysis = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str, TypeInfo::Bool]);
+        let analysis = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str, TypeInfo::Bool]);
         let sig = FunctionSignature::from_analysis(&analysis);
         assert_eq!(
             sig.params,
-            vec![ps(TypeInfo::Int), ps(TypeInfo::Str), ps(TypeInfo::Bool)]
+            vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Str), ps(TypeInfo::Bool)]
         );
         assert_eq!(sig.arity(), 3);
     }
 
     #[test]
     fn function_signature_ignores_param_names() {
-        let a = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
-        let mut b = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
+        let a = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
+        let mut b = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
         b.params[0].name = "renamed".into();
         b.params[1].name = "also_renamed".into();
         let sa = FunctionSignature::from_analysis(&a);
@@ -1478,8 +1478,8 @@ mod tests {
         // to `Customer` invalidates stored inputs even though the structural
         // shape is unchanged. See the `FunctionSignature` rustdoc for the
         // false-positive-versus-false-negative rationale.
-        let mut a = analysis_with_params("f", &[TypeInfo::Int]);
-        let mut b = analysis_with_params("f", &[TypeInfo::Int]);
+        let mut a = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }]);
+        let mut b = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }]);
         a.params[0].type_name = Some("UserId".into());
         b.params[0].type_name = Some("CustomerId".into());
         let sa = FunctionSignature::from_analysis(&a);
@@ -1492,8 +1492,8 @@ mod tests {
     fn function_signature_anonymous_types_compare_structurally() {
         // Two params with `type_name == None` and identical structural
         // TypeInfo ARE compatible — anonymous types compare on shape alone.
-        let a = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
-        let b = analysis_with_params("f", &[TypeInfo::Int, TypeInfo::Str]);
+        let a = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
+        let b = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }, TypeInfo::Str]);
         let sa = FunctionSignature::from_analysis(&a);
         let sb = FunctionSignature::from_analysis(&b);
         assert_eq!(sa, sb);
@@ -1506,8 +1506,8 @@ mod tests {
         // should also be treated as incompatible — the nominal type did not
         // exist before, and replaying generic inputs against a nominal
         // constraint risks the same poisoning as a rename.
-        let mut a = analysis_with_params("f", &[TypeInfo::Int]);
-        let mut b = analysis_with_params("f", &[TypeInfo::Int]);
+        let mut a = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }]);
+        let mut b = analysis_with_params("f", &[TypeInfo::Int { int_width: None, int_signed: None }]);
         a.params[0].type_name = None;
         b.params[0].type_name = Some("UserId".into());
         let sa = FunctionSignature::from_analysis(&a);
@@ -1518,7 +1518,7 @@ mod tests {
     #[test]
     fn compat_exact_on_identical_signatures() {
         let sig = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Bool)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Bool)],
         };
         assert_eq!(sig.compatibility_with(&sig), SignatureCompat::Exact);
     }
@@ -1526,10 +1526,10 @@ mod tests {
     #[test]
     fn compat_additive_when_tail_appended() {
         let stored = FunctionSignature {
-            params: vec![ps(TypeInfo::Int)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None })],
         };
         let current = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Str)],
         };
         assert_eq!(
             stored.compatibility_with(&current),
@@ -1540,10 +1540,10 @@ mod tests {
     #[test]
     fn compat_subtractive_when_tail_removed() {
         let stored = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str), ps(TypeInfo::Bool)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Str), ps(TypeInfo::Bool)],
         };
         let current = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Str)],
         };
         assert_eq!(
             stored.compatibility_with(&current),
@@ -1554,7 +1554,7 @@ mod tests {
     #[test]
     fn compat_rejects_prefix_type_mismatch() {
         let stored = FunctionSignature {
-            params: vec![ps(TypeInfo::Int)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None })],
         };
         let current = FunctionSignature {
             params: vec![ps(TypeInfo::Str)],
@@ -1572,10 +1572,10 @@ mod tests {
         // (Bool vs Str). This is an ambiguous change: the caller cannot tell
         // whether the old Bool values belong at position 1 or position 2.
         let stored = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Bool)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Bool)],
         };
         let current = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str), ps(TypeInfo::Bool)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Str), ps(TypeInfo::Bool)],
         };
         assert_eq!(
             stored.compatibility_with(&current),
@@ -1586,10 +1586,10 @@ mod tests {
     #[test]
     fn compat_rejects_reorder() {
         let stored = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Str)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Str)],
         };
         let current = FunctionSignature {
-            params: vec![ps(TypeInfo::Str), ps(TypeInfo::Int)],
+            params: vec![ps(TypeInfo::Str), ps(TypeInfo::Int { int_width: None, int_signed: None })],
         };
         assert_eq!(
             stored.compatibility_with(&current),
@@ -1603,10 +1603,10 @@ mod tests {
         // mirror images of each other across the two directions of
         // compatibility_with.
         let short = FunctionSignature {
-            params: vec![ps(TypeInfo::Int)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None })],
         };
         let long = FunctionSignature {
-            params: vec![ps(TypeInfo::Int), ps(TypeInfo::Bool)],
+            params: vec![ps(TypeInfo::Int { int_width: None, int_signed: None }), ps(TypeInfo::Bool)],
         };
         assert_eq!(
             short.compatibility_with(&long),

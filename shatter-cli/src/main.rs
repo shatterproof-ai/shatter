@@ -11,7 +11,10 @@ mod args;
 mod commands;
 mod embedded_frontend;
 mod embedded_go_frontend;
+mod frontend_versions;
+mod generated_paths;
 mod helpers;
+mod host_writes;
 mod render;
 mod telemetry_flush;
 
@@ -124,6 +127,7 @@ async fn main() -> ExitCode {
     let subcommand_name = subcommand_label(&cli.command);
     let cmd_start = std::time::Instant::now();
     let timing_start_unix_ms = timing::unix_timestamp_ms_now();
+
     let timing_handle = if timing_config.mode.is_enabled() {
         let handle = TimingHandle::default();
         if let Err(err) = handle.install_global() {
@@ -132,6 +136,28 @@ async fn main() -> ExitCode {
         Some(handle)
     } else {
         None
+    };
+
+    // str-gg9v: default-deny host filesystem writes. Commands that execute or
+    // replay target functions refuse to run when no OS sandbox backend is
+    // configured unless the operator opts in (`--allow-host-writes` /
+    // `SHATTER_ALLOW_HOST_WRITES=1`). When they do run unsandboxed, targets are
+    // confined to a throwaway working directory held alive by this guard for the
+    // command's duration. Analysis-only commands (`analyze`, `stale`) are exempt.
+    let _host_write_isolation = match host_writes::setup(&cli.command, cli.allow_host_writes) {
+        Ok(guard) => guard,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
+            let duration_ms = cmd_start.elapsed().as_millis() as u64;
+            return finalize_exit_code(
+                &subcommand_name,
+                duration_ms,
+                1,
+                &timing_config,
+                timing_start_unix_ms,
+                timing_handle.as_ref(),
+            );
+        }
     };
 
     let result = match cli.command {
@@ -543,13 +569,35 @@ async fn main() -> ExitCode {
                 yaml_genetic
             };
 
-            // Load project-level config (shatter.config.json) for scan defaults.
-            let project_cfg =
-                shatter_core::config::load_project_config(std::path::Path::new(&directory))
-                    .unwrap_or_else(|e| {
+            // Load project-level config (shatter.config.json) for scan
+            // defaults. Walk up from the scan directory so a scan of a
+            // subdirectory (e.g. `shatter scan web/src`) still picks up the
+            // project-root config (str-1q12y). `project_config_dir` is the
+            // directory the config was found in — the anchor for its
+            // include/exclude glob patterns.
+            //
+            // Start the walk from the canonicalized scan directory: a relative
+            // `directory` such as `web/src` would otherwise yield relative
+            // ancestor paths (and an empty path at the top), producing a bad
+            // anchor that fails to match the canonicalized scan root used
+            // during discovery.
+            let config_search_start = std::path::Path::new(&directory)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(&directory));
+            let (project_cfg, project_config_dir) =
+                match shatter_core::config::find_project_config(&config_search_start) {
+                    Ok(Some((cfg, dir))) => {
+                        // Canonicalize so the anchor matches the canonicalized
+                        // scan root used during file discovery.
+                        let dir = dir.canonicalize().unwrap_or(dir);
+                        (Some(cfg), Some(dir))
+                    }
+                    Ok(None) => (None, None),
+                    Err(e) => {
                         log::warn!("Failed to load project config: {e}");
-                        None
-                    });
+                        (None, None)
+                    }
+                };
 
             // Resolve CLI options: CLI flag > YAML config > built-in default.
             let effective_max_iterations = max_iterations
@@ -598,6 +646,15 @@ async fn main() -> ExitCode {
                 }
             };
             // For Vec/bool fields: CLI non-empty/true overrides config.
+            //
+            // Pattern origin drives anchoring (str-1q12y): CLI `--include` /
+            // `--exclude` are scan-root-relative (anchor `None`), while
+            // config-file patterns are anchored at the config file's directory
+            // (`project_config_dir`) so project-root patterns keep working when
+            // the scan root is a subdirectory. Include and exclude resolve
+            // independently, so their anchors are computed independently.
+            let include_from_config =
+                include.is_empty() && project_cfg.as_ref().is_some_and(|c| !c.include.is_empty());
             let effective_include = if include.is_empty() {
                 project_cfg
                     .as_ref()
@@ -606,6 +663,13 @@ async fn main() -> ExitCode {
             } else {
                 include
             };
+            let include_anchor = if include_from_config {
+                project_config_dir.clone()
+            } else {
+                None
+            };
+            let exclude_from_config =
+                exclude.is_empty() && project_cfg.as_ref().is_some_and(|c| !c.exclude.is_empty());
             let effective_exclude = if exclude.is_empty() {
                 project_cfg
                     .as_ref()
@@ -613,6 +677,11 @@ async fn main() -> ExitCode {
                     .unwrap_or_default()
             } else {
                 exclude
+            };
+            let exclude_anchor = if exclude_from_config {
+                project_config_dir.clone()
+            } else {
+                None
             };
             let effective_outputs = if outputs.is_empty() {
                 project_cfg
@@ -645,6 +714,8 @@ async fn main() -> ExitCode {
                 language.as_deref(),
                 &effective_include,
                 &effective_exclude,
+                include_anchor.as_deref(),
+                exclude_anchor.as_deref(),
                 changed,
                 since.as_deref(),
                 until.as_deref(),
@@ -728,12 +799,13 @@ async fn main() -> ExitCode {
             max_iterations,
             timeout,
             analyze_only,
+            concolic,
             request_timeout,
             exec_timeout,
             build_timeout,
             coverage_budget_gates,
             release,
-            solver_timeout: _,
+            solver_timeout,
             memory_limit,
         } => {
             commands::run::run_run(
@@ -742,10 +814,12 @@ async fn main() -> ExitCode {
                 max_iterations,
                 timeout,
                 analyze_only,
+                concolic,
                 request_timeout,
                 exec_timeout,
                 build_timeout,
                 release,
+                solver_timeout,
                 log_level,
                 memory_limit,
                 cli.project_dir.as_deref(),
@@ -1113,6 +1187,32 @@ async fn main() -> ExitCode {
                     &subcommand_name,
                     dm,
                     0,
+                    &timing_config,
+                    timing_start_unix_ms,
+                    timing_handle.as_ref(),
+                ),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    queue_command_error_event(&subcommand_name, &*e);
+                    finalize_exit_code(
+                        &subcommand_name,
+                        dm,
+                        1,
+                        &timing_config,
+                        timing_start_unix_ms,
+                        timing_handle.as_ref(),
+                    )
+                }
+            };
+        }
+        CliCommand::Doctor { directory } => {
+            let dm = cmd_start.elapsed().as_millis() as u64;
+            let result = commands::doctor::run_doctor(directory.as_deref(), &colors);
+            return match result {
+                Ok(healthy) => finalize_exit_code(
+                    &subcommand_name,
+                    dm,
+                    if healthy { 0 } else { 1 },
                     &timing_config,
                     timing_start_unix_ms,
                     timing_handle.as_ref(),
