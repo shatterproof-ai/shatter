@@ -765,7 +765,22 @@ feature_capabilities:
       spelling-dependent match makes configured mocks resolve for planning
       and silently vanish at execute time. Anchored matches outrank basename
       fallbacks as a separate tier, and the safety-policy gate opts out of the
-      fallback entirely (it fails closed). Go-only at this stage.
+      fallback entirely (it fails closed). Since str-djcv2, mocks are keyed by
+      resolved package IDENTITY, not source spelling: a config symbol may be
+      bare (`pkg.Func`, base-name shorthand) or path-qualified
+      (`import/path.Func`, exact identity); aliased imports match by identity
+      and same-base-name packages no longer collide on the type-resolved path
+      (the syntactic fallback still keys on spelling alone). A path-qualified
+      mock outranks a bare one at a site both match. The identity model is
+      deliberately language-neutral so it maps cleanly to the other frontends
+      when they adopt hint mocks: Go = import path + function name; TypeScript
+      = module specifier + export name (str-c8djq TS counterpart); Rust = crate
+      path + item path. The canonical concept is "a value expression for an
+      opaque/hard dependency, keyed by canonical symbol identity" — each
+      frontend supplies its own identity tuple, but the keying/dedupe/merge
+      contract (path-qualified exact match, bare base-name match with an
+      ambiguity warning, wire+config field merge) is shared. Go-only at this
+      stage.
     frontends:
       typescript: not_supported
       go: supported

@@ -171,7 +171,7 @@ func TestDedupeMocks_ConfigWinsOverWire(t *testing.T) {
 	deduped := instrument.DedupeMocks([]instrument.MockConfig{
 		{Symbol: "auth:GetAccount", ReturnValues: []any{nil}},
 		{Symbol: "auth.GetAccount", Expression: "&auth.Account{}"},
-	})
+	}, nil)
 	if len(deduped) != 1 {
 		t.Fatalf("expected 1 deduped mock, got %d: %+v", len(deduped), deduped)
 	}

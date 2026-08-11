@@ -322,14 +322,24 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 	}
 
 	// Build the mocked-import matchers from mock symbols. Shapes:
-	//   "module:export" / "module/path"   — suppress the exact import path;
-	//   "module/path.Func"                — suppress the exact import path;
-	//   "pkg.Func" (config-mock qualifier) — suppress any import whose local
-	//     name (alias, or path base; instrument.ImportLocalName) is the
-	//     qualifier. Bare qualifiers can't distinguish same-base-name modules,
-	//     so this over-suppresses when e.g. two different `auth` packages are
-	//     imported — an accepted limit of the source-qualifier spelling; use
-	//     the path-qualified form when it matters.
+	//   "module/path.Func" / "module/path:Export" / "module:Export"
+	//     (colon form, any module) — suppress the exact import path only, so
+	//     a same-base-name import from a DIFFERENT module stays reported. A
+	//     colon always separates a real import path from the exported
+	//     function name (wire/discovery form) even when that import path has
+	//     no slash — a single-segment import path is valid Go (every stdlib
+	//     package: "fmt", "os", "strings"). Checked ahead of the shared
+	//     parsed-symbol representation (parseMockSymbol), which deliberately
+	//     classifies a slash-free colon form as a bare qualifier for
+	//     DedupeMocks/the rewriter's purposes (see parsedMockSymbol's doc
+	//     comment) — this suppression pass needs the opposite precision, an
+	//     exact import-path match rather than same-name-anywhere.
+	//   "pkg.Func" (bare qualifier, dot form) — suppress any import whose
+	//     local name (alias, or path base; instrument.ImportLocalName) is the
+	//     qualifier. Bare qualifiers can't distinguish same-base-name
+	//     modules, so this over-suppresses when e.g. two different `auth`
+	//     packages are imported — an accepted limit of the source-qualifier
+	//     spelling; use the path-qualified form when it matters.
 	mockedModules := make(map[string]bool)
 	mockedQualifiers := make(map[string]bool)
 	for _, m := range mocks {
@@ -338,16 +348,12 @@ func discoverDependencies(sourcePath string, mocks []MockConfig) []DiscoveredDep
 			mockedModules[module] = true
 			continue
 		}
-		if slash := strings.LastIndex(sym, "/"); slash >= 0 {
-			if dot := strings.Index(sym[slash:], "."); dot >= 0 {
-				mockedModules[sym[:slash+dot]] = true
+		if p, ok := parseMockSymbol(sym); ok {
+			if p.ImportPath != "" {
+				mockedModules[p.ImportPath] = true
 			} else {
-				mockedModules[sym] = true
+				mockedQualifiers[p.Base] = true
 			}
-			continue
-		}
-		if qualifier, _, found := strings.Cut(sym, "."); found {
-			mockedQualifiers[qualifier] = true
 			continue
 		}
 		mockedModules[sym] = true

@@ -59,3 +59,27 @@ func TestProperty_MockFingerprint(t *testing.T) {
 		})
 	})
 }
+
+// TestSubstitutionsFingerprint_SensitiveToImportPath guards against a
+// resolved substitution set differing only in ImportPath (which candidate a
+// same-spelled call site's rewriter picks — str-djcv2) hashing identically.
+// build.cacheKey feeds this into the launcher-binary cache key, so a
+// collision here means a build could reuse a cached binary that substituted
+// the wrong package's call sites.
+func TestSubstitutionsFingerprint_SensitiveToImportPath(t *testing.T) {
+	unpinned := []MockSubstitution{
+		{QualifiedFunction: "util.Do", Expression: `"x"`, TypeResolved: true, AllowPackageScope: true},
+	}
+	pinnedA := []MockSubstitution{
+		{QualifiedFunction: "util.Do", Expression: `"x"`, TypeResolved: true, AllowPackageScope: true, ImportPath: "a/util"},
+	}
+	pinnedB := []MockSubstitution{
+		{QualifiedFunction: "util.Do", Expression: `"x"`, TypeResolved: true, AllowPackageScope: true, ImportPath: "b/util"},
+	}
+	if SubstitutionsFingerprint(unpinned) == SubstitutionsFingerprint(pinnedA) {
+		t.Fatal("fingerprint insensitive to unpinned vs pinned ImportPath")
+	}
+	if SubstitutionsFingerprint(pinnedA) == SubstitutionsFingerprint(pinnedB) {
+		t.Fatal("fingerprint insensitive to differing ImportPath")
+	}
+}

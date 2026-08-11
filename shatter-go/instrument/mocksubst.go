@@ -7,6 +7,7 @@ import (
 	"go/printer"
 	"go/token"
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -52,6 +53,105 @@ type MockSubstitution struct {
 	// TypeResolved reports whether AllowedFuncs/AllowPackageScope were computed
 	// from real type information. False selects the syntactic fallback.
 	TypeResolved bool
+	// ImportPath, when non-empty, is the resolved package import path this
+	// substitution targets. It is set for path-qualified config spellings
+	// ("example.com/pkg.Func") and lets type resolution match call sites by
+	// package identity rather than the ambiguous base qualifier — so two
+	// packages sharing a base name ("a/util.Do" vs "b/util.Do") no longer
+	// collide, and an aliased import ("import a2 example.com/auth") still
+	// matches. Empty for bare spellings.
+	ImportPath string
+	// BaseQualifier is the final package qualifier / base name (e.g. "auth"),
+	// used to match a bare config spelling against a call site's resolved
+	// package when no import path was supplied.
+	BaseQualifier string
+}
+
+// parsedMockSymbol is the package-identity decomposition of a mock symbol.
+// A mock symbol names a package-level function in one of several spellings:
+//
+//   - bare              "auth.GetAccount"              (Base="auth")
+//   - path-qualified    "example.com/auth.GetAccount"  (ImportPath set)
+//   - wire colon form   "example.com/auth:GetAccount"  (ImportPath set)
+//   - wire colon bare   "auth:GetAccount"              (Base="auth")
+//
+// Base is always the final package qualifier — the alias-free source spelling
+// a non-aliased import would use at the call site. ImportPath is non-empty only
+// when the symbol carried a full slash-bearing import path, in which case
+// matching and dedupe can key on package identity instead of the ambiguous
+// base name.
+//
+// The slash-free colon form ("auth:GetAccount") is deliberately classified as
+// bare, not path-qualified, even though a colon always originates from a real
+// import path: DedupeMocks and the rewriter must let it collapse with — and
+// be overridden by — a user's dotted config spelling for the same function
+// ("auth.GetAccount"), which is the whole point of the wire-to-config upgrade
+// path. Treating it as path-qualified here would split that identity in two.
+// discoverDependencies (executor.go) needs the opposite precision for
+// dependency-SUPPRESSION (an exact import path, not "any same-named
+// package"), so it recovers the colon signal itself before falling back to
+// this shared parse.
+type parsedMockSymbol struct {
+	ImportPath string // full import path when path-qualified, else ""
+	Base       string // final package qualifier / base name
+	Func       string // function name
+}
+
+// identityKey is a dedupe/lookup key that collapses two symbols only when they
+// provably name the same package function: path-qualified symbols key on the
+// exact import path; bare symbols key on the base qualifier. A bare and a
+// path-qualified spelling therefore never collapse — without type information
+// the two cannot be proven identical, so collapsing them risks dropping a
+// distinct mock (str-djcv2).
+func (p parsedMockSymbol) identityKey() string {
+	if p.ImportPath != "" {
+		return "P\x00" + p.ImportPath + "\x00" + p.Func
+	}
+	return "B\x00" + p.Base + "\x00" + p.Func
+}
+
+// parseMockSymbol decomposes a mock symbol into its package identity. It
+// returns false for spellings that cannot name a package-qualified call site
+// (missing function, non-identifier base/function, empty segments).
+func parseMockSymbol(symbol string) (parsedMockSymbol, bool) {
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return parsedMockSymbol{}, false
+	}
+	// Fold "path:Export" into "path.Export" so wire and config spellings funnel
+	// through a single splitter.
+	if idx := strings.LastIndex(symbol, ":"); idx >= 0 {
+		symbol = symbol[:idx] + "." + symbol[idx+1:]
+	}
+	dot := strings.LastIndex(symbol, ".")
+	if dot < 0 {
+		return parsedMockSymbol{}, false
+	}
+	qualifier := symbol[:dot]
+	fn := symbol[dot+1:]
+	if qualifier == "" || fn == "" {
+		return parsedMockSymbol{}, false
+	}
+	var importPath, base string
+	if slash := strings.LastIndex(qualifier, "/"); slash >= 0 {
+		// Slash-bearing qualifier: the whole thing is an import path; the base
+		// is its final segment.
+		importPath = qualifier
+		base = qualifier[slash+1:]
+	} else {
+		// No slash: reduce a dotted qualifier ("nested.pkg.path") to its final
+		// segment — only the last element appears at the source call site.
+		base = qualifier
+		if d := strings.LastIndex(base, "."); d >= 0 {
+			base = base[d+1:]
+		}
+	}
+	// A selector call site can only ever match identifier.identifier; reject
+	// anything that could not appear there (stray punctuation, empty segments).
+	if !isGoIdentifier(base) || !isGoIdentifier(fn) {
+		return parsedMockSymbol{}, false
+	}
+	return parsedMockSymbol{ImportPath: importPath, Base: base, Func: fn}, true
 }
 
 // MockSubstitutionsFromConfigs extracts the expression-bearing subset of mocks
@@ -70,43 +170,62 @@ func MockSubstitutionsFromConfigs(mocks []MockConfig) []MockSubstitution {
 		if strings.TrimSpace(m.Expression) == "" {
 			continue
 		}
-		key := normalizeMockSymbol(m.Symbol)
-		if key == "" || seen[key] {
+		p, ok := parseMockSymbol(m.Symbol)
+		if !ok {
+			continue
+		}
+		key := p.identityKey()
+		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		subs = append(subs, MockSubstitution{
-			QualifiedFunction: key,
+			// QualifiedFunction is the base source spelling used by the
+			// syntactic fallback and as the seed spelling for type resolution;
+			// the resolver may re-key an aliased call site to its actual local
+			// spelling. ImportPath/BaseQualifier carry the package identity.
+			QualifiedFunction: p.Base + "." + p.Func,
+			ImportPath:        p.ImportPath,
+			BaseQualifier:     p.Base,
 			Expression:        m.Expression,
 		})
 	}
 	return subs
 }
 
-// DedupeMocks collapses mocks that normalize to the same qualified function,
-// preserving first-seen order. When both a wire mock (ReturnValues, empty
-// Expression) and a config mock (Expression) target the same symbol, the
-// expression-bearing entry wins — otherwise sanitizeMockName would collapse
-// both into one ShatterMock_<name> and generateLoopMockFile would emit a
-// duplicate function declaration that fails to compile (str-c8djq review
-// fix 2). Config call-site substitution takes precedence over a wire
-// return-value shim for the same symbol.
-func DedupeMocks(mocks []MockConfig) []MockConfig {
+// DedupeMocks collapses mocks that provably name the same package function,
+// preserving first-seen order. Entries are keyed by package identity
+// (parsedMockSymbol.identityKey): path-qualified symbols collapse only with an
+// exact import-path match, bare symbols by base qualifier. Two packages sharing
+// a base name ("a/util.Do" vs "b/util.Do") therefore no longer collide and
+// silently drop one another (str-djcv2). Keeping distinct spellings does mean
+// two wire mocks whose spellings differ but sanitize to the same
+// ShatterMock_<name> can both reach shim generation; see str-heegk.
+//
+// When both a wire mock (ReturnValues, empty Expression) and a config mock
+// (Expression) target the same symbol, they are MERGED rather than replaced:
+// the Expression comes from the config entry while the wire entry's
+// ReturnValues/ShouldTrackCalls/DefaultBehavior are preserved. Replacing
+// wholesale used to discard the wire fields (str-djcv2). The single surviving
+// entry keeps a unique sanitizeMockName so generateLoopMockFile cannot emit a
+// duplicate ShatterMock_<name> declaration (str-c8djq review fix 2).
+//
+// logf (may be nil) receives a one-line warning whenever a merge silently
+// picks a side: two genuinely conflicting non-empty values for the same
+// field (mergeMockConfigs keeps the first-seen one), or a wire mock's
+// ShouldTrackCalls surviving onto a merged entry whose Expression makes the
+// ShatterMock shim — the only thing that acts on ShouldTrackCalls — never
+// get generated for it (wireShimMocks, build/instrumented_overlay.go).
+func DedupeMocks(mocks []MockConfig, logf func(msg string, args ...any)) []MockConfig {
 	if len(mocks) < 2 {
 		return mocks
 	}
 	pos := make(map[string]int, len(mocks))
 	out := make([]MockConfig, 0, len(mocks))
 	for _, m := range mocks {
-		key := normalizeMockSymbol(m.Symbol)
-		if key == "" {
-			key = "\x00raw\x00" + m.Symbol
-		}
+		key := mockDedupeKey(m.Symbol)
 		if i, seen := pos[key]; seen {
-			// Upgrade to the expression-bearing entry (config wins).
-			if strings.TrimSpace(out[i].Expression) == "" && strings.TrimSpace(m.Expression) != "" {
-				out[i] = m
-			}
+			out[i] = mergeMockConfigs(out[i], m, logf)
 			continue
 		}
 		pos[key] = len(out)
@@ -125,37 +244,84 @@ func DedupeMocks(mocks []MockConfig) []MockConfig {
 // package-qualified call in Go source is always a single-identifier selector
 // (import path segments never appear at the call site).
 func normalizeMockSymbol(symbol string) string {
-	symbol = strings.TrimSpace(symbol)
-	if symbol == "" {
+	p, ok := parseMockSymbol(symbol)
+	if !ok {
 		return ""
 	}
-	// Fold "module:Export" into "module.Export".
-	if idx := strings.LastIndex(symbol, ":"); idx >= 0 {
-		symbol = symbol[:idx] + "." + symbol[idx+1:]
+	return p.Base + "." + p.Func
+}
+
+// mockDedupeKey returns the package-identity dedupe key for a mock symbol,
+// falling back to the raw symbol for spellings that cannot be parsed (so
+// malformed symbols still collapse with themselves but never with a valid one).
+func mockDedupeKey(symbol string) string {
+	if p, ok := parseMockSymbol(symbol); ok {
+		return p.identityKey()
 	}
-	// Reduce a dotted path to its final "qualifier.Func" pair. The qualifier
-	// is the last path segment before the function name; anything earlier is
-	// an import-path prefix that never appears at the source call site.
-	parts := strings.Split(symbol, ".")
-	if len(parts) < 2 {
-		return ""
+	return "\x00raw\x00" + symbol
+}
+
+// mergeMockConfigs combines two mocks proven to name the same symbol into one,
+// preserving each half's contribution: Expression (config call-site
+// substitution) and the wire shim fields (ReturnValues, ShouldTrackCalls,
+// DefaultBehavior). The existing (first-seen) entry's Symbol spelling is kept
+// for a stable sanitizeMockName. A field with only one non-empty side takes
+// that value, so the merge is order-independent when the two sides do not
+// overlap — the common case, since wire mocks carry ReturnValues/behavior and
+// config mocks carry Expression. When BOTH sides supply a genuinely
+// different non-empty value for the same field, the first-seen (existing)
+// value wins and logf (if non-nil) reports the discarded one — silently
+// picking a side on a real conflict is exactly the failure mode this merge
+// exists to avoid for the Expression-vs-ReturnValues case.
+func mergeMockConfigs(existing, incoming MockConfig, logf func(msg string, args ...any)) MockConfig {
+	merged := existing
+	if strings.TrimSpace(merged.Expression) == "" && strings.TrimSpace(incoming.Expression) != "" {
+		merged.Expression = incoming.Expression
 	}
-	qualifier := parts[len(parts)-2]
-	fn := parts[len(parts)-1]
-	// A colon-form import path may leave a slash-qualified segment
-	// ("example.com/pkg"); the source call site uses only the final path
-	// element as the package qualifier.
-	if idx := strings.LastIndex(qualifier, "/"); idx >= 0 {
-		qualifier = qualifier[idx+1:]
+	if len(merged.ReturnValues) == 0 {
+		merged.ReturnValues = incoming.ReturnValues
+	} else if len(incoming.ReturnValues) > 0 && !returnValuesEqual(merged.ReturnValues, incoming.ReturnValues) {
+		if logf != nil {
+			logf("mock merge: discarding conflicting return_values",
+				"symbol", merged.Symbol, "kept", merged.ReturnValues, "discarded", incoming.ReturnValues)
+		}
 	}
-	// Both halves must be plausible Go identifiers: a selector call site can
-	// only ever match identifier.identifier, so anything else (stray colons,
-	// spaces, empty segments from malformed config) is inert junk — reject it
-	// here rather than letting it pollute dedupe keys and rewrite maps.
-	if !isGoIdentifier(qualifier) || !isGoIdentifier(fn) {
-		return ""
+	if strings.TrimSpace(merged.DefaultBehavior) == "" && strings.TrimSpace(incoming.DefaultBehavior) != "" {
+		merged.DefaultBehavior = incoming.DefaultBehavior
+	} else if strings.TrimSpace(incoming.DefaultBehavior) != "" && merged.DefaultBehavior != incoming.DefaultBehavior {
+		if logf != nil {
+			logf("mock merge: discarding conflicting default_behavior",
+				"symbol", merged.Symbol, "kept", merged.DefaultBehavior, "discarded", incoming.DefaultBehavior)
+		}
 	}
-	return qualifier + "." + fn
+	if incoming.ShouldTrackCalls {
+		merged.ShouldTrackCalls = true
+	}
+	// A ShatterMock shim — the only consumer of ShouldTrackCalls/ReturnValues —
+	// is never generated for an Expression-bearing entry (wireShimMocks,
+	// build/instrumented_overlay.go: the call site is replaced by Expression
+	// outright, so a shim for it would never be called). Preserving
+	// ShouldTrackCalls onto such an entry keeps the field on the struct but it
+	// has no effect; say so instead of silently dropping the guarantee.
+	if merged.ShouldTrackCalls && strings.TrimSpace(merged.Expression) != "" && logf != nil {
+		logf("mock merge: should_track_calls has no effect once merged with an expression mock; the call site is replaced outright and no shim is generated",
+			"symbol", merged.Symbol)
+	}
+	return merged
+}
+
+// returnValuesEqual reports whether two ReturnValues slices carry the same
+// values in the same order.
+func returnValuesEqual(a, b []any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // isGoIdentifier reports whether s is a valid Go identifier.
@@ -346,7 +512,13 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 		return 0, nil
 	}
 
-	byKey := make(map[string]MockSubstitution, len(subs))
+	// Multiple substitutions may share a local spelling: two packages with the
+	// same base name, aliased to distinct import paths but both called
+	// "util.Do" in different functions of this package, resolve to distinct
+	// expressions with disjoint AllowedFuncs. The rewriter is position-blind and
+	// keyed by spelling, so it holds every candidate per spelling and selects
+	// the one whose allow-list covers the enclosing function (str-djcv2).
+	byKey := make(map[string][]MockSubstitution, len(subs))
 	var parseErrs []string
 	for _, s := range subs {
 		if s.QualifiedFunction == "" || strings.TrimSpace(s.Expression) == "" {
@@ -356,7 +528,7 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 			parseErrs = append(parseErrs, fmt.Sprintf("%s: %v", s.QualifiedFunction, err))
 			continue
 		}
-		byKey[s.QualifiedFunction] = s
+		byKey[s.QualifiedFunction] = append(byKey[s.QualifiedFunction], s)
 	}
 	if len(byKey) == 0 {
 		if len(parseErrs) > 0 {
@@ -366,6 +538,7 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 	}
 
 	imports := importedPackageNames(file)
+	importPaths := importedPackagePaths(file)
 
 	// Precompute per-top-level-function bound names for the shadow checks.
 	// The "" key holds bindings from package-scope function literals, whose
@@ -383,16 +556,36 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 	// AllowedFuncs can never disagree about which sites exist.
 	count := 0
 	WalkQualifiedCalls(file, func(site QualifiedCallSite) ast.Expr {
-		sub, ok := byKey[site.QualifiedName()]
+		candidates, ok := byKey[site.QualifiedName()]
 		if !ok {
 			return nil
 		}
-		if !mockCallSiteAllowed(sub, site.EnclosingFunc, site.Qualifier, imports, boundByFunc) {
+		// Pick the candidate whose allow-list AND package identity cover this
+		// site. The allow-list alone is not enough to separate two candidates
+		// sharing a local spelling: function-scoped keys are package-unique, but
+		// every package-scope site reports the same empty key, so two same-base
+		// packages each mocked in a different file would both be "allowed" and
+		// the first candidate would win in both — the very collision this
+		// keying exists to prevent. importPaths pins each candidate to the
+		// import this file actually binds to that qualifier.
+		//
+		// A pinned (path-qualified) candidate must always win over an unpinned
+		// (bare) one at a site both match — mockImportIdentityMatches passes an
+		// unpinned candidate unconditionally, so relying on `candidates` order
+		// alone would let an unrelated bare candidate mask the more specific
+		// pinned one whenever it happened to sort first. Two explicit passes —
+		// pinned candidates first, unpinned only as a fallback — make that
+		// precedence a property of ImportPath, not of slice order.
+		chosen := selectMockCandidate(candidates, site, imports, importPaths, boundByFunc, true)
+		if chosen == nil {
+			chosen = selectMockCandidate(candidates, site, imports, importPaths, boundByFunc, false)
+		}
+		if chosen == nil {
 			return nil
 		}
 		// Parse a fresh expression per call site so replaced nodes never
 		// share AST identity (which would confuse the printer).
-		repl, err := parser.ParseExpr(sub.Expression)
+		repl, err := parser.ParseExpr(chosen.Expression)
 		if err != nil {
 			return nil
 		}
@@ -404,6 +597,77 @@ func RewriteMockCallSites(file *ast.File, subs []MockSubstitution) (int, error) 
 		return count, fmt.Errorf("mock substitution: %s", strings.Join(parseErrs, "; "))
 	}
 	return count, nil
+}
+
+// importedPackagePaths maps each local package qualifier in a file to the
+// import path it binds. Unlike the type-resolved pass this is purely
+// syntactic — an ImportSpec's alias-or-base-segment and its quoted path — but
+// it is exact for the question the rewriter asks: within THIS file, which
+// package does this qualifier name?
+func importedPackagePaths(file *ast.File) map[string]string {
+	paths := make(map[string]string, len(file.Imports))
+	for _, imp := range file.Imports {
+		name := ImportLocalName(imp)
+		if name == "" || imp.Path == nil {
+			continue
+		}
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		paths[name] = path
+	}
+	return paths
+}
+
+// mockImportIdentityMatches reports whether a substitution pinned to a package
+// identity may fire at a call site in this file.
+//
+// A substitution with no ImportPath is unpinned and matches anywhere its
+// allow-list permits (the syntactic fallback, and bare mocks that legitimately
+// span several same-base packages). A pinned substitution fires only when this
+// file's import for the qualifier is the same package. When the file has no
+// import under that name at all, the qualifier cannot be resolved here, so the
+// pin is not treated as a mismatch — the allow-list checks already decided.
+func mockImportIdentityMatches(sub MockSubstitution, qualifier string, importPaths map[string]string) bool {
+	if sub.ImportPath == "" {
+		return true
+	}
+	path, ok := importPaths[qualifier]
+	if !ok {
+		return true
+	}
+	return path == sub.ImportPath
+}
+
+// selectMockCandidate returns the first candidate substitution that both
+// covers this call site (mockCallSiteAllowed) and matches its package
+// identity (mockImportIdentityMatches), restricted to pinned (ImportPath !=
+// "") candidates when pinnedOnly is true and to unpinned candidates
+// otherwise. Callers run the pinned pass first so a path-qualified mock
+// always wins over a bare one at a site both match, regardless of slice
+// order.
+func selectMockCandidate(
+	candidates []MockSubstitution,
+	site QualifiedCallSite,
+	imports map[string]bool,
+	importPaths map[string]string,
+	boundByFunc map[string]map[string]bool,
+	pinnedOnly bool,
+) *MockSubstitution {
+	for i := range candidates {
+		if (candidates[i].ImportPath != "") != pinnedOnly {
+			continue
+		}
+		if !mockCallSiteAllowed(candidates[i], site.EnclosingFunc, site.Qualifier, imports, boundByFunc) {
+			continue
+		}
+		if !mockImportIdentityMatches(candidates[i], site.Qualifier, importPaths) {
+			continue
+		}
+		return &candidates[i]
+	}
+	return nil
 }
 
 // mockCallSiteAllowed decides whether a matched call site should be rewritten.

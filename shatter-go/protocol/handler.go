@@ -901,7 +901,7 @@ func (h *Handler) resolveExecMocks(file, function string, wireMocks []MockConfig
 		})
 	}
 	execMocks = append(execMocks, h.configMockConfigs(file, function)...)
-	return instrument.DedupeMocks(execMocks)
+	return instrument.DedupeMocks(execMocks, h.log.Warn)
 }
 
 // mockProvenance captures the mock inputs a harness is being built under so a

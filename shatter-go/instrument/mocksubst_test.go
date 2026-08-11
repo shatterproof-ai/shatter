@@ -136,15 +136,15 @@ func F() { _ = b.Real() }
 
 func TestNormalizeMockSymbol(t *testing.T) {
 	cases := map[string]string{
-		"auth.GetAccount":            "auth.GetAccount",
-		"module:Export":              "module.Export",
-		"example.com/pkg:NewThing":   "pkg.NewThing",
-		"example.com/pkg.NewThing":   "pkg.NewThing",
-		"nested.pkg.path.Fn":         "path.Fn",
-		"bare":                       "",
-		"":                           "",
-		"trailing.":                  "",
-		".leading":                   "",
+		"auth.GetAccount":          "auth.GetAccount",
+		"module:Export":            "module.Export",
+		"example.com/pkg:NewThing": "pkg.NewThing",
+		"example.com/pkg.NewThing": "pkg.NewThing",
+		"nested.pkg.path.Fn":       "path.Fn",
+		"bare":                     "",
+		"":                         "",
+		"trailing.":                "",
+		".leading":                 "",
 	}
 	for in, want := range cases {
 		if got := normalizeMockSymbol(in); got != want {
@@ -503,3 +503,248 @@ func TestProperty_NormalizeMockSymbol_DotColonEquivalenceAndIdempotent(t *testin
 }
 
 var _ = mustFormat
+
+// bare vs path-qualified vs wire-colon spellings.
+
+func TestParseMockSymbol(t *testing.T) {
+	cases := []struct {
+		in         string
+		ok         bool
+		importPath string
+		base       string
+		fn         string
+	}{
+		{"auth.GetAccount", true, "", "auth", "GetAccount"},
+		{"example.com/auth.GetAccount", true, "example.com/auth", "auth", "GetAccount"},
+		{"example.com/auth:GetAccount", true, "example.com/auth", "auth", "GetAccount"},
+		{"auth:GetAccount", true, "", "auth", "GetAccount"},
+		{"a/util.Do", true, "a/util", "util", "Do"},
+		{"nested.pkg.path.Fn", true, "", "path", "Fn"},
+		{"bare", false, "", "", ""},
+		{"", false, "", "", ""},
+		{"trailing.", false, "", "", ""},
+		{".leading", false, "", "", ""},
+	}
+	for _, c := range cases {
+		got, ok := parseMockSymbol(c.in)
+		if ok != c.ok {
+			t.Errorf("parseMockSymbol(%q) ok = %v, want %v", c.in, ok, c.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if got.ImportPath != c.importPath || got.Base != c.base || got.Func != c.fn {
+			t.Errorf("parseMockSymbol(%q) = %+v, want {ImportPath:%q Base:%q Func:%q}",
+				c.in, got, c.importPath, c.base, c.fn)
+		}
+	}
+}
+
+// ("util") must NOT collapse — keying by source spelling used to drop one.
+
+func TestDedupeMocks_SameBaseNamePackagesDoNotCollide(t *testing.T) {
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "example.com/a/util.Do", Expression: "fakeA()"},
+		{Symbol: "example.com/b/util.Do", Expression: "fakeB()"},
+	}, nil)
+	if len(deduped) != 2 {
+		t.Fatalf("expected both same-base-name mocks preserved, got %d: %+v", len(deduped), deduped)
+	}
+	byExpr := map[string]bool{}
+	for _, m := range deduped {
+		byExpr[m.Expression] = true
+	}
+	if !byExpr["fakeA()"] || !byExpr["fakeB()"] {
+		t.Fatalf("both expressions must survive, got %+v", deduped)
+	}
+}
+
+// contributions, not replace the wire entry wholesale.
+
+func TestDedupeMocks_PreservesWireFieldsOnUpgrade(t *testing.T) {
+	var warnings []string
+	logf := func(msg string, args ...any) { warnings = append(warnings, msg) }
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "auth:GetAccount", ReturnValues: []any{1, 2}, ShouldTrackCalls: true, DefaultBehavior: "repeat_last"},
+		{Symbol: "auth.GetAccount", Expression: "&auth.Account{}"},
+	}, logf)
+	if len(deduped) != 1 {
+		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
+	}
+	m := deduped[0]
+	if m.Expression != "&auth.Account{}" {
+		t.Errorf("config Expression lost: %+v", m)
+	}
+	if len(m.ReturnValues) != 2 {
+		t.Errorf("wire ReturnValues discarded: %+v", m)
+	}
+	if !m.ShouldTrackCalls {
+		t.Errorf("wire ShouldTrackCalls discarded: %+v", m)
+	}
+	if m.DefaultBehavior != "repeat_last" {
+		t.Errorf("wire DefaultBehavior discarded: %+v", m)
+	}
+	// The struct field survives the merge, but no shim is ever generated for
+	// an Expression-bearing entry (wireShimMocks), so ShouldTrackCalls has no
+	// effect here — the merge must say so instead of claiming a silent win.
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "should_track_calls has no effect") {
+		t.Errorf("expected a should_track_calls-has-no-effect warning, got %v", warnings)
+	}
+}
+
+// halves regardless of which entry (wire or config) is seen first.
+
+func TestDedupeMocks_MergeOrderIndependent(t *testing.T) {
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "auth.GetAccount", Expression: "&auth.Account{}"},
+		{Symbol: "auth:GetAccount", ReturnValues: []any{1}, ShouldTrackCalls: true},
+	}, nil)
+	if len(deduped) != 1 {
+		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
+	}
+	m := deduped[0]
+	if m.Expression != "&auth.Account{}" || len(m.ReturnValues) != 1 || !m.ShouldTrackCalls {
+		t.Fatalf("merge dropped a field: %+v", m)
+	}
+}
+
+// TestDedupeMocks_ConflictingReturnValuesWarnsAndKeepsFirst covers
+// mergeMockConfigs' conflict path: two entries proven to name the same
+// symbol both supply non-empty, DIFFERENT ReturnValues. The old code silently
+// kept whichever was first-seen; the merge must still keep it (order stays
+// deterministic) but must not do so silently.
+func TestDedupeMocks_ConflictingReturnValuesWarnsAndKeepsFirst(t *testing.T) {
+	var warnings []string
+	logf := func(msg string, args ...any) { warnings = append(warnings, msg) }
+	deduped := DedupeMocks([]MockConfig{
+		{Symbol: "auth:GetAccount", ReturnValues: []any{1, 2}},
+		{Symbol: "auth:GetAccount", ReturnValues: []any{3, 4}},
+	}, logf)
+	if len(deduped) != 1 {
+		t.Fatalf("expected 1 merged mock, got %d: %+v", len(deduped), deduped)
+	}
+	if len(deduped[0].ReturnValues) != 2 || deduped[0].ReturnValues[0] != 1 {
+		t.Errorf("expected first-seen ReturnValues kept, got %+v", deduped[0])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "conflicting return_values") {
+		t.Errorf("expected a conflicting-return_values warning, got %v", warnings)
+	}
+}
+
+// AllowedFuncs each rewrite only their own function.
+
+func TestRewriteMockCallSites_MultipleCandidatesPerSpelling(t *testing.T) {
+	src := "package target\n\n" +
+		"import \"util\"\n\n" +
+		"func A() { _ = util.Do() }\n" +
+		"func B() { _ = util.Do() }\n"
+	subs := []MockSubstitution{
+		{QualifiedFunction: "util.Do", Expression: "\"fromA\"", TypeResolved: true, AllowedFuncs: map[string]bool{"A": true}},
+		{QualifiedFunction: "util.Do", Expression: "\"fromB\"", TypeResolved: true, AllowedFuncs: map[string]bool{"B": true}},
+	}
+	out, n := rewrite(t, src, subs)
+	if n != 2 {
+		t.Fatalf("expected 2 rewrites, got %d\n%s", n, out)
+	}
+	// Both distinct expressions must appear (each candidate applied to its own
+	// function) and no original call site may remain.
+	if !strings.Contains(out, `"fromA"`) || !strings.Contains(out, `"fromB"`) {
+		t.Errorf("expected both fromA and fromB expressions in output:\n%s", out)
+	}
+	if strings.Contains(out, "util.Do") {
+		t.Errorf("original call site not fully rewritten:\n%s", out)
+	}
+	// Association check: fromA precedes fromB (func A declared before func B).
+	if strings.Index(out, `"fromA"`) > strings.Index(out, `"fromB"`) {
+		t.Errorf("candidate selection mismatched function order:\n%s", out)
+	}
+}
+
+// Package-scope call sites all report the same empty enclosing-function key, so
+// the allow-list cannot separate two candidates that share a local spelling —
+// both set AllowPackageScope and the first would win everywhere. That silently
+// reintroduces the same-base-name collision this keying exists to prevent (a
+// package-level `var B = util.Do()` initialized with the OTHER package's mock).
+// The candidate's resolved ImportPath, checked against the import this file
+// actually binds to the qualifier, is what tells them apart.
+func TestRewriteMockCallSites_PackageScopeCandidatesDisambiguateByImportPath(t *testing.T) {
+	fileA := "package target\n\n" +
+		"import \"a/util\"\n\n" +
+		"var A = util.Do()\n"
+	fileB := "package target\n\n" +
+		"import \"b/util\"\n\n" +
+		"var B = util.Do()\n"
+	subs := []MockSubstitution{
+		{
+			QualifiedFunction: "util.Do", Expression: `"fromA"`, TypeResolved: true,
+			AllowPackageScope: true, ImportPath: "a/util",
+		},
+		{
+			QualifiedFunction: "util.Do", Expression: `"fromB"`, TypeResolved: true,
+			AllowPackageScope: true, ImportPath: "b/util",
+		},
+	}
+
+	outA, nA := rewrite(t, fileA, subs)
+	if nA != 1 || !strings.Contains(outA, `"fromA"`) {
+		t.Errorf("file importing a/util should get fromA (n=%d):\n%s", nA, outA)
+	}
+	if strings.Contains(outA, `"fromB"`) {
+		t.Errorf("file importing a/util wrongly got b/util's expression:\n%s", outA)
+	}
+
+	outB, nB := rewrite(t, fileB, subs)
+	if nB != 1 || !strings.Contains(outB, `"fromB"`) {
+		t.Errorf("file importing b/util should get fromB (n=%d):\n%s", nB, outB)
+	}
+	if strings.Contains(outB, `"fromA"`) {
+		t.Errorf("file importing b/util wrongly got a/util's expression:\n%s", outB)
+	}
+}
+
+// An unpinned substitution (no ImportPath) keeps matching anywhere its
+// allow-list permits: that covers the syntactic fallback and a bare mock that
+// legitimately spans several same-base packages, where the documented behavior
+// is to substitute in all of them.
+func TestRewriteMockCallSites_UnpinnedSubstitutionStillMatches(t *testing.T) {
+	src := "package target\n\n" +
+		"import \"a/util\"\n\n" +
+		"var A = util.Do()\n"
+	subs := []MockSubstitution{
+		{QualifiedFunction: "util.Do", Expression: `"any"`, TypeResolved: true, AllowPackageScope: true},
+	}
+	out, n := rewrite(t, src, subs)
+	if n != 1 || !strings.Contains(out, `"any"`) {
+		t.Errorf("unpinned substitution should still rewrite (n=%d):\n%s", n, out)
+	}
+}
+
+// A pinned (path-qualified) candidate must always win over an unpinned
+// (bare) one at a site both match, regardless of which order they appear in
+// `candidates` — mockImportIdentityMatches passes an unpinned candidate
+// unconditionally, so without an explicit pinned-first pass the bare
+// candidate could mask the more specific pinned one whenever it happened to
+// sort first.
+func TestRewriteMockCallSites_PinnedCandidateWinsRegardlessOfOrder(t *testing.T) {
+	src := "package target\n\n" +
+		"import \"specific/auth\"\n\n" +
+		"var A = auth.GetName()\n"
+	bare := MockSubstitution{
+		QualifiedFunction: "auth.GetName", Expression: `"fromBare"`, TypeResolved: true, AllowPackageScope: true,
+	}
+	pinned := MockSubstitution{
+		QualifiedFunction: "auth.GetName", Expression: `"fromPinned"`, TypeResolved: true,
+		AllowPackageScope: true, ImportPath: "specific/auth",
+	}
+
+	outBareFirst, n := rewrite(t, src, []MockSubstitution{bare, pinned})
+	if n != 1 || !strings.Contains(outBareFirst, `"fromPinned"`) {
+		t.Errorf("bare-first order: expected pinned candidate to win (n=%d):\n%s", n, outBareFirst)
+	}
+
+	outPinnedFirst, n := rewrite(t, src, []MockSubstitution{pinned, bare})
+	if n != 1 || !strings.Contains(outPinnedFirst, `"fromPinned"`) {
+		t.Errorf("pinned-first order: expected pinned candidate to win (n=%d):\n%s", n, outPinnedFirst)
+	}
+}
