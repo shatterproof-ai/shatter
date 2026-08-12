@@ -195,6 +195,72 @@ class DocsStoriesTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Subprocess helper
+# ---------------------------------------------------------------------------
+
+
+class RunCommandTest(unittest.TestCase):
+    """run_command() must degrade, never raise (str-ny1jh).
+
+    Every check funnels through this helper, so an exception escaping it
+    takes down the whole patrol instead of turning one check red.
+    """
+
+    def test_missing_command_reports_127(self) -> None:
+        with mock.patch.object(
+            drift_patrol.subprocess, "run", side_effect=FileNotFoundError("no such file")
+        ):
+            code, output = drift_patrol.run_command(["definitely-not-a-real-command"])
+        self.assertEqual(code, 127)
+        self.assertIn("command not found", output)
+
+    def test_timeout_reports_124(self) -> None:
+        with mock.patch.object(
+            drift_patrol.subprocess,
+            "run",
+            side_effect=drift_patrol.subprocess.TimeoutExpired(cmd="sleep", timeout=5),
+        ):
+            code, output = drift_patrol.run_command(["sleep", "99"], timeout=5)
+        self.assertEqual(code, 124)
+        self.assertIn("timed out after 5s", output)
+
+    def test_permission_error_degrades_instead_of_raising(self) -> None:
+        # A checker script that lost its +x bit: PermissionError is an OSError
+        # but not a FileNotFoundError, so it used to propagate uncaught.
+        with mock.patch.object(
+            drift_patrol.subprocess,
+            "run",
+            side_effect=PermissionError(13, "Permission denied"),
+        ):
+            code, output = drift_patrol.run_command(["scripts/not-executable.py"])
+        self.assertEqual(code, 1)
+        self.assertIn("could not run", output)
+        self.assertIn("Permission denied", output)
+
+    def test_other_oserror_degrades_instead_of_raising(self) -> None:
+        with mock.patch.object(
+            drift_patrol.subprocess,
+            "run",
+            side_effect=OSError(12, "Cannot allocate memory"),
+        ):
+            code, output = drift_patrol.run_command(["some-checker"])
+        self.assertEqual(code, 1)
+        self.assertIn("Cannot allocate memory", output)
+
+    def test_oserror_surfaces_as_a_failed_check_not_a_crash(self) -> None:
+        # End-to-end through _subprocess_check: the patrol keeps running and
+        # reports FAIL for the one check that could not be executed.
+        with mock.patch.object(
+            drift_patrol.subprocess,
+            "run",
+            side_effect=PermissionError(13, "Permission denied"),
+        ):
+            result = drift_patrol.check_protocol_registry()
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertIn("exit 1", result.summary)
+
+
+# ---------------------------------------------------------------------------
 # Helpers and reporting
 # ---------------------------------------------------------------------------
 
