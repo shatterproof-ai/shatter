@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/shatter-dev/shatter/shatter-go/config"
@@ -561,6 +562,31 @@ func isSymbolicBodyParam(p protocol.ParamInfo) bool {
 		return true
 	}
 	return runtimeval.IsSymbolic(strings.TrimSpace(p.Type.Label))
+}
+
+// mergeStructDecodeSeeds folds auto-synthesized schema-derived seeds
+// (str-4q7bd) into a parameter's seed pool, ranked after any operator-
+// configured seeds for that same parameter — a configured seed pool
+// expresses explicit operator intent and must not be pushed out of its
+// top ranking slots by an automatically-generated fallback. Parameters with
+// no configured seeds get the synthesized pool as their entire SeedsByName
+// entry.
+func mergeStructDecodeSeeds(configured map[string][]ParamValueHint, synthesized map[string][]json.RawMessage) map[string][]ParamValueHint {
+	if len(synthesized) == 0 {
+		return configured
+	}
+	merged := make(map[string][]ParamValueHint, len(configured)+len(synthesized))
+	maps.Copy(merged, configured)
+	for name, docs := range synthesized {
+		existing := merged[name]
+		combined := make([]ParamValueHint, 0, len(existing)+len(docs))
+		combined = append(combined, existing...)
+		for _, doc := range docs {
+			combined = append(combined, ParamValueHint{Literal: doc})
+		}
+		merged[name] = combined
+	}
+	return merged
 }
 
 // paramFamily carries the code-generation type hint plus the ordered

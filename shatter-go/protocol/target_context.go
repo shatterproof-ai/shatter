@@ -1,5 +1,7 @@
 package protocol
 
+import "encoding/json"
+
 // TargetContext bundles the per-target information the planner needs to plan
 // for one InvocationRequirement. Building it requires more than the cached
 // FunctionAnalysis: the receiver-aware planner pathway (str-hy9b.H5) reaches
@@ -81,6 +83,17 @@ type TargetContext struct {
 	// bake its sentinel table, so the indices stay aligned. Go-internal planner
 	// context; no wire-protocol field.
 	ErrorSentinelCountsByParam map[string]int
+
+	// StructDecodeSeedsByParam maps parameter names to auto-synthesized
+	// structured documents keyed off the target struct's own schema (field
+	// names/tags/types), for parameters whose bytes/string value flows
+	// directly into a json.Unmarshal/yaml.Unmarshal call in the target body
+	// (str-4q7bd). Each entry is a small ordered pool of Literal candidate
+	// documents, ranked after any operator-configured seed pool
+	// (config.yaml `seeds`, str-b27zm) for the same parameter — auto-
+	// synthesis is a fallback default, not an override of explicit operator
+	// intent. Go-internal planner context; no wire-protocol field.
+	StructDecodeSeedsByParam map[string][]json.RawMessage
 }
 
 // InterfaceParamCandidate names a concrete type that implements a parameter's
