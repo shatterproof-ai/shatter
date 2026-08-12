@@ -142,7 +142,15 @@ candidates=()
 protected_hits=()
 while IFS= read -r ref; do
   branch="${ref#"$REMOTE/"}"
-  case "$branch" in ""|main|HEAD) continue ;; esac
+  # `refs/remotes/<remote>/HEAD` — the remote's symbolic default-branch
+  # pointer, present whenever the remote has been cloned normally — renders
+  # via `%(refname:short)` as just the bare remote name (e.g. "origin"), not
+  # "<remote>/HEAD". Without this check it slipped past the ""|main|HEAD
+  # exclusions and into the deletable set, so `--execute` would attempt
+  # `git push <remote> --delete <remote>` — deleting a real branch that
+  # happens to share the remote's name, if one exists, instead of the intended
+  # symref (found during code review of str-g18x).
+  case "$branch" in ""|main|HEAD|"$REMOTE") continue ;; esac
   if is_protected "$branch"; then
     protected_hits+=("$branch")
   else
