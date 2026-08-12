@@ -580,18 +580,15 @@ async fn main() -> ExitCode {
             // `directory` such as `web/src` would otherwise yield relative
             // ancestor paths (and an empty path at the top), producing a bad
             // anchor that fails to match the canonicalized scan root used
-            // during discovery.
+            // during discovery. The walk only strips components via
+            // `Path::parent()`, so the returned anchor is already canonical and
+            // needs no second canonicalize (str-qxmlz).
             let config_search_start = std::path::Path::new(&directory)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from(&directory));
             let (project_cfg, project_config_dir) =
                 match shatter_core::config::find_project_config(&config_search_start) {
-                    Ok(Some((cfg, dir))) => {
-                        // Canonicalize so the anchor matches the canonicalized
-                        // scan root used during file discovery.
-                        let dir = dir.canonicalize().unwrap_or(dir);
-                        (Some(cfg), Some(dir))
-                    }
+                    Ok(Some((cfg, dir))) => (Some(cfg), Some(dir)),
                     Ok(None) => (None, None),
                     Err(e) => {
                         log::warn!("Failed to load project config: {e}");
