@@ -63,6 +63,15 @@ pub fn run_doctor(
     Ok(frontend_ok && gitignore_ok)
 }
 
+/// Render a `doctor` warning header: a bolded headline, an em dash, then the
+/// plain-text detail, terminated by a newline.
+///
+/// Every failing check in this report opens with that shape; routing them
+/// through one helper keeps the warnings visually identical as checks are added.
+fn warning_header(colors: &Colors, headline: &str, detail: &str) -> String {
+    format!("{}{headline}{} — {detail}\n", colors.bold, colors.reset)
+}
+
 /// Check whether the embedded Go frontend is up to date with the on-disk
 /// `shatter-go/` sources. Returns `true` when healthy or when the check is not
 /// applicable (installed binary outside its source checkout).
@@ -92,10 +101,10 @@ fn check_embedded_frontend(colors: &Colors) -> bool {
         crate::helpers::print_stdout("Embedded Go frontend: up to date.\n");
         true
     } else {
-        crate::helpers::print_stdout(&format!(
-            "{}Embedded Go frontend is stale{} — the binary was built from a different \
-             `shatter-go/` than what is on disk.\n",
-            colors.bold, colors.reset
+        crate::helpers::print_stdout(&warning_header(
+            colors,
+            "Embedded Go frontend is stale",
+            "the binary was built from a different `shatter-go/` than what is on disk.",
         ));
         crate::helpers::print_stdout(&format!(
             "  embedded source hash: {GO_FRONTEND_SOURCE_HASH}\n"
@@ -129,12 +138,13 @@ fn check_generated_paths_ignored(project_root: &Path, colors: &Colors) -> bool {
         );
         true
     } else {
-        crate::helpers::print_stdout(&format!(
-            "{}Generated paths are not ignored{} — {} configured output path(s) would \
-             pollute `git status`:\n",
-            colors.bold,
-            colors.reset,
-            unignored.len()
+        crate::helpers::print_stdout(&warning_header(
+            colors,
+            "Generated paths are not ignored",
+            &format!(
+                "{} configured output path(s) would pollute `git status`:",
+                unignored.len()
+            ),
         ));
         for entry in &unignored {
             crate::helpers::print_stdout(&format!("  {entry}\n"));
@@ -390,6 +400,23 @@ mod tests {
         assert_ne!(before, after, "adding a .go file must change the hash");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn warning_header_shape_matches_legacy_formatting() {
+        // Byte-for-byte the string the two checks emitted before the helper
+        // existed: bold headline, em dash, detail, newline.
+        let plain = Colors::new(false);
+        assert_eq!(
+            warning_header(&plain, "Headline", "detail text."),
+            "Headline — detail text.\n"
+        );
+
+        let colored = Colors::new(true);
+        assert_eq!(
+            warning_header(&colored, "Headline", "detail text."),
+            format!("{}Headline{} — detail text.\n", colored.bold, colored.reset)
+        );
     }
 
     #[test]
