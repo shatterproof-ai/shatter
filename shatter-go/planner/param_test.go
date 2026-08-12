@@ -1161,6 +1161,72 @@ func TestPlanParam_NamedStringEnum_HintTakesPriority(t *testing.T) {
 	}
 }
 
+// str-b27zm regression: a configured seed pool must not be silently dropped
+// for named string-alias enum params. planEnumStringParam is a separate code
+// path from the primitive-string family in PlanParam and, before this fix,
+// only consulted HintsByName — SeedsByName was read by the caller but never
+// reached this function, so `seeds:` config silently produced zero plans for
+// enum-typed params while `defaults:` worked for the same param.
+func TestPlanParam_NamedStringEnum_SeedsRespected(t *testing.T) {
+	p := unionStringParam("t", "CORE", "LOCATION")
+	opts := planner.ParamPlanOptions{
+		SeedsByName: map[string][]planner.ParamValueHint{
+			"t": {{Literal: json.RawMessage(`"SEEDED"`), TypeHint: "string"}},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, p, opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	got := map[string]bool{}
+	for _, pl := range plans {
+		if pl.Kind == protocol.ValuePlanKindLiteral {
+			var s string
+			if json.Unmarshal(pl.Literal, &s) == nil {
+				got[s] = true
+			}
+		}
+	}
+	if !got["SEEDED"] {
+		t.Errorf("seed value %q missing from candidates %+v; seeds must not be dropped for named string-alias enum params", "SEEDED", plans)
+	}
+	for _, want := range []string{"CORE", "LOCATION"} {
+		if !got[want] {
+			t.Errorf("enum constant %q missing from candidates %+v", want, plans)
+		}
+	}
+}
+
+// str-b27zm regression: when both a hint (default) and a seed pool are
+// configured for the same enum-typed param, the hint still wins the top
+// slot — seeds rank just below it, matching the primitive-string path.
+func TestPlanParam_NamedStringEnum_SeedsRankBelowHint(t *testing.T) {
+	p := unionStringParam("t", "CORE", "LOCATION")
+	hintLit := json.RawMessage(`"HINTED"`)
+	opts := planner.ParamPlanOptions{
+		HintsByName: map[string]planner.ParamValueHint{
+			"t": {Literal: hintLit, TypeHint: "string"},
+		},
+		SeedsByName: map[string][]planner.ParamValueHint{
+			"t": {{Literal: json.RawMessage(`"SEEDED"`), TypeHint: "string"}},
+		},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, p, opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) < 2 {
+		t.Fatalf("expected at least 2 plans, got %+v", plans)
+	}
+	if !bytes.Equal(plans[0].Literal, hintLit) {
+		t.Errorf("plans[0] = %+v, want hint literal %s first", plans[0], hintLit)
+	}
+	var second string
+	if err := json.Unmarshal(plans[1].Literal, &second); err != nil || second != "SEEDED" {
+		t.Errorf("plans[1] = %+v, want seed literal \"SEEDED\" ranked just below the hint", plans[1])
+	}
+}
+
 // str-9pkrb scope boundary: int enums are out of scope (semantic domain
 // inference for arbitrary numeric enums is explicitly deferred). A union with a
 // non-string base must not be seeded as string candidates; it retains the

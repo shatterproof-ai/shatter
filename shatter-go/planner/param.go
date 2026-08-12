@@ -331,10 +331,11 @@ func enumStringValues(p protocol.ParamInfo) ([]string, bool) {
 
 // planEnumStringParam builds the ValuePlan slice for a named string-alias enum
 // parameter. Priority order mirrors the primitive string path: an operator
-// override (config default) wins the top slot, then source-mined comparison
-// literals, then the enum constant domain (the high-priority candidates this
-// change adds), and finally the generic string family so off-domain random/
-// string fuzzing is preserved rather than replaced (str-9pkrb acceptance).
+// override (config default) wins the top slot, then a configured seed pool
+// (str-b27zm), then source-mined comparison literals, then the enum constant
+// domain (the high-priority candidates this change adds), and finally the
+// generic string family so off-domain random/string fuzzing is preserved
+// rather than replaced (str-9pkrb acceptance).
 //
 // Enum domains are bounded (enumValuesFromNamed caps at maxEnumValues) and each
 // constant is a distinct switch case, so the per-parameter cap is raised to fit
@@ -344,7 +345,8 @@ func enumStringValues(p protocol.ParamInfo) ([]string, bool) {
 func planEnumStringParam(paramIndex int, p protocol.ParamInfo, enumValues []string, opts ParamPlanOptions, maxPlans int) []protocol.ValuePlan {
 	generic := stringFamily()
 	minedLiterals := opts.StringLiteralsByParam[p.Name]
-	needed := len(enumValues) + len(generic.candidates) + len(minedLiterals)
+	seeds := opts.SeedsByName[p.Name]
+	needed := len(enumValues) + len(generic.candidates) + len(minedLiterals) + len(seeds)
 	if _, hasHint := opts.HintsByName[p.Name]; hasHint {
 		needed++
 	}
@@ -400,6 +402,32 @@ func planEnumStringParam(paramIndex int, p protocol.ParamInfo, enumValues []stri
 			Literal:  hint.Literal,
 			TypeHint: typeHint,
 		})
+	}
+	// 1b. Configured seed pool (str-b27zm) — ranks just below the single
+	// operator override, ahead of source-mined/enum-domain candidates, same
+	// as the primitive string path in PlanParam.
+	for _, seed := range seeds {
+		var ss string
+		if json.Unmarshal(seed.Literal, &ss) == nil {
+			if seen[ss] {
+				continue
+			}
+			if !addStr(ss) {
+				break
+			}
+			continue
+		}
+		typeHint := seed.TypeHint
+		if typeHint == "" {
+			typeHint = paramTypeHintString
+		}
+		if !add(protocol.ValuePlan{
+			Kind:     protocol.ValuePlanKindLiteral,
+			Literal:  seed.Literal,
+			TypeHint: typeHint,
+		}) {
+			break
+		}
 	}
 	// 2. Source-mined comparison literals — exact known-answer for local branches.
 	for _, s := range minedLiterals {
