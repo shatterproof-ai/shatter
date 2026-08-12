@@ -200,7 +200,9 @@ func MockSubstitutionsFromConfigs(mocks []MockConfig) []MockSubstitution {
 // a base name ("a/util.Do" vs "b/util.Do") therefore no longer collide and
 // silently drop one another (str-djcv2). Keeping distinct spellings does mean
 // two wire mocks whose spellings differ but sanitize to the same
-// ShatterMock_<name> can both reach shim generation; see str-heegk.
+// ShatterMock_<name> can both reach shim generation; generateLoopMockFile owns
+// that invariant and disambiguates the colliding names (uniqueShimNames,
+// str-heegk).
 //
 // When both a wire mock (ReturnValues, empty Expression) and a config mock
 // (Expression) target the same symbol, they are MERGED rather than replaced:
