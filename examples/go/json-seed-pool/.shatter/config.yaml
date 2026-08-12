@@ -1,0 +1,20 @@
+# str-b27zm E2E fixture config: a `seeds` pool of example JSON documents for
+# the `data []byte` parameter of ClassifySpec. Each document is a valid
+# JSON body engineered to land in one of ClassifySpec's branches other than
+# "invalid" -- the one branch pure-random byte mutation can already reach.
+# Exactly 4 seeds: the planner's per-parameter cap (DefaultMaxParamValuePlans
+# in shatter-go/planner/param.go) admits at most 4 ValuePlans per param when
+# unconfigured, so a 5th seed here would be silently truncated rather than
+# reaching the pipeline -- keep this list at or below that cap.
+#
+# The Go frontend discovers this file by walking UP from the analyzed
+# file's directory (config/loader.go findConfigFile), so it lives in the
+# fixture's module root next to spec.go.
+functions:
+  "spec.go:ClassifySpec":
+    seeds:
+      data:
+        - openapi: ""
+        - openapi: "2.0"
+        - openapi: "3.0.0"
+        - openapi: "9.9"

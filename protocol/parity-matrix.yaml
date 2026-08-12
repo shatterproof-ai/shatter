@@ -779,7 +779,12 @@ feature_capabilities:
       opaque/hard dependency, keyed by canonical symbol identity" — each
       frontend supplies its own identity tuple, but the keying/dedupe/merge
       contract (path-qualified exact match, bare base-name match with an
-      ambiguity warning, wire+config field merge) is shared. Go-only at this
+      ambiguity warning, wire+config field merge) is shared.
+      Since str-b27zm, `seeds` supplies a
+      per-parameter pool of example structured documents (as opposed to
+      `defaults`' single literal) for params decoded via json/yaml Unmarshal
+      into a struct; each seed becomes its own Literal ValuePlan through the
+      existing planner pipeline, with no new wire shape. Go-only at this
       stage.
     frontends:
       typescript: not_supported

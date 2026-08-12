@@ -82,6 +82,24 @@ func translateHintConfig(entry config.FunctionConfig) planner.PerTargetHints {
 			}
 		}
 	}
+	if len(entry.Seeds) > 0 {
+		hints.Seeds = make(map[string][]planner.ParamValueHint, len(entry.Seeds))
+		for paramName, docs := range entry.Seeds {
+			seeds := make([]planner.ParamValueHint, 0, len(docs))
+			for _, dv := range docs {
+				if len(dv.JSON) == 0 {
+					continue
+				}
+				seeds = append(seeds, planner.ParamValueHint{
+					Literal:  json.RawMessage(dv.JSON),
+					TypeHint: dv.TypeHint,
+				})
+			}
+			if len(seeds) > 0 {
+				hints.Seeds[paramName] = seeds
+			}
+		}
+	}
 	if len(entry.Generators) > 0 {
 		hints.Generators = make(map[string]string, len(entry.Generators))
 		for paramName, typeName := range entry.Generators {
