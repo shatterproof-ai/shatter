@@ -631,6 +631,78 @@ mod tests {
         }
     }
 
+    /// str-qpttz: a malformed struct-form mock entry must surface the original
+    /// field-level serde error, not the opaque untagged-enum message.
+    #[test]
+    fn malformed_struct_form_reports_field_level_error() {
+        let err = serde_yaml::from_str::<MockOverride>("behavior: repeat_lst\n")
+            .expect_err("repeat_lst is not a MockBehavior variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("repeat_lst") && msg.contains("unknown variant"),
+            "expected the field-level variant error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("did not match any variant of untagged enum"),
+            "untagged-enum error must not leak to the operator: {msg}"
+        );
+    }
+
+    /// A struct-form entry with a badly typed field reports that field, not the
+    /// whole entry.
+    #[test]
+    fn malformed_struct_form_reports_bad_field_type() {
+        let err = serde_yaml::from_str::<MockOverride>("return_values: \"x\"\n")
+            .expect_err("return_values must be a sequence");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("did not match any variant of untagged enum"),
+            "untagged-enum error must not leak to the operator: {msg}"
+        );
+        assert!(
+            msg.contains("sequence") || msg.contains("return_values"),
+            "expected a field-level type error, got: {msg}"
+        );
+    }
+
+    /// Both wire forms still deserialize to the documented shape.
+    #[test]
+    fn wire_forms_still_parse() {
+        let shorthand: MockOverride =
+            serde_yaml::from_str("\"pkg.Fake()\"").expect("bare string is expression shorthand");
+        assert_eq!(
+            shorthand,
+            MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some("pkg.Fake()".to_string()),
+            }
+        );
+
+        let full: MockOverride = serde_yaml::from_str(
+            "return_values: [1]\nbehavior: repeat_last\nexpression: \"pkg.Fake()\"\n",
+        )
+        .expect("struct form parses");
+        assert_eq!(
+            full,
+            MockOverride {
+                return_values: Some(vec![json!(1)]),
+                behavior: Some(MockBehavior::RepeatLast),
+                expression: Some("pkg.Fake()".to_string()),
+            }
+        );
+
+        let empty: MockOverride = serde_yaml::from_str("{}").expect("empty struct form parses");
+        assert_eq!(
+            empty,
+            MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: None,
+            }
+        );
+    }
+
     #[test]
     fn classify_fs_modules() {
         let dep = make_dep("readFile", "fs", TypeInfo::Str);

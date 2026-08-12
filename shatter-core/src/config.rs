@@ -2005,6 +2005,37 @@ functions:
         assert_eq!(mocks["svc.Fetch"].expression.as_deref(), Some("svc.Fake()"));
     }
 
+    /// str-qpttz: a malformed struct-form mock entry must fail with the
+    /// original field-level serde error *and* its position, so the operator can
+    /// find the offending line instead of getting an opaque whole-file abort.
+    #[test]
+    fn malformed_mock_entry_reports_field_and_position() {
+        let yaml = r#"
+functions:
+  "*.resolvers.go:*":
+    mocks:
+      "db.Query":
+        behavior: repeat_lst
+"#;
+        let err = serde_yaml::from_str::<ShatterConfig>(yaml)
+            .expect_err("repeat_lst is not a MockBehavior variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("repeat_lst") && msg.contains("unknown variant"),
+            "expected the field-level variant error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("did not match any variant of untagged enum"),
+            "untagged-enum error must not leak to the operator: {msg}"
+        );
+        let location = err.location().expect("serde_yaml must report a position");
+        assert_eq!(
+            location.line(),
+            6,
+            "position must point at the offending mock line, got: {msg}"
+        );
+    }
+
     #[test]
     fn merge_configs_mocks_near_overrides_far() {
         let far = ShatterConfig {
