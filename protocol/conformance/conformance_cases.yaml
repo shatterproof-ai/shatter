@@ -166,6 +166,10 @@ cases:
 
   - name: prepare_supported_rust
     frontends: [rust]
+    # Rust prepare compiles a per-target harness via cargo on first invocation,
+    # which can take well over the default 30s on cold caches (see
+    # execute_outcome_shape_rust below for the same pattern).
+    timeout_s: 240
     request:
       protocol_version: "0.1.0"
       id: 10
