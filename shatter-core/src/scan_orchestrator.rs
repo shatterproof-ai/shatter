@@ -4528,7 +4528,8 @@ pub async fn parallel_scan_with_progress(
                 // Each task decrements this counter after returning its worker so that
                 // `maybe_grow` can detect tasks still blocked on `checkout()`.
                 let tasks_remaining = Arc::new(AtomicUsize::new(expanded_tasks.len()));
-                let build_timeout_retry_claimed = Arc::new(AtomicBool::new(false));
+                let build_timeout_retry_claimed =
+                    Arc::new(AtomicUsize::new(BUILD_TIMEOUT_RETRY_UNCLAIMED));
                 let write_success_artifact = config.workers_per_fn <= 1;
 
                 // Each task checks out a worker, explores, then returns the worker.
@@ -4569,6 +4570,7 @@ pub async fn parallel_scan_with_progress(
                         Arc::clone(&tasks_remaining),
                     ));
                     let handle_lease = Arc::clone(&lease);
+                    let spawn_instant = Instant::now();
                     let handle = tokio::spawn(async move {
                         // str-tbk9e: gate BEFORE the same-file permit — a
                         // follower holding a file permit while parked at the
@@ -4630,7 +4632,10 @@ pub async fn parallel_scan_with_progress(
 
                             if matches!(result, PhasedOutcome::BuildTimedOut(_))
                                 && !retried_build_timeout
-                                && claim_build_timeout_retry(&build_timeout_retry_claimed)
+                                && claim_build_timeout_retry(
+                                    &build_timeout_retry_claimed,
+                                    progress_index,
+                                )
                             {
                                 retried_build_timeout = true;
                                 phase_build_timeout = build_timeout_retry_budget(build_timeout);
@@ -4799,6 +4804,7 @@ pub async fn parallel_scan_with_progress(
                         handle_func_name,
                         handle_progress_index,
                         handle_lease,
+                        spawn_instant,
                         handle,
                     ));
                 }
@@ -4809,15 +4815,31 @@ pub async fn parallel_scan_with_progress(
                     config.build_timeout,
                     effective_scan_explore_timeout(config),
                 );
+                // str-807vi: the retry claimant needs the base watchdog plus
+                // the extra time its doubled build budget can consume beyond
+                // a single attempt (see join_with_dynamic_watchdog).
+                let task_watchdog_extended =
+                    task_watchdog.saturating_add(build_timeout_retry_budget(config.build_timeout));
                 while !pending_handles.is_empty() {
-                    let (function_name, progress_index, lease, mut handle) =
+                    let (function_name, progress_index, lease, spawn_instant, mut handle) =
                         pending_handles.remove(0);
-                    let join_limit = total_deadline_remaining(scan_deadline)
-                        .map(|remaining| remaining.min(task_watchdog))
-                        .unwrap_or(task_watchdog);
-                    let join_result = match tokio::time::timeout(join_limit, &mut handle).await {
-                        Ok(result) => result,
-                        Err(_) => {
+                    let join_outcome = join_with_dynamic_watchdog(
+                        &mut handle,
+                        spawn_instant,
+                        task_watchdog,
+                        task_watchdog_extended,
+                        scan_deadline,
+                        TASK_WATCHDOG_RECHECK_INTERVAL,
+                        || {
+                            build_timeout_retry_claimant(&build_timeout_retry_claimed)
+                                == Some(progress_index)
+                        },
+                    )
+                    .await;
+
+                    let join_result = match join_outcome {
+                        TaskJoinOutcome::Completed(result) => result,
+                        TaskJoinOutcome::TimedOut { applied_watchdog } => {
                             handle.abort();
                             let _ = handle.await;
                             lease.recover_after_abort().await;
@@ -4828,7 +4850,7 @@ pub async fn parallel_scan_with_progress(
                                     function_name: function_name.clone(),
                                 }
                             } else {
-                                let reason = phase_timeout_reason("task", task_watchdog);
+                                let reason = phase_timeout_reason("task", applied_watchdog);
                                 write_failed_scan_artifact(
                                     artifact_root.as_deref(),
                                     progress_index,
@@ -4846,7 +4868,7 @@ pub async fn parallel_scan_with_progress(
                                 );
                                 FunctionOutcome::Timeout {
                                     function_name: function_name.clone(),
-                                    limit: task_watchdog,
+                                    limit: applied_watchdog,
                                     phase: "task",
                                 }
                             };
@@ -5441,16 +5463,99 @@ fn remaining_build_budget(build_timeout: Duration, started: Instant) -> Option<D
     }
 }
 
-fn claim_build_timeout_retry(retry_claimed: &AtomicBool) -> bool {
+/// Sentinel for "no task has claimed the layer's cold-build retry yet".
+const BUILD_TIMEOUT_RETRY_UNCLAIMED: usize = usize::MAX;
+
+/// Claim the layer's single cold-build retry for `progress_index`.
+///
+/// The claimant's identity is recorded (rather than a bare flag) so the
+/// joiner can extend the watchdog for exactly the one task that is actually
+/// running a second, longer build (str-807vi, str-slnr).
+fn claim_build_timeout_retry(retry_claimed: &AtomicUsize, progress_index: usize) -> bool {
     retry_claimed
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(
+            BUILD_TIMEOUT_RETRY_UNCLAIMED,
+            progress_index,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
         .is_ok()
+}
+
+/// The `progress_index` of the task holding the layer's cold-build retry, if any.
+fn build_timeout_retry_claimant(retry_claimed: &AtomicUsize) -> Option<usize> {
+    match retry_claimed.load(Ordering::Acquire) {
+        BUILD_TIMEOUT_RETRY_UNCLAIMED => None,
+        index => Some(index),
+    }
 }
 
 fn shared_pool_task_watchdog(build_timeout: Duration, timeout_per_fn: Duration) -> Duration {
     build_timeout
         .saturating_add(timeout_per_fn)
         .saturating_add(SHARED_POOL_TASK_CLEANUP_GRACE)
+}
+
+/// How often [`join_with_dynamic_watchdog`] re-checks claim state while
+/// waiting on a task handle.
+const TASK_WATCHDOG_RECHECK_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Outcome of [`join_with_dynamic_watchdog`].
+#[derive(Debug)]
+enum TaskJoinOutcome<T> {
+    Completed(Result<T, tokio::task::JoinError>),
+    /// The task exceeded its watchdog. `applied_watchdog` is whichever
+    /// duration (base or claimant-extended) was in effect at the moment of
+    /// the timeout, for accurate reporting.
+    TimedOut { applied_watchdog: Duration },
+}
+
+/// str-807vi: dynamically-rechecked join watchdog for one shared-pool task.
+///
+/// A prior attempt (str-slnr) computed the join deadline once, synchronously,
+/// at whatever moment the FIFO join loop happened to reach this handle — a
+/// value entirely dependent on how long earlier handles in the queue took to
+/// join, not on this task's own timing. That meant the cold-build retry
+/// claimant's watchdog extension either never applied (the joiner got here
+/// before the claim happened) or applied inconsistently (the joiner got here
+/// after, without accounting for time already elapsed waiting on other
+/// handles). Anchoring the deadline to the task's own `spawn_instant` and
+/// re-checking claim state on every wake-up removes both failure modes: the
+/// deadline is correct no matter when this function is called, and a claim
+/// that lands mid-wait is picked up on the very next recheck instead of being
+/// missed entirely.
+async fn join_with_dynamic_watchdog<T: Send + 'static>(
+    handle: &mut tokio::task::JoinHandle<T>,
+    spawn_instant: Instant,
+    base_watchdog: Duration,
+    extended_watchdog: Duration,
+    scan_deadline: Option<Instant>,
+    recheck_interval: Duration,
+    is_claimant: impl Fn() -> bool,
+) -> TaskJoinOutcome<T> {
+    loop {
+        let watchdog = if is_claimant() {
+            extended_watchdog
+        } else {
+            base_watchdog
+        };
+        let mut deadline = spawn_instant + watchdog;
+        if let Some(scan_deadline) = scan_deadline {
+            deadline = deadline.min(scan_deadline);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return TaskJoinOutcome::TimedOut {
+                applied_watchdog: watchdog,
+            };
+        }
+        let wait = (deadline - now).min(recheck_interval);
+        tokio::select! {
+            biased;
+            res = &mut *handle => return TaskJoinOutcome::Completed(res),
+            _ = tokio::time::sleep(wait) => {}
+        }
+    }
 }
 
 fn total_deadline(scan_start: Instant, timeout_total: Option<Duration>) -> Option<Instant> {
@@ -6643,10 +6748,131 @@ mod tests {
     /// task watchdog interval at a time.
     #[test]
     fn build_timeout_retry_claim_is_single_use() {
-        let retry_claimed = AtomicBool::new(false);
+        let retry_claimed = AtomicUsize::new(BUILD_TIMEOUT_RETRY_UNCLAIMED);
 
-        assert!(claim_build_timeout_retry(&retry_claimed));
-        assert!(!claim_build_timeout_retry(&retry_claimed));
+        assert!(claim_build_timeout_retry(&retry_claimed, 3));
+        assert!(!claim_build_timeout_retry(&retry_claimed, 7));
+        assert_eq!(build_timeout_retry_claimant(&retry_claimed), Some(3));
+    }
+
+    /// str-807vi regression: reproduces the exact race that made str-slnr's
+    /// join-order-based extension unreliable. The claimant's claim event
+    /// (flipping `is_claimant`) happens *after* the joiner has already begun
+    /// awaiting its handle — simulating a slow earlier handle in a FIFO join
+    /// queue delaying when the joiner "reaches" this task. The task itself
+    /// finishes after the base watchdog but well within the extended one. A
+    /// join loop that computes its deadline once, synchronously, before
+    /// starting to wait would miss the claim and time this task out at the
+    /// base watchdog; `join_with_dynamic_watchdog` must not.
+    #[tokio::test(start_paused = true)]
+    async fn join_with_dynamic_watchdog_picks_up_late_claim() {
+        let base_watchdog = Duration::from_millis(150);
+        let extended_watchdog = Duration::from_millis(400);
+        let spawn_instant = Instant::now();
+
+        let is_claimant = Arc::new(AtomicBool::new(false));
+        let is_claimant_setter = Arc::clone(&is_claimant);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            is_claimant_setter.store(true, Ordering::Release);
+        });
+
+        let mut handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            "done"
+        });
+
+        let outcome = join_with_dynamic_watchdog(
+            &mut handle,
+            spawn_instant,
+            base_watchdog,
+            extended_watchdog,
+            None,
+            Duration::from_millis(20),
+            || is_claimant.load(Ordering::Acquire),
+        )
+        .await;
+
+        match outcome {
+            TaskJoinOutcome::Completed(Ok(value)) => assert_eq!(value, "done"),
+            TaskJoinOutcome::Completed(Err(e)) => panic!("task join error: {e}"),
+            TaskJoinOutcome::TimedOut { applied_watchdog } => panic!(
+                "claimant should have outlasted the base watchdog via the late-arriving \
+                 extension, but timed out at {applied_watchdog:?}"
+            ),
+        }
+    }
+
+    /// Control for the above: a task that never claims the retry must still
+    /// be cut off at the base watchdog, not the extended one.
+    #[tokio::test(start_paused = true)]
+    async fn join_with_dynamic_watchdog_times_out_non_claimant_at_base_watchdog() {
+        let base_watchdog = Duration::from_millis(150);
+        let extended_watchdog = Duration::from_millis(400);
+        let spawn_instant = Instant::now();
+
+        let mut handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            "done"
+        });
+
+        let outcome = join_with_dynamic_watchdog(
+            &mut handle,
+            spawn_instant,
+            base_watchdog,
+            extended_watchdog,
+            None,
+            Duration::from_millis(20),
+            || false,
+        )
+        .await;
+
+        match outcome {
+            TaskJoinOutcome::TimedOut { applied_watchdog } => {
+                assert_eq!(applied_watchdog, base_watchdog);
+            }
+            _ => panic!("non-claimant must time out at the base watchdog"),
+        }
+    }
+
+    /// str-807vi: the deadline is anchored to the task's own `spawn_instant`,
+    /// not to whenever the joiner happens to start waiting on it — so a
+    /// caller that only reaches this handle after a delay (e.g. because
+    /// earlier handles in a FIFO queue were slow) still applies a correctly
+    /// elapsed-time-aware deadline instead of granting a fresh full budget.
+    #[tokio::test(start_paused = true)]
+    async fn join_with_dynamic_watchdog_deadline_is_relative_to_spawn_not_call_time() {
+        let base_watchdog = Duration::from_millis(150);
+        let extended_watchdog = Duration::from_millis(400);
+        // Simulate a spawn that happened 100ms before the joiner ever calls
+        // this function (a "slow prior handle" delayed the joiner getting
+        // here).
+        let spawn_instant = Instant::now();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Already claimed before the joiner starts waiting.
+        let mut handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            "done"
+        });
+
+        let outcome = join_with_dynamic_watchdog(
+            &mut handle,
+            spawn_instant,
+            base_watchdog,
+            extended_watchdog,
+            None,
+            Duration::from_millis(20),
+            || true,
+        )
+        .await;
+
+        // 100ms already elapsed before the call + 200ms task sleep = 300ms
+        // total since spawn, which is within the 400ms extended watchdog.
+        match outcome {
+            TaskJoinOutcome::Completed(Ok(value)) => assert_eq!(value, "done"),
+            other => panic!("expected the elapsed-aware deadline to cover the task: {other:?}"),
+        }
     }
 
     /// str-slnr: the planner preamble and Prepare share one build budget, so
