@@ -143,18 +143,24 @@ impl ScmProvider for GitProvider {
         Ok(files)
     }
 
+    /// Scoping and existence contracts: same as `changed_files` (str-a2wkn,
+    /// str-r7roo) — scoped to `root` via `-- .`, and only paths that still
+    /// exist on disk are returned (deletions, and the old side of a rename
+    /// that crossed the scan-root boundary, are dropped).
     fn diff_files(&self, root: &Path, base_ref: &str) -> Result<Vec<PathBuf>, ScmError> {
         let repo_root = repo_root(root)?;
 
         // Three-dot diff: changes between merge-base(base_ref, HEAD) and HEAD
         let range = format!("{base_ref}...HEAD");
-        let output = run_git(root, &["diff", "--name-only", &range])?;
+        let output = run_git(root, &["diff", "--name-only", &range, "--", "."])?;
         let mut files = parse_file_list(&output, &repo_root);
+        files.retain(|path| path.exists());
         files.sort();
         files.dedup();
         Ok(files)
     }
 
+    /// Scoping and existence contracts: same as `diff_files` above.
     fn diff_files_range(
         &self,
         root: &Path,
@@ -163,8 +169,9 @@ impl ScmProvider for GitProvider {
     ) -> Result<Vec<PathBuf>, ScmError> {
         let repo_root = repo_root(root)?;
         let range = format!("{since_ref}...{until_ref}");
-        let output = run_git(root, &["diff", "--name-only", &range])?;
+        let output = run_git(root, &["diff", "--name-only", &range, "--", "."])?;
         let mut files = parse_file_list(&output, &repo_root);
+        files.retain(|path| path.exists());
         files.sort();
         files.dedup();
         Ok(files)
@@ -1288,6 +1295,87 @@ index 1111111..2222222 100644
         let result = provider.diff_files_range(root, "HEAD", "HEAD");
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_diff_files_is_subdir_scoped_and_omits_deleted_paths() {
+        // str-r7roo: diff_files is the same git-diff-based path as
+        // changed_files (str-a2wkn) and needs the identical contract —
+        // scoped to `root` via `-- .`, and paths that no longer exist
+        // (deletions, renames out of root) are dropped rather than handed
+        // to a downstream consumer that doesn't stat its input.
+        let dir = init_repo();
+        let repo = dir.path();
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+
+        let kept_inside = inside.join("kept.ts");
+        let deleted_inside = inside.join("gone.ts");
+        let changed_outside = outside.join("changed.ts");
+        fs::write(&kept_inside, "export const a = 1;\n").expect("write");
+        fs::write(&deleted_inside, "export const b = 1;\n").expect("write");
+        fs::write(&changed_outside, "export const c = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "init"]);
+
+        fs::write(&kept_inside, "export const a = 2;\n").expect("modify");
+        git_ok(repo, &["rm", "-q", "src/gone.ts"]);
+        fs::write(&changed_outside, "export const c = 2;\n").expect("modify");
+        git_ok(repo, &["commit", "-q", "-am", "change"]);
+
+        let provider = GitProvider;
+        let files = provider
+            .diff_files(&inside, "HEAD~1")
+            .expect("diff_files should succeed");
+
+        assert_contains_canonicalized(&files, &kept_inside);
+        assert_not_reported(&files, &deleted_inside);
+        assert_not_reported(&files, &changed_outside);
+        for f in &files {
+            assert!(f.exists(), "reported a nonexistent path: {f:?} in {files:?}");
+        }
+    }
+
+    #[test]
+    fn test_diff_files_range_is_subdir_scoped_and_omits_deleted_paths() {
+        // Same contract as diff_files, for the explicit since/until range path
+        // used by `scan --since ... --until ...`.
+        let dir = init_repo();
+        let repo = dir.path();
+
+        let inside = repo.join("src");
+        let outside = repo.join("other");
+        fs::create_dir(&inside).expect("create src");
+        fs::create_dir(&outside).expect("create other");
+
+        let kept_inside = inside.join("kept.ts");
+        let deleted_inside = inside.join("gone.ts");
+        let changed_outside = outside.join("changed.ts");
+        fs::write(&kept_inside, "export const a = 1;\n").expect("write");
+        fs::write(&deleted_inside, "export const b = 1;\n").expect("write");
+        fs::write(&changed_outside, "export const c = 1;\n").expect("write");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "init"]);
+
+        fs::write(&kept_inside, "export const a = 2;\n").expect("modify");
+        git_ok(repo, &["rm", "-q", "src/gone.ts"]);
+        fs::write(&changed_outside, "export const c = 2;\n").expect("modify");
+        git_ok(repo, &["commit", "-q", "-am", "change"]);
+
+        let provider = GitProvider;
+        let files = provider
+            .diff_files_range(&inside, "HEAD~1", "HEAD")
+            .expect("diff_files_range should succeed");
+
+        assert_contains_canonicalized(&files, &kept_inside);
+        assert_not_reported(&files, &deleted_inside);
+        assert_not_reported(&files, &changed_outside);
+        for f in &files {
+            assert!(f.exists(), "reported a nonexistent path: {f:?} in {files:?}");
+        }
     }
 
     #[test]
