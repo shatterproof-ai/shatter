@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::orchestrator::FrontendCapabilities;
 use crate::string_mutation;
-use crate::types::{ComplexKind, TypeInfo};
+use crate::types::{ComplexKind, TypeInfo, positional_field_types, positional_object_arity};
 
 const GENERATOR_PREFETCH_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -230,7 +230,14 @@ fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
         TypeInfo::Bool => value.is_boolean(),
         TypeInfo::Str => value.is_string(),
         TypeInfo::Array { .. } => value.is_array(),
-        TypeInfo::Object { .. } => value.is_object(),
+        TypeInfo::Object { fields } => {
+            let arity = positional_object_arity(fields);
+            if arity > 0 {
+                value.as_array().is_some_and(|arr| arr.len() == arity)
+            } else {
+                value.is_object()
+            }
+        }
         TypeInfo::Nullable { inner } => value.is_null() || value_matches_type_shape(value, inner),
         TypeInfo::Union { variants, .. } => variants.iter().any(|v| value_matches_type_shape(value, v)),
         TypeInfo::Complex {
@@ -265,6 +272,28 @@ fn value_matches_type_shape(value: &Value, typ: &TypeInfo) -> bool {
 pub fn repair_required_fields(value: &Value, typ: &TypeInfo) -> Value {
     match typ {
         TypeInfo::Object { fields } => {
+            if positional_object_arity(fields) > 0 {
+                // Read positions from either shape: a well-formed array, or a
+                // stale/legacy object keyed by decimal index (the
+                // pre-str-f4sow encoding some seed pools may still carry).
+                let arr_existing = value.as_array();
+                let obj_existing = value.as_object();
+                return Value::Array(
+                    positional_field_types(fields)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, field_type)| {
+                            let item = arr_existing
+                                .and_then(|a| a.get(idx))
+                                .or_else(|| obj_existing.and_then(|o| o.get(&idx.to_string())));
+                            match item {
+                                Some(item) => repair_required_fields(item, field_type),
+                                None => default_for_type(field_type),
+                            }
+                        })
+                        .collect(),
+                );
+            }
             let mut obj = value.as_object().cloned().unwrap_or_default();
             for (name, field_type) in fields {
                 match obj.get(name) {
@@ -379,6 +408,14 @@ fn default_for_type(typ: &TypeInfo) -> Value {
         TypeInfo::Str => json!(""),
         TypeInfo::Array { .. } => json!([]),
         TypeInfo::Object { fields } => {
+            if positional_object_arity(fields) > 0 {
+                return Value::Array(
+                    positional_field_types(fields)
+                        .into_iter()
+                        .map(default_for_type)
+                        .collect(),
+                );
+            }
             let mut obj = serde_json::Map::new();
             for (name, field_type) in fields {
                 obj.insert(name.clone(), default_for_type(field_type));
@@ -556,6 +593,14 @@ fn generate_object(
     rng: &mut impl Rng,
     caps: Option<&FrontendCapabilities>,
 ) -> Value {
+    if positional_object_arity(fields) > 0 {
+        return Value::Array(
+            positional_field_types(fields)
+                .into_iter()
+                .map(|typ| generate_random_value(typ, rng, caps))
+                .collect(),
+        );
+    }
     let mut obj = serde_json::Map::new();
     for (name, typ) in fields {
         obj.insert(name.clone(), generate_random_value(typ, rng, caps));
@@ -2351,6 +2396,9 @@ fn mutate_object(
     dictionary: &[&str],
     rng: &mut impl Rng,
 ) -> Value {
+    if positional_object_arity(fields) > 0 {
+        return mutate_positional_object(value, fields, dictionary, rng);
+    }
     let obj = match value.as_object() {
         Some(o) => o.clone(),
         None => return generate_object(fields, rng, None),
@@ -2405,6 +2453,27 @@ fn mutate_object(
             Value::Object(result)
         }
     }
+}
+
+/// Mutate a positional object (a Rust tuple; see
+/// [`crate::types::positional_object_arity`]). Fixed-arity, so unlike
+/// [`mutate_object`] there is no optional-field-removal or extra-field-add
+/// mutation — a tuple's element count can never change. Mutates one
+/// position's value in place.
+fn mutate_positional_object(
+    value: &Value,
+    fields: &[(String, TypeInfo)],
+    dictionary: &[&str],
+    rng: &mut impl Rng,
+) -> Value {
+    let types = positional_field_types(fields);
+    let mut items = match value.as_array() {
+        Some(arr) if arr.len() == types.len() => arr.clone(),
+        _ => return generate_object(fields, rng, None),
+    };
+    let idx = rng.random_range(0..types.len());
+    items[idx] = mutate_value(&items[idx], types[idx], dictionary, rng);
+    Value::Array(items)
 }
 
 /// Mutate a union value. When `enum_values` carries a closed value domain
@@ -3254,6 +3323,9 @@ fn crossover_object(
     fields: &[(String, TypeInfo)],
     rng: &mut impl Rng,
 ) -> (Value, Value) {
+    if positional_object_arity(fields) > 0 {
+        return crossover_positional_object(a, b, fields, rng);
+    }
     let obj_a = a.as_object();
     let obj_b = b.as_object();
 
@@ -3295,6 +3367,47 @@ fn crossover_object(
     }
 
     (Value::Object(c1), Value::Object(c2))
+}
+
+/// Crossover for a positional object (a Rust tuple; see
+/// [`crate::types::positional_object_arity`]). Every position must be
+/// present in both children — unlike [`crossover_object`], a positional
+/// value can't drop a position and still deserialize — so this swaps each
+/// position independently rather than only-one-parent-has-it logic.
+fn crossover_positional_object(
+    a: &Value,
+    b: &Value,
+    fields: &[(String, TypeInfo)],
+    rng: &mut impl Rng,
+) -> (Value, Value) {
+    let types = positional_field_types(fields);
+    let (Some(arr_a), Some(arr_b)) = (a.as_array(), b.as_array()) else {
+        return if rng.random_bool(0.5) {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+    };
+    let mut c1 = Vec::with_capacity(types.len());
+    let mut c2 = Vec::with_capacity(types.len());
+    for (idx, typ) in types.iter().enumerate() {
+        let va = arr_a
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| default_for_type(typ));
+        let vb = arr_b
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| default_for_type(typ));
+        if rng.random_bool(0.5) {
+            c1.push(va);
+            c2.push(vb);
+        } else {
+            c1.push(vb);
+            c2.push(va);
+        }
+    }
+    (Value::Array(c1), Value::Array(c2))
 }
 
 /// Single-point crossover for arrays: pick a crossover point, swap tails.
@@ -3596,6 +3709,9 @@ fn shrink_array(value: &Value, element: &TypeInfo) -> Vec<Value> {
 }
 
 fn shrink_object(value: &Value, fields: &[(String, TypeInfo)]) -> Vec<Value> {
+    if positional_object_arity(fields) > 0 {
+        return shrink_positional_object(value, fields);
+    }
     let obj = match value.as_object() {
         Some(o) => o,
         None => return Vec::new(),
@@ -3624,6 +3740,27 @@ fn shrink_object(value: &Value, fields: &[(String, TypeInfo)]) -> Vec<Value> {
                 new_obj.insert(name.clone(), shrunk);
                 out.push(Value::Object(new_obj));
             }
+        }
+    }
+    out
+}
+
+/// Shrink a positional object (a Rust tuple; see
+/// [`crate::types::positional_object_arity`]). Fixed-arity, so — unlike
+/// [`shrink_object`] — there is no field-removal candidate, only per-position
+/// value shrinking.
+fn shrink_positional_object(value: &Value, fields: &[(String, TypeInfo)]) -> Vec<Value> {
+    let types = positional_field_types(fields);
+    let arr = match value.as_array() {
+        Some(a) if a.len() == types.len() => a,
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (idx, typ) in types.iter().enumerate() {
+        for shrunk in shrink_candidates(&arr[idx], typ) {
+            let mut new_arr = arr.clone();
+            new_arr[idx] = shrunk;
+            out.push(Value::Array(new_arr));
         }
     }
     out
@@ -4284,6 +4421,105 @@ mod tests {
             let obj = val.as_object().expect("expected object");
             assert!(obj.contains_key("name"));
             assert!(obj.contains_key("age"));
+        }
+    }
+
+    /// A Rust tuple `(i64, String)` maps to `TypeInfo::Object { fields:
+    /// [("0", …), ("1", …)] }` (`shatter-rust`'s `convert_tuple` — `TypeInfo`
+    /// has no tuple variant). The generated harness deserializes such a
+    /// param with `serde_json::from_value::<(T, U)>`, which requires a JSON
+    /// ARRAY, not an object — str-f4sow.
+    fn tuple_type() -> TypeInfo {
+        TypeInfo::Object {
+            fields: vec![
+                ("0".into(), TypeInfo::Int { int_width: None, int_signed: None }),
+                ("1".into(), TypeInfo::Str),
+            ],
+        }
+    }
+
+    #[test]
+    fn generates_positional_object_as_array() {
+        let mut rng = seeded_rng();
+        let typ = tuple_type();
+        for _ in 0..20 {
+            let val = generate_random_value(&typ, &mut rng, None);
+            let arr = val.as_array().expect("expected array for tuple type");
+            assert_eq!(arr.len(), 2);
+            assert!(arr[0].is_i64() || arr[0].is_u64());
+            assert!(arr[1].is_string());
+        }
+    }
+
+    #[test]
+    fn value_matches_type_shape_accepts_only_right_length_array_for_tuple() {
+        let typ = tuple_type();
+        assert!(value_matches_type_shape(&json!([1, "a"]), &typ));
+        assert!(!value_matches_type_shape(&json!({"0": 1, "1": "a"}), &typ));
+        assert!(!value_matches_type_shape(&json!([1]), &typ));
+        assert!(!value_matches_type_shape(&json!([1, "a", "extra"]), &typ));
+    }
+
+    #[test]
+    fn default_for_type_produces_array_for_tuple() {
+        let typ = tuple_type();
+        assert_eq!(default_for_type(&typ), json!([0, ""]));
+    }
+
+    #[test]
+    fn repair_required_fields_arrays_a_tuple_seeded_as_object() {
+        let typ = tuple_type();
+        let repaired = repair_required_fields(&json!({"0": 5, "1": "hi"}), &typ);
+        assert_eq!(repaired, json!([5, "hi"]));
+    }
+
+    #[test]
+    fn repair_required_fields_pads_short_tuple_array() {
+        let typ = tuple_type();
+        let repaired = repair_required_fields(&json!([5]), &typ);
+        assert_eq!(repaired, json!([5, ""]));
+    }
+
+    #[test]
+    fn mutate_positional_object_preserves_arity() {
+        let mut rng = seeded_rng();
+        let typ = tuple_type();
+        let TypeInfo::Object { fields } = &typ else {
+            unreachable!()
+        };
+        let seed = json!([1, "a"]);
+        for _ in 0..20 {
+            let mutated = mutate_positional_object(&seed, fields, &[], &mut rng);
+            let arr = mutated.as_array().expect("expected array");
+            assert_eq!(arr.len(), 2);
+        }
+    }
+
+    #[test]
+    fn crossover_positional_object_preserves_arity_in_both_children() {
+        let mut rng = seeded_rng();
+        let typ = tuple_type();
+        let TypeInfo::Object { fields } = &typ else {
+            unreachable!()
+        };
+        let a = json!([1, "left"]);
+        let b = json!([2, "right"]);
+        let (c1, c2) = crossover_positional_object(&a, &b, fields, &mut rng);
+        assert_eq!(c1.as_array().unwrap().len(), 2);
+        assert_eq!(c2.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn shrink_positional_object_keeps_array_shape() {
+        let typ = tuple_type();
+        let TypeInfo::Object { fields } = &typ else {
+            unreachable!()
+        };
+        let candidates = shrink_positional_object(&json!([42, "hello"]), fields);
+        assert!(!candidates.is_empty());
+        for c in &candidates {
+            let arr = c.as_array().expect("expected array");
+            assert_eq!(arr.len(), 2);
         }
     }
 

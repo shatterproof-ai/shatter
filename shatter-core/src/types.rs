@@ -351,6 +351,67 @@ fn is_map_encoding(fields: &[(String, TypeInfo)]) -> bool {
     )
 }
 
+/// True when `segment` is a canonical decimal index spelling (no leading
+/// zero, e.g. `"0"`, `"12"`, but not `"01"`, `"-1"`, or `"1.0"`).
+fn index_spelling(segment: &str) -> Option<usize> {
+    if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if segment.len() > 1 && segment.starts_with('0') {
+        return None;
+    }
+    segment.parse::<usize>().ok()
+}
+
+/// Arity of a POSITIONAL object — one whose declared field names are exactly
+/// the indices `0..n`, which is how the Rust analyzer models a tuple
+/// (`convert_tuple` in `shatter-rust/src/analyzer.rs` emits
+/// `Object { fields: [("0", …), ("1", …)] }`; `TypeInfo` has no tuple
+/// variant). Such a value deserializes from a JSON ARRAY, not an object, so
+/// both overlay path resolution (`orchestrator::resolve_field_path`) and
+/// input generation (`input_gen::generate_object` and friends) need to treat
+/// it as array-shaped.
+///
+/// Returns 0 for every other object, including one that merely happens to
+/// declare a numeric-looking key (`{"0": …, "label": …}`) — those stay
+/// objects.
+pub(crate) fn positional_object_arity(fields: &[(String, TypeInfo)]) -> usize {
+    if fields.is_empty() {
+        return 0;
+    }
+    let mut seen = vec![false; fields.len()];
+    for (declared, _) in fields {
+        match index_spelling(declared).filter(|index| *index < fields.len()) {
+            Some(index) => seen[index] = true,
+            None => return 0,
+        }
+    }
+    if seen.iter().all(|present| *present) {
+        fields.len()
+    } else {
+        0
+    }
+}
+
+/// Field types of a positional object (see [`positional_object_arity`]),
+/// ordered by position rather than declaration order in `fields`.
+///
+/// Panics if called on a non-positional field list — callers must check
+/// `positional_object_arity(fields) > 0` first.
+pub(crate) fn positional_field_types(fields: &[(String, TypeInfo)]) -> Vec<&TypeInfo> {
+    let mut ordered: Vec<Option<&TypeInfo>> = vec![None; fields.len()];
+    for (name, typ) in fields {
+        if let Some(index) = index_spelling(name).filter(|index| *index < fields.len()) {
+            ordered[index] = Some(typ);
+        }
+    }
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| t.unwrap_or_else(|| panic!("positional_field_types: index {i} missing — caller must check positional_object_arity first")))
+        .collect()
+}
+
 /// Metadata about a function parameter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParamInfo {

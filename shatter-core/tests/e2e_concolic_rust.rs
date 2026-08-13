@@ -1889,3 +1889,101 @@ async fn e2e_rust_nested_enum_field_domain_reaches_several_arms() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test: tuple-param generation (str-f4sow).
+//
+// `classify_pair(p: (i64, i64))`'s only param is a Rust tuple, which the
+// analyzer maps to `TypeInfo::Object { fields: [("0", …), ("1", …)] }`
+// (`TypeInfo` has no tuple variant). The generated harness deserializes the
+// param with `serde_json::from_value::<(i64, i64)>`, which requires a JSON
+// ARRAY. Before str-f4sow the core input generator seeded such params as JSON
+// OBJECTS, which the harness rejected outright ("invalid type: map, expected
+// a tuple of size 2") — the function never executed and no constraints were
+// ever recorded for Z3 to solve, so this test would have found 0 branches.
+//
+// Three branches: p.0 == p.1 ("equal"), p.0 > p.1 ("greater"), else ("less").
+// A single non-equal seed must be enough for the explorer/solver to find the
+// other two arms on its own.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_tuple_param_discovers_all_branches() {
+    let file = repo_examples_rust_dir()
+        .join("tuple-pair")
+        .join("src")
+        .join("pair.rs");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_pair").await;
+    assert_eq!(analysis.params.len(), 1, "classify_pair takes 1 param");
+    // The analyzer maps the tuple to a positional Object (no tuple TypeInfo
+    // variant exists); the generation side must recognize this shape and
+    // seed a JSON array, not an object.
+    match &analysis.params[0].typ {
+        shatter_core::types::TypeInfo::Object { fields } => {
+            assert_eq!(fields.len(), 2, "tuple should map to a 2-field object");
+        }
+        other => panic!("tuple param should be TypeInfo::Object; got {other:?}"),
+    }
+
+    instrument_function(&mut frontend, &file_str, "classify_pair").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(60),
+        max_executions: Some(120),
+        plateau_threshold: 40,
+        ..Default::default()
+    };
+
+    // A single non-equal-valued seed; the "equal" branch requires the solver
+    // to actually reach and negate the p.0 == p.1 constraint, which only
+    // happens if the tuple executes at all.
+    let seed_inputs = vec![vec![serde_json::json!([1, 2])]];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "classify_pair",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_tuple_param_discovers_all_branches: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"equal\"", "\"greater\"", "\"less\""] {
+        assert!(
+            return_values.contains(expected),
+            "tuple-param generation should reach branch {expected}; found: {return_values:?}"
+        );
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

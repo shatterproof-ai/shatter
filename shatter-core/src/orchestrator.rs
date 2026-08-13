@@ -48,7 +48,7 @@ use crate::strategy::{
 };
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
-use crate::types::{ComplexKind, ParamInfo, TypeInfo};
+use crate::types::{ComplexKind, ParamInfo, TypeInfo, positional_object_arity};
 
 /// Parsed frontend capabilities from the handshake response.
 ///
@@ -1278,32 +1278,6 @@ fn peel_nullable(typ: &TypeInfo) -> &TypeInfo {
     match typ {
         TypeInfo::Nullable { inner } => peel_nullable(inner),
         other => other,
-    }
-}
-
-/// Arity of a POSITIONAL object — one whose declared field names are exactly the
-/// indices `0..n`, which is how the Rust analyzer models a tuple (`convert_tuple`
-/// in `shatter-rust/src/analyzer.rs` emits `Object { fields: [("0", …), ("1", …)] }`;
-/// `TypeInfo` has no tuple variant). Such a value deserializes from a JSON ARRAY,
-/// so overlays into it must address positions.
-///
-/// Returns 0 for every other object, including one that merely happens to
-/// declare a numeric-looking key (`{"0": …, "label": …}`) — those stay objects.
-fn positional_object_arity(fields: &[(String, TypeInfo)]) -> usize {
-    if fields.is_empty() {
-        return 0;
-    }
-    let mut seen = vec![false; fields.len()];
-    for (declared, _) in fields {
-        match array_index_segment(declared).filter(|index| *index < fields.len()) {
-            Some(index) => seen[index] = true,
-            None => return 0,
-        }
-    }
-    if seen.iter().all(|present| *present) {
-        fields.len()
-    } else {
-        0
     }
 }
 
