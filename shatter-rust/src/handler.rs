@@ -79,6 +79,23 @@ fn write_instrumented_temp(filename: &str, source: &str) -> io::Result<String> {
     Ok(out_path.to_string_lossy().into_owned())
 }
 
+/// Apply the optional execute `capture` flag (str-kv9n) to a run's captured
+/// side effects. `capture` defaults to `true` when omitted (`None`), matching
+/// the TS (`?? true`) and Go (`== nil || *`) frontends. When `false`, the
+/// low-overhead no-capture mode discards side effects and returns an empty
+/// list; only `side_effects` is affected — the caller preserves `return_value`,
+/// `thrown_error`, and `branch_path` regardless.
+fn apply_capture(
+    side_effects: Vec<serde_json::Value>,
+    capture: Option<bool>,
+) -> Vec<serde_json::Value> {
+    if capture.unwrap_or(true) {
+        side_effects
+    } else {
+        Vec::new()
+    }
+}
+
 /// Build an `InvocationOutcome` for a successful execute path (str-hy9b.A1/A5).
 ///
 /// Mapping:
@@ -1072,7 +1089,12 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                 resp.lines_executed = Some(result.lines_executed);
                 resp.calls_to_external = Some(result.calls_to_external);
                 resp.path_constraints = Some(result.path_constraints);
-                resp.side_effects = Some(result.side_effects);
+                // Honor the optional execute `capture` field. Defaults to true;
+                // when false, the low-overhead no-capture mode returns an empty
+                // side-effects list, matching the TS/Go frontends. Only
+                // `side_effects` is affected — return_value, thrown_error, and
+                // branch_path are preserved regardless (parity with TS/Go).
+                resp.side_effects = Some(apply_capture(result.side_effects, req.capture));
                 resp.loop_body_states = Some(result.loop_body_states);
                 resp.performance = Some(result.performance);
                 self.finalize_response(resp, timing.as_mut())
@@ -1432,6 +1454,81 @@ fn attach_native_replay_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- apply_capture: execute `capture` flag semantics (str-kv9n) --
+
+    fn sample_side_effects() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"kind": "console_output", "level": "log", "message": "hi"}),
+            serde_json::json!({"kind": "thrown_error", "error_type": "runtime_error"}),
+        ]
+    }
+
+    #[test]
+    fn apply_capture_false_yields_empty_side_effects() {
+        assert!(apply_capture(sample_side_effects(), Some(false)).is_empty());
+    }
+
+    #[test]
+    fn apply_capture_true_preserves_side_effects() {
+        let effects = sample_side_effects();
+        assert_eq!(apply_capture(effects.clone(), Some(true)), effects);
+    }
+
+    #[test]
+    fn apply_capture_none_defaults_to_capturing() {
+        // Omitted `capture` (None) must behave like capture=true, matching TS/Go.
+        let effects = sample_side_effects();
+        assert_eq!(apply_capture(effects.clone(), None), effects);
+    }
+
+    /// End-to-end regression (str-kv9n review follow-up): drives a real
+    /// execute request with `capture:false` through the handler (not just
+    /// `apply_capture` in isolation) and asserts the wire response's
+    /// `side_effects` is empty, while the same target with `capture:true`
+    /// carries the captured console output. Guards against a future
+    /// refactor reordering `resp.side_effects` assignment or adding a
+    /// second response-construction path that bypasses `apply_capture`.
+    #[test]
+    fn execute_capture_false_yields_empty_side_effects_end_to_end() {
+        let dir = std::env::temp_dir().join("shatter-test-rust-capture-e2e");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("capture_e2e.rs");
+        std::fs::write(&file, "fn noisy() -> i32 { println!(\"hi\"); 1 }\n").expect("write file");
+
+        let capture_true = format!(
+            r#"{{"protocol_version":"0.1.0","id":1,"command":"execute","file":"{}","function":"noisy","inputs":[],"mocks":[],"capture":true}}"#,
+            file.display()
+        );
+        let resp_true = send_recv(&capture_true);
+        if is_offline_compile_error(&resp_true) {
+            eprintln!(
+                "skipping execute_capture_false_yields_empty_side_effects_end_to_end: cargo unavailable ({})",
+                resp_true.message.as_deref().unwrap_or("unknown error")
+            );
+            return;
+        }
+        assert_eq!(resp_true.status, "execute");
+        assert!(
+            !resp_true.side_effects.clone().unwrap_or_default().is_empty(),
+            "capture:true must capture the println! side effect, got {:?}",
+            resp_true.side_effects
+        );
+
+        let capture_false = format!(
+            r#"{{"protocol_version":"0.1.0","id":2,"command":"execute","file":"{}","function":"noisy","inputs":[],"mocks":[],"capture":false}}"#,
+            file.display()
+        );
+        let resp_false = send_recv(&capture_false);
+        assert_eq!(resp_false.status, "execute");
+        assert!(
+            resp_false.side_effects.clone().unwrap_or_default().is_empty(),
+            "capture:false must yield empty side_effects on the wire, got {:?}",
+            resp_false.side_effects
+        );
+        // Only side_effects is affected — return_value must still be present.
+        assert!(resp_false.return_value.is_some());
+    }
 
     /// Send a single request and read the response.
     fn send_recv(req_json: &str) -> Response {
