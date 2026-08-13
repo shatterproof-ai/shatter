@@ -138,16 +138,17 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 	// falling through, so configuration typos surface as
 	// UnsatisfiedRequirementKindComplexType.
 	if generatorName, ok := opts.GeneratorsByName[p.Name]; ok && generatorName != "" {
-		// str-e41w: the gen-v12 wrapper always builds a direct *http.Request
-		// from its symbolic body input slot; a runtime-value generator plan for
-		// such a param would materialize as a null slot and silently produce an
-		// empty-body request instead of the configured expression. Surface the
-		// conflict loudly, matching the typo-surfacing policy below.
+		// str-e41w / str-ijtww: the gen-v12 wrapper always builds a symbolic
+		// param (e.g. a direct *http.Request) from its symbolic body input
+		// slot; a runtime-value generator plan for such a param would
+		// materialize as a null slot and silently produce an empty body
+		// instead of the configured expression. Surface the conflict loudly,
+		// matching the typo-surfacing policy below.
 		if isSymbolicBodyParam(p) {
 			return nil, &protocol.UnsatisfiedRequirement{
 				Kind:     protocol.UnsatisfiedRequirementKindComplexType,
 				TargetID: targetID,
-				Detail:   fmt.Sprintf("parameter %q: direct *http.Request params take a symbolic request body and cannot use generator %q; supply the body via defaults instead", p.Name, generatorName),
+				Detail:   fmt.Sprintf("parameter %q: symbolic-construction params (e.g. *http.Request) take a symbolic request body and cannot use generator %q; supply the body via defaults instead", p.Name, generatorName),
 			}
 		}
 		plans := generatorPlans(paramIndex, p, generatorName, maxPlans)
