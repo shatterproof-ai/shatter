@@ -56,9 +56,20 @@ issue_id() {
 }
 
 log "Fetching + pruning $REMOTE ..."
-git fetch --prune "$REMOTE" >/dev/null 2>&1 || {
-  log "WARNING: git fetch --prune $REMOTE failed; working from local ref cache."
-}
+FETCH_OK=true
+git fetch --prune "$REMOTE" >/dev/null 2>&1 || FETCH_OK=false
+if [ "$FETCH_OK" = false ]; then
+  if [ "$EXECUTE" = true ]; then
+    # A dry run tolerates a stale local ref cache — it only prints a list.
+    # --execute cannot: classifying "merged" from a cache that predates a
+    # teammate's new unmerged push, then deleting on that basis, is exactly
+    # the real-work-loss scenario this script's safety model promises never
+    # happens (review follow-up).
+    echo "[remote-cleanup] ERROR: git fetch --prune $REMOTE failed; refusing to run --execute against a stale ref cache. Re-run once the fetch succeeds." >&2
+    exit 1
+  fi
+  log "WARNING: git fetch --prune $REMOTE failed; working from local ref cache (dry run only)."
+fi
 
 BASE="$REMOTE/main"
 if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
@@ -139,8 +150,9 @@ is_protected() {
 
 # ── Classify merged remote branches ──────────────────────────────────────────
 candidates=()
+candidate_shas=()
 protected_hits=()
-while IFS= read -r ref; do
+while IFS=$'\t' read -r ref sha; do
   branch="${ref#"$REMOTE/"}"
   # `refs/remotes/<remote>/HEAD` — the remote's symbolic default-branch
   # pointer, present whenever the remote has been cloned normally — renders
@@ -155,8 +167,9 @@ while IFS= read -r ref; do
     protected_hits+=("$branch")
   else
     candidates+=("$branch")
+    candidate_shas+=("$sha")
   fi
-done < <(git for-each-ref --merged "$BASE" --format='%(refname:short)' "refs/remotes/$REMOTE")
+done < <(git for-each-ref --merged "$BASE" --format='%(refname:short)'$'\t''%(objectname)' "refs/remotes/$REMOTE")
 
 n_cand=${#candidates[@]}
 n_prot=${#protected_hits[@]}
@@ -181,7 +194,23 @@ fi
 
 log "Deleting $n_cand merged branches from $REMOTE ..."
 deleted=0
-for b in "${candidates[@]}"; do
+for i in "${!candidates[@]}"; do
+  b="${candidates[$i]}"
+  expected_sha="${candidate_shas[$i]}"
+  # TOCTOU guard (review follow-up): classification happened above, but this
+  # loop can span many branches and take real wall-clock time. Re-read the
+  # branch's CURRENT tip straight from the remote (not the local cache) right
+  # before deleting; if it moved since classification, someone pushed new
+  # work to it — skip rather than delete out from under them.
+  live_sha="$(git ls-remote "$REMOTE" "refs/heads/$b" 2>/dev/null | cut -f1)"
+  if [ -z "$live_sha" ]; then
+    echo "    SKIP    $b (no longer exists on $REMOTE)"
+    continue
+  fi
+  if [ "$live_sha" != "$expected_sha" ]; then
+    echo "    SKIP    $b (moved since classification — new commits pushed; re-run to reconsider)"
+    continue
+  fi
   if git push "$REMOTE" --delete "$b" >/dev/null 2>&1; then
     echo "    deleted $b"
     deleted=$((deleted + 1))

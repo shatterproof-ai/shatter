@@ -76,7 +76,7 @@ is limited. The **first ~20 characters** must be meaningfully descriptive:
    git push origin main
    git status  # MUST show clean working tree on main
    ```
-5. **Clean up** - Clear stashes; delete the merged feature branch locally and on the remote (`git push origin --delete <branch>`); `bd sync` once here so the landing yields a single sync commit
+5. **Clean up** - Clear stashes; delete the merged feature branch locally and on the remote (`git push origin --delete <branch>`); also run `scripts/cleanup-merged-remote-branches.sh` (dry-run, then `--execute` if the list looks right) to sweep any other merged branches that missed deletion at their own landing time — this step is mandatory, not an optional periodic chore, or merged branches silently re-accumulate exactly as before this fix; `bd sync` once here so the landing yields a single sync commit
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
 
@@ -221,13 +221,16 @@ agents is the primary cause of duplicate commits and orphan branches.
 - **Never delete an unmerged branch without explicit user approval.** If a branch
   is not fully merged, stop and ask before deleting it locally or remotely.
 
-**Periodic merged-remote-branch cleanup.** When merged branches have piled up on
-the remote, run `scripts/cleanup-merged-remote-branches.sh` (dry-run by default;
-`--execute` to delete). It deletes a remote branch only when it is fully merged
-into `origin/main`, is not tied to an active worktree, and its issue id is not
-in-progress (the in-progress set is read from the tracked `.beads/issues.jsonl`,
-so it works even when the Dolt server is down). Always review the dry-run list
-before passing `--execute`.
+**Merged-remote-branch cleanup.** Run `scripts/cleanup-merged-remote-branches.sh`
+(dry-run by default; `--execute` to delete) as part of step 5 of every landing
+above — not an optional periodic chore. It deletes a remote branch only when it
+is fully merged into `origin/main`, is not tied to an active worktree, and its
+issue id is not in-progress (the in-progress set is read from the tracked
+`.beads/issues.jsonl`, so it works even when the Dolt server is down). Always
+review the dry-run list before passing `--execute`. Worktree protection only
+sees worktrees on the machine running the script — in a multi-machine swarm, a
+branch actively held elsewhere is protected only via its bead's in-progress
+status, so keep bead status current for work in flight elsewhere.
 - Work is complete when changes are on `main` and pushed, not when a branch is pushed
 - **Never cherry-pick commits.** Cherry-picking creates duplicate commits with
   different SHAs, making history confusing and leaving orphan branches that

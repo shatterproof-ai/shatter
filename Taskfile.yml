@@ -287,6 +287,8 @@ tasks:
       - scripts/test_retention_continuous_releases.py
       - scripts/drift-patrol.py
       - scripts/test_drift_patrol.py
+      - scripts/cleanup-merged-remote-branches.sh
+      - scripts/test_cleanup_merged_remote_branches.sh
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_drift_patrol
@@ -294,6 +296,7 @@ tasks:
       - python3 -m unittest scripts.test_install_manifest
       - python3 -m unittest scripts.test_package_npm_release
       - python3 -m unittest scripts.test_retention_continuous_releases
+      - bash scripts/test_cleanup_merged_remote_branches.sh
       - cd shatter-go-tool && go test ./...
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
