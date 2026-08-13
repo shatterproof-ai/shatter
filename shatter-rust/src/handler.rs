@@ -1482,6 +1482,54 @@ mod tests {
         assert_eq!(apply_capture(effects.clone(), None), effects);
     }
 
+    /// End-to-end regression (str-kv9n review follow-up): drives a real
+    /// execute request with `capture:false` through the handler (not just
+    /// `apply_capture` in isolation) and asserts the wire response's
+    /// `side_effects` is empty, while the same target with `capture:true`
+    /// carries the captured console output. Guards against a future
+    /// refactor reordering `resp.side_effects` assignment or adding a
+    /// second response-construction path that bypasses `apply_capture`.
+    #[test]
+    fn execute_capture_false_yields_empty_side_effects_end_to_end() {
+        let dir = std::env::temp_dir().join("shatter-test-rust-capture-e2e");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("capture_e2e.rs");
+        std::fs::write(&file, "fn noisy() -> i32 { println!(\"hi\"); 1 }\n").expect("write file");
+
+        let capture_true = format!(
+            r#"{{"protocol_version":"0.1.0","id":1,"command":"execute","file":"{}","function":"noisy","inputs":[],"mocks":[],"capture":true}}"#,
+            file.display()
+        );
+        let resp_true = send_recv(&capture_true);
+        if is_offline_compile_error(&resp_true) {
+            eprintln!(
+                "skipping execute_capture_false_yields_empty_side_effects_end_to_end: cargo unavailable ({})",
+                resp_true.message.as_deref().unwrap_or("unknown error")
+            );
+            return;
+        }
+        assert_eq!(resp_true.status, "execute");
+        assert!(
+            !resp_true.side_effects.clone().unwrap_or_default().is_empty(),
+            "capture:true must capture the println! side effect, got {:?}",
+            resp_true.side_effects
+        );
+
+        let capture_false = format!(
+            r#"{{"protocol_version":"0.1.0","id":2,"command":"execute","file":"{}","function":"noisy","inputs":[],"mocks":[],"capture":false}}"#,
+            file.display()
+        );
+        let resp_false = send_recv(&capture_false);
+        assert_eq!(resp_false.status, "execute");
+        assert!(
+            resp_false.side_effects.clone().unwrap_or_default().is_empty(),
+            "capture:false must yield empty side_effects on the wire, got {:?}",
+            resp_false.side_effects
+        );
+        // Only side_effects is affected — return_value must still be present.
+        assert!(resp_false.return_value.is_some());
+    }
+
     /// Send a single request and read the response.
     fn send_recv(req_json: &str) -> Response {
         let input = format!("{req_json}\n");
