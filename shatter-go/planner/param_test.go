@@ -1247,3 +1247,35 @@ func TestPlanParam_NamedIntEnum_NotSeededAsStrings(t *testing.T) {
 		}
 	}
 }
+
+// str-4q7bd regression: a JSON object/array seed literal for a plain
+// string-family param (e.g. a struct-decode source like
+// json.Unmarshal([]byte(s), &v) where s is a Go string, not []byte) must be
+// re-encoded as a JSON string carrying the document text, matching the
+// symbolic-body-param and []byte-param re-encoding this function already
+// does. Before this fix it fell through unquoted, producing a JSON object
+// where the "string" TypeHint wire contract requires a JSON string.
+func TestPlanParam_SeedPool_StringFamilyReencodedAsJSONString(t *testing.T) {
+	doc := json.RawMessage(`{"name":"a","count":1}`)
+	opts := planner.ParamPlanOptions{
+		SeedsByName: map[string][]planner.ParamValueHint{"data": {{Literal: doc}}},
+	}
+	plans, u := planner.PlanParam(testTargetID, 0, strParam("data"), opts)
+	if u != nil {
+		t.Fatalf("unexpected unsatisfied: %+v", u)
+	}
+	if len(plans) == 0 {
+		t.Fatal("expected at least one plan")
+	}
+	plan := plans[0]
+	if plan.Kind != protocol.ValuePlanKindLiteral {
+		t.Fatalf("plans[0].Kind = %q, want %q", plan.Kind, protocol.ValuePlanKindLiteral)
+	}
+	var s string
+	if err := json.Unmarshal(plan.Literal, &s); err != nil {
+		t.Fatalf("plans[0].Literal is not a JSON string: %v; literal=%s", err, plan.Literal)
+	}
+	if s != string(doc) {
+		t.Fatalf("plans[0] decoded string = %s, want %s", s, doc)
+	}
+}

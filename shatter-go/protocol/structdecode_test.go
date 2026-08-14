@@ -154,3 +154,42 @@ func LoadSpec(path string) (*Spec, error) {
 		t.Errorf("file-path-indirected decode is out of scope for str-4q7bd; expected nil, got %v", got)
 	}
 }
+
+// str-4q7bd regression: unwrapToIdent must not peel arbitrary single-argument
+// function calls, only genuine type conversions ([]byte(x), string(x)).
+// Before this fix, decrypt(data) unwrapped to the identifier "data" just like
+// a conversion, so structDecodeSeedsByParam attributed the decode site to the
+// untransformed parameter and would have seeded it with a plaintext document
+// that decrypt() can never turn back into valid JSON — silently useless.
+func TestStructDecodeSeedsByParamNonConversionCallNotUnwrapped(t *testing.T) {
+	src := `package p
+
+import "encoding/json"
+
+type Spec struct {
+	OpenAPI string
+}
+
+func decrypt(b []byte) []byte {
+	return b
+}
+
+func ClassifySpec(data []byte) string {
+	var spec Spec
+	if err := json.Unmarshal(decrypt(data), &spec); err != nil {
+		return "invalid"
+	}
+	return spec.OpenAPI
+}
+`
+	file, info, _ := parseAndTypeCheck(t, src)
+	fn := findFuncDecl(file, "ClassifySpec")
+	if fn == nil {
+		t.Fatal("ClassifySpec not found")
+	}
+	params := []ParamInfo{{Name: "data", Type: TypeInfo{Kind: "array"}}}
+	got := structDecodeSeedsByParam(fn, info, params)
+	if got != nil {
+		t.Errorf("decrypt(data) is a function call, not a type conversion; must not resolve to param %q, got %v", "data", got)
+	}
+}

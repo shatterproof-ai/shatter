@@ -86,7 +86,7 @@ func findStructDecodeSites(fn *ast.FuncDecl, info *types.Info, paramNames map[st
 		if format == "" {
 			return true
 		}
-		paramName := resolveBytesSourceParam(fn, call.Args[0], paramNames)
+		paramName := resolveBytesSourceParam(fn, call.Args[0], info, paramNames)
 		if paramName == "" {
 			return true
 		}
@@ -130,8 +130,8 @@ func unmarshalFormat(pkgIdent *ast.Ident, info *types.Info) string {
 // directly (expr is the parameter identifier, optionally wrapped in a
 // []byte(...)/string(...) conversion) or through exactly one local
 // `alias := param` / `alias = param` assignment found in fn's body.
-func resolveBytesSourceParam(fn *ast.FuncDecl, expr ast.Expr, paramNames map[string]bool) string {
-	ident := unwrapToIdent(expr)
+func resolveBytesSourceParam(fn *ast.FuncDecl, expr ast.Expr, info *types.Info, paramNames map[string]bool) string {
+	ident := unwrapToIdent(expr, info)
 	if ident == nil {
 		return ""
 	}
@@ -152,7 +152,7 @@ func resolveBytesSourceParam(fn *ast.FuncDecl, expr ast.Expr, paramNames map[str
 			if !ok || lhsIdent.Name != ident.Name {
 				continue
 			}
-			if rhsIdent := unwrapToIdent(assign.Rhs[i]); rhsIdent != nil && paramNames[rhsIdent.Name] {
+			if rhsIdent := unwrapToIdent(assign.Rhs[i], info); rhsIdent != nil && paramNames[rhsIdent.Name] {
 				aliased = rhsIdent.Name
 			}
 		}
@@ -163,9 +163,14 @@ func resolveBytesSourceParam(fn *ast.FuncDecl, expr ast.Expr, paramNames map[str
 
 // unwrapToIdent peels off parens and single-argument type-conversion calls
 // (e.g. []byte(x), string(x)) to find the underlying identifier. Returns nil
-// for any other expression shape (field selectors, function calls with
-// side effects, indexing, ...) — those are out of scope for this slice.
-func unwrapToIdent(expr ast.Expr) *ast.Ident {
+// for any other expression shape (field selectors, arbitrary function calls
+// with side effects, indexing, ...) — those are out of scope for this slice.
+// A CallExpr is only unwrapped when info confirms its Fun denotes a type (a
+// conversion), not a function value: without that check, a transform like
+// decrypt(data) would unwrap to the untransformed identifier "data" and the
+// synthesized plaintext seed would never reach a real decode success, since
+// it never survives the intervening transform.
+func unwrapToIdent(expr ast.Expr, info *types.Info) *ast.Ident {
 	for {
 		switch e := expr.(type) {
 		case *ast.Ident:
@@ -173,7 +178,11 @@ func unwrapToIdent(expr ast.Expr) *ast.Ident {
 		case *ast.ParenExpr:
 			expr = e.X
 		case *ast.CallExpr:
-			if len(e.Args) != 1 {
+			if len(e.Args) != 1 || info == nil {
+				return nil
+			}
+			tv, ok := info.Types[e.Fun]
+			if !ok || !tv.IsType() {
 				return nil
 			}
 			expr = e.Args[0]

@@ -514,28 +514,34 @@ func isJSONStringLiteral(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &s) == nil
 }
 
-// normalizeHintLiteral adapts an operator-supplied hint/seed literal (Defaults
-// or Seeds) to the wire encoding the target parameter's family expects. A
-// structured YAML document (defaults/seeds: r: {model: ...}) decodes to a
-// JSON object/array literal; two families need it re-encoded rather than
-// passed through as-is:
+// normalizeHintLiteral adapts an operator-supplied or synthesized hint/seed
+// literal (Defaults, Seeds, or str-4q7bd struct-decode synthesis) to the wire
+// encoding the target parameter's family expects. A structured YAML document
+// (defaults/seeds: r: {model: ...}) or a synthesized struct-decode document
+// decodes to a JSON object/array literal; three families need it re-encoded
+// rather than passed through as-is:
 //
-//   - symbolic body params (string family, e.g. *http.Request): the wrapper
-//     decodes the body as a JSON string, so an object/array literal is
-//     re-encoded as a JSON string carrying the document text (str-e41w).
+//   - symbolic body params (e.g. *http.Request) and plain string-family
+//     params: the wrapper decodes the body/value as a JSON string, so an
+//     object/array literal is re-encoded as a JSON string carrying the
+//     document text (str-e41w; extended to the plain string family by
+//     str-4q7bd for decode sources like json.Unmarshal([]byte(s), &v) where
+//     s is a Go string parameter -- without this an object/array literal
+//     reaches materialize_value unquoted, a wire-type mismatch for a
+//     "string" TypeHint that silently drops the candidate).
 //   - []byte params (byteSliceFamily): Go's json.Marshal encodes []byte as a
-//     base64 string, so an object/array literal — already valid JSON text —
+//     base64 string, so an object/array literal -- already valid JSON text --
 //     is base64-encoded and wrapped as a JSON string so json.Unmarshal into
 //     the []byte parameter reproduces the original document bytes
 //     (str-b27zm).
 //
 // A literal that is already a JSON string is passed through unchanged in
-// both cases, trusting the operator supplied the exact wire content.
+// all cases, trusting the operator supplied the exact wire content.
 func normalizeHintLiteral(p protocol.ParamInfo, familyTypeHint string, literal json.RawMessage) json.RawMessage {
 	if isJSONStringLiteral(literal) {
 		return literal
 	}
-	if isSymbolicBodyParam(p) {
+	if isSymbolicBodyParam(p) || familyTypeHint == paramTypeHintString {
 		if encoded, err := json.Marshal(string(literal)); err == nil {
 			return encoded
 		}
