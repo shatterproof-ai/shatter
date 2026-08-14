@@ -204,6 +204,9 @@ func planOne(
 	if len(ctx.ErrorSentinelCountsByParam) > 0 {
 		paramOpts.ErrorSentinelCountsByParam = ctx.ErrorSentinelCountsByParam
 	}
+	if len(ctx.StructDecodeSeedsByParam) > 0 {
+		paramOpts.SeedsByName = mergeStructDecodeSeeds(paramOpts.SeedsByName, ctx.StructDecodeSeedsByParam)
+	}
 	return planWithGenericArgs(req, ctx, nil, false, paramOpts, opts)
 }
 
@@ -260,6 +263,9 @@ func planMethod(
 	}
 	if len(ctx.ErrorSentinelCountsByParam) > 0 {
 		paramOpts.ErrorSentinelCountsByParam = ctx.ErrorSentinelCountsByParam
+	}
+	if len(ctx.StructDecodeSeedsByParam) > 0 {
+		paramOpts.SeedsByName = mergeStructDecodeSeeds(paramOpts.SeedsByName, ctx.StructDecodeSeedsByParam)
 	}
 	return planWithGenericArgs(req, ctx, receiverPlans, true, paramOpts, opts)
 }

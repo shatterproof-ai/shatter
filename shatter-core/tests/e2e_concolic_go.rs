@@ -1775,6 +1775,99 @@ async fn e2e_go_seed_pool_reaches_structured_decode_branches() {
 }
 
 // ---------------------------------------------------------------------------
+// Test: schema-aware structured-input synthesis reaches structured-decode
+// branches WITHOUT an operator-supplied seed (str-4q7bd).
+//
+// Companion to `e2e_go_seed_pool_reaches_structured_decode_branches` above:
+// the `struct-schema-synth` fixture has NO `.shatter/config.yaml` at all, so
+// any structured-decode branch reached here is reached purely by the
+// planner synthesizing a document from ClassifyConfig's own decode target
+// (Config, with a nested Limits struct and a []string field) via
+// structDecodeSeedsByParam / synthesizeStructDocument
+// (shatter-go/protocol/structdecode.go, structsynth.go). This proves the
+// acceptance criterion directly: "without requiring a user-provided seed."
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_schema_synthesis_reaches_structured_decode_branches_without_seeds() {
+    let file = repo_examples_go_dir()
+        .join("struct-schema-synth")
+        .join("config.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let config_yaml = repo_examples_go_dir()
+        .join("struct-schema-synth")
+        .join(".shatter")
+        .join("config.yaml");
+    assert!(
+        !config_yaml.exists(),
+        "fixture must have no .shatter/config.yaml -- this test proves synthesis \
+         works without an operator-supplied seed pool"
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("struct-schema-synth").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "ClassifyConfig").await;
+    assert_eq!(
+        analysis.params.len(),
+        1,
+        "ClassifyConfig takes 1 param (data []byte)"
+    );
+
+    instrument_function(&mut frontend, &file_str, "ClassifyConfig").await;
+
+    let target_id = format!(":{}", analysis.name);
+    let bundle = fetch_planner_seeds(&mut frontend, &target_id, &analysis.params)
+        .await
+        .expect("PLANNER GAP: get_invocation_plan transport failed");
+    assert!(
+        !bundle.seeds.is_empty(),
+        "expected auto-synthesized documents to materialize at least one candidate \
+         with no config.yaml present; unsatisfied={:?}",
+        bundle.unsatisfied
+    );
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "ClassifyConfig",
+        bundle.seeds,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"invalid\"", "\"missing-name\"", "\"configured\""] {
+        assert!(
+            return_values.contains(expected),
+            "schema-aware synthesis (no seed config) should reach branch returning \
+             {expected}; found: {return_values:?}"
+        );
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
 // Test: execute-time config mock substitution (str-c8djq).
 //
 // Classify(x int) string calls dep.Fetch(x) and branches on the result:

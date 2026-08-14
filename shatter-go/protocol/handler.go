@@ -2041,6 +2041,7 @@ func (h *Handler) buildTargetContext(targetID string) *TargetContext {
 	ctx.Target = &target
 	ctx.StringLiteralsByParam = stringLiteralCandidatesByParam(fn, pkg.TypesInfo, analysis.Params)
 	ctx.ErrorSentinelCountsByParam = errorSentinelCountsByParam(fn, pkg.TypesInfo, pkg.PkgPath, analysis.Params)
+	ctx.StructDecodeSeedsByParam = structDecodeSeedsByParam(fn, pkg.TypesInfo, analysis.Params)
 
 	if target.Receiver != nil && target.Receiver.TypeName != "" {
 		all := ScanConstructors(pkg)
