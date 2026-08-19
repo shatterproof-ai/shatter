@@ -2490,3 +2490,109 @@ async fn e2e_go_http_handler_adapter_reports_coverage() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Test: str-wvfke -- `error`-returning `run()` in `package main`.
+//
+// In-repo reduction of the kapow observation: a `package main` helper named
+// `run`, called by `main` -> `os.Exit`, whose analyzed return type is `error`
+// (non-void). Two assertions:
+//
+// (A) investigation: does the empty-`lines_executed` / lost-return-value
+//     observability gap reproduce here? If it does, `lines_executed` and
+//     `return_value`/`thrown_error` will be empty/None for every execution
+//     despite iterations running -- assert it does NOT reproduce, so a
+//     regression here is caught immediately.
+// (B) classification: with the spec.rs fix, an `error`-returning function
+//     must never render as `Postcondition::ReturnsVoid` -- it must report
+//     either the observed error/value or `Unobserved`, never a confident void.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_main_run_error_return_is_observed_and_never_void() {
+    let file = repo_examples_go_dir()
+        .join("main-run-error-return")
+        .join("main.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("main-run-error-return").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "run").await;
+    assert_eq!(analysis.params.len(), 1, "run takes 1 param (name string)");
+    assert!(
+        !matches!(analysis.return_type, shatter_core::types::TypeInfo::Unknown),
+        "run's analyzed return type must resolve to error (non-void), got {:?}",
+        analysis.return_type
+    );
+
+    instrument_function(&mut frontend, &file_str, "run").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(20),
+        max_executions: Some(60),
+        plateau_threshold: 15,
+        ..Default::default()
+    };
+
+    // Seed both the always-erroring empty-string arm and a non-empty arm that
+    // returns nil, mirroring the kapow reproduction's unavoidable-error guard.
+    let seed_inputs = vec![
+        vec![serde_json::json!("")],
+        vec![serde_json::json!("alice")],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "run",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    assert!(
+        result.unique_paths >= 2,
+        "should discover both the error and nil-return arms; got {} unique paths",
+        result.unique_paths
+    );
+
+    // (A) investigation: assert every discovered execution is actually
+    // observed -- non-empty lines_executed, and a return_value/thrown_error
+    // that reflects `run`'s guard. If this fails, the empty-lines_executed
+    // bug reproduces in-repo and (A) graduates from "timeboxed investigation"
+    // to "fix it here" per the issue's acceptance criteria.
+    for exec in &result.executions {
+        assert!(
+            !exec.lines_executed.is_empty(),
+            "str-wvfke (A): execution produced no lines_executed -- the kapow \
+             empty-observability bug reproduces in-repo. inputs=? return_value={:?} thrown_error={:?}",
+            exec.return_value,
+            exec.thrown_error,
+        );
+    }
+
+    let return_values = return_value_set(&result);
+    assert!(
+        return_values.contains("ERROR:name is required"),
+        "should observe the guard's error for empty input; found: {return_values:?}"
+    );
+    assert!(
+        return_values.contains("null"),
+        "should observe a nil error return for non-empty input; found: {return_values:?}"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}

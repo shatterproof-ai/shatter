@@ -620,8 +620,13 @@ pub fn specify(
         observe.file, observe.analysis.start_line, observe.analysis.end_line
     ));
 
-    let mut spec =
-        crate::spec::build_spec(&observe.observation, &analyze.eq_classes, location, None);
+    let mut spec = crate::spec::build_spec(
+        &observe.observation,
+        &analyze.eq_classes,
+        location,
+        None,
+        &observe.analysis.return_type,
+    );
 
     if detect_invariants {
         crate::spec::detect_spec_invariants(&mut spec, &observe.observation, &analyze.eq_classes);
@@ -747,6 +752,7 @@ fn build_test_suggestions(spec: &FunctionSpec, solve: &StageSolveOutput) -> Vec<
                     Some(format!("{}: {}", error.error_type, error.message)),
                 ),
                 crate::spec::Postcondition::ReturnsVoid => (None, None),
+                crate::spec::Postcondition::Unobserved => (None, None),
             };
 
             suggestions.push(TestSuggestion {

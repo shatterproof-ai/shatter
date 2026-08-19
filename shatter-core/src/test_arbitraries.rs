@@ -1239,6 +1239,7 @@ pub fn arb_postcondition() -> impl Strategy<Value = Postcondition> {
         arb_json_value().prop_map(|value| Postcondition::Returns { value }),
         arb_error_info().prop_map(|error| Postcondition::Throws { error }),
         Just(Postcondition::ReturnsVoid),
+        Just(Postcondition::Unobserved),
     ]
 }
 

@@ -151,8 +151,13 @@ pub(crate) async fn run_properties(
 
                     let location =
                         Some(format!("{file_str}:{}-{}", func.start_line, func.end_line));
-                    let func_spec =
-                        spec::build_spec_with_invariants(&result, eq_classes, location, None);
+                    let func_spec = spec::build_spec_with_invariants(
+                        &result,
+                        eq_classes,
+                        location,
+                        None,
+                        &func.return_type,
+                    );
                     file_specs.push(func_spec);
                 }
                 Err(e) => {
