@@ -6778,7 +6778,18 @@ fn generate_axum_harness(
     let route_pattern = default_path.as_str();
 
     // Execute native replay and the Axum request inside the same Tokio runtime.
-    h.push_str("\n        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+    //
+    // A current-thread runtime is required (not the multi-thread default from
+    // `Runtime::new()`): `shatter-rust-runtime`'s line/branch tracking is
+    // thread-local (str-oc67). With a multi-thread runtime, `block_on` drives
+    // the handler's top-level future on the calling thread, but any work the
+    // handler awaits that hops onto a worker thread (e.g. a DB driver's
+    // internal `tokio::spawn`) records into a *different* thread's state than
+    // the one `flush_results()` reads after `block_on` returns, silently
+    // dropping recorded lines/branches. A current-thread runtime has no
+    // worker pool, so every task the handler spawns still runs on this same
+    // OS thread, keeping recording and flush on one thread-local instance.
+    h.push_str("\n        let __tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();\n");
     h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
     h.push_str("            __tokio_rt.block_on(async move {\n");
 
@@ -12823,6 +12834,117 @@ pub async fn classify(Path(id): Path<u64>) -> String {
             Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!(
                     "skipping crate_backed_axum_handler_reports_executed_branch_lines: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_backed_axum_handler_with_spawned_await_reports_executed_branch_lines() {
+        // str-oc67: `crate_backed_axum_handler_reports_executed_branch_lines`
+        // above passes even when the harness's Tokio runtime is left at the
+        // multi-thread default, because its handler has no real `.await`
+        // point — the whole body runs synchronously on the `block_on`
+        // thread. A DB-backed handler genuinely awaits (e.g. a connection
+        // pool query), and any work it awaits that hops onto a worker
+        // thread — such as `tokio::spawn` — records lines/branches into
+        // that worker thread's thread-local state, which `flush_results()`
+        // (called on the `block_on` thread after the future resolves) never
+        // sees under a multi-thread runtime. This handler spawns the
+        // branchy work onto a task explicitly to force that hop, so this
+        // test fails on a multi-thread runtime and passes only once the
+        // harness runtime and the recording/flush thread are unified onto
+        // one OS thread.
+        use crate::adapters::{AxumExtractorKind, AxumExtractorMapping};
+
+        let dir = std::env::temp_dir().join("shatter-test-axum-spawned-await-coverage");
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"[package]
+name = "shatter-test-axum-spawned-await"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+"#,
+        )
+        .unwrap();
+        let src_file = src.join("lib.rs");
+        std::fs::write(
+            &src_file,
+            r#"
+use axum::extract::Path;
+
+pub async fn classify(Path(id): Path<u64>) -> String {
+    tokio::spawn(async move {
+        if id > 10 {
+            "large".to_string()
+        } else {
+            "small".to_string()
+        }
+    })
+    .await
+    .unwrap()
+}
+"#,
+        )
+        .unwrap();
+
+        let mappings = vec![AxumExtractorMapping {
+            param_index: 0,
+            kind: AxumExtractorKind::PathParams,
+            type_name: "Path".to_string(),
+        }];
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let result = execute_axum_handler(
+            src_file.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!(11)],
+            &[],
+            60_000,
+            &mappings,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(result) => {
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("status")),
+                    Some(&serde_json::json!(200))
+                );
+                assert_eq!(
+                    result.return_value.as_ref().and_then(|v| v.get("body")),
+                    Some(&serde_json::json!("large"))
+                );
+                assert!(
+                    result.lines_executed.iter().any(|line| *line > 0),
+                    "crate-backed Axum handler with a spawned await should report \
+                     executed source lines despite the branch executing inside a \
+                     spawned task: {result:?}"
+                );
+                assert!(
+                    !result.branch_path.is_empty(),
+                    "crate-backed Axum handler with a spawned await should report \
+                     branch decisions taken inside the spawned task: {result:?}"
+                );
+            }
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_backed_axum_handler_with_spawned_await_reports_executed_branch_lines: cargo unavailable ({msg})"
                 );
             }
             Err(e) => panic!("unexpected error: {e:?}"),
