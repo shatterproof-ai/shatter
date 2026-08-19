@@ -16,7 +16,7 @@ func transformSource(t *testing.T, src string, funcName *string) (string, int) {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	branchCount := transformFile(fset, file, funcName)
+	branchCount, _ := transformFile(fset, file, funcName)
 	var buf strings.Builder
 	if err := printer.Fprint(&buf, fset, file); err != nil {
 		t.Fatalf("printer error: %v", err)
@@ -35,6 +35,56 @@ func F() {
 	out, _ := transformSource(t, src, nil)
 	if count := strings.Count(out, "__shatter_record_line"); count < 2 {
 		t.Errorf("expected at least 2 line record calls, got %d\noutput:\n%s", count, out)
+	}
+}
+
+// TestInstrumentableLineCountExcludesBraceOnlyLines guards str-szcn3: the
+// coverage denominator must be the set of lines that actually received a
+// __shatter_record_line probe, not the raw function span. Blank lines,
+// comment-only lines, and brace/punctuation-only lines must not count.
+func TestInstrumentableLineCountExcludesBraceOnlyLines(t *testing.T) {
+	src := `package main
+
+func Add(a, b int) int {
+	// sum the two inputs
+	sum := a + b
+
+	return sum
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, instrumentableLineCount := transformFile(fset, file, nil)
+	// Span is 6 lines (func signature through closing brace); only the
+	// assignment and return statements carry a probe.
+	if instrumentableLineCount != 2 {
+		t.Errorf("instrumentableLineCount = %d, want 2 (statement lines only, excluding signature/comment/blank/brace lines)", instrumentableLineCount)
+	}
+}
+
+// TestInstrumentableLineCountIgnoresSyntheticScopeMarkers guards against a
+// regression where the call_enter/call_exit scope markers transformFile
+// prepends onto the function body — which carry no real source position —
+// get resolved to a phantom "line 0" and inflate the count.
+func TestInstrumentableLineCountIgnoresSyntheticScopeMarkers(t *testing.T) {
+	src := `package main
+
+func F() {
+	x := 1
+	_ = x
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, instrumentableLineCount := transformFile(fset, file, nil)
+	if instrumentableLineCount != 2 {
+		t.Errorf("instrumentableLineCount = %d, want 2 (line 0 from synthetic scope markers must not be counted)", instrumentableLineCount)
 	}
 }
 

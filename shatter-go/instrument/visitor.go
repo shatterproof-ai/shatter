@@ -10,11 +10,15 @@ import (
 
 // transformFile walks the AST and inserts line recording, branch recording,
 // and scope event calls. If funcName is non-nil, only the named function is
-// instrumented. Returns the number of branches instrumented.
-func transformFile(fset *token.FileSet, file *ast.File, funcName *string) int {
+// instrumented. Returns the number of branches instrumented and the count of
+// unique source lines where a __shatter_record_line probe was inserted —
+// the same universe of lines the coverage numerator (lines_executed) is
+// drawn from, mirroring shatter-ts/src/instrumentor.ts's instrumentableLines.
+func transformFile(fset *token.FileSet, file *ast.File, funcName *string) (int, int) {
 	branchID := 0
 	loopID := 0
 	callSiteID := 0
+	instrumentableLines := make(map[int]struct{})
 	sideEffectImports := sideEffectImportAliases(file)
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -34,10 +38,10 @@ func transformFile(fset *token.FileSet, file *ast.File, funcName *string) int {
 			makeDeferScopeRecordStmt("call_exit", id),
 		}, fn.Body.List...)
 
-		transformBlock(fset, fn.Body, params, &branchID, &loopID, &callSiteID)
+		transformBlock(fset, fn.Body, params, &branchID, &loopID, &callSiteID, instrumentableLines)
 		rewriteSideEffectCalls(fn.Body, sideEffectImports)
 	}
-	return branchID
+	return branchID, len(instrumentableLines)
 }
 
 func sideEffectImportAliases(file *ast.File) map[string]string {
@@ -94,11 +98,11 @@ func buildParamSet(fn *ast.FuncDecl) map[string]bool {
 
 // transformBlock instruments a block statement by inserting line recording
 // before each statement, wrapping branch conditions, and adding scope markers.
-func transformBlock(fset *token.FileSet, block *ast.BlockStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
+func transformBlock(fset *token.FileSet, block *ast.BlockStmt, params map[string]bool, branchID, loopID, callSiteID *int, instrumentableLines map[int]struct{}) {
 	if block == nil {
 		return
 	}
-	block.List = transformStmtList(fset, block.List, params, branchID, loopID, callSiteID, block)
+	block.List = transformStmtList(fset, block.List, params, branchID, loopID, callSiteID, block, instrumentableLines)
 }
 
 // transformStmtList applies the same line/branch/scope instrumentation
@@ -120,25 +124,33 @@ func transformStmtList(
 	params map[string]bool,
 	branchID, loopID, callSiteID *int,
 	enclosingBlock *ast.BlockStmt,
+	instrumentableLines map[int]struct{},
 ) []ast.Stmt {
 	var newList []ast.Stmt
 	for _, stmt := range stmts {
 		line := fset.Position(stmt.Pos()).Line
 		newList = append(newList, makeLineRecordCall(line))
+		// Synthetic statements we prepend ourselves (call_enter/call_exit
+		// scope markers) carry no real source position, so fset resolves
+		// them to line 0. Counting that phantom line would inflate the
+		// denominator by one for every instrumented function.
+		if line > 0 {
+			instrumentableLines[line] = struct{}{}
+		}
 		switch s := stmt.(type) {
 		case *ast.IfStmt:
-			transformIfStmt(fset, s, params, branchID, loopID, callSiteID)
+			transformIfStmt(fset, s, params, branchID, loopID, callSiteID, instrumentableLines)
 		case *ast.SwitchStmt:
-			transformSwitchStmt(fset, s, params, branchID, loopID, callSiteID)
+			transformSwitchStmt(fset, s, params, branchID, loopID, callSiteID, instrumentableLines)
 		case *ast.ForStmt:
-			transformForStmt(fset, s, params, branchID, loopID, callSiteID)
+			transformForStmt(fset, s, params, branchID, loopID, callSiteID, instrumentableLines)
 		case *ast.RangeStmt:
-			transformRangeStmt(fset, s, params, branchID, loopID, callSiteID)
+			transformRangeStmt(fset, s, params, branchID, loopID, callSiteID, instrumentableLines)
 		case *ast.GoStmt:
 			wrapGoStmtForPanicCapture(s)
 		}
 		// Instrument function literals in expressions (callbacks).
-		instrumentFuncLits(fset, stmt, params, branchID, loopID, callSiteID, enclosingBlock)
+		instrumentFuncLits(fset, stmt, params, branchID, loopID, callSiteID, enclosingBlock, instrumentableLines)
 		newList = append(newList, stmt)
 	}
 	return newList
@@ -278,23 +290,23 @@ func rewriteCryptoRandSideEffectCall(call *ast.CallExpr, sel *ast.SelectorExpr) 
 	call.Args = append([]ast.Expr{sel}, call.Args...)
 }
 
-func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
+func transformIfStmt(fset *token.FileSet, s *ast.IfStmt, params map[string]bool, branchID, loopID, callSiteID *int, instrumentableLines map[int]struct{}) {
 	if s.Cond != nil {
 		line := fset.Position(s.Cond.Pos()).Line
 		s.Cond = wrapCondition(fset, s.Cond, line, params, branchID)
 	}
-	transformBlock(fset, s.Body, params, branchID, loopID, callSiteID)
+	transformBlock(fset, s.Body, params, branchID, loopID, callSiteID, instrumentableLines)
 	if s.Else != nil {
 		switch e := s.Else.(type) {
 		case *ast.BlockStmt:
-			transformBlock(fset, e, params, branchID, loopID, callSiteID)
+			transformBlock(fset, e, params, branchID, loopID, callSiteID, instrumentableLines)
 		case *ast.IfStmt:
-			transformIfStmt(fset, e, params, branchID, loopID, callSiteID)
+			transformIfStmt(fset, e, params, branchID, loopID, callSiteID, instrumentableLines)
 		}
 	}
 }
 
-func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
+func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[string]bool, branchID, loopID, callSiteID *int, instrumentableLines map[int]struct{}) {
 	for _, stmt := range s.Body.List {
 		cc, ok := stmt.(*ast.CaseClause)
 		if !ok {
@@ -311,7 +323,7 @@ func transformSwitchStmt(fset *token.FileSet, s *ast.SwitchStmt, params map[stri
 		// case body never appeared in lines_executed — the root cause of
 		// str-qo1.12. The branch record stays first so the case-entry
 		// signal precedes any per-statement line record.
-		instrumented := transformStmtList(fset, cc.Body, params, branchID, loopID, callSiteID, nil)
+		instrumented := transformStmtList(fset, cc.Body, params, branchID, loopID, callSiteID, nil, instrumentableLines)
 		cc.Body = append([]ast.Stmt{recordCall}, instrumented...)
 	}
 }
@@ -350,7 +362,7 @@ func caseClauseExpr(tag, lit ast.Expr) ast.Expr {
 	return &ast.BinaryExpr{X: tag, Op: token.EQL, Y: lit}
 }
 
-func transformForStmt(fset *token.FileSet, s *ast.ForStmt, params map[string]bool, branchID, loopID, callSiteID *int) {
+func transformForStmt(fset *token.FileSet, s *ast.ForStmt, params map[string]bool, branchID, loopID, callSiteID *int, instrumentableLines map[int]struct{}) {
 	if s.Cond != nil {
 		line := fset.Position(s.Cond.Pos()).Line
 		s.Cond = wrapCondition(fset, s.Cond, line, params, branchID)
@@ -364,10 +376,10 @@ func transformForStmt(fset *token.FileSet, s *ast.ForStmt, params map[string]boo
 			append(s.Body.List, makeScopeRecordStmt("loop_exit", id))...,
 		)
 	}
-	transformBlock(fset, s.Body, params, branchID, loopID, callSiteID)
+	transformBlock(fset, s.Body, params, branchID, loopID, callSiteID, instrumentableLines)
 }
 
-func transformRangeStmt(fset *token.FileSet, s *ast.RangeStmt, _ /*params*/ map[string]bool, branchID, loopID, _ /*callSiteID*/ *int) {
+func transformRangeStmt(fset *token.FileSet, s *ast.RangeStmt, _ /*params*/ map[string]bool, branchID, loopID, _ /*callSiteID*/ *int, _ /*instrumentableLines*/ map[int]struct{}) {
 	if s.Body != nil {
 		line := fset.Position(s.Pos()).Line
 		unknownConstraint := `{"kind":"unknown","hint":"range loop"}`
@@ -506,7 +518,7 @@ func makeDeferScopeRecordStmt(kind string, id int) ast.Stmt {
 // instrumentFuncLits walks the statement's expression tree and instruments
 // any function literals (closures) with call scope markers.
 // enclosingBlock is used to check if captured outer params are reassigned after the closure.
-func instrumentFuncLits(fset *token.FileSet, stmt ast.Stmt, params map[string]bool, branchID, loopID, callSiteID *int, enclosingBlock *ast.BlockStmt) {
+func instrumentFuncLits(fset *token.FileSet, stmt ast.Stmt, params map[string]bool, branchID, loopID, callSiteID *int, enclosingBlock *ast.BlockStmt, instrumentableLines map[int]struct{}) {
 	ast.Inspect(stmt, func(n ast.Node) bool {
 		fl, ok := n.(*ast.FuncLit)
 		if !ok || fl.Body == nil {
@@ -540,7 +552,7 @@ func instrumentFuncLits(fset *token.FileSet, stmt ast.Stmt, params map[string]bo
 				}
 			}
 		}
-		transformBlock(fset, fl.Body, funcParams, branchID, loopID, callSiteID)
+		transformBlock(fset, fl.Body, funcParams, branchID, loopID, callSiteID, instrumentableLines)
 		return false // don't recurse into the body again
 	})
 }

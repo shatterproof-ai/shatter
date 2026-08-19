@@ -689,8 +689,9 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 		return resp
 	}
 	outputDir, err := os.MkdirTemp(ws.GeneratedDir(), "instrument-*")
+	var instrumentableLineCount int
 	if err == nil {
-		err = instrument.MaterializeInstrumentedDirectory(req.File, req.Function, outputDir, req.ProjectRoot, timing)
+		instrumentableLineCount, err = instrument.MaterializeInstrumentedDirectory(req.File, req.Function, outputDir, req.ProjectRoot, timing)
 	}
 	finishInstrument()
 	if err != nil {
@@ -704,6 +705,7 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 	resp.Status = "instrument"
 	resp.Instrumented = &instrumented
 	resp.OutputFile = &outputDir
+	resp.InstrumentableLineCount = &instrumentableLineCount
 	return finalizeResponse(resp, timing)
 }
 

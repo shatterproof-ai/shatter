@@ -27,25 +27,26 @@ type InstrumentedFile struct {
 }
 
 // instrumentSource parses sourcePath, applies the existing concolic
-// transform, and returns the package name plus the formatted instrumented
-// source bytes. If renameMain is true and the package is "main", the
+// transform, and returns the package name, the formatted instrumented
+// source bytes, and the number of unique source lines that received a
+// line-record probe. If renameMain is true and the package is "main", the
 // existing func main() is renamed so a wrapper-provided main() can take
 // over (the legacy temp-dir flow needs this; the overlay flow does not).
 //
 // Extracted from InstrumentFileToDir so both the temp-dir path and the
 // overlay path share one parse/transform/print implementation.
-func instrumentSource(sourcePath string, funcName *string, renameMain bool, timing *frontendtiming.Collector) (string, []byte, error) {
+func instrumentSource(sourcePath string, funcName *string, renameMain bool, timing *frontendtiming.Collector) (string, []byte, int, error) {
 	fset := token.NewFileSet()
 	finishParse := timing.Start("instrument.parse")
 	file, err := parser.ParseFile(fset, sourcePath, nil, parser.ParseComments)
 	finishParse()
 	if err != nil {
-		return "", nil, fmt.Errorf("parsing %s: %w", sourcePath, err)
+		return "", nil, 0, fmt.Errorf("parsing %s: %w", sourcePath, err)
 	}
 
 	packageName := file.Name.Name
 	finishTransform := timing.Start("instrument.transform")
-	transformFile(fset, file, funcName)
+	_, instrumentableLineCount := transformFile(fset, file, funcName)
 	finishTransform()
 
 	if renameMain && packageName == "main" {
@@ -54,9 +55,9 @@ func instrumentSource(sourcePath string, funcName *string, renameMain bool, timi
 
 	var buf bytes.Buffer
 	if err := printer.Fprint(&buf, fset, file); err != nil {
-		return "", nil, fmt.Errorf("printing transformed AST for %s: %w", sourcePath, err)
+		return "", nil, 0, fmt.Errorf("printing transformed AST for %s: %w", sourcePath, err)
 	}
-	return packageName, buf.Bytes(), nil
+	return packageName, buf.Bytes(), instrumentableLineCount, nil
 }
 
 // InstrumentPackageForOverlay parses every non-test .go file under
@@ -117,7 +118,7 @@ func InstrumentPackageForOverlay(packageDir, discoveryHash, generatedDir string)
 
 	results := make([]InstrumentedFile, 0, len(sources))
 	for _, sourcePath := range sources {
-		packageName, source, err := instrumentSource(sourcePath, nil, false /*renameMain*/, nil)
+		packageName, source, _, err := instrumentSource(sourcePath, nil, false /*renameMain*/, nil)
 		if err != nil {
 			return nil, err
 		}
