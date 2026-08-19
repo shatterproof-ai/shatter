@@ -61,9 +61,21 @@ pub(crate) fn run_analyze(
         ));
 
         let spec = if detect_invariants {
-            shatter_core::spec::build_spec_with_invariants(observation, eq_classes, location, None)
+            shatter_core::spec::build_spec_with_invariants(
+                observation,
+                eq_classes,
+                location,
+                None,
+                &analysis.return_type,
+            )
         } else {
-            shatter_core::spec::build_spec(observation, eq_classes, location, None)
+            shatter_core::spec::build_spec(
+                observation,
+                eq_classes,
+                location,
+                None,
+                &analysis.return_type,
+            )
         };
 
         if spec_as_json {

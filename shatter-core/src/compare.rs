@@ -32,6 +32,11 @@ pub enum NormalizedOutput {
     Throws { message: String },
     /// The function returned void/undefined/null.
     Void,
+    /// No return value was observed for this input at all (distinct from an
+    /// explicit null/undefined observation, which is `Void`). Never collapsed
+    /// into `Void` — an unobserved return is not evidence the function is
+    /// void (str-wvfke).
+    Unobserved,
 }
 
 impl fmt::Display for NormalizedOutput {
@@ -40,6 +45,7 @@ impl fmt::Display for NormalizedOutput {
             Self::Returns { value } => write!(f, "{}", format_value_short(value)),
             Self::Throws { message } => write!(f, "throws: {message}"),
             Self::Void => write!(f, "void"),
+            Self::Unobserved => write!(f, "unobserved"),
         }
     }
 }
@@ -159,7 +165,7 @@ fn normalize_example_output(
         Some(v) => NormalizedOutput::Returns {
             value: normalize_value(v),
         },
-        None => NormalizedOutput::Void,
+        None => NormalizedOutput::Unobserved,
     }
 }
 
@@ -385,7 +391,7 @@ mod tests {
                     (_, Some(err)) => Postcondition::Throws { error: err.clone() },
                     (Some(v), None) if v.is_null() => Postcondition::ReturnsVoid,
                     (Some(v), None) => Postcondition::Returns { value: v.clone() },
-                    (None, None) => Postcondition::ReturnsVoid,
+                    (None, None) => Postcondition::Unobserved,
                 },
                 side_effects: Vec::new(),
                 examples: vec![example],
@@ -568,7 +574,44 @@ mod tests {
     }
 
     #[test]
-    fn void_returns_match() {
+    fn explicit_null_returns_match() {
+        let spec_a = make_spec(
+            "noop_ts",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: Some(json!(null)),
+                    thrown_error: None,
+                },
+            )],
+        );
+        let spec_b = make_spec(
+            "noop_go",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: Some(json!(null)),
+                    thrown_error: None,
+                },
+            )],
+        );
+
+        let result = compare_specs(&spec_a, &spec_b);
+        assert_eq!(
+            result.matching.len(),
+            1,
+            "two explicit null observations should match as Void"
+        );
+    }
+
+    #[test]
+    fn unobserved_return_does_not_match_explicit_null() {
+        // str-wvfke: an unobserved return (return_value: None, e.g. because the
+        // execution wasn't captured) must not be silently treated as the same
+        // as an explicitly observed null/void return — that hides a real
+        // difference in what each side actually demonstrated.
         let spec_a = make_spec(
             "noop_ts",
             vec![(
@@ -593,11 +636,11 @@ mod tests {
         );
 
         let result = compare_specs(&spec_a, &spec_b);
-        assert_eq!(
-            result.matching.len(),
-            1,
-            "None and null should both normalize to Void"
+        assert!(
+            result.matching.is_empty(),
+            "unobserved (None) must not match an explicit null observation"
         );
+        assert_eq!(result.divergent.len(), 1);
     }
 
     #[test]

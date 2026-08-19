@@ -401,6 +401,7 @@ fn format_postcondition_short(post: &Postcondition) -> String {
             format!("throws {}: {}", error.error_type, error.message)
         }
         Postcondition::ReturnsVoid => "returns void".to_string(),
+        Postcondition::Unobserved => "no return value observed".to_string(),
     }
 }
 
