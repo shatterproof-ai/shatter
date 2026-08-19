@@ -6580,6 +6580,15 @@ fn generate_axum_harness(
     // dropping recorded lines/branches. A current-thread runtime has no
     // worker pool, so every task the handler spawns still runs on this same
     // OS thread, keeping recording and flush on one thread-local instance.
+    //
+    // Caveat: `tokio::task::block_in_place` requires a multi-thread runtime
+    // and panics ("can't call block_in_place from a current_thread context")
+    // if a handler (or a dependency it calls into, e.g. a DB driver bridging
+    // a blocking call) invokes it. This is an inherent trade-off of the
+    // current-thread fix, not an oversight — see str-oc67 for the
+    // alternative (aggregate thread-local counters across threads instead of
+    // pinning to one thread) if a target handler ever needs both real
+    // multi-threading and `block_in_place`.
     h.push_str("\n        let __tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();\n");
     h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
     h.push_str("            __tokio_rt.block_on(async move {\n");
