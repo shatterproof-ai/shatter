@@ -465,7 +465,13 @@ func (h *Handler) handleAnalyze(resp Response, req Request) Response {
 		cacheHash    string
 		cacheHashErr error
 	)
-	if h.workspace != nil {
+	// SHATTER_DISABLE_ANALYSIS_CACHE also skips ComputeDiscoveryHash itself:
+	// ReadAnalysisCache/WriteAnalysisCache already treat the cache as
+	// disabled, so computing the hash just to read/write nothing (map dep
+	// scan + go/packages lite-load + full-executable SHA-256) is pure waste.
+	if h.workspace != nil && analysisCacheDisabled() {
+		logCacheMiss(h.log, "", req.File, analysisCacheMissDisabled)
+	} else if h.workspace != nil {
 		cacheHash, cacheHashErr = ComputeDiscoveryHash(req.File, functionName)
 		if cacheHashErr == nil {
 			if cached, hit, missReason := ReadAnalysisCache(h.workspace, cacheHash); hit {

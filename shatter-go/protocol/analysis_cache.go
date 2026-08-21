@@ -288,6 +288,14 @@ func writeStringField(hasher io.Writer, label, value string) {
 	_, _ = hasher.Write([]byte{0})
 }
 
+// analysisCacheDisabled reports whether SHATTER_DISABLE_ANALYSIS_CACHE is set
+// to a non-empty, non-"0" value. Callers use this to skip cache-only work
+// entirely (including discovery-hash computation), not just the read/write.
+func analysisCacheDisabled() bool {
+	disabled := strings.TrimSpace(os.Getenv(analysisCacheDisableEnvVar))
+	return disabled != "" && disabled != "0"
+}
+
 // ReadAnalysisCache returns (functions, true, "") on a cache hit, or
 // (nil, false, missReason) on miss. Errors are intentionally folded into
 // miss reasons — a misbehaving cache must never fail analysis. The reason
@@ -297,7 +305,7 @@ func ReadAnalysisCache(ws *workspace.Workspace, hash string) (functions []Functi
 	if ws == nil {
 		return nil, false, analysisCacheMissNotFound
 	}
-	if disabled := strings.TrimSpace(os.Getenv(analysisCacheDisableEnvVar)); disabled != "" && disabled != "0" {
+	if analysisCacheDisabled() {
 		return nil, false, analysisCacheMissDisabled
 	}
 	bytes, err := os.ReadFile(analysisCachePath(ws, hash))
@@ -328,7 +336,7 @@ func WriteAnalysisCache(ws *workspace.Workspace, hash, sourcePath, functionFilte
 	if ws == nil {
 		return fmt.Errorf("workspace is nil")
 	}
-	if disabled := strings.TrimSpace(os.Getenv(analysisCacheDisableEnvVar)); disabled != "" && disabled != "0" {
+	if analysisCacheDisabled() {
 		// Caching disabled: silently skip the write.
 		return nil
 	}
