@@ -101,8 +101,9 @@ func (w *Workspace) planOrRun(opts GCOptions, apply bool) (*GCReport, error) {
 	}
 
 	cacheDirs := map[string]string{
-		"cache/build":  w.BuildCacheDir(),
-		"cache/loader": w.LoaderCacheDir(),
+		"cache/build":    w.BuildCacheDir(),
+		"cache/loader":   w.LoaderCacheDir(),
+		"cache/analysis": w.AnalysisDir(),
 	}
 	cacheSizes := make(map[string]CacheSizes, len(cacheDirs))
 	cacheDirNames := make([]string, 0, len(cacheDirs))
