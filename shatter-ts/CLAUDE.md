@@ -339,6 +339,16 @@ their own per-language mechanisms). Tests: `src/opaque-stub-registry.test.ts`,
 `e2e_ts_opaque_param_stub_registry_explores_both_branches` in
 `shatter-core/tests/e2e_concolic.rs`.
 
+## Host-Write Isolation Contract (str-02i70)
+
+Companion to the Go/Rust frontends' `SHATTER_HOST_WRITE_DIR` execution isolation (str-gg9v). When the operator opts into unsandboxed target execution (`--allow-host-writes` / `SHATTER_ALLOW_HOST_WRITES=1`), the `shatter` CLI exports `SHATTER_HOST_WRITE_DIR` — an absolute path to a throwaway directory — into the frontend environment. Go and Rust redirect their target-execution *subprocess*'s working directory to that directory (`cmd.Dir` / `Command::current_dir`) so relative-path writes land there instead of the invoking repo.
+
+TS has no equivalent subprocess boundary — target code runs in-process via `vm.runInContext`, and `main.ts` dispatches requests concurrently (fires `handleRequest` without `await`), so a global `process.chdir()` would race across concurrent invocations (confirmed unsafe by a prior attempt that broke relative source-path resolution). Instead, `src/fs-write-redirect.ts` registers a `ts/fs-host-write-redirect` `ResolverAdapter` (the same interception mechanism the React shim uses for `require('react')`) in `getDefaultResolverAdapters` (`src/executor.ts`). It intercepts `require('fs')` / `require('node:fs')` / `require('fs/promises')` / `require('node:fs/promises')` and, when `SHATTER_HOST_WRITE_DIR` is set, returns a shim that rewrites the path argument of *mutating* fs calls (`writeFile`, `appendFile`, `mkdir`, `rm`/`rmdir`, `unlink`, `rename`, `copyFile`'s destination, `link`/`symlink`'s new path, `chmod`/`chown`/`utimes` families, `open`/`openSync` when opened with a write-capable flag, `createWriteStream`) to resolve under the throwaway directory when the path is relative. Read-only calls and absolute paths pass through unchanged. `getHostWriteDir()` reads the env var fresh on every `require()` call (never cached at module scope), so concurrent in-flight requests never share redirect state — this is what makes the fix safe without a process-wide chdir.
+
+Scope: only relative string path arguments are redirected; Buffer/URL path representations and file descriptors pass through unmodified (conservative, matches the common case that produces stray files). This is an execution-environment contract, not a protocol field — JSON output is unchanged, so this required no wire schema change, but is tracked in `protocol/parity-matrix.yaml` `feature_capabilities.host_write_isolation` since it brings TS to parity with Go/Rust's isolation behavior.
+
+Tests: `"fs host-write redirection (str-02i70)"` describe block in `src/executor.test.ts`.
+
 ## Timeout Contract
 
 15s default, overridden by `SHATTER_EXEC_TIMEOUT` env var (seconds). See `getExecTimeoutMs()` in `src/executor.ts`.

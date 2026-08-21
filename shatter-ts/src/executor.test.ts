@@ -744,6 +744,92 @@ export function readVirtualValue(): number {
   });
 });
 
+describe("fs host-write redirection (str-02i70)", () => {
+  const FS_REDIRECT_FIXTURE = path.join(
+    FIXTURES_DIR,
+    "fs-host-write-redirect.ts",
+  );
+  let hostWriteDir: string | undefined;
+  const previousEnv = process.env.SHATTER_HOST_WRITE_DIR;
+
+  beforeAll(() => {
+    fs.writeFileSync(
+      FS_REDIRECT_FIXTURE,
+      `import * as fs from "fs";
+export function writeRelative(name: string, content: string): string {
+  fs.writeFileSync(name, content);
+  return name;
+}
+`,
+    );
+  });
+
+  afterAll(() => {
+    if (fs.existsSync(FS_REDIRECT_FIXTURE)) {
+      fs.unlinkSync(FS_REDIRECT_FIXTURE);
+    }
+  });
+
+  afterEach(() => {
+    if (previousEnv === undefined) {
+      delete process.env.SHATTER_HOST_WRITE_DIR;
+    } else {
+      process.env.SHATTER_HOST_WRITE_DIR = previousEnv;
+    }
+    if (hostWriteDir && fs.existsSync(hostWriteDir)) {
+      fs.rmSync(hostWriteDir, { recursive: true, force: true });
+    }
+    hostWriteDir = undefined;
+    // A relative write that escaped redirection resolves against the real
+    // process cwd (Node's fs resolves relative paths against
+    // process.cwd(), not the module's __dirname) — clean it up so a failed
+    // run doesn't leave a stray file for the next one to trip over.
+    const strayPath = path.resolve(process.cwd(), "host-write-redirect-out.txt");
+    if (fs.existsSync(strayPath)) fs.unlinkSync(strayPath);
+  });
+
+  it("redirects a relative fs.writeFileSync into SHATTER_HOST_WRITE_DIR when set", async () => {
+    hostWriteDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "shatter-hostwrite-test-"),
+    );
+    process.env.SHATTER_HOST_WRITE_DIR = hostWriteDir;
+
+    const result = await executeFunction(FS_REDIRECT_FIXTURE, "writeRelative", [
+      "host-write-redirect-out.txt",
+      "hello from a relative write",
+    ]);
+
+    expect(result.thrown_error).toBeNull();
+
+    const redirectedPath = path.join(hostWriteDir, "host-write-redirect-out.txt");
+    expect(fs.existsSync(redirectedPath)).toBe(true);
+    expect(fs.readFileSync(redirectedPath, "utf-8")).toBe(
+      "hello from a relative write",
+    );
+
+    const realRepoPath = path.join(FIXTURES_DIR, "host-write-redirect-out.txt");
+    expect(fs.existsSync(realRepoPath)).toBe(false);
+  });
+
+  it("does not redirect when SHATTER_HOST_WRITE_DIR is unset (real fs, cleaned up)", async () => {
+    delete process.env.SHATTER_HOST_WRITE_DIR;
+
+    const realCwdPath = path.resolve(
+      process.cwd(),
+      "host-write-redirect-out.txt",
+    );
+    const result = await executeFunction(FS_REDIRECT_FIXTURE, "writeRelative", [
+      "host-write-redirect-out.txt",
+      "unredirected write",
+    ]);
+
+    expect(result.thrown_error).toBeNull();
+    expect(fs.existsSync(realCwdPath)).toBe(true);
+    expect(fs.readFileSync(realCwdPath, "utf-8")).toBe("unredirected write");
+    fs.unlinkSync(realCwdPath);
+  });
+});
+
 describe("buildExecuteResponse side effects", () => {
   it("passes side_effects through to the response", async () => {
     const result = await executeFunction(
