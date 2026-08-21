@@ -3055,12 +3055,14 @@ fn build_and_spawn_crate_harness(
     let package_name =
         extract_crate_name(cargo_toml_content).unwrap_or_else(|| "shatter-exec-temp".to_string());
     let binary_name = cargo_binary_name(&package_name);
-    let target_dir = crate_bridge_target_dir(harness_dir);
-    let cargo_binary_path = target_dir.join(profile_dir).join(&binary_name);
-    let binary_path = if target_dir == harness_dir.join("target") {
-        cargo_binary_path.clone()
-    } else {
+    let is_pooled_crate_bridge = crate_bridge_pool_root(harness_dir).is_some();
+    let binary_path = if is_pooled_crate_bridge {
         local_harness_binary_path(harness_dir, profile_dir, &binary_name)
+    } else {
+        harness_dir
+            .join("target")
+            .join(profile_dir)
+            .join(&binary_name)
     };
 
     // Skip recompile if binary exists and generated build inputs are unchanged.
@@ -3078,9 +3080,17 @@ fn build_and_spawn_crate_harness(
         std::fs::write(&cargo_toml_path, cargo_toml_content)?;
         std::fs::write(&main_rs_path, harness_source)?;
 
+        // Acquire the CARGO_TARGET_DIR only now: for a pooled crate-bridge
+        // harness this locks a build slot (str-phyi), so the lock is held
+        // only across the actual cargo invocation below, never on the
+        // cache-hit fast path above.
+        let build_target = acquire_crate_bridge_target(harness_dir);
+        let target_dir = &build_target.target_dir;
+        let cargo_binary_path = target_dir.join(profile_dir).join(&binary_name);
+
         // Optional validation: successful scans skip this by default to avoid
         // compiling each harness twice.
-        cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
+        cargo_check_before_build(harness_dir, target_dir, release, timing.as_deref_mut())?;
 
         let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
             .ok()
@@ -3100,7 +3110,7 @@ fn build_and_spawn_crate_harness(
                 Command::new("cargo")
                     .args(&cargo_args)
                     .current_dir(harness_dir)
-                    .env("CARGO_TARGET_DIR", &target_dir)
+                    .env("CARGO_TARGET_DIR", target_dir)
                     .output()
                     .map_err(|e| {
                         ExecuteError::CompilationFailed(format!("failed to run cargo: {e}"))
@@ -3110,7 +3120,7 @@ fn build_and_spawn_crate_harness(
             Command::new("cargo")
                 .args(&cargo_args)
                 .current_dir(harness_dir)
-                .env("CARGO_TARGET_DIR", &target_dir)
+                .env("CARGO_TARGET_DIR", target_dir)
                 .output()
                 .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
         };
@@ -3792,14 +3802,101 @@ fn crate_bridge_source_hash(
     Ok(hasher.finish())
 }
 
-fn crate_bridge_target_dir(harness_dir: &Path) -> PathBuf {
-    if let Some(cache_root) = harness_cache_root() {
-        let bridge_root = cache_root.join("rust").join("crate-bridge");
-        if harness_dir.starts_with(&bridge_root) {
-            return bridge_root.join("target");
+/// Number of parallel `CARGO_TARGET_DIR` slots for crate-bridge harness builds
+/// that share `SHATTER_HARNESS_CACHE`. Bounds disk usage and dependency
+/// recompilation versus one target dir per build, while avoiding the cargo
+/// target-dir lock contention of a single fully-shared dir under concurrent
+/// scan workers (str-phyi). Override via `SHATTER_CRATE_BRIDGE_BUILD_SLOTS`.
+const DEFAULT_CRATE_BRIDGE_BUILD_SLOTS: usize = 4;
+
+fn crate_bridge_build_slot_count() -> usize {
+    std::env::var("SHATTER_CRATE_BRIDGE_BUILD_SLOTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_CRATE_BRIDGE_BUILD_SLOTS)
+}
+
+/// The `CARGO_TARGET_DIR` to use for one crate-bridge cargo invocation.
+///
+/// When `_lock` is `Some`, its `Drop` releases the advisory slot lock — hold
+/// this value for the entire `cargo check`/`cargo build` invocation that uses
+/// `target_dir`, then drop it.
+struct CrateBridgeBuildTarget {
+    target_dir: PathBuf,
+    _lock: Option<std::fs::File>,
+}
+
+/// Whether `harness_dir` is a crate-bridge harness sharing the pooled
+/// `SHATTER_HARNESS_CACHE` target-dir pool (as opposed to a bin-only harness,
+/// or a crate-bridge harness with no shared cache configured — both of which
+/// already get an isolated, uncontended per-harness target dir).
+fn crate_bridge_pool_root(harness_dir: &Path) -> Option<PathBuf> {
+    let cache_root = harness_cache_root()?;
+    let bridge_root = cache_root.join("rust").join("crate-bridge");
+    harness_dir
+        .starts_with(&bridge_root)
+        .then(|| bridge_root.join("target-pool"))
+}
+
+/// Resolve the `CARGO_TARGET_DIR` for a crate-bridge harness build.
+///
+/// Crate-bridge harnesses under a shared `SHATTER_HARNESS_CACHE` previously
+/// all built into one fully-shared target dir, so dependency artifacts were
+/// reused across functions — but cargo holds a single process-wide lock per
+/// target dir, so concurrent scan workers (`--parallelism` > 1) serialised on
+/// that lock and routinely exceeded the per-function build timeout, reporting
+/// spurious `runtime_failed` (str-phyi). Instead, pick one of a small pool of
+/// target-dir slots: try each slot's advisory lock non-blockingly so an idle
+/// slot is picked instantly, falling back to blocking on slot 0 if every slot
+/// is currently building. This bounds worst-case contention to
+/// `crate_bridge_build_slot_count()` concurrent builds instead of one, while
+/// still reusing each slot's dependency build cache across builds that land on
+/// it. Harness dirs outside the pool (bin-only harnesses, or no shared cache
+/// configured) already have an isolated target dir and need no locking.
+fn acquire_crate_bridge_target(harness_dir: &Path) -> CrateBridgeBuildTarget {
+    let Some(pool_root) = crate_bridge_pool_root(harness_dir) else {
+        return CrateBridgeBuildTarget {
+            target_dir: harness_dir.join("target"),
+            _lock: None,
+        };
+    };
+    let _ = std::fs::create_dir_all(&pool_root);
+
+    for slot in 0..crate_bridge_build_slot_count() {
+        let lock_path = pool_root.join(format!("{slot}.lock"));
+        let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+        else {
+            continue;
+        };
+        if file.try_lock().is_ok() {
+            return CrateBridgeBuildTarget {
+                target_dir: pool_root.join(slot.to_string()),
+                _lock: Some(file),
+            };
         }
     }
-    harness_dir.join("target")
+
+    // Every slot is busy: block on slot 0 rather than fail the build or fall
+    // back to the contention-prone fully-shared dir.
+    let lock_path = pool_root.join("0.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok();
+    if let Some(file) = &file {
+        let _ = file.lock();
+    }
+    CrateBridgeBuildTarget {
+        target_dir: pool_root.join("0"),
+        _lock: file,
+    }
 }
 
 fn cargo_binary_name(package_name: &str) -> String {
@@ -5171,8 +5268,6 @@ fn build_and_spawn_crate_bridge_harness(
     let package_name = extract_crate_name(cargo_toml_content)
         .unwrap_or_else(|| "shatter-crate-bridge-exec".to_string());
     let binary_name = cargo_binary_name(&package_name);
-    let target_dir = crate_bridge_target_dir(harness_dir);
-    let cargo_binary_path = target_dir.join(profile_dir).join(&binary_name);
     let binary_path = local_harness_binary_path(harness_dir, profile_dir, &binary_name);
 
     let main_rs_path = src_dir.join("main.rs");
@@ -5189,7 +5284,14 @@ fn build_and_spawn_crate_bridge_harness(
         std::fs::write(&cargo_toml_path, cargo_toml_content)?;
         std::fs::write(&main_rs_path, driver_source)?;
 
-        cargo_check_before_build(harness_dir, &target_dir, release, timing.as_deref_mut())?;
+        // Acquire the CARGO_TARGET_DIR only now, so a pooled crate-bridge
+        // build slot lock (str-phyi) is held only across the cargo
+        // invocation below, never on the cache-hit fast path above.
+        let build_target = acquire_crate_bridge_target(harness_dir);
+        let target_dir = &build_target.target_dir;
+        let cargo_binary_path = target_dir.join(profile_dir).join(&binary_name);
+
+        cargo_check_before_build(harness_dir, target_dir, release, timing.as_deref_mut())?;
 
         let build_timeout_secs = std::env::var("SHATTER_BUILD_TIMEOUT")
             .ok()
@@ -5209,7 +5311,7 @@ fn build_and_spawn_crate_bridge_harness(
                 Command::new("cargo")
                     .args(&cargo_args)
                     .current_dir(harness_dir)
-                    .env("CARGO_TARGET_DIR", &target_dir)
+                    .env("CARGO_TARGET_DIR", target_dir)
                     .output()
                     .map_err(|e| {
                         ExecuteError::CompilationFailed(format!("failed to run cargo: {e}"))
@@ -5219,7 +5321,7 @@ fn build_and_spawn_crate_bridge_harness(
             Command::new("cargo")
                 .args(&cargo_args)
                 .current_dir(harness_dir)
-                .env("CARGO_TARGET_DIR", &target_dir)
+                .env("CARGO_TARGET_DIR", target_dir)
                 .output()
                 .map_err(|e| ExecuteError::CompilationFailed(format!("failed to run cargo: {e}")))?
         };
@@ -11009,9 +11111,16 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
     }
 
     #[test]
-    fn crate_bridge_target_dir_uses_shared_cache_env() {
+    fn crate_bridge_target_uses_pooled_slot_under_shared_cache_env() {
+        // str-phyi: a pooled crate-bridge target dir still lives under the
+        // shared cache root (so a slot's dependency build cache is reused
+        // across builds landing on it) but is never nested under the
+        // per-harness cache key, and the returned guard holds an advisory
+        // lock on the chosen slot.
         let _lock = crate::ENV_LOCK.lock().unwrap();
-        let cache_root = std::env::temp_dir().join("shatter-test-crate-bridge-cache");
+        let cache_root =
+            std::env::temp_dir().join(format!("shatter-test-crate-bridge-pool-{}", line!()));
+        let _ = std::fs::remove_dir_all(&cache_root);
         let cache_str = cache_root.to_string_lossy().into_owned();
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", &cache_str) };
 
@@ -11019,18 +11128,80 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
             .join("rust")
             .join("crate-bridge")
             .join("0123456789abcdef");
-        let target = crate_bridge_target_dir(&harness_dir);
+        let build_target = acquire_crate_bridge_target(&harness_dir);
         unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
 
-        assert_eq!(
-            target,
-            cache_root.join("rust").join("crate-bridge").join("target"),
-            "crate-bridge harnesses should share dependency build artifacts instead of creating one target tree per harness key"
+        let pool_root = cache_root
+            .join("rust")
+            .join("crate-bridge")
+            .join("target-pool");
+        assert!(
+            build_target.target_dir.starts_with(&pool_root),
+            "pooled crate-bridge target dir {:?} must live under the pool root {pool_root:?}",
+            build_target.target_dir
         );
         assert!(
-            !target.starts_with(&harness_dir),
-            "target dir {target:?} must not be nested under per-harness cache key {harness_dir:?}"
+            !build_target.target_dir.starts_with(&harness_dir),
+            "target dir {:?} must not be nested under per-harness cache key {harness_dir:?}",
+            build_target.target_dir
         );
+        assert!(
+            build_target._lock.is_some(),
+            "a pooled slot must be advisory-locked for the caller's build"
+        );
+        let _ = std::fs::remove_dir_all(&cache_root);
+    }
+
+    #[test]
+    fn crate_bridge_target_falls_back_to_per_harness_dir_without_shared_cache() {
+        // No SHATTER_HARNESS_CACHE configured: no pool to contend on, so each
+        // harness already gets its own uncontended target dir and no lock.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+
+        let harness_dir = std::env::temp_dir().join("shatter-test-crate-bridge-no-cache");
+        let build_target = acquire_crate_bridge_target(&harness_dir);
+
+        assert_eq!(build_target.target_dir, harness_dir.join("target"));
+        assert!(
+            build_target._lock.is_none(),
+            "an unpooled target dir needs no advisory lock"
+        );
+    }
+
+    #[test]
+    fn crate_bridge_target_pool_serves_concurrent_builds_distinct_slots() {
+        // str-phyi: previously all crate-bridge harnesses shared ONE
+        // CARGO_TARGET_DIR, so concurrent scan workers serialised on cargo's
+        // own target-dir lock and exceeded per-function build timeouts. Two
+        // still-held (unreleased) acquisitions must now land on distinct pool
+        // slots instead of blocking on each other.
+        let _lock = crate::ENV_LOCK.lock().unwrap();
+        let cache_root = std::env::temp_dir().join(format!(
+            "shatter-test-crate-bridge-pool-slots-{}",
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&cache_root);
+        let cache_str = cache_root.to_string_lossy().into_owned();
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", &cache_str) };
+        unsafe { std::env::set_var("SHATTER_CRATE_BRIDGE_BUILD_SLOTS", "2") };
+
+        let harness_dir_a = cache_root.join("rust").join("crate-bridge").join("aaaa");
+        let harness_dir_b = cache_root.join("rust").join("crate-bridge").join("bbbb");
+        let first = acquire_crate_bridge_target(&harness_dir_a);
+        let second = acquire_crate_bridge_target(&harness_dir_b);
+
+        unsafe { std::env::set_var("SHATTER_CRATE_BRIDGE_BUILD_SLOTS", "") };
+        unsafe { std::env::set_var("SHATTER_HARNESS_CACHE", "") };
+
+        assert_ne!(
+            first.target_dir, second.target_dir,
+            "two concurrent crate-bridge builds should be assigned distinct pool slots"
+        );
+
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_dir_all(&cache_root);
     }
 
     #[test]
