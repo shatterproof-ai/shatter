@@ -196,6 +196,53 @@ func TestHandleAnalyze_DisableEnvVarSkipsCache(t *testing.T) {
 	}
 }
 
+// SHATTER_DISABLE_ANALYSIS_CACHE=1 must skip ComputeDiscoveryHash entirely,
+// not just the read/write. The disabled-miss log line is emitted with an
+// empty hash (rather than a real computed 32-char discovery hash) as proof
+// the hash was never computed, and no "hash failed" debug log appears
+// either (str-xaptz).
+func TestHandleAnalyze_DisableEnvVarSkipsHashComputation(t *testing.T) {
+	f := newCacheHandlerFixture(t)
+	target := writePackage(t, t.TempDir())
+
+	t.Setenv(analysisCacheDisableEnvVar, "1")
+	if resp := f.runAnalyze(t, target); resp.Status != "analyze" {
+		t.Fatalf("disabled-cache analyze status = %q msg=%q", resp.Status, resp.Message)
+	}
+	logs := f.drainLogs()
+	if !strings.Contains(logs, `reason=disabled`) {
+		t.Fatalf("expected disabled-miss reason; logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, `hash= `) {
+		t.Errorf("disabled cache must skip ComputeDiscoveryHash entirely (expected empty hash in log); logs:\n%s", logs)
+	}
+	if strings.Contains(logs, "analysis cache hash failed") {
+		t.Errorf("disabled cache must not attempt hash computation at all; logs:\n%s", logs)
+	}
+}
+
+// Normal cache-enabled behavior (env var unset) must be unchanged: the
+// disabled-miss short-circuit must not fire, and a real discovery hash is
+// still computed and logged.
+func TestHandleAnalyze_CacheEnabledStillComputesHash(t *testing.T) {
+	f := newCacheHandlerFixture(t)
+	target := writePackage(t, t.TempDir())
+
+	if resp := f.runAnalyze(t, target); resp.Status != "analyze" {
+		t.Fatalf("analyze status = %q msg=%q", resp.Status, resp.Message)
+	}
+	logs := f.drainLogs()
+	if strings.Contains(logs, `reason=disabled`) {
+		t.Errorf("cache-enabled call must not report a disabled miss; logs:\n%s", logs)
+	}
+	if strings.Contains(logs, `hash= `) {
+		t.Errorf("cache-enabled call must compute a real (non-empty) discovery hash; logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "analysis cache miss") {
+		t.Errorf("first cache-enabled call should still log a cache miss; logs:\n%s", logs)
+	}
+}
+
 // Cache payload on disk must be valid JSON with the agreed shape.
 func TestHandleAnalyze_CachePayloadShape(t *testing.T) {
 	f := newCacheHandlerFixture(t)
