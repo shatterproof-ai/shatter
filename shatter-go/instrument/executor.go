@@ -207,12 +207,14 @@ func generateLoopMockFile(mocks []MockConfig) string {
 	b.WriteString("\treturn out\n")
 	b.WriteString("}\n\n")
 
+	shimNames := uniqueShimNames(mocks)
+
 	for i, mock := range mocks {
 		if mock.DefaultBehavior == BehaviorPassthrough {
 			continue
 		}
 
-		safeName := sanitizeMockName(mock.Symbol)
+		safeName := shimNames[i]
 		retValsJSON, _ := json.Marshal(mock.ReturnValues)
 
 		fmt.Fprintf(&b, "// Mock for %s\n", mock.Symbol)
@@ -296,6 +298,35 @@ func generateLoopMockFile(mocks []MockConfig) string {
 	}
 
 	return b.String()
+}
+
+// uniqueShimNames returns the ShatterMock_ / ShatterMockErr_ name suffix for
+// each mock, indexed in parallel with mocks (empty for passthrough mocks, which
+// get no shim and therefore claim no name).
+//
+// sanitizeMockName is not injective: distinct spellings such as "a.util.Do" and
+// "a/util.Do" both flatten to "a_util_Do". Since str-djcv2 keyed DedupeMocks by
+// package identity, those two spellings name different packages and both
+// survive dedupe, so the emitter — not dedupe — owns the invariant that no
+// function is declared twice in the generated harness file (str-heegk). The
+// first mock to claim a name keeps the plain sanitized form; later collisions
+// are suffixed with an index.
+func uniqueShimNames(mocks []MockConfig) []string {
+	names := make([]string, len(mocks))
+	used := make(map[string]bool, len(mocks))
+	for i, mock := range mocks {
+		if mock.DefaultBehavior == BehaviorPassthrough {
+			continue
+		}
+		base := sanitizeMockName(mock.Symbol)
+		name := base
+		for n := i; used[name]; n++ {
+			name = fmt.Sprintf("%s_%d", base, n)
+		}
+		used[name] = true
+		names[i] = name
+	}
+	return names
 }
 
 // sanitizeMockName converts a symbol name (e.g. "fs.readFile") to a valid Go identifier.
