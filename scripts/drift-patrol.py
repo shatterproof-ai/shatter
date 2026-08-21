@@ -122,6 +122,13 @@ def run_command(
         return 127, f"command not found: {exc}"
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout}s: {' '.join(cmd)}"
+    except OSError as exc:
+        # Anything else the OS refuses -- a non-executable checker script
+        # (PermissionError), a bad interpreter line, fork exhaustion. Degrade
+        # this one check to FAIL rather than crashing the whole patrol. Must
+        # follow the FileNotFoundError clause above, which is an OSError
+        # subclass and carries a more specific exit code.
+        return 1, f"could not run {' '.join(cmd)}: {exc}"
     return proc.returncode, proc.stdout.decode(errors="replace")
 
 
