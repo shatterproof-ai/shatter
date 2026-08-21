@@ -199,6 +199,79 @@ func TestPlanGCCacheSizeCap(t *testing.T) {
 	}
 }
 
+func TestPlanGCBoundsAnalysisCacheDir(t *testing.T) {
+	workspace := openWorkspace(t)
+	analysisDir := workspace.AnalysisDir()
+	if err := os.MkdirAll(analysisDir, 0o755); err != nil {
+		t.Fatalf("mkdir analysis dir: %v", err)
+	}
+	for index := 0; index < 5; index++ {
+		// Filenames mimic real analysis-cache entries: a discovery hash plus
+		// the .json extension, orphaned by a frontend rebuild that changes
+		// the self-fingerprint mixed into ComputeDiscoveryHash.
+		filename := filepath.Join(analysisDir, fmt.Sprintf("hash%d.json", index))
+		if err := os.WriteFile(filename, make([]byte, 1024*1024), 0o644); err != nil {
+			t.Fatalf("write analysis cache file: %v", err)
+		}
+		// Back-date so oldest files get evicted first.
+		backdated := time.Date(2026, 1, 1+index, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(filename, backdated, backdated); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+	}
+
+	report, err := workspace.PlanGC(GCOptions{
+		KeepLastN:     -1,
+		MaxAge:        -1,
+		MaxRunsBytes:  -1,
+		MaxCacheBytes: 2 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("PlanGC: %v", err)
+	}
+	analysisCandidates := 0
+	for _, candidate := range report.Candidates {
+		if candidate.Reason == GCReasonCacheSize && filepath.Dir(candidate.Path) == analysisDir {
+			analysisCandidates++
+		}
+	}
+	if analysisCandidates != 3 {
+		t.Fatalf("got %d analysis cache candidates, want 3", analysisCandidates)
+	}
+
+	sizes, ok := report.CacheSizes["cache/analysis"]
+	if !ok {
+		t.Fatalf("report.CacheSizes missing cache/analysis entry: %+v", report.CacheSizes)
+	}
+	if sizes.Before != 5*1024*1024 {
+		t.Fatalf("CacheSizes[cache/analysis].Before = %d, want %d", sizes.Before, 5*1024*1024)
+	}
+
+	if err := os.MkdirAll(analysisDir, 0o755); err != nil {
+		t.Fatalf("mkdir analysis dir: %v", err)
+	}
+	runReport, err := workspace.RunGC(GCOptions{
+		KeepLastN:     -1,
+		MaxAge:        -1,
+		MaxRunsBytes:  -1,
+		MaxCacheBytes: 2 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("RunGC: %v", err)
+	}
+	remaining, err := os.ReadDir(analysisDir)
+	if err != nil {
+		t.Fatalf("read analysis dir: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("got %d remaining analysis cache files, want 2", len(remaining))
+	}
+	afterSizes := runReport.CacheSizes["cache/analysis"]
+	if afterSizes.After != 2*1024*1024 {
+		t.Fatalf("CacheSizes[cache/analysis].After = %d, want %d", afterSizes.After, 2*1024*1024)
+	}
+}
+
 func TestPlanGCMissingMetadataFallsBackToMtime(t *testing.T) {
 	workspace := openWorkspace(t)
 
