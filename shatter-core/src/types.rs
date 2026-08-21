@@ -351,8 +351,19 @@ fn is_map_encoding(fields: &[(String, TypeInfo)]) -> bool {
     )
 }
 
+/// Allocation bound on a recognized positional-object arity, mirroring
+/// `orchestrator::MAX_OVERLAY_ARRAY_INDEX` (kept as an independent constant
+/// because `orchestrator.rs` cannot depend on this being `pub`, and the two
+/// values MUST stay equal — see that constant's doc comment for the
+/// rationale). A `TypeInfo::Object` whose field names are exactly `0..n` for
+/// `n` above this bound is not recognized as positional here, matching the
+/// cap `resolve_field_path`'s `array_index_segment` already applies when
+/// parsing an overlay path segment.
+const MAX_POSITIONAL_ARITY_INDEX: usize = 63;
+
 /// True when `segment` is a canonical decimal index spelling (no leading
-/// zero, e.g. `"0"`, `"12"`, but not `"01"`, `"-1"`, or `"1.0"`).
+/// zero, e.g. `"0"`, `"12"`, but not `"01"`, `"-1"`, or `"1.0"`) at or below
+/// [`MAX_POSITIONAL_ARITY_INDEX`].
 fn index_spelling(segment: &str) -> Option<usize> {
     if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -360,7 +371,10 @@ fn index_spelling(segment: &str) -> Option<usize> {
     if segment.len() > 1 && segment.starts_with('0') {
         return None;
     }
-    segment.parse::<usize>().ok()
+    segment
+        .parse::<usize>()
+        .ok()
+        .filter(|index| *index <= MAX_POSITIONAL_ARITY_INDEX)
 }
 
 /// Arity of a POSITIONAL object — one whose declared field names are exactly
@@ -961,5 +975,47 @@ mod tests {
         assert!(int().find_opaque_node(&mut path).is_none());
         assert!(TypeInfo::Str.find_opaque_node(&mut path).is_none());
         assert_eq!(path.len(), 1, "path should be unmodified on no-match");
+    }
+
+    /// `positional_object_arity` recognizes exactly the tuple shape: field
+    /// names covering `0..n`. Gaps, duplicates, extra non-index keys, and an
+    /// empty field list are all non-positional.
+    #[test]
+    fn positional_object_arity_recognizes_only_full_index_sets() {
+        let fields = |names: &[&str]| -> Vec<(String, TypeInfo)> {
+            names.iter().map(|n| ((*n).to_string(), int())).collect()
+        };
+        assert_eq!(positional_object_arity(&fields(&["0", "1", "2"])), 3);
+        // Declaration order does not matter, only the set of indices.
+        assert_eq!(positional_object_arity(&fields(&["1", "0"])), 2);
+        assert_eq!(positional_object_arity(&fields(&[])), 0);
+        // Gap: "0","2" over two fields leaves index 1 unclaimed.
+        assert_eq!(positional_object_arity(&fields(&["0", "2"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["0", "0"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["0", "label"])), 0);
+        assert_eq!(positional_object_arity(&fields(&["01"])), 0);
+    }
+
+    /// A positional object whose field names exceed
+    /// [`MAX_POSITIONAL_ARITY_INDEX`] is not recognized as a tuple, matching
+    /// the cap `orchestrator::array_index_segment` applies when parsing an
+    /// overlay path segment (`MAX_OVERLAY_ARRAY_INDEX`, which MUST stay equal
+    /// to this constant). Without this cap a malformed/synthetic type with a
+    /// huge run of index-spelled field names would be treated as positional
+    /// and could force unbounded array allocation downstream.
+    #[test]
+    fn positional_object_arity_rejects_indices_above_the_cap() {
+        let within_cap: Vec<(String, TypeInfo)> = (0..=MAX_POSITIONAL_ARITY_INDEX)
+            .map(|i| (i.to_string(), int()))
+            .collect();
+        assert_eq!(
+            positional_object_arity(&within_cap),
+            MAX_POSITIONAL_ARITY_INDEX + 1
+        );
+
+        let above_cap: Vec<(String, TypeInfo)> = (0..=MAX_POSITIONAL_ARITY_INDEX + 1)
+            .map(|i| (i.to_string(), int()))
+            .collect();
+        assert_eq!(positional_object_arity(&above_cap), 0);
     }
 }

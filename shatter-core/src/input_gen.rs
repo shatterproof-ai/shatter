@@ -4438,6 +4438,36 @@ mod tests {
         }
     }
 
+    /// Build an arbitrary-arity positional-object fixture from a slice of
+    /// leaf-kind selectors (`0` = Int, `1` = Str, `2` = Bool, `3` = Float),
+    /// one per tuple position. Returns the index-spelled `fields` list
+    /// (`positional_object_arity(&fields) == leaf_kinds.len()`) alongside a
+    /// JSON array seed whose values match those declared types — the shape
+    /// `mutate_positional_object`/`crossover_positional_object`/
+    /// `shrink_positional_object` operate on.
+    fn positional_fixture(leaf_kinds: &[u8]) -> (Vec<(String, TypeInfo)>, Value) {
+        let leaf_type = |kind: u8| match kind % 4 {
+            0 => TypeInfo::Int { int_width: None, int_signed: None },
+            1 => TypeInfo::Str,
+            2 => TypeInfo::Bool,
+            _ => TypeInfo::Float,
+        };
+        let leaf_value = |typ: &TypeInfo| match typ {
+            TypeInfo::Int { .. } => json!(7),
+            TypeInfo::Str => json!("x"),
+            TypeInfo::Bool => json!(true),
+            TypeInfo::Float => json!(1.5),
+            other => unreachable!("positional_fixture: unexpected leaf type {other:?}"),
+        };
+        let fields: Vec<(String, TypeInfo)> = leaf_kinds
+            .iter()
+            .enumerate()
+            .map(|(i, &kind)| (i.to_string(), leaf_type(kind)))
+            .collect();
+        let seed = Value::Array(fields.iter().map(|(_, typ)| leaf_value(typ)).collect());
+        (fields, seed)
+    }
+
     #[test]
     fn generates_positional_object_as_array() {
         let mut rng = seeded_rng();
@@ -8262,6 +8292,90 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                     value_matches_type(&result, &typ),
                     "mutating Nullable produced invalid value: {result:?}"
                 );
+            }
+
+            // -----------------------------------------------------------------
+            // Positional object (tuple) mutation contracts (str-f4sow)
+            //
+            // `mutate_positional_object`/`crossover_positional_object`/
+            // `shrink_positional_object` are the tuple-specific counterparts of
+            // `mutate_object`/`crossover_object`/`shrink_object`: fixed arity, no
+            // add/remove-field op, JSON-array shaped. shatter-core/CLAUDE.md
+            // requires PBT coverage of mutation contracts (arity/type
+            // preservation), not just single-fixture unit tests, so these
+            // generate arbitrary arities and leaf-type combinations rather than
+            // pinning one `(i64, String)` seed.
+            // -----------------------------------------------------------------
+
+            /// `mutate_positional_object` never changes arity or JSON shape,
+            /// regardless of how many positions the tuple has or what leaf
+            /// types occupy them.
+            #[test]
+            fn mutate_positional_object_preserves_arity_and_shape(
+                seed in 0u64..2000,
+                leaf_kinds in prop::collection::vec(0u8..4, 1..=6),
+            ) {
+                let (fields, seed_value) = positional_fixture(&leaf_kinds);
+                let mut rng = StdRng::seed_from_u64(seed);
+                let mutated = mutate_positional_object(&seed_value, &fields, &[], &mut rng);
+                let arr = mutated
+                    .as_array()
+                    .unwrap_or_else(|| panic!("mutate_positional_object produced non-array: {mutated:?}"));
+                prop_assert_eq!(arr.len(), fields.len());
+                for (value, (_, typ)) in arr.iter().zip(fields.iter()) {
+                    prop_assert!(
+                        value_matches_type(value, typ),
+                        "position value {value:?} does not match declared type {typ:?}"
+                    );
+                }
+            }
+
+            /// `crossover_positional_object` preserves arity and per-position
+            /// type shape in both children, for arbitrary arity/type combos.
+            #[test]
+            fn crossover_positional_object_preserves_arity_and_shape(
+                seed in 0u64..2000,
+                leaf_kinds in prop::collection::vec(0u8..4, 1..=6),
+            ) {
+                let (fields, a) = positional_fixture(&leaf_kinds);
+                let (_, b) = positional_fixture(&leaf_kinds);
+                let mut rng = StdRng::seed_from_u64(seed);
+                let (c1, c2) = crossover_positional_object(&a, &b, &fields, &mut rng);
+                for child in [&c1, &c2] {
+                    let arr = child
+                        .as_array()
+                        .unwrap_or_else(|| panic!("crossover_positional_object produced non-array: {child:?}"));
+                    prop_assert_eq!(arr.len(), fields.len());
+                    for (value, (_, typ)) in arr.iter().zip(fields.iter()) {
+                        prop_assert!(
+                            value_matches_type(value, typ),
+                            "position value {value:?} does not match declared type {typ:?}"
+                        );
+                    }
+                }
+            }
+
+            /// `shrink_positional_object` never proposes a candidate whose
+            /// arity or array shape differs from the seed, for arbitrary
+            /// arity/type combos.
+            #[test]
+            fn shrink_positional_object_preserves_arity_and_shape(
+                leaf_kinds in prop::collection::vec(0u8..4, 1..=6),
+            ) {
+                let (fields, seed_value) = positional_fixture(&leaf_kinds);
+                let candidates = shrink_positional_object(&seed_value, &fields);
+                for candidate in &candidates {
+                    let arr = candidate
+                        .as_array()
+                        .unwrap_or_else(|| panic!("shrink_positional_object produced non-array: {candidate:?}"));
+                    prop_assert_eq!(arr.len(), fields.len());
+                    for (value, (_, typ)) in arr.iter().zip(fields.iter()) {
+                        prop_assert!(
+                            value_matches_type(value, typ),
+                            "position value {value:?} does not match declared type {typ:?}"
+                        );
+                    }
+                }
             }
         }
     }
