@@ -64,17 +64,24 @@ tasks:
 
   test:
     desc: Run all tests (all languages)
-    # core:test races frontend builds here too (str-ahqdb, same hazard as
-    # str-6y5w8 fixed for test-standard below) -- not fixed in this task yet.
-    deps: [core:test, cli:test, ts:test, go:test, rust-fe:test, rust-rt:test]
+    # Same frontends-built / core-cli-tests split as test-standard below:
+    # core:test/cli:test only start once ts:build/go:build/rust-fe:build
+    # finish, while frontends-built and the other :test tasks still run in
+    # parallel with each other.
+    deps: [frontends-built, ts:test, go:test, rust-fe:test, rust-rt:test]
+    cmds:
+      - task: core-cli-tests
 
   test-quick:
     desc: "Quick: cargo workspace tests only"
-    # core:test races frontend builds here too (str-ahqdb, same hazard as
-    # str-6y5w8 fixed for test-standard below) -- not fixed in this task yet,
-    # despite this being the tier CLAUDE.md documents for use during
-    # development (i.e. the one most likely to hit it in a fresh checkout).
-    deps: [core:test, cli:test]
+    # Same frontends-built / core-cli-tests split as test-standard below:
+    # core:test/cli:test only start once ts:build/go:build/rust-fe:build
+    # finish. This is the tier CLAUDE.md documents for use during
+    # development, i.e. the one most likely to hit the race in a fresh
+    # checkout.
+    deps: [frontends-built]
+    cmds:
+      - task: core-cli-tests
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
