@@ -65,16 +65,19 @@ ran `task --force check` simultaneously through
 | 3 | 861 | 201 | shared `/tmp/shatter-examples-main/.git/index.lock` race |
 | 4 | 1,593 | 0 | passed |
 
-Aggregate wall time was **1,611s (26m51s)** and peak 1-minute loadavg was
-**58.86**, versus the pre-WS-C single-check peak of 105. Interactive monitoring
-commands remained responsive (roughly 0.2–1.1s). Resource governance bounded
-load, but the 2/4 pass rate exposed two remaining shared-state races. The Go
+Only **2/4 checks passed**. Aggregate wall time was **1,611s (26m51s)** and
+peak 1-minute loadavg was **58.86**, versus the pre-WS-C single-check peak of
+105. Interactive monitoring commands remained responsive (roughly 0.2–1.1s).
+Resource governance bounded load, but the failures exposed two remaining
+shared-state races. The Go
 failure came from a temp-module protocol test: because its target is outside a
 repository and supplies no workspace override, workspace resolution falls back
 to the shared user-data path
 `~/.config/shatter/go-workspace/binaries/binary_registry.json`. The examples
 checkout race was already tracked by WS-CS (`str-35vtk.4`), and the
-binary-registry race was added to that workstream's tracker evidence.
+binary-registry race was added to that workstream's tracker evidence. The raw
+run summary and failure excerpts are preserved in the `str-35vtk.1` notes; the
+follow-up evidence is in the `str-35vtk.4` notes.
 
 ## Test inventories (no-silent-loss reference)
 
