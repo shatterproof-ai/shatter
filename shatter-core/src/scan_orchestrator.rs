@@ -5544,16 +5544,25 @@ async fn join_with_dynamic_watchdog<T: Send + 'static>(
             deadline = deadline.min(scan_deadline);
         }
         let now = Instant::now();
-        if now >= deadline {
-            return TaskJoinOutcome::TimedOut {
-                applied_watchdog: watchdog,
-            };
-        }
-        let wait = (deadline - now).min(recheck_interval);
+        // Always poll `handle` at least once before ever concluding a
+        // timeout, even when `now` is already past `deadline` -- a task that
+        // finished long ago must not be discarded as a false timeout just
+        // because a FIFO-delayed joiner didn't get here until after its
+        // deadline. `select!` with `biased` polls `handle` before the sleep
+        // arm, so a completed handle resolves immediately regardless of
+        // `wait`; only an incomplete-and-overdue handle falls through to the
+        // deadline check below.
+        let wait = deadline.saturating_duration_since(now).min(recheck_interval);
         tokio::select! {
             biased;
             res = &mut *handle => return TaskJoinOutcome::Completed(res),
-            _ = tokio::time::sleep(wait) => {}
+            _ = tokio::time::sleep(wait) => {
+                if Instant::now() >= deadline {
+                    return TaskJoinOutcome::TimedOut {
+                        applied_watchdog: watchdog,
+                    };
+                }
+            }
         }
     }
 }
@@ -6766,8 +6775,12 @@ mod tests {
     /// base watchdog; `join_with_dynamic_watchdog` must not.
     #[tokio::test]
     async fn join_with_dynamic_watchdog_picks_up_late_claim() {
-        let base_watchdog = Duration::from_millis(150);
-        let extended_watchdog = Duration::from_millis(400);
+        // Wide margins (vs. the 100ms/150ms/300ms/400ms this test originally
+        // used) so a claim landing at 100ms is comfortably clear of the
+        // 250ms base watchdog even under heavy CI scheduling pressure,
+        // rather than a ~50ms window that could flake under load.
+        let base_watchdog = Duration::from_millis(250);
+        let extended_watchdog = Duration::from_millis(600);
         let spawn_instant = Instant::now();
 
         let is_claimant = Arc::new(AtomicBool::new(false));
@@ -6778,7 +6791,7 @@ mod tests {
         });
 
         let mut handle = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
             "done"
         });
 
@@ -6884,6 +6897,52 @@ mod tests {
                 "deadline must be anchored to spawn_instant, not to whenever the joiner \
                  starts waiting — a call-time-relative deadline would wrongly grant a \
                  fresh window here and let the task complete: {other:?}"
+            ),
+        }
+    }
+
+    /// str-807vi regression: an already-completed task must not be reported
+    /// as timed out just because the FIFO-delayed joiner didn't call
+    /// `join_with_dynamic_watchdog` until after its deadline had passed. The
+    /// very first iteration must poll `handle` at least once before ever
+    /// concluding a timeout -- an early `now >= deadline` short-circuit that
+    /// returns without polling reintroduces exactly the joiner-delay
+    /// pathology this function exists to fix, just from the opposite
+    /// direction (a finished task discarded, instead of a retrying task
+    /// aborted).
+    #[tokio::test]
+    async fn join_with_dynamic_watchdog_does_not_discard_an_already_finished_task() {
+        let base_watchdog = Duration::from_millis(50);
+        let extended_watchdog = Duration::from_millis(400);
+        let spawn_instant = Instant::now();
+
+        let mut handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            "done"
+        });
+
+        // Simulate a slow prior handle in a FIFO join queue: the joiner
+        // doesn't call this function until well after both the task
+        // finished (5ms) and the base watchdog elapsed (50ms).
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let outcome = join_with_dynamic_watchdog(
+            &mut handle,
+            spawn_instant,
+            base_watchdog,
+            extended_watchdog,
+            None,
+            Duration::from_millis(20),
+            || false,
+        )
+        .await;
+
+        match outcome {
+            TaskJoinOutcome::Completed(Ok(value)) => assert_eq!(value, "done"),
+            other => panic!(
+                "an already-finished task must be reported as Completed even when the \
+                 joiner arrives after its watchdog deadline -- the handle must be polled \
+                 before concluding a timeout: {other:?}"
             ),
         }
     }
