@@ -274,8 +274,7 @@ fn default_for_type(typ: &TypeInfo) -> Value {
 /// execute-time call-site substitution (str-c8djq); the CLI parses and
 /// preserves it so one config file satisfies both consumers, but does not
 /// act on it — substitution is frontend-owned.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(from = "MockOverrideRepr")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct MockOverride {
     /// Pre-configured return values, replacing auto-generated defaults.
     #[serde(default)]
@@ -300,40 +299,80 @@ impl MockOverride {
     }
 }
 
-/// Wire representation for [`MockOverride`]: either the bare expression
-/// string or the full struct.
+/// Struct-form wire representation for [`MockOverride`], derived so serde
+/// reports the original field-level error (with `serde_yaml` line/column)
+/// instead of the opaque message a `#[serde(untagged)]` enum would collapse
+/// every variant's error into (str-qpttz).
 #[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum MockOverrideRepr {
-    Expression(String),
-    Full {
-        #[serde(default)]
-        return_values: Option<Vec<Value>>,
-        #[serde(default)]
-        behavior: Option<MockBehavior>,
-        #[serde(default)]
-        expression: Option<String>,
-    },
+struct MockOverrideFull {
+    #[serde(default)]
+    return_values: Option<Vec<Value>>,
+    #[serde(default)]
+    behavior: Option<MockBehavior>,
+    #[serde(default)]
+    expression: Option<String>,
 }
 
-impl From<MockOverrideRepr> for MockOverride {
-    fn from(repr: MockOverrideRepr) -> Self {
-        match repr {
-            MockOverrideRepr::Expression(expression) => MockOverride {
-                return_values: None,
-                behavior: None,
-                expression: Some(expression),
-            },
-            MockOverrideRepr::Full {
-                return_values,
-                behavior,
-                expression,
-            } => MockOverride {
-                return_values,
-                behavior,
-                expression,
-            },
+/// Manual `Deserialize` for [`MockOverride`] instead of a derived
+/// `#[serde(untagged)]` enum (str-7lab0 → str-qpttz): a scalar YAML/JSON node
+/// maps directly to the expression shorthand, while a mapping node delegates
+/// to the derived [`MockOverrideFull`] via `MapAccessDeserializer` so a
+/// malformed field (bad enum variant, wrong type, ...) surfaces serde's
+/// normal field-level error instead of "data did not match any variant of
+/// untagged enum" -- which named neither the offending key nor a position and
+/// aborted the whole config parse with no way to bisect the file.
+impl<'de> serde::Deserialize<'de> for MockOverride {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct MockOverrideVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for MockOverrideVisitor {
+            type Value = MockOverride;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a mock expression string or a mock override mapping")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(MockOverride {
+                    return_values: None,
+                    behavior: None,
+                    expression: Some(v.to_string()),
+                })
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(MockOverride {
+                    return_values: None,
+                    behavior: None,
+                    expression: Some(v),
+                })
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let full = <MockOverrideFull as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(MockOverride {
+                    return_values: full.return_values,
+                    behavior: full.behavior,
+                    expression: full.expression,
+                })
+            }
         }
+
+        deserializer.deserialize_any(MockOverrideVisitor)
     }
 }
 
@@ -629,6 +668,78 @@ mod tests {
             param_types: vec![],
             call_sites: vec![1],
         }
+    }
+
+    /// str-qpttz: a malformed struct-form mock entry must surface the original
+    /// field-level serde error, not the opaque untagged-enum message.
+    #[test]
+    fn malformed_struct_form_reports_field_level_error() {
+        let err = serde_yaml::from_str::<MockOverride>("behavior: repeat_lst\n")
+            .expect_err("repeat_lst is not a MockBehavior variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("repeat_lst") && msg.contains("unknown variant"),
+            "expected the field-level variant error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("did not match any variant of untagged enum"),
+            "untagged-enum error must not leak to the operator: {msg}"
+        );
+    }
+
+    /// A struct-form entry with a badly typed field reports that field, not the
+    /// whole entry.
+    #[test]
+    fn malformed_struct_form_reports_bad_field_type() {
+        let err = serde_yaml::from_str::<MockOverride>("return_values: \"x\"\n")
+            .expect_err("return_values must be a sequence");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("did not match any variant of untagged enum"),
+            "untagged-enum error must not leak to the operator: {msg}"
+        );
+        assert!(
+            msg.contains("sequence") || msg.contains("return_values"),
+            "expected a field-level type error, got: {msg}"
+        );
+    }
+
+    /// Both wire forms still deserialize to the documented shape.
+    #[test]
+    fn wire_forms_still_parse() {
+        let shorthand: MockOverride =
+            serde_yaml::from_str("\"pkg.Fake()\"").expect("bare string is expression shorthand");
+        assert_eq!(
+            shorthand,
+            MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: Some("pkg.Fake()".to_string()),
+            }
+        );
+
+        let full: MockOverride = serde_yaml::from_str(
+            "return_values: [1]\nbehavior: repeat_last\nexpression: \"pkg.Fake()\"\n",
+        )
+        .expect("struct form parses");
+        assert_eq!(
+            full,
+            MockOverride {
+                return_values: Some(vec![json!(1)]),
+                behavior: Some(MockBehavior::RepeatLast),
+                expression: Some("pkg.Fake()".to_string()),
+            }
+        );
+
+        let empty: MockOverride = serde_yaml::from_str("{}").expect("empty struct form parses");
+        assert_eq!(
+            empty,
+            MockOverride {
+                return_values: None,
+                behavior: None,
+                expression: None,
+            }
+        );
     }
 
     #[test]
