@@ -6764,7 +6764,7 @@ mod tests {
     /// join loop that computes its deadline once, synchronously, before
     /// starting to wait would miss the claim and time this task out at the
     /// base watchdog; `join_with_dynamic_watchdog` must not.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn join_with_dynamic_watchdog_picks_up_late_claim() {
         let base_watchdog = Duration::from_millis(150);
         let extended_watchdog = Duration::from_millis(400);
@@ -6805,7 +6805,7 @@ mod tests {
 
     /// Control for the above: a task that never claims the retry must still
     /// be cut off at the base watchdog, not the extended one.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn join_with_dynamic_watchdog_times_out_non_claimant_at_base_watchdog() {
         let base_watchdog = Duration::from_millis(150);
         let extended_watchdog = Duration::from_millis(400);
@@ -6835,24 +6835,30 @@ mod tests {
         }
     }
 
-    /// str-807vi: the deadline is anchored to the task's own `spawn_instant`,
-    /// not to whenever the joiner happens to start waiting on it — so a
-    /// caller that only reaches this handle after a delay (e.g. because
-    /// earlier handles in a FIFO queue were slow) still applies a correctly
-    /// elapsed-time-aware deadline instead of granting a fresh full budget.
-    #[tokio::test(start_paused = true)]
+    /// str-807vi regression: reproduces the second race variant from the
+    /// issue — "the joiner reaches [the handle] AFTER (by luck, because
+    /// earlier handles were slow): the extension does apply, but doesn't
+    /// account for time already elapsed while the joiner was busy
+    /// elsewhere". Here the joiner doesn't even start waiting on this
+    /// handle until *after* its base watchdog window (measured from the
+    /// task's own `spawn_instant`) has already elapsed. A deadline computed
+    /// relative to when the joiner starts calling (instead of relative to
+    /// spawn) would wrongly grant this task a fresh full watchdog window and
+    /// let it complete; the correct, elapsed-aware deadline must recognize
+    /// the task as already overdue.
+    #[tokio::test]
     async fn join_with_dynamic_watchdog_deadline_is_relative_to_spawn_not_call_time() {
         let base_watchdog = Duration::from_millis(150);
         let extended_watchdog = Duration::from_millis(400);
-        // Simulate a spawn that happened 100ms before the joiner ever calls
-        // this function (a "slow prior handle" delayed the joiner getting
-        // here).
         let spawn_instant = Instant::now();
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Already claimed before the joiner starts waiting.
+        // Simulate a slow prior handle in a FIFO join queue: the joiner
+        // doesn't even call this function until after the base watchdog
+        // window (relative to spawn_instant) has already elapsed.
+        tokio::time::sleep(Duration::from_millis(180)).await;
+
         let mut handle = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
             "done"
         });
 
@@ -6863,15 +6869,22 @@ mod tests {
             extended_watchdog,
             None,
             Duration::from_millis(20),
-            || true,
+            || false,
         )
         .await;
 
-        // 100ms already elapsed before the call + 200ms task sleep = 300ms
-        // total since spawn, which is within the 400ms extended watchdog.
+        handle.abort();
+        let _ = handle.await;
+
         match outcome {
-            TaskJoinOutcome::Completed(Ok(value)) => assert_eq!(value, "done"),
-            other => panic!("expected the elapsed-aware deadline to cover the task: {other:?}"),
+            TaskJoinOutcome::TimedOut { applied_watchdog } => {
+                assert_eq!(applied_watchdog, base_watchdog);
+            }
+            other => panic!(
+                "deadline must be anchored to spawn_instant, not to whenever the joiner \
+                 starts waiting — a call-time-relative deadline would wrongly grant a \
+                 fresh window here and let the task complete: {other:?}"
+            ),
         }
     }
 
