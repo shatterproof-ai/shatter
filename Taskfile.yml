@@ -280,6 +280,17 @@ tasks:
             README.md AGENTS.md CLAUDE.md PLAN.md SPEC.md PROTOCOL.md PARITY.md docs
         else echo "[skip] lychee not installed"; fi
 
+  cache-helper-tests:
+    desc: Test compilation-cache worktree and storage helpers
+    sources:
+      - scripts/seed-worktree.sh
+      - scripts/test_seed_worktree.sh
+      - scripts/target-dir-report.sh
+      - scripts/test_target_dir_report.sh
+    cmds:
+      - bash scripts/test_seed_worktree.sh
+      - bash scripts/test_target_dir_report.sh
+
   meta:
     desc: Run repository meta checks (workflow lint, Semgrep)
     sources:
@@ -348,6 +359,7 @@ tasks:
       - schemas
       - docs
       - docs-smoke
+      - cache-helper-tests
       - meta
 
   check-unit:

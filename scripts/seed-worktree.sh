@@ -52,17 +52,25 @@ fi
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 START_SECONDS="$SECONDS"
-if [[ -d "$TARGET_TS/node_modules" ]]; then
-    echo "node_modules already exists in $TARGET_ROOT; leaving it unchanged"
-elif [[ -d "$CANONICAL_MODULES" && -f "$CANONICAL_LOCK" ]] &&
-    cmp -s "$TARGET_LOCK" "$CANONICAL_LOCK"; then
-    cp -al "$CANONICAL_MODULES" "$TARGET_TS/"
-    echo "Seeded shatter-ts/node_modules from $CANONICAL_ROOT with hardlinks in $((SECONDS - START_SECONDS))s"
-else
-    echo "Canonical dependencies are unavailable or lockfiles differ; running npm ci"
+run_npm_ci() {
+    local reason="$1"
+    echo "$reason; running npm ci"
     (
         cd "$TARGET_TS"
         npm ci --no-audit --no-fund
     )
     echo "Installed shatter-ts/node_modules with npm ci in $((SECONDS - START_SECONDS))s"
+}
+
+if [[ -d "$TARGET_TS/node_modules" ]]; then
+    echo "node_modules already exists in $TARGET_ROOT; leaving it unchanged"
+elif [[ -d "$CANONICAL_MODULES" && -f "$CANONICAL_LOCK" ]] &&
+    cmp -s "$TARGET_LOCK" "$CANONICAL_LOCK"; then
+    if cp -al "$CANONICAL_MODULES" "$TARGET_TS/" 2>/dev/null; then
+        echo "Seeded shatter-ts/node_modules from $CANONICAL_ROOT with hardlinks in $((SECONDS - START_SECONDS))s"
+    else
+        run_npm_ci "Hardlink cloning is unavailable"
+    fi
+else
+    run_npm_ci "Canonical dependencies are unavailable or lockfiles differ"
 fi
