@@ -475,7 +475,10 @@ scripts/seed-worktree.sh /absolute/path/to/new-worktree
 
 Matching lockfiles use a hardlink clone of the canonical checkout's
 `shatter-ts/node_modules`; a mismatch or missing canonical install runs
-`npm ci` in the new worktree instead.
+`npm ci` in the new worktree instead. Because matching installs initially
+share file inodes, run `npm ci` first before using tools that rewrite
+dependency files in place (for example patch-package or native rebuilds).
+Normal npm installs replace package files and are safe.
 
 **Before merging a worktree branch:**
 - Preview conflicts first: `git merge --no-commit --no-ff <branch>` then `git merge --abort`

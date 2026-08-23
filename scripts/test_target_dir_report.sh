@@ -29,4 +29,31 @@ for EXPECTED in \
     fi
 done
 
+REPORTED_TOTAL="$(printf '%s\n' "$OUTPUT" | awk -F '\t' '$3 == "TOTAL" { print $1 }')"
+CALCULATED_TOTAL="$(printf '%s\n' "$OUTPUT" | awk -F '\t' '$3 != "TARGET_DIR" && $3 != "TOTAL" { sum += $1 } END { print sum }')"
+if [[ "$REPORTED_TOTAL" != "$CALCULATED_TOTAL" ]]; then
+    echo "[FAIL] reported total must equal the sum of target-directory sizes" >&2
+    printf '%s\n' "$OUTPUT" >&2
+    exit 1
+fi
+
+mkdir -p "$SCRATCH/bin"
+cat > "$SCRATCH/bin/du" <<EOF
+#!/usr/bin/env bash
+if [[ "\${*: -1}" == "$WORKTREE_ONE/target" ]]; then
+    exit 1
+fi
+exec /usr/bin/du "\$@"
+EOF
+chmod +x "$SCRATCH/bin/du"
+
+if ! OUTPUT_WITH_RACE="$(PATH="$SCRATCH/bin:$PATH" "$SCRIPT" --worktree "$WORKTREE_ONE" --worktree "$WORKTREE_TWO" 2>&1)"; then
+    echo "[FAIL] one unreadable or disappearing target must not abort the report" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$OUTPUT_WITH_RACE" | grep -Fq "$WORKTREE_TWO/shatter-rust-runtime/target"; then
+    echo "[FAIL] report must continue after one target-directory error" >&2
+    exit 1
+fi
+
 echo "[ok] target-dir-report lists target directories across worktrees"

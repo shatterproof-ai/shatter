@@ -44,4 +44,13 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
     exit 1
 fi
 
+exec 9>"$TARGET/shatter-ts/.seed-worktree.lock"
+flock -n 9
+if PATH="$SCRATCH/bin:$PATH" "$SCRIPT" "$TARGET" "$CANONICAL" 2>/dev/null; then
+    echo "[FAIL] an existing seed lock must reject a concurrent invocation" >&2
+    exit 1
+fi
+flock -u 9
+exec 9>&-
+
 echo "[ok] seed-worktree hardlinks matching dependencies and falls back to npm ci"

@@ -40,7 +40,10 @@ for WORKTREE in "${WORKTREES[@]}"; do
         if [[ ! -d "$TARGET_DIR" ]]; then
             continue
         fi
-        KIB="$(du -sk "$TARGET_DIR" | cut -f1)"
+        if ! KIB="$(du -sk "$TARGET_DIR" | cut -f1)"; then
+            echo "warning: could not measure $TARGET_DIR; skipping" >&2
+            continue
+        fi
         TOTAL_KIB=$((TOTAL_KIB + KIB))
         printf '%s\t%s\t%s\n' "$KIB" "$(numfmt --to=iec --suffix=B "$((KIB * 1024))")" "$TARGET_DIR"
     done

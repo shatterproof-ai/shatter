@@ -43,6 +43,14 @@ if [[ ! -f "$TARGET_LOCK" ]]; then
     exit 1
 fi
 
+LOCK_FILE="$TARGET_TS/.seed-worktree.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "error: another dependency seed is already running for $TARGET_ROOT" >&2
+    exit 1
+fi
+trap 'rm -f "$LOCK_FILE"' EXIT
+
 START_SECONDS="$SECONDS"
 if [[ -d "$TARGET_TS/node_modules" ]]; then
     echo "node_modules already exists in $TARGET_ROOT; leaving it unchanged"
