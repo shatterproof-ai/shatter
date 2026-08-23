@@ -5533,7 +5533,7 @@ async fn join_with_dynamic_watchdog<T: Send + 'static>(
     recheck_interval: Duration,
     is_claimant: impl Fn() -> bool,
 ) -> TaskJoinOutcome<T> {
-    loop {
+    let effective_deadline = |is_claimant: &dyn Fn() -> bool| {
         let watchdog = if is_claimant() {
             extended_watchdog
         } else {
@@ -5543,25 +5543,36 @@ async fn join_with_dynamic_watchdog<T: Send + 'static>(
         if let Some(scan_deadline) = scan_deadline {
             deadline = deadline.min(scan_deadline);
         }
-        let now = Instant::now();
-        // Always poll `handle` at least once before ever concluding a
-        // timeout, even when `now` is already past `deadline` -- a task that
-        // finished long ago must not be discarded as a false timeout just
-        // because a FIFO-delayed joiner didn't get here until after its
-        // deadline. `select!` with `biased` polls `handle` before the sleep
-        // arm, so a completed handle resolves immediately regardless of
-        // `wait`; only an incomplete-and-overdue handle falls through to the
-        // deadline check below.
-        let wait = deadline.saturating_duration_since(now).min(recheck_interval);
-        tokio::select! {
-            biased;
-            res = &mut *handle => return TaskJoinOutcome::Completed(res),
-            _ = tokio::time::sleep(wait) => {
-                if Instant::now() >= deadline {
+        (watchdog, deadline)
+    };
+    loop {
+        let (_, deadline) = effective_deadline(&is_claimant);
+        // Bound this wait to `recheck_interval` so claim state is
+        // re-evaluated periodically, without ever waiting past the true
+        // deadline. `timeout_at` always polls `handle` before considering
+        // its deadline elapsed (even a deadline already in the past), so a
+        // task that already finished is never discarded as a false timeout
+        // regardless of how late the (possibly FIFO-delayed) caller reaches
+        // this wait.
+        let recheck_deadline = (Instant::now() + recheck_interval).min(deadline);
+        match tokio::time::timeout_at(recheck_deadline.into(), &mut *handle).await {
+            Ok(res) => return TaskJoinOutcome::Completed(res),
+            Err(_) => {
+                // The wait above elapsed without `handle` completing.
+                // Re-derive the deadline from CURRENT claim state before
+                // deciding: a claim that lands during this wait -- even in
+                // its final instant -- must extend the deadline before we
+                // conclude timeout, not be judged against the watchdog
+                // value this loop iteration started with.
+                let (watchdog_now, deadline_now) = effective_deadline(&is_claimant);
+                if Instant::now() >= deadline_now {
                     return TaskJoinOutcome::TimedOut {
-                        applied_watchdog: watchdog,
+                        applied_watchdog: watchdog_now,
                     };
                 }
+                // Otherwise either the recheck interval elapsed before the
+                // true deadline, or a fresh claim just extended it; loop
+                // again to re-wait against the current deadline.
             }
         }
     }
@@ -6943,6 +6954,59 @@ mod tests {
                 "an already-finished task must be reported as Completed even when the \
                  joiner arrives after its watchdog deadline -- the handle must be polled \
                  before concluding a timeout: {other:?}"
+            ),
+        }
+    }
+
+    /// str-807vi round-2 regression: a claim landing during the FINAL
+    /// recheck window before the base watchdog deadline must still extend
+    /// the deadline, not be judged against the base-watchdog value the loop
+    /// iteration started with. The claim setter fires partway through a
+    /// single recheck window that ends exactly at the base watchdog, so the
+    /// only way this passes is if the timeout decision re-derives claim
+    /// state fresh at the moment it actually decides, rather than reusing a
+    /// watchdog value captured before the wait that contained the claim.
+    #[tokio::test]
+    async fn join_with_dynamic_watchdog_claim_in_final_recheck_window_still_extends() {
+        // base_watchdog falls inside a single recheck_interval of "now" (the
+        // call happens at t=0, base_watchdog=40ms, recheck_interval=200ms),
+        // so the very first wait spans the base watchdog deadline in one
+        // shot -- there is no second top-of-loop iteration before that
+        // deadline to pick up the claim via the normal per-iteration
+        // recompute. The claim lands at 20ms, inside that same wait.
+        let base_watchdog = Duration::from_millis(40);
+        let extended_watchdog = Duration::from_millis(300);
+        let spawn_instant = Instant::now();
+
+        let is_claimant = Arc::new(AtomicBool::new(false));
+        let is_claimant_setter = Arc::clone(&is_claimant);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            is_claimant_setter.store(true, Ordering::Release);
+        });
+
+        let mut handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            "done"
+        });
+
+        let outcome = join_with_dynamic_watchdog(
+            &mut handle,
+            spawn_instant,
+            base_watchdog,
+            extended_watchdog,
+            None,
+            Duration::from_millis(200),
+            || is_claimant.load(Ordering::Acquire),
+        )
+        .await;
+
+        match outcome {
+            TaskJoinOutcome::Completed(Ok(value)) => assert_eq!(value, "done"),
+            other => panic!(
+                "a claim landing inside the wait that spans the base watchdog deadline \
+                 must still extend it -- the timeout decision must re-check claim state \
+                 fresh, not reuse the watchdog value the wait started with: {other:?}"
             ),
         }
     }
