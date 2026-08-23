@@ -28,6 +28,9 @@ The operator setup required to make acceleration automatic across worktrees is
 documented in `AGENTS.md`; this task intentionally did not mutate user-level
 configuration or install system packages.
 
+Generated execution-harness manifests remain separate work and are tracked by
+`str-cdgxr`, linked as discovered from `str-35vtk.2`.
+
 ## Go cache
 
 Inside `shatter-go`, `go env GOCACHE` resolves to the default shared cache
