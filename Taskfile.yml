@@ -49,6 +49,12 @@ tasks:
     desc: Build example targets
     sources:
       - scripts/examples_checkout.py
+    # The shared examples checkout is treated as read-only (str-35vtk.4): a
+    # concurrent refresh may reset/clean it at any time, so cargo's build
+    # output must not live inside it. Redirect target/ outside the checkout
+    # rather than the default in-tree location.
+    env:
+      CARGO_TARGET_DIR: '{{env "CARGO_TARGET_DIR" | default (printf "%s/shatter-examples-build-target" (env "TMPDIR" | default "/tmp"))}}'
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"

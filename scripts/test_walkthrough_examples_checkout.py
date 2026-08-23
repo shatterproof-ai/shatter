@@ -6,6 +6,7 @@ import stat
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 import importlib.util
 import sys
@@ -81,6 +82,51 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                     (["clean", "-fdx"], checkout_dir),
                 ],
             )
+
+    def test_refresh_checkout_skips_git_calls_within_freshness_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            (checkout_dir / ".git").mkdir(parents=True)
+            recorded_calls: list[tuple[list[str], Path | None]] = []
+
+            def fake_run_git(args: list[str], cwd: Path | None = None) -> None:
+                recorded_calls.append((args, cwd))
+
+            original_run_git = examples_checkout.run_git
+            examples_checkout.run_git = fake_run_git
+            try:
+                examples_checkout.refresh_checkout(checkout_dir)
+                self.assertEqual(len(recorded_calls), 4)
+                # A second refresh within the freshness window must not
+                # re-fetch/reset/clean — this is what protects a concurrent
+                # in-flight consumer from having the checkout yanked out
+                # from under it.
+                examples_checkout.refresh_checkout(checkout_dir)
+                self.assertEqual(len(recorded_calls), 4)
+            finally:
+                examples_checkout.run_git = original_run_git
+
+    def test_refresh_checkout_refreshes_again_after_window_expires(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            (checkout_dir / ".git").mkdir(parents=True)
+            recorded_calls: list[tuple[list[str], Path | None]] = []
+
+            def fake_run_git(args: list[str], cwd: Path | None = None) -> None:
+                recorded_calls.append((args, cwd))
+
+            original_run_git = examples_checkout.run_git
+            examples_checkout.run_git = fake_run_git
+            try:
+                examples_checkout.refresh_checkout(checkout_dir)
+                self.assertEqual(len(recorded_calls), 4)
+                marker = examples_checkout._refresh_marker_path(checkout_dir)
+                stale_time = time.time() - examples_checkout.REFRESH_WINDOW_SECONDS - 1
+                os.utime(marker, (stale_time, stale_time))
+                examples_checkout.refresh_checkout(checkout_dir)
+                self.assertEqual(len(recorded_calls), 8)
+            finally:
+                examples_checkout.run_git = original_run_git
 
     def test_clones_clean_examples_into_temp_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,17 +4,28 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
 DEFAULT_REPO_URL = "https://github.com/shatterproof-ai/examples.git"
 DEFAULT_BRANCH = "main"
 DEFAULT_DIR = Path(tempfile.gettempdir()) / "shatter-examples-main"
+
+# Skip the network fetch + reset + clean if the shared checkout was refreshed
+# more recently than this. Concurrent `task` invocations (e.g. two `task
+# smoke` runs, or smoke + e2e) each call this script independently; without a
+# freshness window every one of them re-fetches and re-cleans the same shared
+# directory, which is both wasteful and (absent the lock below) a source of
+# git-state corruption. See str-35vtk.4.
+REFRESH_WINDOW_SECONDS = 600
 
 
 def _sanitized_git_env() -> dict[str, str]:
@@ -54,15 +65,51 @@ def clone_checkout(repo_url: str, checkout_dir: Path) -> Path:
     return checkout_dir.resolve()
 
 
+def _shared_lock_path(checkout_dir: Path) -> Path:
+    return checkout_dir.parent / f".{checkout_dir.name}.lock"
+
+
+def _refresh_marker_path(checkout_dir: Path) -> Path:
+    return checkout_dir.parent / f".{checkout_dir.name}.last-refresh"
+
+
+@contextlib.contextmanager
+def _locked_shared_checkout(checkout_dir: Path):
+    # Serializes every process that touches the shared checkout (clone,
+    # refresh, and the freshness check itself) so concurrent `task`
+    # invocations never run `git fetch`/`reset --hard`/`clean -fdx` against
+    # the same working tree at once, and never race to clone into it.
+    lock_path = _shared_lock_path(checkout_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _is_recently_refreshed(checkout_dir: Path) -> bool:
+    try:
+        age = time.time() - _refresh_marker_path(checkout_dir).stat().st_mtime
+    except FileNotFoundError:
+        return False
+    return age < REFRESH_WINDOW_SECONDS
+
+
 def refresh_checkout(checkout_dir: Path) -> Path:
     if not (checkout_dir / ".git").exists():
         raise SystemExit(
             f"examples checkout path exists but is not a git repository: {checkout_dir}"
         )
-    run_git(["fetch", "--quiet", "origin", DEFAULT_BRANCH], cwd=checkout_dir)
-    run_git(["checkout", "--quiet", DEFAULT_BRANCH], cwd=checkout_dir)
-    run_git(["reset", "--hard", f"origin/{DEFAULT_BRANCH}"], cwd=checkout_dir)
-    run_git(["clean", "-fdx"], cwd=checkout_dir)
+    with _locked_shared_checkout(checkout_dir):
+        if _is_recently_refreshed(checkout_dir):
+            return checkout_dir.resolve()
+        run_git(["fetch", "--quiet", "origin", DEFAULT_BRANCH], cwd=checkout_dir)
+        run_git(["checkout", "--quiet", DEFAULT_BRANCH], cwd=checkout_dir)
+        run_git(["reset", "--hard", f"origin/{DEFAULT_BRANCH}"], cwd=checkout_dir)
+        run_git(["clean", "-fdx"], cwd=checkout_dir)
+        _refresh_marker_path(checkout_dir).touch()
     return checkout_dir.resolve()
 
 
@@ -78,6 +125,8 @@ def ensure_examples_checkout(args: argparse.Namespace) -> Path:
 
     repo_url = os.environ.get("SHATTER_EXAMPLES_REPO", DEFAULT_REPO_URL)
     if args.fresh:
+        # --fresh always clones into a brand-new per-process temp dir, so it
+        # never touches the shared checkout and needs no locking.
         temp_root = Path(
             tempfile.mkdtemp(prefix="shatter-examples.", dir=tempfile.gettempdir())
         )
@@ -85,10 +134,20 @@ def ensure_examples_checkout(args: argparse.Namespace) -> Path:
         return temp_root.resolve()
 
     checkout_dir = DEFAULT_DIR
-    if not checkout_dir.exists():
-        return clone_checkout(repo_url, checkout_dir)
     if args.no_update:
+        # Read-only fast path: reuse whatever is on disk without contending
+        # for the lock. Callers that need mutation (e.g. a build writing into
+        # the checkout) must not use --no-update as a substitute for their
+        # own per-run copy; see AGENTS.md / str-35vtk.4.
+        if not checkout_dir.exists():
+            with _locked_shared_checkout(checkout_dir):
+                if not checkout_dir.exists():
+                    return clone_checkout(repo_url, checkout_dir)
         return checkout_dir.resolve()
+
+    with _locked_shared_checkout(checkout_dir):
+        if not checkout_dir.exists():
+            return clone_checkout(repo_url, checkout_dir)
     return refresh_checkout(checkout_dir)
 
 
