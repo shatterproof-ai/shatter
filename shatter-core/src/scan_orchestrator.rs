@@ -5533,7 +5533,7 @@ async fn join_with_dynamic_watchdog<T: Send + 'static>(
     recheck_interval: Duration,
     is_claimant: impl Fn() -> bool,
 ) -> TaskJoinOutcome<T> {
-    let effective_deadline = |is_claimant: &dyn Fn() -> bool| {
+    let effective_deadline = || {
         let watchdog = if is_claimant() {
             extended_watchdog
         } else {
@@ -5546,7 +5546,7 @@ async fn join_with_dynamic_watchdog<T: Send + 'static>(
         (watchdog, deadline)
     };
     loop {
-        let (_, deadline) = effective_deadline(&is_claimant);
+        let (_, deadline) = effective_deadline();
         // Bound this wait to `recheck_interval` so claim state is
         // re-evaluated periodically, without ever waiting past the true
         // deadline. `timeout_at` always polls `handle` before considering
@@ -5564,7 +5564,7 @@ async fn join_with_dynamic_watchdog<T: Send + 'static>(
                 // its final instant -- must extend the deadline before we
                 // conclude timeout, not be judged against the watchdog
                 // value this loop iteration started with.
-                let (watchdog_now, deadline_now) = effective_deadline(&is_claimant);
+                let (watchdog_now, deadline_now) = effective_deadline();
                 if Instant::now() >= deadline_now {
                     return TaskJoinOutcome::TimedOut {
                         applied_watchdog: watchdog_now,
@@ -6969,13 +6969,15 @@ mod tests {
     #[tokio::test]
     async fn join_with_dynamic_watchdog_claim_in_final_recheck_window_still_extends() {
         // base_watchdog falls inside a single recheck_interval of "now" (the
-        // call happens at t=0, base_watchdog=40ms, recheck_interval=200ms),
+        // call happens at t=0, base_watchdog=200ms, recheck_interval=300ms),
         // so the very first wait spans the base watchdog deadline in one
         // shot -- there is no second top-of-loop iteration before that
         // deadline to pick up the claim via the normal per-iteration
-        // recompute. The claim lands at 20ms, inside that same wait.
-        let base_watchdog = Duration::from_millis(40);
-        let extended_watchdog = Duration::from_millis(300);
+        // recompute. The claim lands at 20ms, well clear of the 200ms
+        // deadline (a wide margin so this isn't flake-prone under CI
+        // scheduling pressure), inside that same wait.
+        let base_watchdog = Duration::from_millis(200);
+        let extended_watchdog = Duration::from_millis(800);
         let spawn_instant = Instant::now();
 
         let is_claimant = Arc::new(AtomicBool::new(false));
@@ -6986,7 +6988,7 @@ mod tests {
         });
 
         let mut handle = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             "done"
         });
 
@@ -6996,7 +6998,7 @@ mod tests {
             base_watchdog,
             extended_watchdog,
             None,
-            Duration::from_millis(200),
+            Duration::from_millis(300),
             || is_claimant.load(Ordering::Acquire),
         )
         .await;
