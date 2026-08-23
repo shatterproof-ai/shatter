@@ -28,14 +28,21 @@ SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-cache.XXXXXX
 SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-cargo.XXXXXX")}"
+OWN_CARGO_TARGET_DIR=false
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+    CARGO_TARGET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-cargo.XXXXXX")"
+    OWN_CARGO_TARGET_DIR=true
+fi
 
 EXAMPLES_ROOT=""
 
 ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
 STEP_ERRORS=0
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" "${TIA_DEMO_DIR:-}" || true; }
+cleanup() {
+    rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$EXAMPLES_ROOT" "${TIA_DEMO_DIR:-}" || true
+    [[ "$OWN_CARGO_TARGET_DIR" == false ]] || rm -rf "$CARGO_TARGET_DIR"
+}
 trap cleanup EXIT
 
 if command -v gcc &>/dev/null; then
