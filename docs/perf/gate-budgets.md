@@ -51,15 +51,33 @@ baseline evidence for WS-C (resource governance) and WS-M (test mechanics):
 Implication recorded for WS-H: post-change acceptance for `check` is not just
 "faster" but "passes reliably, bounded load".
 
-## Concurrency headline (pending — deliberately not run unattended)
+## Concurrency headline
 
-WS0 calls for 4 worktrees running `task check` simultaneously (aggregate wall,
-peak load, responsiveness). Given that a single `check` already drives loadavg
-to 105 and flakes its own subtests, running 4× would render the machine
-unusable for ~30–60 minutes, so it was **not run unattended**. The scenario is
-scripted and ready; run it at a convenient time and append the results here.
-The post-WS-C re-run of the same scenario is the before/after comparison that
-matters.
+The operator-authorized run completed 2026-08-22 at commit `72dfccd7`, after
+WS-C had landed. Four clean worktrees at the same commit were pre-built, then
+ran `task --force check` simultaneously through
+`scripts/concurrency-headline.sh`:
+
+| Run | Wall (s) | Exit | Result |
+|---|---:|---:|---|
+| 1 | 1,611 | 0 | passed |
+| 2 | 857 | 201 | shared user-data Go registry temporary-file rename race |
+| 3 | 861 | 201 | shared `/tmp/shatter-examples-main/.git/index.lock` race |
+| 4 | 1,593 | 0 | passed |
+
+Only **2/4 checks passed**. Aggregate wall time was **1,611s (26m51s)** and
+peak 1-minute loadavg was **58.86**, versus the pre-WS-C single-check peak of
+105. Interactive monitoring commands remained responsive (roughly 0.2–1.1s).
+Resource governance bounded load, but the failures exposed two remaining
+shared-state races. The Go
+failure came from a temp-module protocol test: because its target is outside a
+repository and supplies no workspace override, workspace resolution falls back
+to the shared user-data path
+`~/.config/shatter/go-workspace/binaries/binary_registry.json`. The examples
+checkout race was already tracked by WS-CS (`str-35vtk.4`), and the
+binary-registry race was added to that workstream's tracker evidence. The raw
+run summary and failure excerpts are preserved in the `str-35vtk.1` notes; the
+follow-up evidence is in the `str-35vtk.4` notes.
 
 ## Test inventories (no-silent-loss reference)
 
