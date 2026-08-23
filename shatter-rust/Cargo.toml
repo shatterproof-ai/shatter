@@ -5,6 +5,13 @@ edition = "2024"
 
 [workspace]
 
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
 [lib]
 name = "shatter_rust"
 path = "src/lib.rs"

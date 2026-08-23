@@ -2,3 +2,10 @@
 members = ["shatter-core", "shatter-cli", "shatter-llm"]
 exclude = ["shatter-rust", "shatter-rust-runtime", "examples/rust", "examples/generators/wasm-rust", "examples/generators/wasm-adversarial"]
 resolver = "2"
+
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false

@@ -70,7 +70,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ci-cargo-${{ hashFiles('**/Cargo.lock') }}
+            shatter-rust/target
+            shatter-rust-runtime/target
+          # The root Cargo.lock is intentionally untracked, so Cargo.toml is
+          # its cache-key fallback. The standalone frontend locks are tracked.
+          key: ci-cargo-${{ hashFiles('Cargo.toml', 'shatter-rust/Cargo.lock', 'shatter-rust-runtime/Cargo.lock') }}
           restore-keys: |
             ci-cargo-
 
