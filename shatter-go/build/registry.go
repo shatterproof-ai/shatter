@@ -82,16 +82,48 @@ func (r *BinaryRegistry) save() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("registry: mkdir %q: %w", dir, err)
 	}
-	data, err := json.MarshalIndent(r.index, "", "  ")
+	release, err := acquireBuildGenerationLock(dir, registryFileName)
+	if err != nil {
+		return fmt.Errorf("registry: acquire persistence lock: %w", err)
+	}
+	defer release()
+
+	persisted := make(map[string]string)
+	data, err := os.ReadFile(r.persistPath)
+	if err == nil {
+		if err := json.Unmarshal(data, &persisted); err != nil {
+			return fmt.Errorf("registry: decode persisted index: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("registry: read persisted index: %w", err)
+	}
+	for hash, binaryPath := range r.index {
+		persisted[hash] = binaryPath
+	}
+	r.index = persisted
+
+	data, err = json.MarshalIndent(r.index, "", "  ")
 	if err != nil {
 		return fmt.Errorf("registry: marshal: %w", err)
 	}
-	tmp := r.persistPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmpFile, err := os.CreateTemp(dir, registryFileName+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("registry: create tmp: %w", err)
+	}
+	tmp := tmpFile.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if err := tmpFile.Chmod(0o644); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("registry: chmod tmp: %w", err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("registry: write tmp: %w", err)
 	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("registry: close tmp: %w", err)
+	}
 	if err := os.Rename(tmp, r.persistPath); err != nil {
-		_ = os.Remove(tmp)
 		return fmt.Errorf("registry: rename: %w", err)
 	}
 	return nil

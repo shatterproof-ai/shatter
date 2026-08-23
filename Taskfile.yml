@@ -54,7 +54,7 @@ tasks:
     # output must not live inside it. Redirect target/ outside the checkout
     # rather than the default in-tree location.
     env:
-      CARGO_TARGET_DIR: '{{env "CARGO_TARGET_DIR" | default (printf "%s/shatter-examples-build-target" (env "TMPDIR" | default "/tmp"))}}'
+      CARGO_TARGET_DIR: '{{env "CARGO_TARGET_DIR" | default (printf "%s/target/examples-build" .ROOT_DIR)}}'
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
@@ -313,6 +313,10 @@ tasks:
       - scripts/test_drift_patrol.py
       - scripts/cleanup-merged-remote-branches.sh
       - scripts/test_cleanup_merged_remote_branches.sh
+      - scripts/examples_checkout.py
+      - scripts/test_walkthrough_examples_checkout.py
+      - scripts/setup-hooks.sh
+      - scripts/test_setup_hooks.sh
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_drift_patrol
@@ -321,6 +325,8 @@ tasks:
       - python3 -m unittest scripts.test_package_npm_release
       - python3 -m unittest scripts.test_retention_continuous_releases
       - bash scripts/test_cleanup_merged_remote_branches.sh
+      - python3 -m unittest scripts.test_walkthrough_examples_checkout
+      - bash scripts/test_setup_hooks.sh
       - cd shatter-go-tool && go test ./...
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then

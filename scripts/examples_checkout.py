@@ -97,20 +97,37 @@ def _is_recently_refreshed(checkout_dir: Path) -> bool:
     return age < REFRESH_WINDOW_SECONDS
 
 
-def refresh_checkout(checkout_dir: Path) -> Path:
+def _refresh_checkout_locked(checkout_dir: Path) -> Path:
     if not (checkout_dir / ".git").exists():
         raise SystemExit(
             f"examples checkout path exists but is not a git repository: {checkout_dir}"
         )
-    with _locked_shared_checkout(checkout_dir):
-        if _is_recently_refreshed(checkout_dir):
-            return checkout_dir.resolve()
-        run_git(["fetch", "--quiet", "origin", DEFAULT_BRANCH], cwd=checkout_dir)
-        run_git(["checkout", "--quiet", DEFAULT_BRANCH], cwd=checkout_dir)
-        run_git(["reset", "--hard", f"origin/{DEFAULT_BRANCH}"], cwd=checkout_dir)
-        run_git(["clean", "-fdx"], cwd=checkout_dir)
-        _refresh_marker_path(checkout_dir).touch()
+    if _is_recently_refreshed(checkout_dir):
+        return checkout_dir.resolve()
+    run_git(["fetch", "--quiet", "origin", DEFAULT_BRANCH], cwd=checkout_dir)
+    run_git(["checkout", "--quiet", DEFAULT_BRANCH], cwd=checkout_dir)
+    run_git(["reset", "--hard", f"origin/{DEFAULT_BRANCH}"], cwd=checkout_dir)
+    run_git(["clean", "-fdx"], cwd=checkout_dir)
+    _refresh_marker_path(checkout_dir).touch()
     return checkout_dir.resolve()
+
+
+def refresh_checkout(checkout_dir: Path) -> Path:
+    with _locked_shared_checkout(checkout_dir):
+        return _refresh_checkout_locked(checkout_dir)
+
+
+def _clone_shared_checkout(repo_url: str, checkout_dir: Path) -> Path:
+    cloned = clone_checkout(repo_url, checkout_dir)
+    _refresh_marker_path(checkout_dir).touch()
+    return cloned
+
+
+def cleanup_checkout(checkout_dir: Path) -> None:
+    with _locked_shared_checkout(checkout_dir):
+        if checkout_dir.exists():
+            shutil.rmtree(checkout_dir)
+        _refresh_marker_path(checkout_dir).unlink(missing_ok=True)
 
 
 def ensure_examples_checkout(args: argparse.Namespace) -> Path:
@@ -142,13 +159,13 @@ def ensure_examples_checkout(args: argparse.Namespace) -> Path:
         if not checkout_dir.exists():
             with _locked_shared_checkout(checkout_dir):
                 if not checkout_dir.exists():
-                    return clone_checkout(repo_url, checkout_dir)
+                    return _clone_shared_checkout(repo_url, checkout_dir)
         return checkout_dir.resolve()
 
     with _locked_shared_checkout(checkout_dir):
         if not checkout_dir.exists():
-            return clone_checkout(repo_url, checkout_dir)
-    return refresh_checkout(checkout_dir)
+            return _clone_shared_checkout(repo_url, checkout_dir)
+        return _refresh_checkout_locked(checkout_dir)
 
 
 def main() -> None:
@@ -171,8 +188,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.cleanup:
-        if DEFAULT_DIR.exists():
-            shutil.rmtree(DEFAULT_DIR)
+        cleanup_checkout(DEFAULT_DIR)
         return
 
     print(ensure_examples_checkout(args))
