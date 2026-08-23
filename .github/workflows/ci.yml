@@ -70,7 +70,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ci-cargo-${{ hashFiles('**/Cargo.lock') }}
+            shatter-rust/target
+            shatter-rust-runtime/target
+          key: ci-cargo-${{ hashFiles('Cargo.lock', 'shatter-rust/Cargo.lock', 'shatter-rust-runtime/Cargo.lock') }}
           restore-keys: |
             ci-cargo-
 

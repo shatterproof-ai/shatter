@@ -39,6 +39,31 @@ The wrapper targets `~/project/kapow/.agents/bin/refute` by default and uses
 [`docs/validation/kapow-refute-agent-workflow.md`](docs/validation/kapow-refute-agent-workflow.md)
 for install, smoke, and failure-mode details.
 
+## Host Build Cache Setup
+
+Build acceleration is machine-level so it covers every worktree without
+breaking CI or hosts that do not have the tools. The operator installs mold
+(`sudo apt-get install mold`; use lld as the fallback) and sccache, then adds
+this to `~/.cargo/config.toml`:
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[build]
+rustc-wrapper = "/absolute/path/to/sccache"
+```
+
+Set `SCCACHE_DIR=$HOME/.cache/sccache` and `SCCACHE_CACHE_SIZE=40G` in the
+shell profile. If its daemon wedges, run `sccache --stop-server` before
+retrying. Keep `CARGO_INCREMENTAL` unchanged: sccache handles the
+non-incremental dependency crates while each worktree keeps incremental
+artifacts for its workspace crates.
+
+Do not configure a shared `CARGO_TARGET_DIR`. Cargo's target-directory lock
+would serialize agents, and cross-branch fingerprint churn would erase the
+benefit of sharing it.
+
 ## Issue Title Guidelines
 
 Titles appear in `bd list`, `bd ready`, and terminal window titles where space
@@ -442,6 +467,21 @@ When working in a git worktree (e.g. started with `--worktree`), **always merge
 the branch back into `main` before ending the session.** Do not leave the
 worktree branch unmerged without asking.
 
+Immediately after creating a worktree, seed its TypeScript dependencies:
+
+```bash
+scripts/seed-worktree.sh /absolute/path/to/new-worktree
+```
+
+Matching lockfiles use a hardlink clone of the canonical checkout's
+`shatter-ts/node_modules`; a mismatch or missing canonical install runs
+`npm ci` in the new worktree instead. The helper records the installed lockfile
+digest and replaces an existing tree when that stamp is missing or stale, so an
+interrupted seed is safe to rerun. Because matching installs initially share
+file inodes, run `npm ci` first before using tools that rewrite
+dependency files in place (for example patch-package or native rebuilds).
+Normal npm installs replace package files and are safe.
+
 **Before merging a worktree branch:**
 - Preview conflicts first: `git merge --no-commit --no-ff <branch>` then `git merge --abort`
 - Rebase long-lived worktrees onto main before merging: `git rebase main` (from the worktree)
@@ -452,6 +492,11 @@ Claude Code manages worktree lifecycle automatically when invoked with
 directory yourself — the user is prompted to keep or remove it when the session
 ends. Manually removing the worktree mid-session can break the working directory
 and cause confusing errors.
+
+Periodic closure/GC passes should run `scripts/target-dir-report.sh` first.
+It reports the root, Rust frontend, and Rust runtime target-directory sizes for
+every registered worktree so stale build artifacts can be prioritized without
+touching active work.
 
 <!-- Beads command basics are in the "bd Quick Reference" section above and the bento:beads-issue-flow skill.
      Shatter-specific beads extensions: issue types always specify -t, use discovered-from for linked bugs,
