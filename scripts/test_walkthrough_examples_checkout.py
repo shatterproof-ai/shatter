@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import contextlib
 import os
 import shutil
 import stat
@@ -25,6 +27,92 @@ SPEC.loader.exec_module(examples_checkout)
 
 
 class WalkthroughExamplesCheckoutTest(unittest.TestCase):
+    def test_ensure_existing_checkout_takes_shared_lock_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            (checkout_dir / ".git").mkdir(parents=True)
+            args = argparse.Namespace(fresh=False, no_update=False, cleanup=False)
+            lock_depth = 0
+
+            @contextlib.contextmanager
+            def tracked_lock(path: Path):
+                nonlocal lock_depth
+                self.assertEqual(path, checkout_dir)
+                self.assertEqual(lock_depth, 0, "shared checkout lock was acquired recursively")
+                lock_depth += 1
+                try:
+                    yield
+                finally:
+                    lock_depth -= 1
+
+            original_dir = examples_checkout.DEFAULT_DIR
+            original_lock = examples_checkout._locked_shared_checkout
+            original_run_git = examples_checkout.run_git
+            examples_checkout.DEFAULT_DIR = checkout_dir
+            examples_checkout._locked_shared_checkout = tracked_lock
+            examples_checkout.run_git = lambda args, cwd=None: None
+            try:
+                self.assertEqual(
+                    examples_checkout.ensure_examples_checkout(args),
+                    checkout_dir.resolve(),
+                )
+            finally:
+                examples_checkout.DEFAULT_DIR = original_dir
+                examples_checkout._locked_shared_checkout = original_lock
+                examples_checkout.run_git = original_run_git
+
+    def test_fresh_shared_clone_is_marked_before_return(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            args = argparse.Namespace(fresh=False, no_update=False, cleanup=False)
+
+            def fake_clone(repo_url: str, target: Path) -> Path:
+                self.assertEqual(target, checkout_dir)
+                (target / ".git").mkdir(parents=True)
+                return target.resolve()
+
+            original_dir = examples_checkout.DEFAULT_DIR
+            original_clone = examples_checkout.clone_checkout
+            examples_checkout.DEFAULT_DIR = checkout_dir
+            examples_checkout.clone_checkout = fake_clone
+            try:
+                examples_checkout.ensure_examples_checkout(args)
+                self.assertTrue(
+                    examples_checkout._refresh_marker_path(checkout_dir).exists(),
+                    "shared clone must be marked fresh before consumers can use it",
+                )
+            finally:
+                examples_checkout.DEFAULT_DIR = original_dir
+                examples_checkout.clone_checkout = original_clone
+
+    def test_cleanup_removes_checkout_and_marker_under_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            checkout_dir.mkdir()
+            marker = examples_checkout._refresh_marker_path(checkout_dir)
+            marker.touch()
+            lock_held = False
+
+            @contextlib.contextmanager
+            def tracked_lock(path: Path):
+                nonlocal lock_held
+                self.assertEqual(path, checkout_dir)
+                lock_held = True
+                try:
+                    yield
+                finally:
+                    lock_held = False
+
+            original_lock = examples_checkout._locked_shared_checkout
+            examples_checkout._locked_shared_checkout = tracked_lock
+            try:
+                examples_checkout.cleanup_checkout(checkout_dir)
+                self.assertTrue(lock_held is False)
+                self.assertFalse(checkout_dir.exists())
+                self.assertFalse(marker.exists())
+            finally:
+                examples_checkout._locked_shared_checkout = original_lock
+
     def test_run_git_strips_leaked_actions_checkout_credentials(self) -> None:
         leaked_env = {
             "GIT_CONFIG_COUNT": "1",

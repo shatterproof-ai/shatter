@@ -153,6 +153,33 @@ func TestBinaryRegistryPersistence(t *testing.T) {
 	}
 }
 
+func TestBinaryRegistryStaleInstancesPreserveEachOthersEntries(t *testing.T) {
+	dir := t.TempDir()
+	targetA := t.TempDir()
+	targetB := t.TempDir()
+
+	// Model two processes that loaded the registry before either persisted.
+	r1 := build.NewBinaryRegistry(dir)
+	r2 := build.NewBinaryRegistry(dir)
+	if err := r1.Register("hash-a", targetA); err != nil {
+		t.Fatalf("register hash-a: %v", err)
+	}
+	if err := r2.Register("hash-b", targetB); err != nil {
+		t.Fatalf("register hash-b: %v", err)
+	}
+
+	reloaded := build.NewBinaryRegistry(dir)
+	for hash, want := range map[string]string{"hash-a": targetA, "hash-b": targetB} {
+		got, ok := reloaded.Lookup(hash)
+		if !ok {
+			t.Fatalf("persisted registry lost %s", hash)
+		}
+		if got != want {
+			t.Errorf("Lookup(%q) = %q, want %q", hash, got, want)
+		}
+	}
+}
+
 // ---- BuildRequest validation tests ----
 
 func TestBuildRequestValidation(t *testing.T) {
