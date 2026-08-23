@@ -943,6 +943,13 @@ edition = "2021"
 
 [workspace]
 
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
 [dependencies]
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
@@ -11388,6 +11395,22 @@ fn increment() -> i32 { unsafe { COUNTER += 1; COUNTER } }
         assert_eq!(
             serde_json_count, 1,
             "serde_json must appear exactly once, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn generate_cargo_toml_includes_compact_dev_profile() {
+        let user_toml = "[package]\nname = \"my-crate\"\n\n[dependencies]\nregex = \"1\"\n";
+        let runtime_path = std::path::Path::new("/fake/runtime");
+        let result =
+            generate_cargo_toml_with_user_deps(user_toml, runtime_path, false, false, false);
+        assert!(
+            result.contains("[profile.dev]\ndebug = \"line-tables-only\"\nsplit-debuginfo = \"unpacked\""),
+            "must include compact dev profile matching str-35vtk.2 workspace policy, got:\n{result}"
+        );
+        assert!(
+            result.contains("[profile.dev.package.\"*\"]\ndebug = false"),
+            "must disable debug info for dependency packages, got:\n{result}"
         );
     }
 
