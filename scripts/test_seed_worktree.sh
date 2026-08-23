@@ -48,7 +48,6 @@ if [[ "$SOURCE_INODE" != "$AUTODETECT_INODE" ]]; then
     exit 1
 fi
 
-rm -rf "$TARGET/shatter-ts/node_modules"
 printf '{"lockfileVersion": 2}\n' > "$TARGET/shatter-ts/package-lock.json"
 mkdir -p "$SCRATCH/bin"
 cat > "$SCRATCH/bin/npm" <<'EOF'
@@ -65,7 +64,7 @@ PATH="$SCRATCH/bin:$PATH" "$SCRIPT" "$TARGET" "$CANONICAL"
 EXPECTED="$TARGET/shatter-ts"
 ACTUAL="$(<"$TARGET/shatter-ts/node_modules/npm-ci-ran")"
 if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-    echo "[FAIL] mismatched lockfiles must run npm ci in the target worktree" >&2
+    echo "[FAIL] mismatched lockfiles must replace stale node_modules with npm ci" >&2
     exit 1
 fi
 

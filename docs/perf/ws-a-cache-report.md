@@ -6,8 +6,9 @@ Date: 2026-08-22
 
 `scripts/seed-worktree.sh` seeded this issue's fresh linked worktree from the
 canonical checkout in 2.06 seconds. The regression test also verifies that
-matching lockfiles share file inodes and that a lockfile mismatch runs
-`npm ci` in the target worktree.
+matching lockfiles share file inodes, automatic main-worktree detection works,
+and a lockfile mismatch or unavailable hardlink clone runs `npm ci` in the
+target worktree.
 
 ## Cargo and sccache
 
