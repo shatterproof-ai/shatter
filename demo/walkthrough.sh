@@ -21,35 +21,10 @@ MODE="auto"
 DELAY=2
 DRY_RUN=false
 STEP_TIMEOUT=120
+COLD=false
 
-# Temp dirs — isolated from repo state and concurrent cargo commands
-export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR RUST_BACKTRACE CARGO_NET_OFFLINE CARGO_TARGET_DIR
-SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-cache.XXXXXX")"
-SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
-RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
-CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
-OWN_CARGO_TARGET_DIR=false
-if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
-    CARGO_TARGET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-cargo.XXXXXX")"
-    OWN_CARGO_TARGET_DIR=true
-fi
-
-EXAMPLES_ROOT=""
-
-ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
-STEP_ERRORS=0
-
-cleanup() {
-    rm -rf "$SHATTER_CACHE_DIR" "$ERROR_LOG" "$EXAMPLES_ROOT" "${TIA_DEMO_DIR:-}" || true
-    [[ "$OWN_CARGO_TARGET_DIR" == false ]] || rm -rf "$CARGO_TARGET_DIR"
-}
-trap cleanup EXIT
-
-if command -v gcc &>/dev/null; then
-    export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I$(gcc -print-file-name=include)"
-fi
-
-# Color support
+# Color support. Argument parsing must complete before any filesystem state is
+# allocated, so initialize display-only values first for --help/errors.
 if [[ -t 1 ]]; then
     BOLD=$'\033[1m' DIM=$'\033[2m' GREEN=$'\033[32m' CYAN=$'\033[36m'
     YELLOW=$'\033[33m' RED=$'\033[31m' RESET=$'\033[0m'
@@ -58,18 +33,6 @@ else
     BOLD="" DIM="" GREEN="" CYAN="" YELLOW="" RED="" RESET=""
     SHATTER_COLOR="never"
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-example_path() {
-    local path="$1"
-    if [[ "$path" == examples/* ]]; then
-        printf '%s\n' "$EXAMPLES_ROOT/${path#examples/}"
-    else
-        printf '%s\n' "$path"
-    fi
-}
 
 usage() {
     cat <<EOF
@@ -83,23 +46,117 @@ ${BOLD}OPTIONS${RESET}
     --auto          (no-op, auto is the default)
     --delay N       Seconds between steps in auto mode (default: 2)
     --step-timeout N  Per-step timeout in seconds (default: 120, 0 = no limit)
+    --cold          Use isolated per-run build and Shatter caches
     --dry-run       Print commands without executing them
     --help, -h      Show this help
 EOF
-    exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --auto)        MODE="auto"; shift ;;
+        --auto) MODE="auto"; shift ;;
         --interactive) MODE="interactive"; shift ;;
-        --delay)       DELAY="$2"; shift 2 ;;
-        --step-timeout) STEP_TIMEOUT="$2"; shift 2 ;;
-        --dry-run)     DRY_RUN=true; shift ;;
-        --help|-h)     usage ;;
-        *)             echo "${RED}Unknown option: $1${RESET}"; exit 1 ;;
+        --delay|--step-timeout)
+            option="$1"
+            if [[ $# -lt 2 ]]; then
+                echo "${RED}Missing value for ${option}${RESET}" >&2
+                exit 2
+            fi
+            if [[ "$option" == "--delay" ]]; then
+                DELAY="$2"
+            else
+                STEP_TIMEOUT="$2"
+            fi
+            shift 2
+            ;;
+        --cold) COLD=true; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo "${RED}Unknown option: $1${RESET}" >&2; exit 2 ;;
     esac
 done
+if [[ ! "$DELAY" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "${RED}--delay must be a non-negative number${RESET}" >&2
+    exit 2
+fi
+if [[ ! "$STEP_TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "${RED}--step-timeout must be a non-negative integer${RESET}" >&2
+    exit 2
+fi
+
+# Cache mode is resolved only after argument parsing. Warm mode serializes the
+# complete demo process before any persistent cache subdirectory is touched.
+export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR SHATTER_HARNESS_CACHE
+export SHATTER_ARTIFACT_DIR RUST_BACKTRACE CARGO_NET_OFFLINE CARGO_TARGET_DIR
+OWN_SHATTER_CACHE_DIR=false
+OWN_CARGO_TARGET_DIR=false
+if [[ "$COLD" == true ]]; then
+    SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-cache.XXXXXX")"
+    OWN_SHATTER_CACHE_DIR=true
+    unset SHATTER_HARNESS_CACHE
+else
+    if [[ -n "${SHATTER_DEMO_CACHE:-}" ]]; then
+        WARM_ROOT="$SHATTER_DEMO_CACHE"
+    elif [[ -n "${HOME:-}" ]]; then
+        WARM_ROOT="$HOME/.cache/shatter-demo"
+    else
+        echo "${RED}HOME is unset; set SHATTER_DEMO_CACHE for warm mode${RESET}" >&2
+        exit 2
+    fi
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "${RED}flock is required for the shared warm demo cache${RESET}" >&2
+        exit 2
+    fi
+    mkdir -p "$WARM_ROOT"
+    exec {DEMO_LOCK_FD}>"$WARM_ROOT/demo.lock"
+    echo "${DIM}waiting for shared demo cache lock: ${WARM_ROOT}/demo.lock${RESET}" >&2
+    flock "$DEMO_LOCK_FD"
+    SHATTER_CACHE_DIR="$WARM_ROOT/cache"
+    SHATTER_HARNESS_CACHE="$WARM_ROOT/harness"
+    mkdir -p "$SHATTER_CACHE_DIR" "$SHATTER_HARNESS_CACHE"
+fi
+SHATTER_SEEDS_DIR="$SHATTER_CACHE_DIR/seeds"
+mkdir -p "$SHATTER_SEEDS_DIR"
+SHATTER_ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-artifacts.XXXXXX")"
+RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
+CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+    if [[ "$COLD" == true ]]; then
+        CARGO_TARGET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-walkthrough-cargo.XXXXXX")"
+        OWN_CARGO_TARGET_DIR=true
+    else
+        CARGO_TARGET_DIR="$WARM_ROOT/cargo-target"
+    fi
+fi
+
+EXAMPLES_ROOT=""
+
+ERROR_LOG="$(mktemp "${TMPDIR:-/tmp}/shatter-walkthrough-errors.XXXXXX")"
+STEP_ERRORS=0
+
+cleanup() {
+    rm -rf "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" "$EXAMPLES_ROOT" "${TIA_DEMO_DIR:-}" || true
+    [[ "$OWN_SHATTER_CACHE_DIR" == false ]] || rm -rf "$SHATTER_CACHE_DIR"
+    [[ "$OWN_CARGO_TARGET_DIR" == false ]] || rm -rf "$CARGO_TARGET_DIR"
+}
+trap cleanup EXIT
+
+if command -v gcc &>/dev/null; then
+    BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I$(gcc -print-file-name=include)"
+    export BINDGEN_EXTRA_CLANG_ARGS
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+example_path() {
+    local path="$1"
+    if [[ "$path" == examples/* ]]; then
+        printf '%s\n' "$EXAMPLES_ROOT/${path#examples/}"
+    else
+        printf '%s\n' "$path"
+    fi
+}
 
 # Check dependencies
 python3 -c "import yaml" 2>/dev/null || { echo "${RED}PyYAML required: pip install pyyaml${RESET}"; exit 1; }
