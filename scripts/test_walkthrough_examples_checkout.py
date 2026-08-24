@@ -29,6 +29,19 @@ SPEC.loader.exec_module(examples_checkout)
 
 
 class WalkthroughExamplesCheckoutTest(unittest.TestCase):
+    @contextlib.contextmanager
+    def _using_snapshot_cache(self, cache_dir: Path):
+        had_original = hasattr(examples_checkout, "SNAPSHOT_CACHE_DIR")
+        original = getattr(examples_checkout, "SNAPSHOT_CACHE_DIR", None)
+        examples_checkout.SNAPSHOT_CACHE_DIR = cache_dir
+        try:
+            yield
+        finally:
+            if had_original:
+                examples_checkout.SNAPSHOT_CACHE_DIR = original
+            else:
+                del examples_checkout.SNAPSHOT_CACHE_DIR
+
     def _init_git_checkout(self, checkout_dir: Path, content: str = "version one\n") -> None:
         checkout_dir.mkdir(parents=True)
         subprocess.run(
@@ -57,6 +70,7 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
     def test_ensure_existing_checkout_takes_shared_lock_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkout_dir = Path(tmp) / "examples"
+            snapshot_cache = Path(tmp) / "snapshots"
             self._init_git_checkout(checkout_dir)
             examples_checkout._refresh_marker_path(checkout_dir).touch()
             args = argparse.Namespace(fresh=False, no_update=False, cleanup=False)
@@ -78,7 +92,8 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             examples_checkout.DEFAULT_DIR = checkout_dir
             examples_checkout._locked_shared_checkout = tracked_lock
             try:
-                snapshot = examples_checkout.ensure_examples_checkout(args)
+                with self._using_snapshot_cache(snapshot_cache):
+                    snapshot = examples_checkout.ensure_examples_checkout(args)
                 self.assertNotEqual(snapshot, checkout_dir.resolve())
                 self.assertEqual(
                     (snapshot / "example.txt").read_text(encoding="utf-8"),
@@ -91,6 +106,7 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
     def test_fresh_shared_clone_is_marked_before_return(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkout_dir = Path(tmp) / "examples"
+            snapshot_cache = Path(tmp) / "snapshots"
             args = argparse.Namespace(fresh=False, no_update=False, cleanup=False)
 
             def fake_clone(repo_url: str, target: Path) -> Path:
@@ -103,7 +119,8 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             examples_checkout.DEFAULT_DIR = checkout_dir
             examples_checkout.clone_checkout = fake_clone
             try:
-                examples_checkout.ensure_examples_checkout(args)
+                with self._using_snapshot_cache(snapshot_cache):
+                    examples_checkout.ensure_examples_checkout(args)
                 self.assertTrue(
                     examples_checkout._refresh_marker_path(checkout_dir).exists(),
                     "shared clone must be marked fresh before consumers can use it",
@@ -111,6 +128,73 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             finally:
                 examples_checkout.DEFAULT_DIR = original_dir
                 examples_checkout.clone_checkout = original_clone
+
+    def test_same_head_reuses_one_published_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            snapshot_cache = Path(tmp) / "snapshots"
+            self._init_git_checkout(checkout_dir)
+            examples_checkout._refresh_marker_path(checkout_dir).touch()
+            args = argparse.Namespace(fresh=False, no_update=True, cleanup=False)
+            clone_count = 0
+
+            def counting_git(args: list[str], cwd: Path | None = None) -> str:
+                nonlocal clone_count
+                if args and args[0] == "clone":
+                    clone_count += 1
+                return original_run_git(args, cwd)
+
+            original_dir = examples_checkout.DEFAULT_DIR
+            original_run_git = examples_checkout.run_git
+            examples_checkout.DEFAULT_DIR = checkout_dir
+            examples_checkout.run_git = counting_git
+            try:
+                with self._using_snapshot_cache(snapshot_cache):
+                    first = examples_checkout.ensure_examples_checkout(args)
+                    second = examples_checkout.ensure_examples_checkout(args)
+                self.assertEqual(first, second)
+                self.assertEqual(clone_count, 1)
+                self.assertEqual(
+                    [
+                        path
+                        for path in snapshot_cache.iterdir()
+                        if not path.name.startswith(".")
+                    ],
+                    [first.parent],
+                )
+            finally:
+                examples_checkout.DEFAULT_DIR = original_dir
+                examples_checkout.run_git = original_run_git
+
+    def test_failed_snapshot_clone_leaves_no_partial_published_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            snapshot_cache = Path(tmp) / "snapshots"
+            self._init_git_checkout(checkout_dir)
+            examples_checkout._refresh_marker_path(checkout_dir).touch()
+            args = argparse.Namespace(fresh=False, no_update=True, cleanup=False)
+
+            def failing_clone(args: list[str], cwd: Path | None = None) -> str:
+                if args and args[0] == "clone":
+                    destination = Path(args[-1])
+                    destination.mkdir(parents=True)
+                    (destination / "partial").touch()
+                    raise SystemExit("simulated interrupted clone")
+                return original_run_git(args, cwd)
+
+            original_dir = examples_checkout.DEFAULT_DIR
+            original_run_git = examples_checkout.run_git
+            examples_checkout.DEFAULT_DIR = checkout_dir
+            examples_checkout.run_git = failing_clone
+            try:
+                with self._using_snapshot_cache(snapshot_cache):
+                    with self.assertRaisesRegex(SystemExit, "interrupted clone"):
+                        examples_checkout.ensure_examples_checkout(args)
+                self.assertTrue(snapshot_cache.is_dir())
+                self.assertEqual(list(snapshot_cache.iterdir()), [])
+            finally:
+                examples_checkout.DEFAULT_DIR = original_dir
+                examples_checkout.run_git = original_run_git
 
     def test_no_update_waits_for_clone_then_validates_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,6 +230,7 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
     def test_returned_snapshot_survives_refresh_after_freshness_expiry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkout_dir = Path(tmp) / "examples"
+            snapshot_cache = Path(tmp) / "snapshots"
             self._init_git_checkout(checkout_dir)
             examples_checkout._refresh_marker_path(checkout_dir).touch()
             no_update = argparse.Namespace(fresh=False, no_update=True, cleanup=False)
@@ -155,7 +240,8 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             original_run_git = examples_checkout.run_git
             examples_checkout.DEFAULT_DIR = checkout_dir
             try:
-                first_snapshot = examples_checkout.ensure_examples_checkout(no_update)
+                with self._using_snapshot_cache(snapshot_cache):
+                    first_snapshot = examples_checkout.ensure_examples_checkout(no_update)
                 self.assertNotEqual(first_snapshot, checkout_dir.resolve())
                 self.assertEqual(
                     (first_snapshot / "example.txt").read_text(encoding="utf-8"),
@@ -166,7 +252,9 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                 stale_time = time.time() - examples_checkout.REFRESH_WINDOW_SECONDS - 1
                 os.utime(marker, (stale_time, stale_time))
 
-                def refreshing_git(args: list[str], cwd: Path | None = None) -> None:
+                def refreshing_git(
+                    args: list[str], cwd: Path | None = None
+                ) -> str | None:
                     if args[:2] in (["fetch", "--quiet"], ["checkout", "--quiet"]):
                         return
                     if args[:2] == ["reset", "--hard"]:
@@ -183,10 +271,11 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                         return
                     if args == ["clean", "-fdx"]:
                         return
-                    original_run_git(args, cwd)
+                    return original_run_git(args, cwd)
 
                 examples_checkout.run_git = refreshing_git
-                second_snapshot = examples_checkout.ensure_examples_checkout(update)
+                with self._using_snapshot_cache(snapshot_cache):
+                    second_snapshot = examples_checkout.ensure_examples_checkout(update)
 
                 self.assertNotEqual(second_snapshot, first_snapshot)
                 self.assertEqual(
@@ -198,6 +287,16 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                     "version one\n",
                     "a later refresh must not mutate an in-flight consumer's snapshot",
                 )
+                self.assertEqual(
+                    len(
+                        [
+                            path
+                            for path in snapshot_cache.iterdir()
+                            if not path.name.startswith(".")
+                        ]
+                    ),
+                    2,
+                )
             finally:
                 examples_checkout.DEFAULT_DIR = original_dir
                 examples_checkout.run_git = original_run_git
@@ -205,9 +304,11 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
     def test_cleanup_removes_checkout_and_marker_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkout_dir = Path(tmp) / "examples"
+            snapshot_cache = Path(tmp) / "snapshots"
             checkout_dir.mkdir()
             marker = examples_checkout._refresh_marker_path(checkout_dir)
             marker.touch()
+            (snapshot_cache / "commit" / "examples").mkdir(parents=True)
             lock_held = False
 
             @contextlib.contextmanager
@@ -223,10 +324,12 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             original_lock = examples_checkout._locked_shared_checkout
             examples_checkout._locked_shared_checkout = tracked_lock
             try:
-                examples_checkout.cleanup_checkout(checkout_dir)
+                with self._using_snapshot_cache(snapshot_cache):
+                    examples_checkout.cleanup_checkout(checkout_dir)
                 self.assertTrue(lock_held is False)
                 self.assertFalse(checkout_dir.exists())
                 self.assertFalse(marker.exists())
+                self.assertFalse(snapshot_cache.exists())
             finally:
                 examples_checkout._locked_shared_checkout = original_lock
 

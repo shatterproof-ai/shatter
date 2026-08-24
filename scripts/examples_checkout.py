@@ -18,6 +18,7 @@ from pathlib import Path
 DEFAULT_REPO_URL = "https://github.com/shatterproof-ai/examples.git"
 DEFAULT_BRANCH = "main"
 DEFAULT_DIR = Path(tempfile.gettempdir()) / "shatter-examples-main"
+SNAPSHOT_CACHE_DIR = Path(tempfile.gettempdir()) / "shatter-examples-snapshots"
 
 # Skip the network fetch + reset + clean if the canonical checkout was refreshed
 # more recently than this. Concurrent `task` invocations (e.g. two `task
@@ -43,7 +44,7 @@ def _sanitized_git_env() -> dict[str, str]:
     return env
 
 
-def run_git(args: list[str], cwd: Path | None = None) -> None:
+def run_git(args: list[str], cwd: Path | None = None) -> str:
     completed = subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -54,7 +55,7 @@ def run_git(args: list[str], cwd: Path | None = None) -> None:
         text=True,
     )
     if completed.returncode == 0:
-        return
+        return completed.stdout.strip()
     detail = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
     raise SystemExit(detail)
 
@@ -128,12 +129,26 @@ def _clone_shared_checkout(repo_url: str, checkout_dir: Path) -> Path:
 
 
 def _snapshot_shared_checkout_locked(checkout_dir: Path) -> Path:
-    """Create a consumer-owned clone while the canonical checkout is stable."""
+    """Return an immutable, independently stored snapshot of canonical HEAD."""
     _validate_shared_checkout_locked(checkout_dir)
-    snapshot_root = Path(
-        tempfile.mkdtemp(prefix="shatter-examples.snapshot.", dir=tempfile.gettempdir())
+    commit = run_git(["rev-parse", "HEAD"], cwd=checkout_dir)
+    if len(commit) not in (40, 64) or any(
+        character not in "0123456789abcdef" for character in commit
+    ):
+        raise SystemExit(f"examples checkout returned invalid HEAD revision: {commit!r}")
+
+    published_root = SNAPSHOT_CACHE_DIR / commit
+    published_snapshot = published_root / "examples"
+    if (published_snapshot / ".git").exists():
+        return published_snapshot.resolve()
+    if published_root.exists():
+        raise SystemExit(f"examples snapshot cache entry is incomplete: {published_root}")
+
+    SNAPSHOT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    temporary_root = Path(
+        tempfile.mkdtemp(prefix=f".{commit}.", dir=SNAPSHOT_CACHE_DIR)
     )
-    snapshot_dir = snapshot_root / "examples"
+    temporary_snapshot = temporary_root / "examples"
     try:
         # --no-hardlinks makes the snapshot independent even if --cleanup later
         # removes the canonical checkout. The clone is local-only and does not
@@ -147,13 +162,16 @@ def _snapshot_shared_checkout_locked(checkout_dir: Path) -> Path:
                 "--branch",
                 DEFAULT_BRANCH,
                 str(checkout_dir),
-                str(snapshot_dir),
+                str(temporary_snapshot),
             ]
         )
+        # Readers only discover the commit-named directory after the clone is
+        # complete. The canonical checkout lock serializes publishers.
+        temporary_root.rename(published_root)
     except BaseException:
-        shutil.rmtree(snapshot_root, ignore_errors=True)
+        shutil.rmtree(temporary_root, ignore_errors=True)
         raise
-    return snapshot_dir.resolve()
+    return published_snapshot.resolve()
 
 
 def cleanup_checkout(checkout_dir: Path) -> None:
@@ -161,6 +179,8 @@ def cleanup_checkout(checkout_dir: Path) -> None:
         if checkout_dir.exists():
             shutil.rmtree(checkout_dir)
         _refresh_marker_path(checkout_dir).unlink(missing_ok=True)
+        if SNAPSHOT_CACHE_DIR.exists():
+            shutil.rmtree(SNAPSHOT_CACHE_DIR)
 
 
 def ensure_examples_checkout(args: argparse.Namespace) -> Path:
