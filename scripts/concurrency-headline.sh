@@ -12,9 +12,7 @@
 set -u
 [ $# -ge 2 ] || { echo "need >=2 checkout dirs" >&2; exit 2; }
 
-stamp=$(date +%Y%m%d-%H%M%S)
-out="/tmp/shatter-concurrency-headline-$stamp"
-mkdir -p "$out"
+out=$(mktemp -d "${TMPDIR:-/tmp}/shatter-concurrency-headline.XXXXXX")
 echo "results -> $out"
 
 ( while true; do echo "$(date -Is) $(cut -d' ' -f1-3 /proc/loadavg)"; sleep 15; done ) > "$out/loadavg.log" &

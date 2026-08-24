@@ -2,11 +2,15 @@ package build_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/shatter-dev/shatter/shatter-go/build"
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
+	"pgregory.net/rapid"
 )
 
 func mustTempWorkspace(t *testing.T) *workspace.Workspace {
@@ -151,6 +155,175 @@ func TestBinaryRegistryPersistence(t *testing.T) {
 	if path != target {
 		t.Errorf("path = %q, want %q", path, target)
 	}
+}
+
+func TestBinaryRegistryStaleInstancesPersistOnlyCurrentMutation(t *testing.T) {
+	dir := t.TempDir()
+	oldTarget := t.TempDir()
+	newTarget := t.TempDir()
+	disjointTarget := t.TempDir()
+
+	seed := build.NewBinaryRegistry(dir)
+	if err := seed.Register("same-hash", oldTarget); err != nil {
+		t.Fatalf("seed same-hash: %v", err)
+	}
+
+	// Model two processes that loaded the same old value. The first updates
+	// that value, then the stale second process registers a disjoint key. Its
+	// old in-memory snapshot must not roll the first process's update back.
+	r1 := build.NewBinaryRegistry(dir)
+	r2 := build.NewBinaryRegistry(dir)
+	if err := r1.Register("same-hash", newTarget); err != nil {
+		t.Fatalf("update same-hash: %v", err)
+	}
+	if err := r2.Register("disjoint-hash", disjointTarget); err != nil {
+		t.Fatalf("register disjoint-hash: %v", err)
+	}
+
+	reloaded := build.NewBinaryRegistry(dir)
+	wants := map[string]string{
+		"same-hash":     newTarget,
+		"disjoint-hash": disjointTarget,
+	}
+	for hash, want := range wants {
+		got, ok := reloaded.Lookup(hash)
+		if !ok {
+			t.Fatalf("persisted registry lost %s", hash)
+		}
+		if got != want {
+			t.Errorf("Lookup(%q) = %q, want %q", hash, got, want)
+		}
+	}
+}
+
+func TestBinaryRegistryRegisterConcurrentWithWorkspaceGC(t *testing.T) {
+	ws, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	if err := ws.Ensure(); err != nil {
+		t.Fatalf("ensure workspace: %v", err)
+	}
+
+	const registrations = 64
+	registries := make([]*build.BinaryRegistry, registrations)
+	for i := range registries {
+		registries[i] = build.NewBinaryRegistry(ws.BinariesDir())
+	}
+
+	stopGC := make(chan struct{})
+	gcStarted := make(chan struct{})
+	gcDone := make(chan struct{})
+	gcErrors := make(chan error, 1)
+	go func() {
+		defer close(gcDone)
+		first := true
+		for {
+			select {
+			case <-stopGC:
+				return
+			default:
+			}
+			_, runErr := ws.RunGC(workspace.GCOptions{
+				KeepLastN:         -1,
+				MaxAge:            time.Nanosecond,
+				MaxRunsBytes:      -1,
+				MaxCacheBytes:     -1,
+				MaxGeneratedBytes: -1,
+				MaxBinariesBytes:  -1,
+				Now:               time.Now().Add(time.Hour),
+			})
+			if first {
+				close(gcStarted)
+				first = false
+			}
+			if runErr != nil {
+				select {
+				case gcErrors <- runErr:
+				default:
+				}
+				return
+			}
+		}
+	}()
+	<-gcStarted
+
+	start := make(chan struct{})
+	registerErrors := make(chan error, registrations)
+	var workers sync.WaitGroup
+	for i, registry := range registries {
+		workers.Add(1)
+		go func(index int, registry *build.BinaryRegistry) {
+			defer workers.Done()
+			<-start
+			if err := registry.Register(
+				fmt.Sprintf("hash-%02d", index),
+				fmt.Sprintf("/nonexistent/binary-%02d", index),
+			); err != nil {
+				registerErrors <- err
+			}
+		}(i, registry)
+	}
+	close(start)
+	workers.Wait()
+	close(stopGC)
+	<-gcDone
+
+	select {
+	case err := <-gcErrors:
+		t.Fatalf("RunGC raced with registry persistence: %v", err)
+	default:
+	}
+	close(registerErrors)
+	for err := range registerErrors {
+		t.Errorf("Register raced with RunGC: %v", err)
+	}
+
+	reloaded := build.NewBinaryRegistry(ws.BinariesDir())
+	if got := reloaded.Len(); got != registrations {
+		t.Fatalf("persisted registry contains %d entries, want %d", got, registrations)
+	}
+}
+
+func TestBinaryRegistryMutationSequenceMatchesLastWrite(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		dir := t.TempDir()
+		targets := []string{t.TempDir(), t.TempDir(), t.TempDir()}
+		registries := []*build.BinaryRegistry{
+			build.NewBinaryRegistry(dir),
+			build.NewBinaryRegistry(dir),
+			build.NewBinaryRegistry(dir),
+		}
+		want := make(map[string]string)
+		operationCount := rapid.IntRange(1, 12).Draw(rt, "operation-count")
+		for operation := 0; operation < operationCount; operation++ {
+			registryIndex := rapid.IntRange(0, len(registries)-1).
+				Draw(rt, fmt.Sprintf("registry-%d", operation))
+			keyIndex := rapid.IntRange(0, 2).
+				Draw(rt, fmt.Sprintf("key-%d", operation))
+			targetIndex := rapid.IntRange(0, len(targets)-1).
+				Draw(rt, fmt.Sprintf("target-%d", operation))
+			key := fmt.Sprintf("hash-%d", keyIndex)
+			if err := registries[registryIndex].Register(key, targets[targetIndex]); err != nil {
+				rt.Fatalf("Register(%q): %v", key, err)
+			}
+			want[key] = targets[targetIndex]
+		}
+
+		reloaded := build.NewBinaryRegistry(dir)
+		if got := reloaded.Len(); got != len(want) {
+			rt.Fatalf("persisted registry contains %d entries, want %d", got, len(want))
+		}
+		for key, wantPath := range want {
+			gotPath, ok := reloaded.Lookup(key)
+			if !ok {
+				rt.Fatalf("persisted registry lost %s", key)
+			}
+			if gotPath != wantPath {
+				rt.Fatalf("Lookup(%q) = %q, want %q", key, gotPath, wantPath)
+			}
+		}
+	})
 }
 
 // ---- BuildRequest validation tests ----

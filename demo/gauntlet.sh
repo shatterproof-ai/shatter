@@ -36,12 +36,24 @@ SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
 # str-jeen.58.
 SHATTER_ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-artifacts.XXXXXX")"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
-XDG_CACHE_HOME="${XDG_CACHE_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")}"
-GOCACHE="${GOCACHE:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")}"
+OWN_XDG_CACHE_HOME=false
+if [[ -z "${XDG_CACHE_HOME:-}" ]]; then
+    XDG_CACHE_HOME="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")"
+    OWN_XDG_CACHE_HOME=true
+fi
+OWN_GOCACHE=false
+if [[ -z "${GOCACHE:-}" ]]; then
+    GOCACHE="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")"
+    OWN_GOCACHE=true
+fi
 CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
 # Isolate Cargo's target directory so the gauntlet doesn't contend with
 # concurrent cargo commands (e.g. cargo test) over the shared artifact lock.
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cargo-target.XXXXXX")}"
+OWN_CARGO_TARGET_DIR=false
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+    CARGO_TARGET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cargo-target.XXXXXX")"
+    OWN_CARGO_TARGET_DIR=true
+fi
 
 # HTML reports are written here; intentionally NOT cleaned up so user can inspect after.
 HTML_REPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-gauntlet.XXXXXX")"
@@ -52,7 +64,31 @@ STEP_ERRORS=0
 EXAMPLES_ROOT=""
 BENCH_MANIFEST_TMP=""
 
-cleanup() { rm -rf "$SHATTER_CACHE_DIR" "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" "$XDG_CACHE_HOME" "$GOCACHE" "$CARGO_TARGET_DIR" "$EXAMPLES_ROOT" "$BENCH_MANIFEST_TMP" || true; }
+# Scratch dir for per-run artifacts that steps read back from later in the
+# same run (specs, observations, scan reports). Previously these were fixed
+# /tmp paths, which two concurrent gauntlet runs would clobber. See str-35vtk.4.
+GAUNTLET_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-gauntlet-tmp.XXXXXX")"
+
+preserve_concurrency_evidence() {
+    [[ -n "${SHATTER_GAUNTLET_EVIDENCE_DIR:-}" ]] || return 0
+    mkdir -p "$SHATTER_GAUNTLET_EVIDENCE_DIR"
+    for artifact in "$GAUNTLET_TMP_DIR"/*; do
+        [[ -f "$artifact" ]] || continue
+        cp "$artifact" "$SHATTER_GAUNTLET_EVIDENCE_DIR/"
+    done
+    printf 'gauntlet_tmp=%s\nexamples_root=%s\n' \
+        "$GAUNTLET_TMP_DIR" "$EXAMPLES_ROOT" \
+        > "$SHATTER_GAUNTLET_EVIDENCE_DIR/run-paths.txt"
+}
+
+cleanup() {
+    preserve_concurrency_evidence || true
+    rm -rf "$SHATTER_CACHE_DIR" "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" \
+        "$EXAMPLES_ROOT" "$BENCH_MANIFEST_TMP" "$GAUNTLET_TMP_DIR" || true
+    [[ "$OWN_XDG_CACHE_HOME" == false ]] || rm -rf "$XDG_CACHE_HOME"
+    [[ "$OWN_GOCACHE" == false ]] || rm -rf "$GOCACHE"
+    [[ "$OWN_CARGO_TARGET_DIR" == false ]] || rm -rf "$CARGO_TARGET_DIR"
+}
 trap cleanup EXIT
 
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
@@ -560,16 +596,23 @@ step 26 $TOTAL "Behavioral Specification (JSON)" \
 # Stage 26: Spec diff
 # Generate specs from v1 and v2 fixture variants of classifyNumber and diff them.
 # v2 adds a "large" threshold, so the diff shows added/changed behaviors.
+printf -v SPEC_DIFF_COMMAND \
+    '%q explore --max-iterations 20 --timeout-explore 15 --quiet --spec-out %q %q && %q explore --max-iterations 20 --timeout-explore 15 --quiet --spec-out %q %q && { %q spec-diff %q %q; true; }' \
+    "$SHATTER" "$GAUNTLET_TMP_DIR/shatter-spec-old.json" 'demo/fixtures/arithmetic-v1.ts:classifyNumber' \
+    "$SHATTER" "$GAUNTLET_TMP_DIR/shatter-spec-new.json" 'demo/fixtures/arithmetic-v2.ts:classifyNumber' \
+    "$SHATTER" "$GAUNTLET_TMP_DIR/shatter-spec-old.json" "$GAUNTLET_TMP_DIR/shatter-spec-new.json"
 step 27 $TOTAL "Specification Diff" \
     "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
-    bash -c "$SHATTER explore --max-iterations 20 --timeout-explore 15 --quiet --spec-json 'demo/fixtures/arithmetic-v1.ts:classifyNumber' > /tmp/shatter-spec-old.json && $SHATTER explore --max-iterations 20 --timeout-explore 15 --quiet --spec-json 'demo/fixtures/arithmetic-v2.ts:classifyNumber' > /tmp/shatter-spec-new.json && { $SHATTER spec-diff /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true; }"
+    bash -c "$SPEC_DIFF_COMMAND"
 
 # Stage 27: Cross-language compare
 # Reuses the v1 and v2 spec files from step 27 to demonstrate cross-language
 # behavioral comparison. Compares by input/output behavior, ignoring branch paths.
+printf -v COMPARE_COMMAND '%q compare %q %q; true' \
+    "$SHATTER" "$GAUNTLET_TMP_DIR/shatter-spec-old.json" "$GAUNTLET_TMP_DIR/shatter-spec-new.json"
 step 28 $TOTAL "Cross-Language Compare" \
     "Compare two specs by input/output behavior (ignoring language-specific branch paths)" \
-    bash -c "$SHATTER compare /tmp/shatter-spec-old.json /tmp/shatter-spec-new.json; true"
+    bash -c "$COMPARE_COMMAND"
 
 # Stage 28: Explore without boundary values
 step 29 $TOTAL "Explore Without Boundary Values" \
@@ -579,7 +622,7 @@ step 29 $TOTAL "Explore Without Boundary Values" \
 # Stage 29: Markdown scan report
 step 30 $TOTAL "Markdown Scan Report" \
     "Generate a human-readable markdown report alongside JSON" \
-    $SHATTER scan -o /tmp/shatter-scan-report.md "$EXAMPLES_TS_DIR"
+    $SHATTER scan -o "$GAUNTLET_TMP_DIR/shatter-scan-report.md" "$EXAMPLES_TS_DIR"
 
 # Stage 30: Scan dry-run
 step 31 $TOTAL "Scan Dry Run" \
@@ -636,30 +679,33 @@ step 40 $TOTAL "MC/DC Coverage Analysis" \
 # Stage 40: Spec output to file (--output)
 step 41 $TOTAL "Spec Output to File" \
     "Write a spec bundle to a JSON file with --output (includes fingerprints)" \
-    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output "$GAUNTLET_TMP_DIR/shatter-spec.json" "${EXAMPLES[0]}"
 
 # Stage 41: Incremental re-run (skips fresh functions)
 step 42 $TOTAL "Incremental Re-run" \
     "Re-run with --output against existing spec — unchanged functions are skipped" \
-    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output /tmp/shatter-spec.json "${EXAMPLES[0]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output "$GAUNTLET_TMP_DIR/shatter-spec.json" "${EXAMPLES[0]}"
 
 # Stage 42: Dry-run mode
 step 43 $TOTAL "Dry-Run Mode" \
     "Use --dry-run to preview which functions would be re-explored without actually exploring" \
-    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output /tmp/shatter-spec.json --dry-run "${EXAMPLES[0]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output "$GAUNTLET_TMP_DIR/shatter-spec.json" --dry-run "${EXAMPLES[0]}"
 
 # Stage 43: Clean re-exploration
 step 44 $TOTAL "Clean Re-exploration" \
     "Use --clean to force full re-exploration, ignoring the existing spec" \
-    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output /tmp/shatter-spec.json --clean "${EXAMPLES[0]}"
+    $SHATTER explore --max-iterations 20 --timeout-explore 15 --output "$GAUNTLET_TMP_DIR/shatter-spec.json" --clean "${EXAMPLES[0]}"
 
 # Stage 44: Stale command
 # The spec from step 40 only explored classifyNumber. The file also exports
 # compareMagnitudes, so `stale` correctly reports it as stale. Exit code 1
 # means "some functions are stale or removed" — this is informational, not a failure.
+printf -v STALE_COMMAND '%q stale %q %q; echo %q' \
+    "$SHATTER" "$TS_ARITHMETIC_FILE" "$GAUNTLET_TMP_DIR/shatter-spec.json" \
+    '(exit code 1 is expected: compareMagnitudes was not in the spec from step 40)'
 step 45 $TOTAL "Stale Check" \
     "Check staleness relative to spec from step 40 (exit 1 = stale found, expected here)" \
-    bash -c "$SHATTER stale '"$TS_ARITHMETIC_FILE"' /tmp/shatter-spec.json; echo '(exit code 1 is expected: compareMagnitudes was not in the spec from step 40)'"
+    bash -c "$STALE_COMMAND"
 
 # Stage 45: Revalidate command
 # Re-execute cached behaviors to check for drift/regressions. Uses cache
@@ -685,28 +731,28 @@ step 48 $TOTAL "Setup Fail-on-Error" \
 # Stage 48: Observe command — run observation stage, write ObserveStageOutput JSON
 step 49 $TOTAL "Observe Stage" \
     "Run observation stage only for classifyNumber, write to temp file" \
-    $SHATTER observe --output /tmp/shatter-observe.json \
+    $SHATTER observe --output "$GAUNTLET_TMP_DIR/shatter-observe.json" \
     "$TS_ARITHMETIC_FN"
 
 # Stage 49: Analyze observe output — offline analysis, no frontend needed
 step 50 $TOTAL "Analyze Observe Output" \
     "Read observation output and run offline analysis stage" \
-    $SHATTER analyze /tmp/shatter-observe.json
+    $SHATTER analyze "$GAUNTLET_TMP_DIR/shatter-observe.json"
 
 # Stage 50: Solve uncovered branches — offline Z3 constraint solving
 step 51 $TOTAL "Solve Uncovered Branches" \
     "Run Z3 constraint solver on observation output to find inputs for uncovered branches" \
-    $SHATTER solve /tmp/shatter-observe.json
+    $SHATTER solve "$GAUNTLET_TMP_DIR/shatter-observe.json"
 
 # Stage 51: Specify from observation — build FunctionSpec markdown
 step 52 $TOTAL "Specify from Observation" \
     "Build FunctionSpec markdown from observation output" \
-    $SHATTER specify /tmp/shatter-observe.json
+    $SHATTER specify "$GAUNTLET_TMP_DIR/shatter-observe.json"
 
 # Stage 52: Specify YAML — build FunctionSpec with invariant property descriptions
 step 53 $TOTAL "Specify from Observation (YAML)" \
     "Build FunctionSpec as YAML with inferred invariant property descriptions" \
-    $SHATTER specify --yaml --invariants /tmp/shatter-observe.json
+    $SHATTER specify --yaml --invariants "$GAUNTLET_TMP_DIR/shatter-observe.json"
 
 # Stage 53: HTML explore report
 step 54 $TOTAL "HTML Explore Report" \

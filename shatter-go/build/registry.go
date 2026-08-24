@@ -10,6 +10,8 @@ import (
 
 const registryFileName = "binary_registry.json"
 
+const registryStateDirectorySuffix = "-registry-state"
+
 // BinaryRegistry is a thread-safe in-memory registry of compiled launcher
 // binaries, keyed by discovery hash. It also persists the index to disk so
 // that a freshly constructed Registry can recover cached binaries from a
@@ -57,7 +59,7 @@ func (r *BinaryRegistry) Register(discoveryHash, binaryPath string) error {
 	defer r.mu.Unlock()
 	r.index[discoveryHash] = binaryPath
 	if r.persistPath != "" {
-		return r.save()
+		return r.save(discoveryHash, binaryPath)
 	}
 	return nil
 }
@@ -77,22 +79,69 @@ func (r *BinaryRegistry) load() error {
 	return json.Unmarshal(data, &r.index)
 }
 
-func (r *BinaryRegistry) save() error {
+func (r *BinaryRegistry) save(discoveryHash, binaryPath string) error {
 	dir := filepath.Dir(r.persistPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("registry: mkdir %q: %w", dir, err)
 	}
-	data, err := json.MarshalIndent(r.index, "", "  ")
+	stateDir := registryStateDir(dir)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return fmt.Errorf("registry: mkdir state dir %q: %w", stateDir, err)
+	}
+	release, err := acquireRegistryPersistenceLock(stateDir)
+	if err != nil {
+		return fmt.Errorf("registry: acquire persistence lock: %w", err)
+	}
+	defer release()
+
+	persisted := make(map[string]string)
+	data, err := os.ReadFile(r.persistPath)
+	if err == nil {
+		if err := json.Unmarshal(data, &persisted); err != nil {
+			return fmt.Errorf("registry: decode persisted index: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("registry: read persisted index: %w", err)
+	}
+	// Persist only this Register mutation. The receiver may have loaded its
+	// in-memory snapshot before another process updated the file; merging the
+	// whole snapshot here would roll those newer values back.
+	persisted[discoveryHash] = binaryPath
+
+	data, err = json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return fmt.Errorf("registry: marshal: %w", err)
 	}
-	tmp := r.persistPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// RunGC manages binaries/, so both synchronization and scratch files live
+	// in a sibling state directory. The sibling remains on the same filesystem,
+	// preserving atomic rename into the final registry path.
+	tmpFile, err := os.CreateTemp(stateDir, registryFileName+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("registry: create tmp: %w", err)
+	}
+	tmp := tmpFile.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if err := tmpFile.Chmod(0o644); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("registry: chmod tmp: %w", err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("registry: write tmp: %w", err)
 	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("registry: close tmp: %w", err)
+	}
 	if err := os.Rename(tmp, r.persistPath); err != nil {
-		_ = os.Remove(tmp)
 		return fmt.Errorf("registry: rename: %w", err)
 	}
+	r.index = persisted
 	return nil
+}
+
+func registryStateDir(persistDir string) string {
+	return filepath.Join(
+		filepath.Dir(persistDir),
+		"."+filepath.Base(persistDir)+registryStateDirectorySuffix,
+	)
 }
