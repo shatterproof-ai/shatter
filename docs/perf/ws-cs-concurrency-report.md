@@ -43,10 +43,11 @@ and `spec-diff` accepts them.
 ## Shared state fixes
 
 - The reusable examples cache serializes clone, validation, refresh, and
-  cleanup. Every caller receives an independent local clone created while the
-  cache lock is held, so a later refresh or cleanup cannot mutate an in-flight
-  reader even after the ten-minute refresh window expires. `--no-update` also
-  waits for and validates a complete canonical clone under that lock.
+  cleanup. Callers receive an immutable local clone keyed by canonical Git
+  commit and published atomically while the cache lock is held, so a later
+  refresh cannot mutate an in-flight reader even after the ten-minute refresh
+  window expires. Calls at the same commit reuse one snapshot. `--no-update`
+  also waits for and validates a complete canonical clone under that lock.
 - `BinaryRegistry` persistence reloads the on-disk index under a cross-process
   lock and applies only the current registration, preventing a stale instance
   from rolling back a newer value. Lock and temporary files live in a sibling
@@ -85,8 +86,9 @@ within the configured 30-second bound.
   flock-protected timing CSV; those paths coordinate agents rather than hold
   per-run artifacts.
 - `/tmp/shatter-examples-main` is a shared cache protected by the checkout
-  lock. Consumers use unique `shatter-examples.snapshot.*` clones; fresh demo
-  checkouts use unique `shatter-examples.*` directories.
+  lock. Consumers reuse immutable commit-keyed clones under
+  `/tmp/shatter-examples-snapshots/`; fresh demo checkouts use unique
+  `shatter-examples.*` directories.
 - `scripts/cleanup.sh --tmp` is an explicit garbage-collection command, not a
   runtime consumer; it must not be run concurrently with active demos.
 - No fixed listening ports were found under `demo/` or `scripts/`.
