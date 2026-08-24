@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 const registryFileName = "binary_registry.json"
+
+const registryStateDirectorySuffix = "-registry-state"
 
 // BinaryRegistry is a thread-safe in-memory registry of compiled launcher
 // binaries, keyed by discovery hash. It also persists the index to disk so
@@ -57,7 +60,7 @@ func (r *BinaryRegistry) Register(discoveryHash, binaryPath string) error {
 	defer r.mu.Unlock()
 	r.index[discoveryHash] = binaryPath
 	if r.persistPath != "" {
-		return r.save()
+		return r.save(discoveryHash, binaryPath)
 	}
 	return nil
 }
@@ -77,12 +80,16 @@ func (r *BinaryRegistry) load() error {
 	return json.Unmarshal(data, &r.index)
 }
 
-func (r *BinaryRegistry) save() error {
+func (r *BinaryRegistry) save(discoveryHash, binaryPath string) error {
 	dir := filepath.Dir(r.persistPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("registry: mkdir %q: %w", dir, err)
 	}
-	release, err := acquireBuildGenerationLock(dir, registryFileName)
+	stateDir := registryStateDir(dir)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return fmt.Errorf("registry: mkdir state dir %q: %w", stateDir, err)
+	}
+	release, err := acquireRegistryPersistenceLock(stateDir)
 	if err != nil {
 		return fmt.Errorf("registry: acquire persistence lock: %w", err)
 	}
@@ -97,16 +104,19 @@ func (r *BinaryRegistry) save() error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("registry: read persisted index: %w", err)
 	}
-	for hash, binaryPath := range r.index {
-		persisted[hash] = binaryPath
-	}
-	r.index = persisted
+	// Persist only this Register mutation. The receiver may have loaded its
+	// in-memory snapshot before another process updated the file; merging the
+	// whole snapshot here would roll those newer values back.
+	persisted[discoveryHash] = binaryPath
 
-	data, err = json.MarshalIndent(r.index, "", "  ")
+	data, err = json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return fmt.Errorf("registry: marshal: %w", err)
 	}
-	tmpFile, err := os.CreateTemp(dir, registryFileName+".*.tmp")
+	// RunGC manages binaries/, so both synchronization and scratch files live
+	// in a sibling state directory. The sibling remains on the same filesystem,
+	// preserving atomic rename into the final registry path.
+	tmpFile, err := os.CreateTemp(stateDir, registryFileName+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("registry: create tmp: %w", err)
 	}
@@ -126,5 +136,29 @@ func (r *BinaryRegistry) save() error {
 	if err := os.Rename(tmp, r.persistPath); err != nil {
 		return fmt.Errorf("registry: rename: %w", err)
 	}
+	r.index = persisted
 	return nil
+}
+
+func registryStateDir(persistDir string) string {
+	return filepath.Join(
+		filepath.Dir(persistDir),
+		"."+filepath.Base(persistDir)+registryStateDirectorySuffix,
+	)
+}
+
+func acquireRegistryPersistenceLock(stateDir string) (func(), error) {
+	lockPath := filepath.Join(stateDir, registryFileName+".lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open %q: %w", lockPath, err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("lock %q: %w", lockPath, err)
+	}
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
 }
