@@ -196,7 +196,10 @@ export SHATTER_ARTIFACT_DIR="$ambient_artifact"
 export CARGO_TARGET_DIR="$ambient_cargo"
 override_capture="$SCRATCH/gauntlet-warm-overrides.env"
 run_to_checkpoint gauntlet "$override_capture"
-assert_warm_paths "$override_capture" "$SHATTER_DEMO_CACHE" "gauntlet warm override"
+check_eq "$(value_of "$override_capture" SHATTER_CACHE_DIR)" \
+    "$SHATTER_DEMO_CACHE/cache" "gauntlet warm override cache path"
+check_eq "$(value_of "$override_capture" SHATTER_HARNESS_CACHE)" \
+    "$SHATTER_DEMO_CACHE/harness" "gauntlet warm override harness path"
 override_artifact="$(value_of "$override_capture" SHATTER_ARTIFACT_DIR)"
 [[ "$override_artifact" != "$ambient_artifact" ]] || fail "warm artifact must be per-run, not ambient"
 check_under "$override_artifact" "$TMPDIR" "warm artifact must be temporary"
