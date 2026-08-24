@@ -42,14 +42,17 @@ and `spec-diff` accepts them.
 
 ## Shared state fixes
 
-- The reusable examples checkout serializes clone, refresh, and cleanup,
-  records a ten-minute freshness marker before returning a fresh clone, and
-  never recursively acquires its own lock. Read-only consumers avoid resets
-  during the freshness window.
-- `BinaryRegistry` persistence uses the existing cross-process build lock,
-  reloads and merges the on-disk index while locked, and renames a unique
-  temporary file. The regression models two stale processes and proves both
-  entries survive.
+- The reusable examples cache serializes clone, validation, refresh, and
+  cleanup. Every caller receives an independent local clone created while the
+  cache lock is held, so a later refresh or cleanup cannot mutate an in-flight
+  reader even after the ten-minute refresh window expires. `--no-update` also
+  waits for and validates a complete canonical clone under that lock.
+- `BinaryRegistry` persistence reloads the on-disk index under a cross-process
+  lock and applies only the current registration, preventing a stale instance
+  from rolling back a newer value. Lock and temporary files live in a sibling
+  state directory outside `binaries/`, where concurrent workspace GC cannot
+  remove them. Example and Rapid state-machine regressions cover stale
+  same-key updates, unrelated keys, and registration concurrent with GC.
 - Gauntlet specifications, observations, and scan reports use one `mktemp`
   directory per run. Caller-owned `XDG_CACHE_HOME`, `GOCACHE`, and
   `CARGO_TARGET_DIR` values are no longer deleted. Walkthrough likewise
@@ -81,9 +84,9 @@ within the configured 30-second bound.
 - `scripts/gate-wrapper.sh` intentionally uses a fixed lock directory and a
   flock-protected timing CSV; those paths coordinate agents rather than hold
   per-run artifacts.
-- `/tmp/shatter-examples-main` is intentionally shared and protected by the
-  checkout lock/freshness protocol. Fresh demo checkouts use unique
-  `shatter-examples.*` directories.
+- `/tmp/shatter-examples-main` is a shared cache protected by the checkout
+  lock. Consumers use unique `shatter-examples.snapshot.*` clones; fresh demo
+  checkouts use unique `shatter-examples.*` directories.
 - `scripts/cleanup.sh --tmp` is an explicit garbage-collection command, not a
   runtime consumer; it must not be run concurrently with active demos.
 - No fixed listening ports were found under `demo/` or `scripts/`.
