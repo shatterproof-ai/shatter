@@ -6,7 +6,7 @@ Date: 2026-08-23
 
 The acceptance harness launched two `task --force smoke` processes and two
 `demo/gauntlet.sh --auto --delay 0 --step-timeout 300` processes at the same
-time from commit `2807e6c9`. Each gauntlet copied its per-run spec, observation,
+time from commit `87da0048`. Each gauntlet copied its per-run spec, observation,
 scan report, and path manifest into a distinct evidence directory before its
 private scratch directory was removed.
 
@@ -20,14 +20,14 @@ scripts/concurrency-safety-check.sh
 It prints the durable run directory and preserves logs, result records, JSON,
 Markdown, path manifests, and a summary there for independent inspection.
 The final candidate run is preserved at
-`/tmp/str-35vtk4-acceptance.1vEuV2` on the validation host.
+`/tmp/str-35vtk4-acceptance.5m1c46` on the validation host.
 
 | Run | Exit | Wall time |
 |---|---:|---:|
-| smoke-1 | 0 | 25s |
-| smoke-2 | 0 | 25s |
-| gauntlet-1 | 0 | 290s |
-| gauntlet-2 | 0 | 292s |
+| smoke-1 | 0 | 19s |
+| smoke-2 | 0 | 18s |
+| gauntlet-1 | 0 | 391s |
+| gauntlet-2 | 0 | 391s |
 
 The mechanical validator parsed every preserved JSON artifact, required a
 Markdown scan report from each gauntlet, and rejected references to the other
