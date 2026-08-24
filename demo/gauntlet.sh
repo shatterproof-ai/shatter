@@ -597,9 +597,9 @@ step 26 $TOTAL "Behavioral Specification (JSON)" \
 # Generate specs from v1 and v2 fixture variants of classifyNumber and diff them.
 # v2 adds a "large" threshold, so the diff shows added/changed behaviors.
 printf -v SPEC_DIFF_COMMAND \
-    '%q explore --max-iterations 20 --timeout-explore 15 --quiet --spec-json %q > %q && %q explore --max-iterations 20 --timeout-explore 15 --quiet --spec-json %q > %q && { %q spec-diff %q %q; true; }' \
-    "$SHATTER" 'demo/fixtures/arithmetic-v1.ts:classifyNumber' "$GAUNTLET_TMP_DIR/shatter-spec-old.json" \
-    "$SHATTER" 'demo/fixtures/arithmetic-v2.ts:classifyNumber' "$GAUNTLET_TMP_DIR/shatter-spec-new.json" \
+    '%q explore --max-iterations 20 --timeout-explore 15 --quiet --spec-out %q %q && %q explore --max-iterations 20 --timeout-explore 15 --quiet --spec-out %q %q && { %q spec-diff %q %q; true; }' \
+    "$SHATTER" "$GAUNTLET_TMP_DIR/shatter-spec-old.json" 'demo/fixtures/arithmetic-v1.ts:classifyNumber' \
+    "$SHATTER" "$GAUNTLET_TMP_DIR/shatter-spec-new.json" 'demo/fixtures/arithmetic-v2.ts:classifyNumber' \
     "$SHATTER" "$GAUNTLET_TMP_DIR/shatter-spec-old.json" "$GAUNTLET_TMP_DIR/shatter-spec-new.json"
 step 27 $TOTAL "Specification Diff" \
     "Compare behavioral specs from two versions of classifyNumber to detect regressions" \
