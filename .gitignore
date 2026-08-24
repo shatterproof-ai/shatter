@@ -179,4 +179,5 @@ shatter-go/bin/
 .shatter-cache/
 .shatter/seeds/
 shatter-artifacts/
+.shatter/cache/
 # <<< shatter generated paths
