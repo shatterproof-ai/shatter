@@ -8,6 +8,7 @@ import contextlib
 import fcntl
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ DEFAULT_REPO_URL = "https://github.com/shatterproof-ai/examples.git"
 DEFAULT_BRANCH = "main"
 DEFAULT_DIR = Path(tempfile.gettempdir()) / "shatter-examples-main"
 SNAPSHOT_CACHE_DIR = Path(tempfile.gettempdir()) / "shatter-examples-snapshots"
+SNAPSHOT_PERMISSIONS_MARKER = ".shatter-read-only-v1"
 
 # Skip the network fetch + reset + clean if the canonical checkout was refreshed
 # more recently than this. Concurrent `task` invocations (e.g. two `task
@@ -128,6 +130,41 @@ def _clone_shared_checkout(repo_url: str, checkout_dir: Path) -> Path:
     return cloned
 
 
+def _make_snapshot_worktree_read_only(snapshot_dir: Path) -> None:
+    """Remove worktree write bits while leaving .git writable and usable."""
+    marker = snapshot_dir / ".git" / SNAPSHOT_PERMISSIONS_MARKER
+    if marker.exists():
+        return
+
+    directories = [snapshot_dir]
+    for root, dir_names, file_names in os.walk(snapshot_dir):
+        root_path = Path(root)
+        if root_path == snapshot_dir and ".git" in dir_names:
+            dir_names.remove(".git")
+        directories.extend(root_path / name for name in dir_names)
+        for name in file_names:
+            path = root_path / name
+            if path == snapshot_dir / ".git" or path.is_symlink():
+                continue
+            mode = stat.S_IMODE(path.stat().st_mode)
+            path.chmod(0o444 | (mode & 0o111))
+
+    for directory in reversed(directories):
+        directory.chmod(0o555)
+    marker.write_text("worktree content is read-only\n", encoding="utf-8")
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove a tree whose directories may intentionally be read-only."""
+    for root, dir_names, _file_names in os.walk(path):
+        Path(root).chmod(0o700)
+        for name in dir_names:
+            directory = Path(root) / name
+            if not directory.is_symlink():
+                directory.chmod(0o700)
+    shutil.rmtree(path)
+
+
 def _snapshot_shared_checkout_locked(checkout_dir: Path) -> Path:
     """Return an immutable, independently stored snapshot of canonical HEAD."""
     _validate_shared_checkout_locked(checkout_dir)
@@ -140,6 +177,7 @@ def _snapshot_shared_checkout_locked(checkout_dir: Path) -> Path:
     published_root = SNAPSHOT_CACHE_DIR / commit
     published_snapshot = published_root / "examples"
     if (published_snapshot / ".git").exists():
+        _make_snapshot_worktree_read_only(published_snapshot)
         return published_snapshot.resolve()
     if published_root.exists():
         raise SystemExit(f"examples snapshot cache entry is incomplete: {published_root}")
@@ -165,6 +203,7 @@ def _snapshot_shared_checkout_locked(checkout_dir: Path) -> Path:
                 str(temporary_snapshot),
             ]
         )
+        _make_snapshot_worktree_read_only(temporary_snapshot)
         # Readers only discover the commit-named directory after the clone is
         # complete. The canonical checkout lock serializes publishers.
         temporary_root.rename(published_root)
@@ -175,12 +214,13 @@ def _snapshot_shared_checkout_locked(checkout_dir: Path) -> Path:
 
 
 def cleanup_checkout(checkout_dir: Path) -> None:
+    """Remove shared examples state; callers guarantee no active readers."""
     with _locked_shared_checkout(checkout_dir):
         if checkout_dir.exists():
             shutil.rmtree(checkout_dir)
         _refresh_marker_path(checkout_dir).unlink(missing_ok=True)
         if SNAPSHOT_CACHE_DIR.exists():
-            shutil.rmtree(SNAPSHOT_CACHE_DIR)
+            _remove_tree(SNAPSHOT_CACHE_DIR)
 
 
 def ensure_examples_checkout(args: argparse.Namespace) -> Path:
@@ -233,7 +273,7 @@ def main() -> None:
     parser.add_argument(
         "--cleanup",
         action="store_true",
-        help="delete the default reusable /tmp checkout if it exists",
+        help="delete shared caches (requires no active examples readers)",
     )
     args = parser.parse_args()
 

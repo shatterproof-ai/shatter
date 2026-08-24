@@ -6,12 +6,13 @@
 # --all          Clean everything (default if no flags given)
 # --worktrees    Remove stale git worktrees (fully committed, no outstanding changes)
 # --builds       Remove Rust target/ dirs and Go binaries
-# --tmp          Remove shatter temp files from /tmp
+# --tmp          Remove shatter temp files (requires no active examples readers)
 # --incremental  Remove only Rust incremental compilation caches (fast, preserves deps)
 
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP_ROOT="${TMPDIR:-/tmp}"
 
 DRY_RUN=false
 DO_WORKTREES=false
@@ -185,10 +186,37 @@ fi
 if [ "$DO_TMP" = true ]; then
   log "=== Temp Files ==="
 
+  # This is an explicit stop-the-world GC operation: commit snapshots are
+  # immutable and may be serving long-running gates. Route deletion through
+  # the helper so canonical checkout and snapshot state are removed under the
+  # same flock used by clone/refresh. The operator guarantees no active readers.
+  examples_found=false
+  examples_size=0
+  for examples_path in \
+    "$TMP_ROOT/shatter-examples-main" \
+    "$TMP_ROOT/.shatter-examples-main.last-refresh" \
+    "$TMP_ROOT/shatter-examples-snapshots"; do
+    if [ -e "$examples_path" ]; then
+      examples_found=true
+      size=$(dir_size_bytes "$examples_path")
+      examples_size=$((examples_size + size))
+    fi
+  done
+  if [ "$examples_found" = true ]; then
+    if [ "$DRY_RUN" = true ]; then
+      log "would remove shared examples caches ($(human_size "$examples_size")); requires no active examples readers"
+    else
+      log "removing shared examples caches; requires no active examples readers"
+      TMPDIR="$TMP_ROOT" python3 "$PROJECT_ROOT/scripts/examples_checkout.py" --cleanup
+      log "removed shared examples caches ($(human_size "$examples_size"))"
+    fi
+    TOTAL_FREED=$((TOTAL_FREED + examples_size))
+  fi
+
   # Shatter-generated temp dirs/files
-  for f in /tmp/shatter-gen-* /tmp/shatter-demo-* /tmp/shatter-spec* \
-           /tmp/shatter-go-spec* /tmp/shatter-rust-stderr* \
-           /tmp/shatter-examples-main /tmp/shatter-examples.*; do
+  for f in "$TMP_ROOT"/shatter-gen-* "$TMP_ROOT"/shatter-demo-* \
+           "$TMP_ROOT"/shatter-spec* "$TMP_ROOT"/shatter-go-spec* \
+           "$TMP_ROOT"/shatter-rust-stderr* "$TMP_ROOT"/shatter-examples.*; do
     if [ -e "$f" ]; then
       size=$(dir_size_bytes "$f")
       if [ "$DRY_RUN" = true ]; then

@@ -113,5 +113,6 @@ passed the restored `check-fast` pre-push gate.
   `/tmp/shatter-examples-snapshots/`; fresh demo checkouts use unique
   `shatter-examples.*` directories.
 - `scripts/cleanup.sh --tmp` is an explicit garbage-collection command, not a
-  runtime consumer; it must not be run concurrently with active demos.
+  runtime consumer; it must not be run concurrently with active demos, gates,
+  or profiling processes that may be reading an examples snapshot.
 - No fixed listening ports were found under `demo/` or `scripts/`.

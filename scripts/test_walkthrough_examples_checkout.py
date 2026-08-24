@@ -166,6 +166,50 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                 examples_checkout.DEFAULT_DIR = original_dir
                 examples_checkout.run_git = original_run_git
 
+    def test_published_snapshot_worktree_is_read_only_but_git_metadata_works(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout_dir = Path(tmp) / "examples"
+            snapshot_cache = Path(tmp) / "snapshots"
+            self._init_git_checkout(checkout_dir)
+            executable = checkout_dir / "tool.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+            subprocess.run(["git", "add", "tool.sh"], cwd=checkout_dir, check=True)
+            subprocess.run(
+                ["git", "commit", "--quiet", "--amend", "-m", "fixture"],
+                cwd=checkout_dir,
+                check=True,
+            )
+            examples_checkout._refresh_marker_path(checkout_dir).touch()
+            args = argparse.Namespace(fresh=False, no_update=True, cleanup=False)
+
+            original_dir = examples_checkout.DEFAULT_DIR
+            examples_checkout.DEFAULT_DIR = checkout_dir
+            try:
+                with self._using_snapshot_cache(snapshot_cache):
+                    snapshot = examples_checkout.ensure_examples_checkout(args)
+
+                self.assertEqual(snapshot.stat().st_mode & 0o222, 0)
+                self.assertEqual((snapshot / "example.txt").stat().st_mode & 0o222, 0)
+                self.assertEqual((snapshot / "tool.sh").stat().st_mode & 0o222, 0)
+                self.assertNotEqual((snapshot / "tool.sh").stat().st_mode & 0o111, 0)
+                with self.assertRaises(PermissionError):
+                    (snapshot / "example.txt").write_text("mutated\n", encoding="utf-8")
+
+                status = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=snapshot,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(status.stdout, "")
+                metadata_probe = snapshot / ".git" / "write-probe"
+                metadata_probe.write_text("ok\n", encoding="utf-8")
+                self.assertEqual(metadata_probe.read_text(encoding="utf-8"), "ok\n")
+            finally:
+                examples_checkout.DEFAULT_DIR = original_dir
+
     def test_failed_snapshot_clone_leaves_no_partial_published_revision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkout_dir = Path(tmp) / "examples"
@@ -332,6 +376,58 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                 self.assertFalse(snapshot_cache.exists())
             finally:
                 examples_checkout._locked_shared_checkout = original_lock
+
+    def test_cleanup_script_tmp_uses_locked_helper_for_examples_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture_root = Path(tmp) / "project"
+            fixture_scripts = fixture_root / "scripts"
+            fixture_scripts.mkdir(parents=True)
+            shutil.copy2(REPO_ROOT / "scripts" / "cleanup.sh", fixture_scripts)
+            shutil.copy2(MODULE_PATH, fixture_scripts)
+
+            tmp_root = Path(tmp) / "tmp"
+            tmp_root.mkdir()
+            checkout_dir = tmp_root / "shatter-examples-main"
+            checkout_dir.mkdir()
+            marker = tmp_root / ".shatter-examples-main.last-refresh"
+            marker.touch()
+            snapshot_cache = tmp_root / "shatter-examples-snapshots"
+            (snapshot_cache / "commit" / "examples").mkdir(parents=True)
+
+            # Keep the broad temp-file globs non-destructive so this test
+            # isolates caches that must be removed by Python's locked helper.
+            fake_bin = Path(tmp) / "bin"
+            fake_bin.mkdir()
+            fake_rm = fake_bin / "rm"
+            fake_rm.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_rm.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            env["TMPDIR"] = str(tmp_root)
+
+            with examples_checkout._locked_shared_checkout(checkout_dir):
+                cleanup = subprocess.Popen(
+                    ["bash", str(fixture_scripts / "cleanup.sh"), "--tmp"],
+                    cwd=fixture_root,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                time.sleep(0.2)
+                if cleanup.poll() is not None:
+                    early_stdout, early_stderr = cleanup.communicate()
+                    self.fail(
+                        "cleanup must wait for the examples checkout lock; "
+                        f"stdout={early_stdout!r} stderr={early_stderr!r}"
+                    )
+
+            stdout, stderr = cleanup.communicate(timeout=5)
+            self.assertEqual(cleanup.returncode, 0, stderr)
+            self.assertIn("no active examples readers", stdout)
+            self.assertFalse(checkout_dir.exists())
+            self.assertFalse(marker.exists())
+            self.assertFalse(snapshot_cache.exists())
 
     def test_run_git_strips_leaked_actions_checkout_credentials(self) -> None:
         leaked_env = {
