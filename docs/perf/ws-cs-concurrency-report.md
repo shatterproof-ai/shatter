@@ -77,8 +77,29 @@ The repository keeps `backup.git-push: true`. Beads sets `BD_GIT_HOOK=1` while
 running managed hooks, which suppresses automatic backup from those hook
 processes; the setting therefore does not add a network push to checkout or
 merge hooks. The persistent `core.hooksPath=/dev/null` bypass found during the
-audit was removed, and a real checkout confirmed that the restored hook exits
-within the configured 30-second bound.
+audit was removed.
+
+Checkout latency was measured against the same detached commit with a fresh
+target directory each time. The disabled baseline used a command-local hook
+bypass; the bounded measurement used the installed shared hooks:
+
+```bash
+disabled="$(mktemp -d)"; rmdir "$disabled"
+/usr/bin/time -f '%e' git -c core.hooksPath=/dev/null \
+  worktree add --detach "$disabled" HEAD
+git worktree remove "$disabled"
+
+enabled="$(mktemp -d)"; rmdir "$enabled"
+/usr/bin/time -f '%e' git worktree add --detach "$enabled" HEAD
+git worktree remove "$enabled"
+```
+
+The hook-disabled checkout completed in **0.23 seconds**. With the installed
+hook path restored, the same operation completed in approximately **30.2
+seconds** when the local Beads post-checkout operation did not return promptly.
+That demonstrates the new 30-second bound in place of the Beads shim's
+300-second default ceiling. A subsequent pushed feature commit also ran and
+passed the restored `check-fast` pre-push gate.
 
 ## Fixed-resource sweep
 
