@@ -138,10 +138,13 @@ func ensureHarnessRuntimeDir() (string, error) {
 // the response.
 func generateLoopMockFile(mocks []MockConfig) string {
 	hasThrowError := false
+	hasNonPassthrough := false
 	for _, m := range mocks {
 		if m.DefaultBehavior == BehaviorThrowError {
 			hasThrowError = true
-			break
+		}
+		if m.DefaultBehavior != BehaviorPassthrough {
+			hasNonPassthrough = true
 		}
 	}
 
@@ -154,7 +157,9 @@ func generateLoopMockFile(mocks []MockConfig) string {
 		b.WriteString("\t\"fmt\"\n")
 	}
 	b.WriteString("\t\"sync\"\n")
-	b.WriteString("\t\"sync/atomic\"\n")
+	if hasNonPassthrough {
+		b.WriteString("\t\"sync/atomic\"\n")
+	}
 	b.WriteString(")\n\n")
 
 	b.WriteString("type shatterMockCall struct {\n")
@@ -183,7 +188,10 @@ func generateLoopMockFile(mocks []MockConfig) string {
 	// shatterResetMockCounters resets all per-mock call indices and the accumulated
 	// call list so each loop iteration starts from a clean state.
 	b.WriteString("func shatterResetMockCounters() {\n")
-	for i := range mocks {
+	for i, mock := range mocks {
+		if mock.DefaultBehavior == BehaviorPassthrough {
+			continue
+		}
 		fmt.Fprintf(&b, "\tatomic.StoreInt64(&shatterMock%d_callIdx, 0)\n", i)
 	}
 	b.WriteString("\tshatterMockCallsMu.Lock()\n")
