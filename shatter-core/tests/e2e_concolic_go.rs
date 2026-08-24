@@ -337,6 +337,118 @@ async fn e2e_go_classify_number_discovers_all_branches() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 1b: Go's `instrumentable_line_count` denominator (str-szcn3).
+//
+// ClassifyNumber spans source lines 19-30 (12 lines) but only 7 of those
+// lines carry a statement that receives a line-record probe (the func decl
+// line, blank lines, and comments are not instrumentable). Before this fix
+// the Go frontend's Instrument response left `instrumentable_line_count`
+// unset, so the core's `reconcile_line_coverage` fell back to the raw
+// `end_line - start_line + 1` span -- the same class of bug str-4o07 fixed
+// for TypeScript, where full coverage of every instrumentable line still
+// under-reported as a fraction of the wider span.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_instrumentable_line_count_matches_probed_lines() {
+    use shatter_core::explorer::ObservationOutput;
+    use shatter_core::observe::reconcile_observation_coverage;
+
+    let file = standalone_go_dir().join("01-arithmetic.go");
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("instrumentable-line-count").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "ClassifyNumber").await;
+    let raw_span = analysis.end_line.saturating_sub(analysis.start_line) + 1;
+
+    let instrument_response = frontend
+        .send(ProtoCommand::Instrument {
+            file: file_str.clone(),
+            function: "ClassifyNumber".to_string(),
+            mocks: vec![],
+            project_root: None,
+            execution_profile: None,
+        })
+        .await
+        .expect("instrument command failed");
+    let instrumentable_line_count = match instrument_response.result {
+        ResponseResult::Instrument {
+            instrumented,
+            instrumentable_line_count,
+            ..
+        } => {
+            assert!(instrumented, "instrumentation returned false");
+            instrumentable_line_count.expect(
+                "Go frontend should report instrumentable_line_count on the Instrument response",
+            )
+        }
+        other => panic!("expected Instrument response, got: {other:?}"),
+    };
+
+    assert_eq!(
+        instrumentable_line_count, 7,
+        "ClassifyNumber has 7 probed source lines (3 ifs + 4 returns); got {instrumentable_line_count}"
+    );
+    assert!(
+        instrumentable_line_count < raw_span,
+        "instrumentable_line_count ({instrumentable_line_count}) should be less than the raw \
+         span ({raw_span}) -- comments/blank lines/the func decl line are not instrumentable"
+    );
+
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+    let seed_inputs = vec![
+        vec![serde_json::json!(7)],
+        vec![serde_json::json!(2)],
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(0)],
+    ];
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        "ClassifyNumber",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let mut obs: ObservationOutput = result.into();
+    reconcile_observation_coverage(
+        &mut obs,
+        analysis.start_line,
+        analysis.end_line,
+        Some(instrumentable_line_count),
+    );
+
+    assert_eq!(
+        obs.total_lines, instrumentable_line_count,
+        "reconciled total_lines should equal the frontend's instrumentable_line_count, not the raw span"
+    );
+    assert_eq!(
+        obs.lines_covered, obs.total_lines as usize,
+        "seeding all four branches should cover every instrumentable line; got {}/{}",
+        obs.lines_covered, obs.total_lines
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: method with same-package constructor.
 // Test 2: method with same-package constructor.
 //
 // (*Service).Compute(x int) int -- 2 paths:
