@@ -874,10 +874,14 @@ step 59 $TOTAL "Benchmark Run (Smoke)" \
     "Run the benchmark harness on the smoke tier with 1 repeat, 0 warmups." \
     $SHATTER bench --manifest "$BENCH_MANIFEST_TMP" --tier smoke --repeats 1 --warmups 0
 
-# Stage 59: Cache clear
+# Stage 59: Cache clear. Exercise the command against disposable state so a
+# warm gauntlet does not erase the persistent cache it just populated.
+CACHE_CLEAR_DIR="$GAUNTLET_TMP_DIR/cache-clear"
+mkdir -p "$CACHE_CLEAR_DIR/seeds"
 step 60 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
-    $SHATTER cache clear
+    env SHATTER_CACHE_DIR="$CACHE_CLEAR_DIR" SHATTER_SEEDS_DIR="$CACHE_CLEAR_DIR/seeds" \
+    "$SHATTER" --color "$SHATTER_COLOR" cache clear
 
 
 # ─── Step inventory check ────────────────────────────────────────────

@@ -164,6 +164,7 @@ def display_path(path: Path) -> str:
 
 def make_cache_env(base_dir: Path) -> dict[str, str]:
     return {
+        "SHATTER_DEMO_CACHE": str(base_dir / "demo-cache"),
         "SHATTER_CACHE_DIR": str(base_dir / "shatter-cache"),
         "SHATTER_SEEDS_DIR": str(base_dir / "shatter-cache" / "seeds"),
         "XDG_CACHE_HOME": str(base_dir / "xdg-cache"),
@@ -409,6 +410,7 @@ def run_once(
     env.setdefault("SHATTER_EXAMPLES_DIR", str(resolve_examples_root()))
 
     for key in (
+        "SHATTER_DEMO_CACHE",
         "SHATTER_CACHE_DIR",
         "SHATTER_SEEDS_DIR",
         "XDG_CACHE_HOME",
