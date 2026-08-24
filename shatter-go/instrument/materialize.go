@@ -18,19 +18,20 @@ const harnessModuleName = "shatter_instrumented"
 
 // MaterializeInstrumentedDirectory writes the instrumented source, recorder,
 // and go.mod/go.sum support files into outputDir. The caller is responsible for
-// choosing and cleaning up outputDir.
+// choosing and cleaning up outputDir. Returns the number of unique source
+// lines that received a line-record probe (the coverage denominator).
 func MaterializeInstrumentedDirectory(
 	sourcePath string,
 	funcName *string,
 	outputDir string,
 	projectRoot *string,
 	timing *frontendtiming.Collector,
-) error {
+) (int, error) {
 	if outputDir == "" {
-		return fmt.Errorf("instrument: MaterializeInstrumentedDirectory: outputDir must not be empty")
+		return 0, fmt.Errorf("instrument: MaterializeInstrumentedDirectory: outputDir must not be empty")
 	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("instrument: create output dir: %w", err)
+		return 0, fmt.Errorf("instrument: create output dir: %w", err)
 	}
 	return materializeInstrumentedFiles(sourcePath, outputDir, funcName, projectRoot, timing)
 }
@@ -41,10 +42,10 @@ func materializeInstrumentedFiles(
 	funcName *string,
 	projectRoot *string,
 	timing *frontendtiming.Collector,
-) error {
-	packageName, source, err := instrumentSource(sourcePath, funcName, true /*renameMain*/, timing)
+) (int, error) {
+	packageName, source, instrumentableLineCount, err := instrumentSource(sourcePath, funcName, true /*renameMain*/, timing)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	sourceName := filepath.Base(sourcePath)
@@ -52,7 +53,7 @@ func materializeInstrumentedFiles(
 	finishWriteSource := timing.Start("instrument.write_source")
 	if err := os.WriteFile(outPath, source, 0o644); err != nil {
 		finishWriteSource()
-		return fmt.Errorf("creating output file: %w", err)
+		return 0, fmt.Errorf("creating output file: %w", err)
 	}
 	finishWriteSource()
 
@@ -61,18 +62,18 @@ func materializeInstrumentedFiles(
 	finishWriteRecorder := timing.Start("instrument.write_recorder")
 	if err := os.WriteFile(recorderPath, []byte(recorderSource), 0o644); err != nil {
 		finishWriteRecorder()
-		return fmt.Errorf("writing recorder: %w", err)
+		return 0, fmt.Errorf("writing recorder: %w", err)
 	}
 	finishWriteRecorder()
 
 	finishWriteGoMod := timing.Start("instrument.write_go_mod")
 	if err := writeGoMod(outputDir, sourcePath, projectRoot); err != nil {
 		finishWriteGoMod()
-		return fmt.Errorf("writing go.mod: %w", err)
+		return 0, fmt.Errorf("writing go.mod: %w", err)
 	}
 	finishWriteGoMod()
 
-	return nil
+	return instrumentableLineCount, nil
 }
 
 // writeGoMod copies go.mod and go.sum from the project root (if provided),

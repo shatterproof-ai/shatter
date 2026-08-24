@@ -21,7 +21,7 @@ type testResults struct {
 func materializeTestOutputDir(t *testing.T, sourcePath string, funcName *string) string {
 	t.Helper()
 	outputDir := t.TempDir()
-	if err := MaterializeInstrumentedDirectory(sourcePath, funcName, outputDir, nil, nil); err != nil {
+	if _, err := MaterializeInstrumentedDirectory(sourcePath, funcName, outputDir, nil, nil); err != nil {
 		t.Fatalf("MaterializeInstrumentedDirectory: %v", err)
 	}
 	return outputDir
@@ -190,7 +190,7 @@ func main() {
 }
 
 func TestInstrumentFileNotFound(t *testing.T) {
-	err := MaterializeInstrumentedDirectory("/nonexistent/file.go", nil, t.TempDir(), nil, nil)
+	_, err := MaterializeInstrumentedDirectory("/nonexistent/file.go", nil, t.TempDir(), nil, nil)
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}
