@@ -315,6 +315,8 @@ tasks:
       - scripts/test_cleanup_merged_remote_branches.sh
       - scripts/examples_checkout.py
       - scripts/test_walkthrough_examples_checkout.py
+      - scripts/setup-hooks.sh
+      - scripts/test_setup_hooks.sh
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_drift_patrol
@@ -324,6 +326,7 @@ tasks:
       - python3 -m unittest scripts.test_retention_continuous_releases
       - bash scripts/test_cleanup_merged_remote_branches.sh
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
+      - bash scripts/test_setup_hooks.sh
       - cd shatter-go-tool && go test ./...
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
