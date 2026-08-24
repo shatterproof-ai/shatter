@@ -828,6 +828,41 @@ export function writeRelative(name: string, content: string): string {
     expect(fs.readFileSync(realCwdPath, "utf-8")).toBe("unredirected write");
     fs.unlinkSync(realCwdPath);
   });
+
+  it("keeps a `..`-traversal path contained inside SHATTER_HOST_WRITE_DIR instead of escaping it", async () => {
+    hostWriteDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "shatter-hostwrite-test-"),
+    );
+    process.env.SHATTER_HOST_WRITE_DIR = hostWriteDir;
+
+    const escapingRelativePath = path.join(
+      "..",
+      "..",
+      "..",
+      "..",
+      "..",
+      "tmp",
+      "host-write-redirect-escape.txt",
+    );
+    const result = await executeFunction(FS_REDIRECT_FIXTURE, "writeRelative", [
+      escapingRelativePath,
+      "should stay inside the throwaway dir",
+    ]);
+
+    expect(result.thrown_error).toBeNull();
+
+    const escapedRealPath = path.resolve(hostWriteDir, escapingRelativePath);
+    expect(fs.existsSync(escapedRealPath)).toBe(false);
+
+    const containedPath = path.join(
+      hostWriteDir,
+      path.basename(escapingRelativePath),
+    );
+    expect(fs.existsSync(containedPath)).toBe(true);
+    expect(fs.readFileSync(containedPath, "utf-8")).toBe(
+      "should stay inside the throwaway dir",
+    );
+  });
 });
 
 describe("buildExecuteResponse side effects", () => {

@@ -63,10 +63,24 @@ export function getHostWriteDir(): string | undefined {
  * shim only redirects the common "relative string path" case that produces
  * stray files in the invoking repo; it does not attempt to rewrite exotic
  * path representations.
+ *
+ * `path.resolve` alone does not stop a `..`-laden relative path (routine in
+ * literal-mined/generated string inputs, per `host_writes.rs`'s threat
+ * model) from walking back out of `hostWriteDir` to the real filesystem —
+ * that would defeat the shim entirely. After resolving, verify the result is
+ * still contained in `hostWriteDir`; if it escaped, redirect to the
+ * resolved path's basename joined under `hostWriteDir` instead, so the write
+ * always lands inside the throwaway directory.
  */
 function redirectPathValue(value: unknown, hostWriteDir: string): unknown {
   if (typeof value !== "string" || path.isAbsolute(value)) return value;
-  return path.resolve(hostWriteDir, value);
+  const resolvedHostWriteDir = path.resolve(hostWriteDir);
+  const resolved = path.resolve(resolvedHostWriteDir, value);
+  const relative = path.relative(resolvedHostWriteDir, resolved);
+  const escapesHostWriteDir =
+    relative === ".." || relative.startsWith(`..${path.sep}`);
+  if (!escapesHostWriteDir) return resolved;
+  return path.join(resolvedHostWriteDir, path.basename(resolved));
 }
 
 function redirectArgs(
@@ -141,7 +155,9 @@ const WRITE_FN_SPECS: ReadonlyArray<{
   { name: "unlink", pathArgIndices: [0] },
   { name: "rmdir", pathArgIndices: [0] },
   { name: "mkdir", pathArgIndices: [0] },
+  { name: "mkdtemp", pathArgIndices: [0] },
   { name: "rm", pathArgIndices: [0] },
+  { name: "cp", pathArgIndices: [1] },
   { name: "chmod", pathArgIndices: [0] },
   { name: "lchmod", pathArgIndices: [0] },
   { name: "chown", pathArgIndices: [0] },
