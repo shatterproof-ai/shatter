@@ -19,12 +19,12 @@ DEFAULT_REPO_URL = "https://github.com/shatterproof-ai/examples.git"
 DEFAULT_BRANCH = "main"
 DEFAULT_DIR = Path(tempfile.gettempdir()) / "shatter-examples-main"
 
-# Skip the network fetch + reset + clean if the shared checkout was refreshed
+# Skip the network fetch + reset + clean if the canonical checkout was refreshed
 # more recently than this. Concurrent `task` invocations (e.g. two `task
 # smoke` runs, or smoke + e2e) each call this script independently; without a
-# freshness window every one of them re-fetches and re-cleans the same shared
-# directory, which is both wasteful and (absent the lock below) a source of
-# git-state corruption. See str-35vtk.4.
+# freshness window every one of them redundantly refreshes the canonical copy.
+# Consumers receive independent snapshots, so correctness does not depend on
+# this optimization window outliving their work. See str-35vtk.4.
 REFRESH_WINDOW_SECONDS = 600
 
 
@@ -97,11 +97,15 @@ def _is_recently_refreshed(checkout_dir: Path) -> bool:
     return age < REFRESH_WINDOW_SECONDS
 
 
-def _refresh_checkout_locked(checkout_dir: Path) -> Path:
+def _validate_shared_checkout_locked(checkout_dir: Path) -> None:
     if not (checkout_dir / ".git").exists():
         raise SystemExit(
             f"examples checkout path exists but is not a git repository: {checkout_dir}"
         )
+
+
+def _refresh_checkout_locked(checkout_dir: Path) -> Path:
+    _validate_shared_checkout_locked(checkout_dir)
     if _is_recently_refreshed(checkout_dir):
         return checkout_dir.resolve()
     run_git(["fetch", "--quiet", "origin", DEFAULT_BRANCH], cwd=checkout_dir)
@@ -121,6 +125,35 @@ def _clone_shared_checkout(repo_url: str, checkout_dir: Path) -> Path:
     cloned = clone_checkout(repo_url, checkout_dir)
     _refresh_marker_path(checkout_dir).touch()
     return cloned
+
+
+def _snapshot_shared_checkout_locked(checkout_dir: Path) -> Path:
+    """Create a consumer-owned clone while the canonical checkout is stable."""
+    _validate_shared_checkout_locked(checkout_dir)
+    snapshot_root = Path(
+        tempfile.mkdtemp(prefix="shatter-examples.snapshot.", dir=tempfile.gettempdir())
+    )
+    snapshot_dir = snapshot_root / "examples"
+    try:
+        # --no-hardlinks makes the snapshot independent even if --cleanup later
+        # removes the canonical checkout. The clone is local-only and does not
+        # contact origin.
+        run_git(
+            [
+                "clone",
+                "--quiet",
+                "--local",
+                "--no-hardlinks",
+                "--branch",
+                DEFAULT_BRANCH,
+                str(checkout_dir),
+                str(snapshot_dir),
+            ]
+        )
+    except BaseException:
+        shutil.rmtree(snapshot_root, ignore_errors=True)
+        raise
+    return snapshot_dir.resolve()
 
 
 def cleanup_checkout(checkout_dir: Path) -> None:
@@ -151,21 +184,18 @@ def ensure_examples_checkout(args: argparse.Namespace) -> Path:
         return temp_root.resolve()
 
     checkout_dir = DEFAULT_DIR
-    if args.no_update:
-        # Read-only fast path: reuse whatever is on disk without contending
-        # for the lock. Callers that need mutation (e.g. a build writing into
-        # the checkout) must not use --no-update as a substitute for their
-        # own per-run copy; see AGENTS.md / str-35vtk.4.
-        if not checkout_dir.exists():
-            with _locked_shared_checkout(checkout_dir):
-                if not checkout_dir.exists():
-                    return _clone_shared_checkout(repo_url, checkout_dir)
-        return checkout_dir.resolve()
-
     with _locked_shared_checkout(checkout_dir):
         if not checkout_dir.exists():
-            return _clone_shared_checkout(repo_url, checkout_dir)
-        return _refresh_checkout_locked(checkout_dir)
+            _clone_shared_checkout(repo_url, checkout_dir)
+        elif not args.no_update:
+            _refresh_checkout_locked(checkout_dir)
+        else:
+            # The existence check and repository validation must happen under
+            # the same lock as cloning. A clone creates its destination before
+            # .git is ready, so an unlocked --no-update check can otherwise
+            # expose a partial checkout.
+            _validate_shared_checkout_locked(checkout_dir)
+        return _snapshot_shared_checkout_locked(checkout_dir)
 
 
 def main() -> None:
@@ -178,7 +208,7 @@ def main() -> None:
     parser.add_argument(
         "--no-update",
         action="store_true",
-        help="reuse the default /tmp checkout without fetching origin/main",
+        help="snapshot the cached /tmp checkout without fetching origin/main",
     )
     parser.add_argument(
         "--cleanup",
