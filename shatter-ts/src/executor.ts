@@ -61,6 +61,11 @@ import {
   getReactShim,
 } from "./react-shim.js";
 import {
+  FS_MODULE_IDS,
+  getHostWriteDir,
+  buildFsWriteRedirectShim,
+} from "./fs-write-redirect.js";
+import {
   DEFAULT_JSX_RUNTIME_OPTIONS,
   loadJsxRuntimeOptions,
   type JsxRuntimeOptions,
@@ -838,6 +843,29 @@ function getDefaultResolverAdapters(
           }
         }
         return { kind: "continue" };
+      },
+    },
+    {
+      // Host-write isolation (str-02i70, companion to Go/Rust's
+      // SHATTER_HOST_WRITE_DIR subprocess-cwd redirect, str-gg9v). Reads the
+      // env var fresh on every require() call (never cached) so concurrent
+      // in-flight requests never share redirect state. A no-op ({kind:
+      // "continue"}, falling through to the real fs module) whenever the
+      // var is unset — i.e. whenever the CLI's default-deny gate hasn't
+      // opted the run into unsandboxed execution.
+      id: "ts/fs-host-write-redirect",
+      resolveModule({ module_id, require: originalRequire }) {
+        if (!FS_MODULE_IDS.has(module_id)) return { kind: "continue" };
+        const hostWriteDir = getHostWriteDir();
+        if (!hostWriteDir) return { kind: "continue" };
+        return {
+          kind: "resolved",
+          value: buildFsWriteRedirectShim(
+            module_id,
+            originalRequire,
+            hostWriteDir,
+          ),
+        };
       },
     },
   ];

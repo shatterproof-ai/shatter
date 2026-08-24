@@ -760,6 +760,36 @@ feature_capabilities:
       go: supported
       rust: not_applicable
 
+  host_write_isolation:
+    status: optional
+    notes: >
+      Execution isolation under the CLI's host-write default-deny opt-in
+      (str-gg9v): when the operator runs unsandboxed targets via
+      `--allow-host-writes` / `SHATTER_ALLOW_HOST_WRITES=1`, the CLI exports
+      `SHATTER_HOST_WRITE_DIR` (an absolute throwaway-directory path) into
+      the frontend's environment so relative-path writes during target
+      execution land there instead of the invoking repository. This does
+      not change wire output — it is an execution-environment contract, not
+      a protocol field — but is tracked here because all three frontends now
+      implement the isolation side of str-gg9v (the CLI-side default-deny
+      refusal gate itself is not frontend-specific and predates this entry).
+      Go and Rust redirect the target-execution subprocess's working
+      directory (`cmd.Dir` / `Command::current_dir`) — see
+      `shatter-go/CLAUDE.md` "OS sandbox runner" and
+      `shatter-rust/src/executor.rs::harness_exec_cwd`. TypeScript runs
+      targets in-process via `vm.runInContext` with requests dispatched
+      concurrently, so a process-wide `chdir` is unsafe; instead TS installs
+      a `require('fs')` path-redirection shim (str-02i70) that rewrites the
+      path argument of mutating fs calls (write/create/rename/delete/
+      permission changes) to resolve under `SHATTER_HOST_WRITE_DIR` when
+      relative, scoped per require() call so concurrent dispatches never
+      share redirect state. See `shatter-ts/CLAUDE.md` "Host-Write Isolation
+      Contract".
+    frontends:
+      typescript: supported
+      go: supported
+      rust: supported
+
   adapter_http_nethttp:
     status: optional
     notes: >
