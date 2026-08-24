@@ -9,7 +9,15 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$SCRATCH"' EXIT
+cleanup_scratch() {
+    if [[ "${KEEP_TEST_SCRATCH:-0}" == 1 ]]; then
+        echo "[debug] preserved test scratch: $SCRATCH" >&2
+        return
+    fi
+    chmod -R u+w "$SCRATCH" 2>/dev/null || true
+    rm -rf "$SCRATCH"
+}
+trap cleanup_scratch EXIT
 
 REAL_PYTHON="$(command -v python3)"
 REAL_MKTEMP="$(command -v mktemp)"
@@ -49,6 +57,10 @@ if [[ $# -eq 2 && "$1" == "$CHECKPOINT_HELPER" && "$2" == "--fresh" ]]; then
             sleep 0.02
         done
     fi
+    if [[ "${CHECKPOINT_COMPLETE:-0}" == 1 ]]; then
+        printf '%s\n' "${COMPLETE_EXAMPLES_ROOT:?}"
+        exit 0
+    fi
     exit 86
 fi
 
@@ -64,6 +76,13 @@ MKTEMP
 
 cat > "$FAKE_BIN/shatter" <<'SHATTER'
 #!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${SHATTER_COMMAND_LOG:-}" ]]; then
+    printf '%s|%s\n' "${SHATTER_CACHE_DIR:-<unset>}" "$*" >> "$SHATTER_COMMAND_LOG"
+fi
+if [[ "$*" == *"cache clear" ]]; then
+    rm -f "${SHATTER_CACHE_DIR:?}/cache-preservation-marker"
+fi
 exit 0
 SHATTER
 
@@ -121,6 +140,7 @@ reset_demo_env() {
     unset SHATTER_HARNESS_CACHE SHATTER_ARTIFACT_DIR CARGO_TARGET_DIR
     unset XDG_CACHE_HOME GOCACHE
     unset CHECKPOINT_REACHED CHECKPOINT_RELEASE
+    unset CHECKPOINT_COMPLETE SHATTER_COMMAND_LOG
     export HOME="$SCRATCH/home fallback"
     export TMPDIR="$SCRATCH/tmp"
     mkdir -p "$HOME" "$TMPDIR"
@@ -179,6 +199,41 @@ for script in walkthrough gauntlet; do
 done
 check_exists "$host_xdg/caller-marker" "warm run deleted caller XDG cache"
 check_exists "$host_go/caller-marker" "warm run deleted caller Go cache"
+
+echo "[test] a completed warm gauntlet clears only an isolated per-run cache"
+reset_demo_env
+export SHATTER_DEMO_CACHE="$SCRATCH/completed warm root"
+mkdir -p "$SHATTER_DEMO_CACHE/cache"
+touch "$SHATTER_DEMO_CACHE/cache/cache-preservation-marker"
+completed_capture="$SCRATCH/completed-gauntlet.env"
+completed_commands="$SCRATCH/completed-gauntlet.commands"
+source_examples="$($REAL_PYTHON "$CHECKPOINT_HELPER" --no-update)"
+export COMPLETE_EXAMPLES_ROOT="$SCRATCH/completed-examples"
+cp -a "$source_examples" "$COMPLETE_EXAMPLES_ROOT"
+chmod -R u+w "$COMPLETE_EXAMPLES_ROOT"
+export CHECKPOINT_CAPTURE="$completed_capture" CHECKPOINT_TOUCH=0
+export CHECKPOINT_COMPLETE=1 SHATTER_COMMAND_LOG="$completed_commands"
+set +e
+bash "$REPO_ROOT/demo/gauntlet.sh" --auto --delay 0 --step-timeout 0 \
+    > "$SCRATCH/completed-gauntlet.stdout" 2> "$SCRATCH/completed-gauntlet.stderr"
+completed_status=$?
+set -e
+[[ -f "$completed_commands" ]] || fail "completed gauntlet did not invoke the fake Shatter binary"
+cache_clear_dir="$(awk -F'|' '$2 ~ /cache clear$/ { print $1; exit }' "$completed_commands")"
+if [[ -z "$cache_clear_dir" ]]; then
+    completed_tail="$(tail -n 5 "$SCRATCH/completed-gauntlet.stderr" 2>/dev/null || true)"
+    fail "completed gauntlet did not reach cache-clear coverage (status $completed_status): $completed_tail"
+fi
+[[ "$cache_clear_dir" != "$SHATTER_DEMO_CACHE/cache" ]] || \
+    fail "completed warm gauntlet cleared its persistent shared cache"
+check_under "$cache_clear_dir" "$TMPDIR" "cache-clear coverage must use per-run scratch"
+check_absent "$cache_clear_dir" "cache-clear scratch must be removed on exit"
+check_exists "$SHATTER_DEMO_CACHE/cache/cache-preservation-marker" \
+    "completed warm gauntlet deleted persistent analysis/results cache state"
+if [[ $completed_status -ne 0 ]]; then
+    grep -q "Gauntlet complete" "$SCRATCH/completed-gauntlet.stdout" || \
+        fail "fake completed gauntlet did not reach its completion summary"
+fi
 
 echo "[test] SHATTER_DEMO_CACHE supports spaces and warm paths override ambient cache variables"
 reset_demo_env
@@ -342,6 +397,36 @@ for script in walkthrough gauntlet; do
     run_parse_case "$script" nonzero unknown --definitely-unknown
     run_parse_case "$script" nonzero missing-delay --delay
 done
+
+echo "[test] perf and concurrency invocations isolate demo caches"
+if ! "$REAL_PYTHON" - "$REPO_ROOT" <<'PYTHON'
+import sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+sys.path.insert(0, str(repo))
+from scripts import perf_runner
+
+scenarios = perf_runner.load_scenarios()
+cold = scenarios["gauntlet-auto-cold"]
+if "--cold" not in cold.command:
+    raise SystemExit("gauntlet-auto-cold does not pass --cold")
+warm_env = perf_runner.make_cache_env(Path("/result/cache"))
+expected = "/result/cache/demo-cache"
+if warm_env.get("SHATTER_DEMO_CACHE") != expected:
+    raise SystemExit(
+        f"perf cache env does not isolate SHATTER_DEMO_CACHE: {warm_env.get('SHATTER_DEMO_CACHE')!r}"
+    )
+PYTHON
+then
+    fail "perf gauntlet scenarios do not preserve warm/cold cache semantics"
+fi
+# The test intentionally searches for the literal variable reference in the harness.
+# shellcheck disable=SC2016
+concurrency_demo_roots="$(grep -Fc 'SHATTER_DEMO_CACHE="$RUN_ROOT/demo-cache"' \
+    "$REPO_ROOT/scripts/concurrency-safety-check.sh" || true)"
+check_eq "$concurrency_demo_roots" 2 \
+    "concurrency harness must isolate both gauntlets under its run root"
 
 if [[ $FAILURES -ne 0 ]]; then
     echo "[FAIL] demo cache mode regressions: $FAILURES assertion(s) failed" >&2
