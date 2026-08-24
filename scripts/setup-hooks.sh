@@ -33,64 +33,9 @@ done
 
 BEGIN_MARKER="# --- BEGIN SHATTER QUALITY ---"
 END_MARKER="# --- END SHATTER QUALITY ---"
-ENV_BEGIN_MARKER="# --- BEGIN SHATTER HOOK ENV ---"
-ENV_END_MARKER="# --- END SHATTER HOOK ENV ---"
-# The single-quoted value is emitted literally into each installed hook.
-# shellcheck disable=SC2016
-BEADS_HOOK_TIMEOUT_LINE='export BEADS_HOOK_TIMEOUT="${BEADS_HOOK_TIMEOUT:-30}"'
-BEADS_HOOKS=(pre-commit post-merge pre-push post-checkout prepare-commit-msg)
 
 has_shatter_section() {
   grep -qF "${BEGIN_MARKER}" "$1" 2>/dev/null
-}
-
-has_hook_env_section() {
-  grep -qF "${ENV_BEGIN_MARKER}" "$1" 2>/dev/null &&
-    grep -qF "${BEADS_HOOK_TIMEOUT_LINE}" "$1" 2>/dev/null &&
-    grep -qF "${ENV_END_MARKER}" "$1" 2>/dev/null
-}
-
-install_hook_env() {
-  local hook_name="$1"
-  local hook_file="${HOOKS_DIR}/${hook_name}"
-
-  if has_hook_env_section "${hook_file}"; then
-    echo "[ok]   ${hook_name}: Shatter hook environment present"
-    return 0
-  fi
-  if "${CHECK_ONLY}"; then
-    echo "[miss] ${hook_name}: Shatter hook environment missing or stale"
-    return 1
-  fi
-
-  mkdir -p "${HOOKS_DIR}"
-  if [[ ! -f "${hook_file}" ]]; then
-    printf '#!/usr/bin/env sh\n' > "${hook_file}"
-  fi
-  if grep -qF "${ENV_BEGIN_MARKER}" "${hook_file}" 2>/dev/null; then
-    sed -i "/${ENV_BEGIN_MARKER}/,/${ENV_END_MARKER}/d" "${hook_file}"
-  fi
-
-  local hook_tmp
-  hook_tmp="$(mktemp "${hook_file}.XXXXXX")"
-  {
-    IFS= read -r first_line || true
-    if [[ "${first_line}" == '#!'* ]]; then
-      printf '%s\n' "${first_line}"
-    else
-      printf '#!/usr/bin/env sh\n'
-      [[ -z "${first_line}" ]] || printf '%s\n' "${first_line}"
-    fi
-    printf '%s\n' \
-      "${ENV_BEGIN_MARKER}" \
-      '# Managed by scripts/setup-hooks.sh — do not edit between markers.' \
-      "${BEADS_HOOK_TIMEOUT_LINE}" \
-      "${ENV_END_MARKER}"
-    cat
-  } < "${hook_file}" > "${hook_tmp}"
-  chmod +x "${hook_tmp}"
-  mv "${hook_tmp}" "${hook_file}"
-  echo "[add]  ${hook_name}: 30s Beads hook timeout installed"
 }
 
 install_hook() {
@@ -149,9 +94,6 @@ PRE_PUSH_BODY='if [ -f "Taskfile.yml" ] && command -v task >/dev/null 2>&1; then
 fi'
 
 MISSING=0
-for hook_name in "${BEADS_HOOKS[@]}"; do
-  install_hook_env "${hook_name}" || MISSING=$((MISSING + 1))
-done
 install_hook "pre-commit" "${PRE_COMMIT_BODY}" || MISSING=$((MISSING + 1))
 install_hook "pre-push" "${PRE_PUSH_BODY}" || MISSING=$((MISSING + 1))
 

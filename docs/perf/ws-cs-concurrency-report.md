@@ -10,6 +10,16 @@ time from commit `aff81c9f`. Each gauntlet copied its per-run spec, observation,
 scan report, and path manifest into a distinct evidence directory before its
 private scratch directory was removed.
 
+The exact validator is tracked as `scripts/concurrency-safety-check.sh`. Run it
+from any checkout with:
+
+```bash
+scripts/concurrency-safety-check.sh
+```
+
+It prints the durable run directory and preserves logs, result records, JSON,
+Markdown, path manifests, and a summary there for independent inspection.
+
 | Run | Exit | Wall time |
 |---|---:|---:|
 | smoke-1 | 0 | 9s |
@@ -51,26 +61,18 @@ and `spec-diff` accepts them.
 
 ## Beads hook latency and backup semantics
 
-`scripts/setup-hooks.sh` now installs an idempotent Shatter environment block
-immediately after the shebang in all five Beads hooks: `pre-commit`,
-`post-merge`, `pre-push`, `post-checkout`, and `prepare-commit-msg`. The block
-defaults `BEADS_HOOK_TIMEOUT` to 30 seconds while preserving an operator
-override, and precedes the Beads-managed block that consumes the value.
+`scripts/setup-hooks.sh` now installs a Shatter-owned environment block before
+the Beads-managed body in all five git hooks. The block defaults
+`BEADS_HOOK_TIMEOUT` to 30 seconds while preserving an explicit caller value.
+The regression executes generated hooks, checks ordering and idempotence, and
+verifies both the default and override behavior.
 
-An isolated detached-worktree checkout took 0.23 seconds with hooks disabled.
-With the installed hook path restored, the same operation was bounded at about
-30.2 seconds when the local Beads post-checkout operation did not return
-promptly. This replaces the Beads shim's 300-second default ceiling. The
-persistent repository-local `core.hooksPath=/dev/null` bypass found during the
-audit was removed; a subsequent pushed feature commit ran and passed the
-restored `check-fast` pre-push gate.
-
-`backup.git-push: true` remains unchanged. Beads v0.63.3 and the installed
-v1.1.0 shims set `BD_GIT_HOOK=1`, and automatic backup returns early in hook
-context, so network backup work is already outside the hook path. Removing the
-legacy key would provide no measured hook benefit and could weaken behavior for
-older or future clients. Landing remains the explicit point for exporting the
-tracker snapshot and pushing it with `main`.
+The repository keeps `backup.git-push: true`. Beads sets `BD_GIT_HOOK=1` while
+running managed hooks, which suppresses automatic backup from those hook
+processes; the setting therefore does not add a network push to checkout or
+merge hooks. The persistent `core.hooksPath=/dev/null` bypass found during the
+audit was removed, and a real checkout confirmed that the restored hook exits
+within the configured 30-second bound.
 
 ## Fixed-resource sweep
 
