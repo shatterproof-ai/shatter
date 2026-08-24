@@ -169,21 +169,18 @@ for script in walkthrough gauntlet; do
     check_exists "$warm_root/cache/checkpoint-marker" "$script warm cache must survive exit"
     check_exists "$warm_root/harness/checkpoint-marker" "$script warm harness cache must survive exit"
     check_exists "$warm_root/cargo-target/checkpoint-marker" "$script warm cargo cache must survive exit"
-    if [[ "$script" == gauntlet ]]; then
-        first_artifact="$(value_of "$first" SHATTER_ARTIFACT_DIR)"
-        second_artifact="$(value_of "$second" SHATTER_ARTIFACT_DIR)"
-        [[ "$first_artifact" != "$second_artifact" ]] || fail "gauntlet warm artifacts must be per-run"
-        check_absent "$first_artifact" "gauntlet warm artifact run 1 must be cleaned"
-        check_absent "$second_artifact" "gauntlet warm artifact run 2 must be cleaned"
-    else
-        check_eq "$(value_of "$first" SHATTER_ARTIFACT_DIR)" "<unset>" \
-            "walkthrough must not invent an artifact directory"
-    fi
+    first_artifact="$(value_of "$first" SHATTER_ARTIFACT_DIR)"
+    second_artifact="$(value_of "$second" SHATTER_ARTIFACT_DIR)"
+    [[ "$first_artifact" != "$second_artifact" ]] || fail "$script warm artifacts must be per-run"
+    check_under "$first_artifact" "$TMPDIR" "$script warm artifact run 1 must be temporary"
+    check_under "$second_artifact" "$TMPDIR" "$script warm artifact run 2 must be temporary"
+    check_absent "$first_artifact" "$script warm artifact run 1 must be cleaned"
+    check_absent "$second_artifact" "$script warm artifact run 2 must be cleaned"
 done
 check_exists "$host_xdg/caller-marker" "warm run deleted caller XDG cache"
 check_exists "$host_go/caller-marker" "warm run deleted caller Go cache"
 
-echo "[test] SHATTER_DEMO_CACHE supports spaces and ambient warm overrides win"
+echo "[test] SHATTER_DEMO_CACHE supports spaces and warm paths override ambient cache variables"
 reset_demo_env
 export SHATTER_DEMO_CACHE="$SCRATCH/custom warm root"
 ambient_cache="$SCRATCH/ambient cache"
@@ -199,9 +196,11 @@ export SHATTER_ARTIFACT_DIR="$ambient_artifact"
 export CARGO_TARGET_DIR="$ambient_cargo"
 override_capture="$SCRATCH/gauntlet-warm-overrides.env"
 run_to_checkpoint gauntlet "$override_capture"
-check_eq "$(value_of "$override_capture" SHATTER_CACHE_DIR)" "$ambient_cache" "ambient cache must win"
-check_eq "$(value_of "$override_capture" SHATTER_HARNESS_CACHE)" "$ambient_harness" "ambient harness must win"
-check_eq "$(value_of "$override_capture" SHATTER_ARTIFACT_DIR)" "$ambient_artifact" "ambient artifact must win"
+assert_warm_paths "$override_capture" "$SHATTER_DEMO_CACHE" "gauntlet warm override"
+override_artifact="$(value_of "$override_capture" SHATTER_ARTIFACT_DIR)"
+[[ "$override_artifact" != "$ambient_artifact" ]] || fail "warm artifact must be per-run, not ambient"
+check_under "$override_artifact" "$TMPDIR" "warm artifact must be temporary"
+check_absent "$override_artifact" "warm artifact must be cleaned"
 check_eq "$(value_of "$override_capture" CARGO_TARGET_DIR)" "$ambient_cargo" "ambient cargo must win"
 for path in "$ambient_cache" "$ambient_harness" "$ambient_artifact" "$ambient_cargo"; do
     check_exists "$path/caller-marker" "warm cleanup deleted an ambient path"
@@ -230,19 +229,17 @@ for script in walkthrough gauntlet; do
         check_absent "$cargo" "$script cold cargo target must be cleaned"
         check_eq "$(value_of "$capture" SHATTER_HARNESS_CACHE)" "<unset>" \
             "$script cold mode must disable the warm harness cache"
+        artifact="$(value_of "$capture" SHATTER_ARTIFACT_DIR)"
+        check_under "$artifact" "$TMPDIR" "$script cold artifact must be temporary"
+        check_absent "$artifact" "$script cold artifact must be cleaned"
         if [[ "$script" == gauntlet ]]; then
-            artifact="$(value_of "$capture" SHATTER_ARTIFACT_DIR)"
             xdg="$(value_of "$capture" XDG_CACHE_HOME)"
             go_cache="$(value_of "$capture" GOCACHE)"
-            check_under "$artifact" "$TMPDIR" "gauntlet cold artifact must be temporary"
             check_under "$xdg" "$TMPDIR" "gauntlet cold XDG cache must be temporary"
             check_under "$go_cache" "$TMPDIR" "gauntlet cold Go cache must be temporary"
-            check_absent "$artifact" "gauntlet cold artifact must be cleaned"
             check_absent "$xdg" "gauntlet cold XDG cache must be cleaned"
             check_absent "$go_cache" "gauntlet cold Go cache must be cleaned"
         else
-            check_eq "$(value_of "$capture" SHATTER_ARTIFACT_DIR)" "<unset>" \
-                "walkthrough cold mode must not invent an artifact directory"
             check_eq "$(value_of "$capture" XDG_CACHE_HOME)" "<unset>" \
                 "walkthrough cold mode must inherit unset XDG_CACHE_HOME"
             check_eq "$(value_of "$capture" GOCACHE)" "<unset>" \
@@ -309,6 +306,8 @@ touch "$release"
 wait "$first_pid" || true
 wait "$second_pid" || true
 check_exists "$second_reached" "second warm process did not proceed after lock release"
+grep -q "waiting for shared demo cache lock" "$second_capture.stderr" || \
+    fail "second warm process did not report that it was waiting for the shared cache lock"
 
 run_parse_case() {
     local script="$1" expected_status="$2" label="$3"
