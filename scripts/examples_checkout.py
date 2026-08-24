@@ -21,6 +21,23 @@ DEFAULT_BRANCH = "main"
 DEFAULT_DIR = Path(tempfile.gettempdir()) / "shatter-examples-main"
 SNAPSHOT_CACHE_DIR = Path(tempfile.gettempdir()) / "shatter-examples-snapshots"
 SNAPSHOT_PERMISSIONS_MARKER = ".shatter-read-only-v1"
+GIT_LOCAL_ENV_VARS = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
 
 # Skip the network fetch + reset + clean if the canonical checkout was refreshed
 # more recently than this. Concurrent `task` invocations (e.g. two `task
@@ -38,7 +55,10 @@ def _sanitized_git_env() -> dict[str, str]:
     # different, public repo, that leaked auth header gets sent anyway and
     # is rejected, producing a bogus "could not read Username" failure.
     env = os.environ.copy()
-    env.pop("GIT_CONFIG_COUNT", None)
+    # Hooks export repository-local variables. Letting those leak into the
+    # examples clone makes Git operate on the parent Shatter repository.
+    for key in GIT_LOCAL_ENV_VARS:
+        env.pop(key, None)
     for key in list(env):
         if key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
             del env[key]

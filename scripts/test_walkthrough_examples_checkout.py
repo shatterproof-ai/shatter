@@ -429,11 +429,16 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertFalse(snapshot_cache.exists())
 
-    def test_run_git_strips_leaked_actions_checkout_credentials(self) -> None:
+    def test_run_git_strips_leaked_repo_context_and_checkout_credentials(self) -> None:
         leaked_env = {
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
             "GIT_CONFIG_VALUE_0": "AUTHORIZATION: basic ***",
+            "GIT_COMMON_DIR": "/repo/.git",
+            "GIT_DIR": "/repo/.git",
+            "GIT_INDEX_FILE": "/repo/.git/index",
+            "GIT_OBJECT_DIRECTORY": "/repo/.git/objects",
+            "GIT_WORK_TREE": "/repo",
         }
         original_environ = os.environ.copy()
         os.environ.update(leaked_env)
