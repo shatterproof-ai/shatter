@@ -140,6 +140,26 @@ TS and Rust currently declare `outcome` only; conformance tests
 clean "capability not supported" response from TS/Rust rather than
 crashing or returning malformed data.
 
+## Instrumentable Line Count Contract (str-szcn3)
+
+The `instrument` response's optional `instrumentable_line_count` field
+reports the number of distinct real source lines that received an
+instrumentation probe — the coverage denominator for
+`lines_executed / instrumentable_line_count`. The visitor
+(`shatter-go/instrument/visitor.go`) threads an
+`instrumentableLines map[int]struct{}` through `transformFile` and
+`transformStmtList`, deduping by `fset.Position(...).Line` and guarding
+`line > 0` so synthetic `call_enter`/`call_exit` scope markers (which
+carry no real `token.Pos`) are excluded, matching TypeScript's
+`instrumentableLines: Set<number>` semantics in `instrumentor.ts`. In
+whole-file mode (`req.Function == nil`), lines are deduped across all
+instrumented functions in the file, not scoped per function — broader
+than TS's always-single-function scope, so there is no direct
+line-for-line TS comparison in that mode. `handler.go` populates
+`resp.InstrumentableLineCount` from the final count. Rust does not
+populate this field yet; see `instrumentable_line_count` in
+`protocol/parity-matrix.yaml`.
+
 ## No-Target-Reason Classifier Contract
 
 The Go per-language no-target-reason classifier (str-jeen.23) refines

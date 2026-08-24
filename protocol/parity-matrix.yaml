@@ -851,6 +851,28 @@ feature_capabilities:
       go: supported
       rust: not_supported
 
+  instrumentable_line_count:
+    status: optional
+    notes: >
+      Optional `instrument` response field reporting the count of distinct
+      real source lines that received an instrumentation probe — the
+      coverage denominator for `lines_executed / instrumentable_line_count`.
+      TypeScript tracks this via `instrumentableLines: Set<number>` in
+      `instrumentor.ts`, deduped per real source line and excluding
+      synthetic probe lines. Go closed the parity gap in str-szcn3: the
+      visitor threads an `instrumentableLines map[int]struct{}` through
+      `transformFile`/`transformStmtList` (dedup semantics matching TS),
+      guards `line > 0` to exclude synthetic `call_enter`/`call_exit` scope
+      markers (which have no real `token.Pos`), and `handler.go` populates
+      `resp.InstrumentableLineCount` from the count. Rust does not populate
+      this field yet (`instrumentable_line_count: None` in all Execute/
+      Instrument response constructors in `protocol.rs`) — no per-line
+      instrumentable-count tracking exists in the Rust instrumentor.
+    frontends:
+      typescript: supported
+      go: supported
+      rust: not_supported
+
 # --- Adapter capabilities ---
 #
 # Adapters wrap function invocation for targets that cannot be called directly
