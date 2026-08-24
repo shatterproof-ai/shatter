@@ -64,6 +64,26 @@ Do not configure a shared `CARGO_TARGET_DIR`. Cargo's target-directory lock
 would serialize agents, and cross-branch fingerprint churn would erase the
 benefit of sharing it.
 
+The sole intentional exception is the human-facing walkthrough/gauntlet demo
+cache. Those scripts use `${SHATTER_DEMO_CACHE:-$HOME/.cache/shatter-demo}` and
+hold its `demo.lock` for their full warm-mode lifetime, so only one process can
+touch the shared analysis, harness, and Cargo caches at a time. Use
+`task walkthrough-cold` or `task gauntlet-cold` for isolated release/hermetic
+validation. A caller-provided `CARGO_TARGET_DIR` still takes precedence.
+
+To reset warm demo state, keep the lock inode and remove only its cache
+subdirectories while no demo owns the lock:
+
+```bash
+demo_root="${SHATTER_DEMO_CACHE:-$HOME/.cache/shatter-demo}"
+mkdir -p "$demo_root"
+(
+  exec 9>"$demo_root/demo.lock"
+  flock 9
+  rm -rf -- "$demo_root/cache" "$demo_root/harness" "$demo_root/cargo-target"
+)
+```
+
 ## Issue Title Guidelines
 
 Titles appear in `bd list`, `bd ready`, and terminal window titles where space
