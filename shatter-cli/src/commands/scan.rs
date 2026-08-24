@@ -625,6 +625,7 @@ pub(crate) async fn run_scan(
         analyzable_files.iter().map(|(_, lang)| *lang).collect();
 
     let mut frontends: HashMap<DiscoveryLanguage, Frontend> = HashMap::new();
+    let mut analyzer_versions = HashMap::new();
     for lang in &needed_langs {
         let cli_lang =
             discovery_lang_to_cli_lang(*lang).ok_or_else(|| format!("no frontend for {lang:?}"))?;
@@ -646,6 +647,9 @@ pub(crate) async fn run_scan(
         }
         if no_cache {
             disable_frontend_analysis_cache(&mut config);
+        } else {
+            let version = crate::frontend_versions::analyzer_version(*lang, &config)?;
+            analyzer_versions.insert(*lang, version);
         }
         let frontend = Frontend::spawn(&config)
             .await
@@ -676,7 +680,6 @@ pub(crate) async fn run_scan(
     // deadline so discovery/analysis time is charged before the remaining
     // budget is handed to the scan orchestrator.
     let registry = {
-        let analyzer_versions = crate::frontend_versions::analyzer_versions();
         let fut = batch_analyze::batch_analyze(
             &mut frontends,
             &analyzable_files,
