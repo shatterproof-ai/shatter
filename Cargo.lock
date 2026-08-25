@@ -2254,6 +2254,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "shatter-core",
  "shatter-llm",
  "tempfile",
