@@ -4,11 +4,11 @@
 //! `(file_path, content_hash, protocol_version, analyzer_version)`.
 //! On lookup, an mtime fast-path avoids re-hashing when the file hasn't been touched.
 //! A protocol version is stored with each entry — protocol bumps invalidate all cached data.
-//! An analyzer version (the frontend's source/bundle hash) is also stored: when a frontend's
-//! analyze behavior changes for unchanged source — a new build without a protocol bump — the
-//! stored analyzer version no longer matches and the entry is invalidated, so the new behavior
-//! is not silently masked by stale cached results (str-2cihu). This mirrors the wrapper-side
-//! generatorVersion cache key (str-6jwyw, str-o09e).
+//! An analyzer identity (the embedded bundle hash or selected executable's content hash) is also
+//! stored: when a frontend's analyze behavior changes for unchanged source — a new build without
+//! a protocol bump — the stored identity no longer matches and the entry is invalidated, so the
+//! new behavior is not silently masked by stale cached results (str-2cihu). This mirrors the
+//! wrapper-side generatorVersion cache key (str-6jwyw, str-o09e).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,8 @@ struct AnalysisCacheEntry {
     mtime_secs: i64,
     /// Protocol version used when the analysis was produced.
     protocol_version: String,
-    /// Frontend analyzer version (source/bundle hash) that produced the analysis.
+    /// Frontend analyzer identity (bundle or executable content hash) that
+    /// produced the analysis.
     ///
     /// Defaults to empty for entries written before this field existed, which
     /// then mismatch any non-empty caller version and invalidate cleanly.
@@ -60,9 +61,10 @@ impl AnalysisCache {
     /// Uses an mtime fast-path: if the file's mtime matches the cached mtime,
     /// the content hash is not recomputed.
     ///
-    /// `analyzer_version` is the frontend's source/bundle hash for the file's
-    /// language. An entry produced by a different analyzer version is treated as
-    /// a miss so that changed analyze behavior is not masked by stale results.
+    /// `analyzer_version` is the frontend's bundle or executable content hash
+    /// for the file's language. An entry produced by a different identity is
+    /// treated as a miss so changed analyze behavior is not masked by stale
+    /// results.
     pub fn lookup(
         &self,
         file_path: &Path,
@@ -116,8 +118,9 @@ impl AnalysisCache {
 
     /// Store analysis results for a source file.
     ///
-    /// `analyzer_version` is the frontend's source/bundle hash for the file's
-    /// language; it is recorded so a later analyzer change invalidates the entry.
+    /// `analyzer_version` is the frontend's bundle or executable content hash
+    /// for the file's language; it is recorded so a later analyzer change
+    /// invalidates the entry.
     pub fn store(
         &self,
         file_path: &Path,

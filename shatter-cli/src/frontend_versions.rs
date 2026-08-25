@@ -38,8 +38,17 @@ pub(crate) fn analyzer_version(
 ) -> Result<String, String> {
     match language {
         Language::TypeScript => Ok(TS_FRONTEND_BUNDLE_HASH.to_string()),
+        Language::Go if is_current_embedded_go_frontend(&config.command) => {
+            Ok(GO_FRONTEND_BINARY_HASH.to_string())
+        }
         Language::Go | Language::Rust => hash_file(&config.command),
     }
+}
+
+fn is_current_embedded_go_frontend(path: &std::path::Path) -> bool {
+    let expected_name = format!("go-frontend-{GO_FRONTEND_BINARY_HASH}");
+    path.file_name()
+        .is_some_and(|name| name == std::ffi::OsStr::new(&expected_name))
 }
 
 fn hash_file(path: &std::path::Path) -> Result<String, String> {
@@ -91,6 +100,19 @@ mod tests {
         assert_eq!(
             analyzer_version(Language::TypeScript, &config).unwrap(),
             TS_FRONTEND_BUNDLE_HASH
+        );
+    }
+
+    #[test]
+    fn embedded_go_analyzer_version_uses_known_binary_hash() {
+        let command = std::path::PathBuf::from(format!(
+            "/unreadable/cache/go-frontend-{GO_FRONTEND_BINARY_HASH}"
+        ));
+        let config = FrontendConfig::new(command);
+
+        assert_eq!(
+            analyzer_version(Language::Go, &config).unwrap(),
+            GO_FRONTEND_BINARY_HASH
         );
     }
 }
