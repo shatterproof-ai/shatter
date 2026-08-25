@@ -850,6 +850,27 @@ fn stable_crate_harness_dir(
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-bin-only-{key:016x}")))
 }
 
+#[cfg(test)]
+fn crate_harness_cache_identity(
+    file_path: &str,
+    src_hash: u64,
+    mocks_hash: u64,
+    cargo_lock_hash: u64,
+    native_replay_hash: u64,
+    _runtime_hash: u64,
+) -> (CrateHarnessKey, PathBuf) {
+    (
+        CrateHarnessKey {
+            file_path: file_path.to_string(),
+            source_hash: src_hash,
+            mocks_hash,
+            cargo_lock_hash,
+            native_replay_hash,
+        },
+        stable_crate_harness_dir(file_path, src_hash, mocks_hash, native_replay_hash),
+    )
+}
+
 /// Extract the `[dependencies]` section lines from a Cargo.toml file.
 /// Returns the raw lines (not including the `[dependencies]` header) ready to
 /// append to a generated Cargo.toml.
@@ -4101,6 +4122,34 @@ fn cargo_lock_hash_for_crate(crate_root: &Path) -> io::Result<u64> {
         }
         None => Ok(0),
     }
+}
+
+fn runtime_source_hash(runtime_root: &Path) -> io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let source_root = runtime_root.join("src");
+    let mut files = Vec::new();
+    let mut pending = vec![source_root.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for path in files {
+        path.strip_prefix(&source_root)
+            .unwrap_or(&path)
+            .hash(&mut hasher);
+        std::fs::read(path)?.hash(&mut hasher);
+    }
+    Ok(hasher.finish())
 }
 
 fn copy_cargo_lock_for_driver(crate_root: &Path, driver_root: &Path) -> io::Result<()> {
@@ -13990,6 +14039,47 @@ edition = "2021"
         );
 
         let _ = std::fs::remove_dir_all(&crate_root);
+    }
+
+    #[test]
+    fn crate_harness_cache_identity_changes_when_runtime_source_changes() {
+        let runtime_root = unique_tmp_dir("bin-only-runtime-cache-hash");
+        std::fs::create_dir_all(runtime_root.join("src")).unwrap();
+        let runtime_source = runtime_root.join("src/lib.rs");
+        std::fs::write(&runtime_source, "pub fn marker() -> u64 { 1 }\n").unwrap();
+
+        let old_runtime_hash = runtime_source_hash(&runtime_root).unwrap();
+        let old_identity = crate_harness_cache_identity(
+            "src/lib.rs",
+            1,
+            2,
+            3,
+            4,
+            old_runtime_hash,
+        );
+
+        std::fs::write(&runtime_source, "pub fn marker() -> u64 { 2 }\n").unwrap();
+        let new_runtime_hash = runtime_source_hash(&runtime_root).unwrap();
+        let new_identity = crate_harness_cache_identity(
+            "src/lib.rs",
+            1,
+            2,
+            3,
+            4,
+            new_runtime_hash,
+        );
+
+        assert_ne!(old_runtime_hash, new_runtime_hash);
+        assert_ne!(
+            old_identity.0, new_identity.0,
+            "bin-only in-memory harness cache key must change when runtime source changes",
+        );
+        assert_ne!(
+            old_identity.1, new_identity.1,
+            "bin-only persistent harness directory must change when runtime source changes",
+        );
+
+        let _ = std::fs::remove_dir_all(&runtime_root);
     }
 
     #[test]
