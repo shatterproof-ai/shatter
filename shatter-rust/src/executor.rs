@@ -14106,6 +14106,18 @@ edition = "2021"
             "bin-only persistent harness directory must change when runtime source changes",
         );
 
+        let before_manifest_hash = runtime_source_hash(&runtime_root).unwrap();
+        std::fs::write(
+            runtime_root.join("Cargo.toml"),
+            "[package]\nname = \"shatter-rust-runtime\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let after_manifest_hash = runtime_source_hash(&runtime_root).unwrap();
+        assert_ne!(
+            before_manifest_hash, after_manifest_hash,
+            "bin-only harness cache identity must change when the runtime manifest changes",
+        );
+
         let _ = std::fs::remove_dir_all(&runtime_root);
     }
 
