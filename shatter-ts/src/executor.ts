@@ -1127,6 +1127,14 @@ function loadModule(
   // mid-execution sees this pre-reassignment `moduleExports` object). Always
   // cleared in `finally` so a failed load doesn't wedge later top-level loads
   // of the same path with a stale in-progress entry.
+  //
+  // Same caveat Node's own CJS loader has: a caller mid-cycle only sees
+  // properties assigned onto THIS `moduleExports` object. A cyclic module
+  // that fully reassigns `module.exports = {...}` (rather than mutating the
+  // existing `exports` object — the shape TS's own CJS transpile output
+  // produces for `export const`/`export function`) replaces the sandbox's
+  // reference, but a caller that already captured the pre-reassignment
+  // object via this cycle-break won't see the new one.
   inFlightModules.set(absolutePath, moduleExports);
   try {
     try {
