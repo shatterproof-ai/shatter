@@ -608,11 +608,21 @@ fn main() {{
     match locate_shatter_rust_runtime_source(&shatter_rust_abs) {
         Some(runtime_src) => {
             let vendored_runtime = out_dir.join("shatter-rust-runtime");
-            vendor_runtime_crate(&runtime_src, &vendored_runtime)?;
-            log::info!(
-                "vendored shatter-rust-runtime crate: {}",
-                vendored_runtime.display()
-            );
+            match vendor_runtime_crate(&runtime_src, &vendored_runtime) {
+                Ok(()) => log::info!(
+                    "vendored shatter-rust-runtime crate: {}",
+                    vendored_runtime.display()
+                ),
+                // Vendoring is a best-effort convenience on top of an
+                // already-built, already-copied binary: a copy failure
+                // (disk full, permission denied, etc.) should degrade the
+                // same way "couldn't locate it" does, not discard a
+                // successful build.
+                Err(e) => log::warn!(
+                    "failed to vendor shatter-rust-runtime crate: {e}; \
+                     crate-backed axum harnesses may need SHATTER_RUNTIME_PATH set at scan time"
+                ),
+            }
         }
         None => {
             log::warn!(
