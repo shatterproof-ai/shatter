@@ -600,6 +600,38 @@ fn main() {{
     std::fs::copy(&built, &output_binary).map_err(|e| format!("failed to copy binary: {e}"))?;
 
     log::info!("custom Rust frontend built: {}", output_binary.display());
+
+    // str-da35: vendor shatter-rust-runtime beside the custom binary so
+    // `find_runtime_crate_path` (shatter-rust/src/executor.rs) locates it via
+    // its "sibling of current_exe" walk-up without requiring
+    // SHATTER_RUNTIME_PATH to be set at scan time.
+    match locate_shatter_rust_runtime_source(&shatter_rust_abs) {
+        Some(runtime_src) => {
+            let vendored_runtime = out_dir.join("shatter-rust-runtime");
+            match vendor_runtime_crate(&runtime_src, &vendored_runtime) {
+                Ok(()) => log::info!(
+                    "vendored shatter-rust-runtime crate: {}",
+                    vendored_runtime.display()
+                ),
+                // Vendoring is a best-effort convenience on top of an
+                // already-built, already-copied binary: a copy failure
+                // (disk full, permission denied, etc.) should degrade the
+                // same way "couldn't locate it" does, not discard a
+                // successful build.
+                Err(e) => log::warn!(
+                    "failed to vendor shatter-rust-runtime crate: {e}; \
+                     crate-backed axum harnesses may need SHATTER_RUNTIME_PATH set at scan time"
+                ),
+            }
+        }
+        None => {
+            log::warn!(
+                "cannot locate shatter-rust-runtime source to vendor; \
+                 crate-backed axum harnesses may need SHATTER_RUNTIME_PATH set at scan time"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -618,6 +650,77 @@ fn locate_shatter_rust_source() -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Locate the shatter-rust-runtime crate source directory so it can be
+/// vendored beside a custom-built Rust frontend binary. Mirrors
+/// `find_runtime_crate_path` in shatter-rust/src/executor.rs: prefer an
+/// explicit override, then fall back to the monorepo sibling layout.
+fn locate_shatter_rust_runtime_source(shatter_rust_abs: &Path) -> Option<PathBuf> {
+    if let Ok(src) = std::env::var("SHATTER_RUST_RUNTIME_SRC") {
+        let p = PathBuf::from(src);
+        if p.join("Cargo.toml").exists() {
+            return Some(p);
+        }
+    }
+
+    // shatter-rust-runtime is a sibling of shatter-rust in the monorepo layout.
+    if let Some(siblings_dir) = shatter_rust_abs.parent() {
+        let candidate = siblings_dir.join("shatter-rust-runtime");
+        if candidate.join("Cargo.toml").exists() {
+            return Some(candidate);
+        }
+    }
+
+    let candidate = PathBuf::from("shatter-rust-runtime");
+    if candidate.join("Cargo.toml").exists() {
+        return Some(candidate);
+    }
+
+    None
+}
+
+/// Recursively copy a crate directory (Cargo.toml, Cargo.lock, src/, etc.)
+/// into `dest`, skipping build artifacts (`target/`) and VCS metadata.
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dest)
+        .map_err(|e| format!("failed to create dir {}: {e}", dest.display()))?;
+    for entry in std::fs::read_dir(src)
+        .map_err(|e| format!("failed to read dir {}: {e}", src.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read dir entry: {e}"))?;
+        let file_name = entry.file_name();
+        if matches!(file_name.to_str(), Some("target" | ".git")) {
+            continue;
+        }
+        let src_path = entry.path();
+        let dest_path = dest.join(&file_name);
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("failed to stat {}: {e}", src_path.display()))?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&src_path, &dest_path).map_err(|e| {
+                format!(
+                    "failed to copy {} to {}: {e}",
+                    src_path.display(),
+                    dest_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Vendor the shatter-rust-runtime crate into `dest`, replacing any
+/// previously vendored copy so stale files don't linger across rebuilds.
+fn vendor_runtime_crate(runtime_src: &Path, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        std::fs::remove_dir_all(dest)
+            .map_err(|e| format!("failed to remove stale vendored runtime at {}: {e}", dest.display()))?;
+    }
+    copy_dir_recursive(runtime_src, dest)
 }
 
 #[cfg(test)]
@@ -897,6 +1000,87 @@ edition = "2021"
             std::fs::read_to_string(build_dir.join("Cargo.lock")).unwrap(),
             local_lockfile,
             "workspace-excluded crates must keep their own lockfile",
+        );
+    }
+
+    #[test]
+    fn locate_shatter_rust_runtime_source_finds_monorepo_sibling() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let shatter_rust_dir = workspace_root.path().join("shatter-rust");
+        let runtime_dir = workspace_root.path().join("shatter-rust-runtime");
+        std::fs::create_dir_all(&shatter_rust_dir).unwrap();
+        std::fs::create_dir_all(runtime_dir.join("src")).unwrap();
+        std::fs::write(
+            runtime_dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-rust-runtime\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        let found = locate_shatter_rust_runtime_source(&shatter_rust_dir);
+
+        assert_eq!(found, Some(runtime_dir));
+    }
+
+    #[test]
+    fn locate_shatter_rust_runtime_source_returns_none_when_missing() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let shatter_rust_dir = workspace_root.path().join("shatter-rust");
+        std::fs::create_dir_all(&shatter_rust_dir).unwrap();
+
+        let _cwd_lock = CWD_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::enter(workspace_root.path());
+
+        assert_eq!(locate_shatter_rust_runtime_source(&shatter_rust_dir), None);
+    }
+
+    #[test]
+    fn vendor_runtime_crate_copies_crate_and_skips_target_dir() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let runtime_src = workspace_root.path().join("shatter-rust-runtime");
+        let dest = workspace_root.path().join("out").join("shatter-rust-runtime");
+        std::fs::create_dir_all(runtime_src.join("src")).unwrap();
+        std::fs::create_dir_all(runtime_src.join("target").join("debug")).unwrap();
+        std::fs::write(runtime_src.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::write(runtime_src.join("Cargo.lock"), "version = 4\n").unwrap();
+        std::fs::write(runtime_src.join("src/lib.rs"), "pub fn hi() {}\n").unwrap();
+        std::fs::write(
+            runtime_src.join("target").join("debug").join("stale.bin"),
+            "junk",
+        )
+        .unwrap();
+
+        vendor_runtime_crate(&runtime_src, &dest).unwrap();
+
+        assert!(dest.join("Cargo.toml").exists());
+        assert!(dest.join("Cargo.lock").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("src/lib.rs")).unwrap(),
+            "pub fn hi() {}\n"
+        );
+        assert!(
+            !dest.join("target").exists(),
+            "vendored runtime crate must not carry build artifacts"
+        );
+    }
+
+    #[test]
+    fn vendor_runtime_crate_replaces_stale_previous_vendor() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let runtime_src = workspace_root.path().join("shatter-rust-runtime");
+        let dest = workspace_root.path().join("out").join("shatter-rust-runtime");
+        std::fs::create_dir_all(runtime_src.join("src")).unwrap();
+        std::fs::write(runtime_src.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::write(runtime_src.join("src/lib.rs"), "pub fn new_fn() {}\n").unwrap();
+
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("stale_removed_file.rs"), "old").unwrap();
+
+        vendor_runtime_crate(&runtime_src, &dest).unwrap();
+
+        assert!(!dest.join("stale_removed_file.rs").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("src/lib.rs")).unwrap(),
+            "pub fn new_fn() {}\n"
         );
     }
 }
