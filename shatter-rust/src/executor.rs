@@ -360,6 +360,7 @@ pub struct CrateHarnessKey {
     source_hash: u64,
     mocks_hash: u64,
     cargo_lock_hash: u64,
+    runtime_hash: u64,
     /// Hash of native generator replay metadata baked into the dispatch harness source.
     native_replay_hash: u64,
 }
@@ -383,6 +384,7 @@ impl CrateHarnessKey {
             source_hash: 0,
             mocks_hash: 0,
             cargo_lock_hash: 0,
+            runtime_hash: 0,
             native_replay_hash: 0,
         }
     }
@@ -837,6 +839,7 @@ fn stable_crate_harness_dir(
     src_hash: u64,
     mocks_hash: u64,
     native_replay_hash: u64,
+    runtime_hash: u64,
 ) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -844,20 +847,20 @@ fn stable_crate_harness_dir(
     src_hash.hash(&mut h);
     mocks_hash.hash(&mut h);
     native_replay_hash.hash(&mut h);
+    runtime_hash.hash(&mut h);
     let key = h.finish();
     harness_cache_root()
         .map(|c| c.join("rust").join("bin-only").join(format!("{key:016x}")))
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-bin-only-{key:016x}")))
 }
 
-#[cfg(test)]
 fn crate_harness_cache_identity(
     file_path: &str,
     src_hash: u64,
     mocks_hash: u64,
     cargo_lock_hash: u64,
     native_replay_hash: u64,
-    _runtime_hash: u64,
+    runtime_hash: u64,
 ) -> (CrateHarnessKey, PathBuf) {
     (
         CrateHarnessKey {
@@ -865,9 +868,16 @@ fn crate_harness_cache_identity(
             source_hash: src_hash,
             mocks_hash,
             cargo_lock_hash,
+            runtime_hash,
             native_replay_hash,
         },
-        stable_crate_harness_dir(file_path, src_hash, mocks_hash, native_replay_hash),
+        stable_crate_harness_dir(
+            file_path,
+            src_hash,
+            mocks_hash,
+            native_replay_hash,
+            runtime_hash,
+        ),
     )
 }
 
@@ -5887,14 +5897,18 @@ fn execute_function_crate_backed(
     let native_replay_hash = native_replay_hash(&native_replays);
     let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
-
-    let key = CrateHarnessKey {
-        file_path: file_path.to_string(),
-        source_hash: src_hash,
-        mocks_hash: mh,
+    let runtime_path = find_runtime_crate_path()?;
+    let runtime_hash = runtime_source_hash(&runtime_path).map_err(|e| {
+        ExecuteError::FileError(format!("cannot hash shatter-rust-runtime sources: {e}"))
+    })?;
+    let (key, harness_dir) = crate_harness_cache_identity(
+        file_path,
+        src_hash,
+        mh,
         cargo_lock_hash,
         native_replay_hash,
-    };
+        runtime_hash,
+    );
 
     // Fast path: dispatch harness running, function in dispatch table.
     {
@@ -5985,7 +5999,6 @@ fn execute_function_crate_backed(
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
     let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path).unwrap_or_default();
 
-    let runtime_path = find_runtime_crate_path()?;
     let cargo_toml_content = generate_cargo_toml_with_user_deps(
         &user_cargo_toml,
         &runtime_path,
@@ -5994,7 +6007,6 @@ fn execute_function_crate_backed(
         false,
     );
 
-    let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh, native_replay_hash);
     std::fs::create_dir_all(&harness_dir)?;
     copy_cargo_lock_for_driver(crate_root, &harness_dir)?;
 
@@ -14008,6 +14020,7 @@ edition = "2021"
             source_hash: 1,
             mocks_hash: 2,
             cargo_lock_hash: old_hash,
+            runtime_hash: 0,
             native_replay_hash: 3,
         };
         let old_bridge_key = CrateBridgeHarnessKey {
