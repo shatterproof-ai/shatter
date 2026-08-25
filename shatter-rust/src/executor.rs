@@ -353,7 +353,9 @@ impl CompatFn {
 }
 
 /// Cache key for a crate-backed file-level dispatch harness.
-/// One harness per (file, source_hash, mocks, native replays) — handles all compatible functions via dispatch.
+///
+/// One harness per file, source, mocks, Cargo lockfile, runtime crate, and native replay inputs.
+/// Each harness handles all compatible functions via dispatch.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateHarnessKey {
     file_path: String,
@@ -4137,15 +4139,33 @@ fn cargo_lock_hash_for_crate(crate_root: &Path) -> io::Result<u64> {
 fn runtime_source_hash(runtime_root: &Path) -> io::Result<u64> {
     use std::hash::{Hash, Hasher};
 
-    let source_root = runtime_root.join("src");
     let mut files = Vec::new();
-    let mut pending = vec![source_root.clone()];
+    let mut pending = vec![runtime_root.to_path_buf()];
+    let mut visited_dirs = std::collections::HashSet::new();
     while let Some(dir) = pending.pop() {
+        let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        if !visited_dirs.insert(canonical_dir) {
+            continue;
+        }
         for entry in std::fs::read_dir(dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
+            let entry = entry?;
+            let path = entry.path();
+            let rel = path.strip_prefix(runtime_root).unwrap_or(path.as_path());
+            if matches!(
+                rel.components()
+                    .next()
+                    .and_then(|component| match component {
+                        std::path::Component::Normal(name) => name.to_str(),
+                        _ => None,
+                    }),
+                Some("target" | ".git" | ".hg" | ".svn")
+            ) {
+                continue;
+            }
+            let metadata = std::fs::metadata(&path)?;
+            if metadata.is_dir() {
                 pending.push(path);
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            } else if metadata.is_file() {
                 files.push(path);
             }
         }
@@ -4154,7 +4174,7 @@ fn runtime_source_hash(runtime_root: &Path) -> io::Result<u64> {
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for path in files {
-        path.strip_prefix(&source_root)
+        path.strip_prefix(runtime_root)
             .unwrap_or(&path)
             .hash(&mut hasher);
         std::fs::read(path)?.hash(&mut hasher);
@@ -4162,6 +4182,11 @@ fn runtime_source_hash(runtime_root: &Path) -> io::Result<u64> {
     Ok(hasher.finish())
 }
 
+/// Resolve and fingerprint the runtime crate once per frontend process.
+///
+/// A rebuilt Shatter frontend starts a new process and computes a new identity. A runtime tree
+/// edited underneath an already-running frontend is intentionally observed after that process is
+/// restarted, avoiding filesystem traversal on every dispatch-cache hit.
 fn runtime_cache_identity() -> Result<&'static (PathBuf, u64), ExecuteError> {
     static IDENTITY: std::sync::OnceLock<(PathBuf, u64)> = std::sync::OnceLock::new();
 
@@ -4171,7 +4196,7 @@ fn runtime_cache_identity() -> Result<&'static (PathBuf, u64), ExecuteError> {
 
     let runtime_path = find_runtime_crate_path()?;
     let runtime_hash = runtime_source_hash(&runtime_path).map_err(|e| {
-        ExecuteError::FileError(format!("cannot hash shatter-rust-runtime sources: {e}"))
+        ExecuteError::FileError(format!("cannot hash shatter-rust-runtime crate inputs: {e}"))
     })?;
     let _ = IDENTITY.set((runtime_path, runtime_hash));
     IDENTITY.get().ok_or_else(|| {
