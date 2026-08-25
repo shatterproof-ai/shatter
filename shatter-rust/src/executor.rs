@@ -4162,6 +4162,23 @@ fn runtime_source_hash(runtime_root: &Path) -> io::Result<u64> {
     Ok(hasher.finish())
 }
 
+fn runtime_cache_identity() -> Result<&'static (PathBuf, u64), ExecuteError> {
+    static IDENTITY: std::sync::OnceLock<(PathBuf, u64)> = std::sync::OnceLock::new();
+
+    if let Some(identity) = IDENTITY.get() {
+        return Ok(identity);
+    }
+
+    let runtime_path = find_runtime_crate_path()?;
+    let runtime_hash = runtime_source_hash(&runtime_path).map_err(|e| {
+        ExecuteError::FileError(format!("cannot hash shatter-rust-runtime sources: {e}"))
+    })?;
+    let _ = IDENTITY.set((runtime_path, runtime_hash));
+    IDENTITY.get().ok_or_else(|| {
+        ExecuteError::FileError("runtime cache identity initialization failed".to_string())
+    })
+}
+
 fn copy_cargo_lock_for_driver(crate_root: &Path, driver_root: &Path) -> io::Result<()> {
     if let Some(lock_source) = cargo_lock_source_for_crate(crate_root) {
         let lock_content = std::fs::read_to_string(&lock_source)?;
@@ -5897,17 +5914,14 @@ fn execute_function_crate_backed(
     let native_replay_hash = native_replay_hash(&native_replays);
     let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
-    let runtime_path = find_runtime_crate_path()?;
-    let runtime_hash = runtime_source_hash(&runtime_path).map_err(|e| {
-        ExecuteError::FileError(format!("cannot hash shatter-rust-runtime sources: {e}"))
-    })?;
+    let (runtime_path, runtime_hash) = runtime_cache_identity()?;
     let (key, harness_dir) = crate_harness_cache_identity(
         file_path,
         src_hash,
         mh,
         cargo_lock_hash,
         native_replay_hash,
-        runtime_hash,
+        *runtime_hash,
     );
 
     // Fast path: dispatch harness running, function in dispatch table.
@@ -6001,7 +6015,7 @@ fn execute_function_crate_backed(
 
     let cargo_toml_content = generate_cargo_toml_with_user_deps(
         &user_cargo_toml,
-        &runtime_path,
+        runtime_path,
         needs_tokio,
         false,
         false,
