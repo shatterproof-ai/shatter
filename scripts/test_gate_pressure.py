@@ -442,6 +442,53 @@ class DiskDeviceDedupTests(unittest.TestCase):
         self.assertEqual(doc["signal"], "disk_free_bytes")
 
 
+class DefaultPathsIgnoreStalePwdTests(unittest.TestCase):
+    """Regression: os.getcwd() must win over a stale inherited $PWD.
+
+    $PWD is shell-maintained and is not refreshed by a parent process's
+    os.chdir()/set_current_dir() before spawning this script as a
+    subprocess -- a stale PWD must not steer the default disk-check path
+    away from the real current working directory.
+    """
+
+    def test_resolve_fs_paths_prefers_getcwd_over_stale_pwd(self):
+        real_cwd = os.getcwd()
+        with _env(SHATTER_PRESSURE_FS_PATHS=None, PWD="/definitely/not/the/real/cwd"):
+            paths = gate_pressure.resolve_fs_paths()
+        self.assertEqual(paths[0], real_cwd)
+        self.assertNotEqual(paths[0], "/definitely/not/the/real/cwd")
+
+    def test_run_reports_disk_for_real_cwd_not_stale_pwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            proc_root = _build_healthy_proc_root(tmp_path)
+            real_cwd_dir = tmp_path / "real-cwd"
+            real_cwd_dir.mkdir()
+            stale_pwd_dir = tmp_path / "stale-pwd"
+            stale_pwd_dir.mkdir()
+
+            previous_cwd = os.getcwd()
+            os.chdir(real_cwd_dir)
+            try:
+                with _env(
+                    SHATTER_PROC_ROOT=str(proc_root),
+                    SHATTER_PRESSURE_FS_PATHS=None,
+                    PWD=str(stale_pwd_dir),
+                    CARGO_TARGET_DIR=str(real_cwd_dir),
+                    SCCACHE_DIR=str(real_cwd_dir),
+                    TMPDIR=str(real_cwd_dir),
+                ):
+                    exit_code, doc = _run_and_parse()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(exit_code, 0)
+        disk_signal = _signal(doc, "disk_free_bytes")
+        checked_inputs = {entry["input"] for entry in disk_signal["detail"]["paths_checked"]}
+        self.assertIn(str(real_cwd_dir), checked_inputs)
+        self.assertNotIn(str(stale_pwd_dir), checked_inputs)
+
+
 class MemInfoErrorTests(unittest.TestCase):
     def test_missing_meminfo_exits_70(self):
         with tempfile.TemporaryDirectory() as tmp:

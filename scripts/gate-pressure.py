@@ -168,7 +168,11 @@ def resolve_fs_paths() -> list:
     if raw is not None and raw.strip() != "":
         return [p for p in raw.split(os.pathsep) if p]
 
-    pwd = os.environ.get("PWD") or os.getcwd()
+    # os.getcwd() must win over $PWD: PWD is shell-maintained and is not
+    # refreshed by a parent process's os.chdir()/set_current_dir() before
+    # spawning this script, so a stale inherited PWD would silently point
+    # the disk check at the wrong directory.
+    pwd = os.getcwd() or os.environ.get("PWD")
     cargo_target = os.environ.get("CARGO_TARGET_DIR") or os.path.join(pwd, "target")
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", ""), ".cache")
     sccache_dir = os.environ.get("SCCACHE_DIR") or os.path.join(xdg_cache_home, "sccache")
