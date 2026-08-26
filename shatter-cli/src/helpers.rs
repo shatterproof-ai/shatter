@@ -39,6 +39,21 @@ pub(crate) fn resolve_observer_pool(
         .max(1)
 }
 
+/// Marks an error as an opt-in gate/policy failure (e.g. `--fail-on-failures`,
+/// a coverage budget gate) rather than a tool or usage error. `main.rs`'s exit
+/// code resolution downcasts to this type to pick exit code 1 (gate fired)
+/// instead of 2 (tool error) — see the exit-code convention in SPEC.md.
+#[derive(Debug)]
+pub(crate) struct GateFailure(pub(crate) String);
+
+impl std::fmt::Display for GateFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for GateFailure {}
+
 /// Resolve the candidate-queue capacity override with CLI > config >
 /// built-in default precedence. Returns `None` when neither side supplies a
 /// value so the explorer falls back to its auto-derived default (str-frc.5).

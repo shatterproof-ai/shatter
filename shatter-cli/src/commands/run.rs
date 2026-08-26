@@ -249,7 +249,7 @@ pub(crate) async fn run_run(
                 &run_status_rollup_input_from_summary(&run_summary),
             )?;
             if coverage_budget_failed(&run_summary.gate_decisions) {
-                return Err("coverage budget gates failed".into());
+                return Err(Box::new(GateFailure("coverage budget gates failed".to_string())));
             }
         }
         return Ok(());
@@ -705,7 +705,7 @@ pub(crate) async fn run_run(
 
     shutdown_all_frontends(frontends).await;
     if budget_failed {
-        return Err("coverage budget gates failed".into());
+        return Err(Box::new(GateFailure("coverage budget gates failed".to_string())));
     }
     if let Some(reason) = run_invalidity_failure(&run_summary) {
         eprintln!(

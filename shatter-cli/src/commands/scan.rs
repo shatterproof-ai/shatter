@@ -1505,7 +1505,7 @@ pub(crate) async fn run_scan(
             // `--failure-threshold`. The summary above already names the
             // completed/failed/unsupported counts.
             if let Some(reason) = result.evaluate_failure_policy(failure_policy) {
-                return Err(format!("scan failed: {reason}").into());
+                return Err(Box::new(GateFailure(format!("scan failed: {reason}"))));
             }
         }
         Err(e) => {
