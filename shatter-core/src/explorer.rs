@@ -422,6 +422,36 @@ pub struct ExecutionSummary {
     pub error_intent: Option<ErrorIntentLabel>,
 }
 
+/// Why exploration for a function stopped. A small, `Serialize`/`Deserialize`
+/// analogue of `orchestrator::TerminationReason` (which cannot itself be
+/// serialized) so the reason survives into the protocol-visible
+/// `ObservationOutput`. Added by str-o7b8z: a one-iteration result was
+/// previously indistinguishable between "budget exhausted", "wall-clock
+/// timeout", and "nothing left to try" — all three could report
+/// `timed_out: false` and looked identical to a thoroughly explored
+/// function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// Reached the configured iteration/path budget (`max_iterations`).
+    MaxIterations,
+    /// Reached the configured total-execution budget (`max_executions`,
+    /// concolic path only).
+    MaxExecutions,
+    /// No new coverage for `plateau_threshold` consecutive executions
+    /// (concolic path only).
+    CoveragePlateau,
+    /// The candidate worklist / strategy set was exhausted before any other
+    /// budget was reached — every available input was tried.
+    #[default]
+    WorklistExhausted,
+    /// The per-function wall-clock timeout (`timeout_explore`) tripped.
+    /// Always implies `ObservationOutput.timed_out == true`.
+    TimeoutExplore,
+    /// All MC/DC independence pairs were satisfied (concolic path only).
+    McdcComplete,
+}
+
 /// Canonical pipeline output for a single function's observation phase.
 ///
 /// Captures everything produced by either random or concolic exploration:
@@ -491,6 +521,12 @@ pub struct ObservationOutput {
     /// `#[serde(default)]` keeps legacy artifacts loadable as `false`.
     #[serde(default)]
     pub timed_out: bool,
+    /// Why exploration stopped. Added by str-o7b8z so a one-iteration result
+    /// is self-explaining (budget vs. timeout vs. exhausted worklist)
+    /// instead of relying solely on `timed_out`. `#[serde(default)]` keeps
+    /// legacy artifacts loadable with a `worklist_exhausted` guess.
+    #[serde(default)]
+    pub stop_reason: StopReason,
     /// Aggregate LLM seed-oracle telemetry. `None` when no oracle was active
     /// during this function's exploration (str-qnp0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1626,6 +1662,17 @@ pub async fn explore_function(
         );
     }
 
+    // str-o7b8z: the loop above can exit through a non-timeout branch (budget
+    // exhaustion, worklist exhaustion) on the same pass where a single slow
+    // Execute round-trip has already pushed wall-clock time past
+    // `timeout_explore`. Re-check unconditionally here so no exit path can
+    // report a stale `timed_out: false` for a run that already blew its
+    // budget — mirrors orchestrator.rs's post-loop `deadline_crossed()`
+    // recheck (str-jeen.65).
+    if !timed_out_due_to_budget && explore_deadline_crossed(config, explore_start) {
+        timed_out_due_to_budget = true;
+    }
+
     // --- Per-function teardown ---
     if per_function_setup && !skip_setup && frontend_supports(&config.capabilities, "teardown") {
         send_teardown(frontend, &analysis.name, config.setup_level)
@@ -1891,6 +1938,19 @@ pub async fn explore_function(
         &std::collections::HashMap::new(),
     );
     let stubbed_modules = collect_stubbed_modules(aggregator.raw_results());
+    // str-o7b8z: classify from final state (after the shrink phase may have
+    // further advanced `timed_out_due_to_budget`), not from whichever `break`
+    // branch happened to fire, so a one-iteration result is self-explaining.
+    // Trusts `timed_out_due_to_budget` alone (no independent fresh deadline
+    // check here) so `stop_reason` can never disagree with the `timed_out`
+    // bool set below from that same value — a fresh recheck at this point
+    // could cross the deadline in the gap after the post-loop/shrink-phase
+    // checks ran, producing TimeoutExplore alongside timed_out=false.
+    let stop_reason = classify_stop_reason(
+        timed_out_due_to_budget,
+        aggregator.iterations() + unsupported_iterations,
+        effective_budget,
+    );
     let mut output = aggregator.into_observation_output(
         analysis.name.clone(),
         total_lines,
@@ -1905,6 +1965,7 @@ pub async fn explore_function(
         opaque_suggestions,
         stubbed_modules,
     );
+    output.stop_reason = stop_reason;
     crate::observe::reconcile_observation_coverage(
         &mut output,
         reconcile_start,
@@ -1918,6 +1979,35 @@ fn explore_deadline_crossed(config: &ExploreConfig, explore_start: Instant) -> b
     config
         .timeout_explore
         .is_some_and(|timeout| explore_start.elapsed() >= timeout)
+}
+
+/// Reconstruct why exploration stopped from post-loop state, independent of
+/// which `break` branch fired inside the loop.
+///
+/// str-o7b8z: the main loop's break conditions are checked in a fixed
+/// order — budget/surplus exhaustion, then wall-clock timeout, then natural
+/// worklist exhaustion. Whenever a non-timeout condition wins the race on
+/// the very iteration where the wall clock has *also* already crossed
+/// `timeout_explore` (most commonly a function whose effective budget is
+/// small and whose single Execute round-trip alone outlasts the timeout),
+/// the loop exits without ever reaching the timeout branch, silently
+/// masking the overrun. Classifying from final state after an unconditional
+/// deadline recheck — rather than trusting only the branch that happened to
+/// `break` — closes that gap the same way `orchestrator::TerminationReason`
+/// plus its post-phase `deadline_crossed()` recheck (str-jeen.65) does for
+/// the concolic path.
+fn classify_stop_reason(
+    timed_out_due_to_budget: bool,
+    iterations_used: u32,
+    effective_budget: Option<u32>,
+) -> StopReason {
+    if timed_out_due_to_budget {
+        StopReason::TimeoutExplore
+    } else if effective_budget.is_some_and(|budget| iterations_used >= budget) {
+        StopReason::MaxIterations
+    } else {
+        StopReason::WorklistExhausted
+    }
 }
 
 fn should_run_shrink_pass(
@@ -2497,6 +2587,15 @@ async fn explore_function_with_observer_pool(
         let _ = handle.await;
     }
 
+    // str-o7b8z: same defensive recheck as explore_function's single-observer
+    // path — the producer loop's max_iterations check runs before its
+    // timeout check, so a slow in-flight execute can drain the queue via
+    // budget exhaustion on the same pass where the wall clock has already
+    // crossed `timeout_explore`, silently masking the overrun.
+    if !timed_out_due_to_budget && explore_deadline_crossed(config, explore_start) {
+        timed_out_due_to_budget = true;
+    }
+
     // str-303gg review fix: reclassify Unsupported only when no successful
     // observation was aggregated. A function that observed any coverage keeps it,
     // even if some iterations returned not_supported.
@@ -2517,6 +2616,11 @@ async fn explore_function_with_observer_pool(
         &std::collections::HashMap::new(),
     );
     let stubbed_modules = collect_stubbed_modules(aggregator.raw_results());
+    let stop_reason = classify_stop_reason(
+        timed_out_due_to_budget,
+        aggregator.iterations() + unsupported_seen,
+        config.max_iterations,
+    );
 
     let mut output = aggregator.into_observation_output(
         analysis.name.clone(),
@@ -2532,6 +2636,7 @@ async fn explore_function_with_observer_pool(
         opaque_suggestions,
         stubbed_modules,
     );
+    output.stop_reason = stop_reason;
     crate::observe::reconcile_observation_coverage(
         &mut output,
         analysis.start_line,
@@ -5179,6 +5284,84 @@ for line in sys.stdin:
         );
     }
 
+    /// str-o7b8z regression, observer-pool variant: same scenario as
+    /// `single_slow_execute_overruns_timeout_reports_timed_out` (a single
+    /// execute alone outlasting `timeout_explore`, with `max_iterations`
+    /// small enough that the producer loop's budget-exhaustion check can win
+    /// the race against the timeout check), but through
+    /// `explore_function_with_observer_pool` (`observer_pool > 1`) rather
+    /// than the single-observer path — the two loops have independent
+    /// post-loop deadline rechecks, so a fix verified only against one
+    /// variant would leave the other's regression unverified.
+    #[tokio::test]
+    async fn observer_pool_single_slow_execute_overruns_timeout_reports_timed_out() {
+        use std::time::Duration;
+        let (_log_dir, log_path) = observer_log_path("pool-slow-execute-overrun");
+        let observer_frontend_config = {
+            let mut c = recording_frontend_config(&log_path);
+            c.env_vars.retain(|(k, _)| k != "SHATTER_OBSERVER_EXEC_SLEEP");
+            c.env_vars.push((
+                "SHATTER_OBSERVER_EXEC_SLEEP".to_string(),
+                "1".to_string(),
+            ));
+            c.request_timeout = Duration::from_secs(30);
+            c
+        };
+        let mut frontend = spawn_recording_frontend(&log_path).await;
+        let analysis = stub_analysis();
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(1),
+            observer_pool: 2,
+            observer_frontend_config: Some(observer_frontend_config),
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            // Single execute takes ~1s; budget is 300ms, so a single
+            // round-trip alone should exceed it ~3x.
+            timeout_explore: Some(Duration::from_millis(300)),
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("observer-pool exploration should return Ok");
+        frontend.shutdown().await.expect("shutdown failed");
+
+        assert!(
+            result.timed_out,
+            "observer-pool path: a single execute 3x over timeout_explore must \
+             report timed_out=true, not a clean completion"
+        );
+        assert_eq!(
+            result.stop_reason,
+            StopReason::TimeoutExplore,
+            "observer-pool path: stop_reason must reflect the wall-clock overrun"
+        );
+    }
+
     #[test]
     fn candidate_queue_capacity_uses_spec_default() {
         assert_eq!(default_candidate_queue_capacity(4, None), 16);
@@ -5773,6 +5956,84 @@ for line in sys.stdin:
             result.iterations < 10_000,
             "expected timeout to stop exploration before max_iterations; iterations={}",
             result.iterations,
+        );
+        frontend.shutdown().await.expect("shutdown failed");
+    }
+
+    /// str-o7b8z regression: a single Execute round-trip that alone outlasts
+    /// `timeout_explore` must surface `timed_out: true` and
+    /// `stop_reason: TimeoutExplore`, even though `max_iterations: Some(1)`
+    /// means the loop's very next top-of-loop pass exits through the
+    /// budget-exhaustion branch (which sits textually *before* the timeout
+    /// check) rather than the timeout branch itself. Before the post-loop
+    /// unconditional deadline recheck this added, that ordering meant a
+    /// function whose whole run was exactly one 3x-over-budget execute was
+    /// reported as a clean, unremarkable "completed" run.
+    #[tokio::test]
+    async fn single_slow_execute_overruns_timeout_reports_timed_out() {
+        use std::time::Duration;
+        let (_log_dir, log_path) = observer_log_path("slow-execute-overrun");
+        let config = {
+            let mut c = recording_frontend_config(&log_path);
+            c.env_vars.retain(|(k, _)| k != "SHATTER_OBSERVER_EXEC_SLEEP");
+            c.env_vars.push((
+                "SHATTER_OBSERVER_EXEC_SLEEP".to_string(),
+                "1".to_string(),
+            ));
+            c.request_timeout = Duration::from_secs(30);
+            c
+        };
+        let mut frontend = Frontend::spawn(&config).await.expect("spawn slow frontend");
+        let analysis = stub_analysis();
+        let explore_config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(1),
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            // Single execute takes ~1s; budget is 300ms, so a single
+            // round-trip alone should exceed it ~3x.
+            timeout_explore: Some(Duration::from_millis(300)),
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+        let result = explore_function(&mut frontend, &analysis, &explore_config, None, None)
+            .await
+            .expect("explore_function should return Ok");
+        assert_eq!(
+            result.iterations, 1,
+            "the single slow execute should be the only iteration attempted"
+        );
+        assert!(
+            result.timed_out,
+            "a single execute 3x over timeout_explore must report timed_out=true, \
+             not a clean completion"
+        );
+        assert_eq!(
+            result.stop_reason,
+            StopReason::TimeoutExplore,
+            "stop_reason must reflect the wall-clock overrun, not the \
+             max_iterations-exhaustion branch that actually broke the loop"
         );
         frontend.shutdown().await.expect("shutdown failed");
     }
