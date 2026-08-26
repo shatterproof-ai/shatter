@@ -20,6 +20,7 @@ use crate::explorer::ObservationOutput;
 use crate::fingerprint::compute_deep_fingerprints;
 use crate::invariants::{ClassifiedInvariant, InvariantKind};
 use crate::protocol::FunctionAnalysis;
+use crate::types::TypeInfo;
 
 /// Error type for spec bundle I/O operations.
 #[derive(Debug)]
@@ -166,6 +167,13 @@ pub enum Postcondition {
     },
     /// The function returns void / undefined / null.
     ReturnsVoid,
+    /// No return value was observed on this path, even though the function's
+    /// analyzed return type is non-void. Distinct from `ReturnsVoid`: this
+    /// means exploration never captured a value (execution may not have been
+    /// observable at all), not that the function is confirmed to return
+    /// nothing. Never assert `ReturnsVoid` for a non-void return type on the
+    /// strength of a missing observation (str-wvfke).
+    Unobserved,
 }
 
 /// A concrete input/output example for an equivalence class.
@@ -328,12 +336,13 @@ pub fn build_spec(
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
     fingerprint: Option<String>,
+    return_type: &TypeInfo,
 ) -> FunctionSpec {
     let z3_branches = z3_branch_set(&result.discoveries);
     let classes = eq_classes
         .iter()
         .enumerate()
-        .map(|(i, ec)| build_spec_class(i, ec, &z3_branches))
+        .map(|(i, ec)| build_spec_class(i, ec, &z3_branches, return_type))
         .collect();
 
     FunctionSpec {
@@ -358,8 +367,9 @@ pub fn build_spec_with_invariants(
     eq_classes: &[EquivalenceClass],
     location: Option<String>,
     fingerprint: Option<String>,
+    return_type: &TypeInfo,
 ) -> FunctionSpec {
-    let mut spec = build_spec(result, eq_classes, location, fingerprint);
+    let mut spec = build_spec(result, eq_classes, location, fingerprint, return_type);
     detect_spec_invariants(&mut spec, result, eq_classes);
     spec
 }
@@ -419,11 +429,31 @@ fn z3_branch_set(discoveries: &[(u32, DiscoveryMethod)]) -> HashSet<u32> {
         .collect()
 }
 
+/// Returns `true` if `return_type` represents a genuinely void return (i.e. the
+/// function declares no return value), as opposed to a real, non-void type that
+/// simply couldn't be resolved.
+///
+/// `TypeInfo::Unknown` is currently the only representation frontends use for
+/// "no return values declared" (see e.g. Go's `extractReturnType`), so it is
+/// treated as void here. It is also the fallback for a type the analyzer
+/// couldn't resolve, which means a small number of genuinely-non-void
+/// functions may still be misclassified as void — but that is strictly better
+/// than the prior behavior, which asserted void for every unobserved return
+/// regardless of the analyzed type (str-wvfke).
+fn is_void_return_type(return_type: &TypeInfo) -> bool {
+    matches!(return_type, TypeInfo::Unknown)
+}
+
 /// Build a single [`SpecClass`] from an equivalence class.
 ///
 /// If every branch in the class's path was discovered by Z3, both precondition
 /// and postcondition provenance are `Proven`; otherwise `Observed`.
-fn build_spec_class(index: usize, ec: &EquivalenceClass, z3_branches: &HashSet<u32>) -> SpecClass {
+fn build_spec_class(
+    index: usize,
+    ec: &EquivalenceClass,
+    z3_branches: &HashSet<u32>,
+    return_type: &TypeInfo,
+) -> SpecClass {
     let postcondition = if let Some(ref err_msg) = ec.canonical_thrown_error {
         let (error_type, message) = match err_msg.split_once(": ") {
             Some((t, m)) => (t.to_string(), m.to_string()),
@@ -438,9 +468,15 @@ fn build_spec_class(index: usize, ec: &EquivalenceClass, z3_branches: &HashSet<u
             },
         }
     } else {
+        let is_void = is_void_return_type(return_type);
         match &ec.canonical_return_value {
-            Some(v) if !v.is_null() => Postcondition::Returns { value: v.clone() },
-            _ => Postcondition::ReturnsVoid,
+            // An explicit value was observed (including a literal null) —
+            // report it rather than collapsing to void, unless the return
+            // type really is void.
+            Some(v) if !v.is_null() || !is_void => Postcondition::Returns { value: v.clone() },
+            Some(_) => Postcondition::ReturnsVoid,
+            None if is_void => Postcondition::ReturnsVoid,
+            None => Postcondition::Unobserved,
         }
     };
 
@@ -498,6 +534,7 @@ fn format_class_label(index: usize, postcondition: &Postcondition) -> String {
             format!("throws {}: {}", error.error_type, error.message)
         }
         Postcondition::ReturnsVoid => "returns void".to_string(),
+        Postcondition::Unobserved => "unobserved return".to_string(),
     };
     format!("Class {} — {}", index + 1, outcome)
 }
@@ -939,6 +976,7 @@ fn format_postcondition(post: &Postcondition) -> String {
             format!("throws {}: {}", error.error_type, error.message)
         }
         Postcondition::ReturnsVoid => "returns void".to_string(),
+        Postcondition::Unobserved => "no return value was observed".to_string(),
     }
 }
 
@@ -1083,7 +1121,7 @@ mod tests {
             ),
         ];
 
-        let spec = build_spec(&result, &classes, Some("math.ts:10".to_string()), None);
+        let spec = build_spec(&result, &classes, Some("math.ts:10".to_string()), None, &TypeInfo::Unknown);
 
         assert_eq!(spec.function_name, "classifyNumber");
         assert_eq!(spec.location.as_deref(), Some("math.ts:10"));
@@ -1128,7 +1166,7 @@ mod tests {
             ),
         ];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
 
         assert_eq!(spec.classes.len(), 2);
 
@@ -1153,15 +1191,90 @@ mod tests {
             10,
         )];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
         assert_eq!(spec.classes[0].postcondition, Postcondition::ReturnsVoid);
         assert!(spec.classes[0].label.contains("void"));
+    }
+
+    /// str-wvfke: a function whose analyzed return type is non-void (e.g. Go's
+    /// `error`) but for which no return value was observed at all must never
+    /// be classified as `ReturnsVoid` — that asserts a behavior the function
+    /// cannot be shown to have. It should report `Unobserved` instead.
+    #[test]
+    fn build_spec_unobserved_return_for_non_void_type() {
+        let result = make_exploration_result("run", 100, 36);
+        let classes = vec![make_eq_class(vec![], vec![json!("")], None, None, vec![], 100)];
+        let non_void_return_type = TypeInfo::Complex {
+            kind: crate::types::ComplexKind::Error,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+
+        let spec = build_spec(&result, &classes, None, None, &non_void_return_type);
+
+        assert_eq!(spec.classes[0].postcondition, Postcondition::Unobserved);
+        assert!(
+            !spec.classes[0].label.to_lowercase().contains("void"),
+            "must not be labeled void when the return type is non-void: {}",
+            spec.classes[0].label
+        );
+    }
+
+    /// str-wvfke: the same "no canonical return value" input, but with a
+    /// genuinely void analyzed return type (no return values declared), must
+    /// still classify as `ReturnsVoid` — this is the arm that was already
+    /// correct and must not regress.
+    #[test]
+    fn build_spec_void_return_for_void_type_unaffected() {
+        let result = make_exploration_result("logMessage", 10, 1);
+        let classes = vec![make_eq_class(
+            vec![],
+            vec![json!("hello")],
+            None,
+            None,
+            vec![],
+            10,
+        )];
+
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
+
+        assert_eq!(spec.classes[0].postcondition, Postcondition::ReturnsVoid);
+    }
+
+    /// An explicit `null`/nil observed for a non-void return type is a real
+    /// observation and must be reported as such, not collapsed into either
+    /// `ReturnsVoid` or `Unobserved`.
+    #[test]
+    fn build_spec_explicit_null_for_non_void_type_reports_returns_null() {
+        let result = make_exploration_result("run", 100, 36);
+        let classes = vec![make_eq_class(
+            vec![],
+            vec![json!("")],
+            Some(json!(null)),
+            None,
+            vec![],
+            100,
+        )];
+        let non_void_return_type = TypeInfo::Complex {
+            kind: crate::types::ComplexKind::Error,
+            metadata: serde_json::Map::new(),
+            inner: None,
+        };
+
+        let spec = build_spec(&result, &classes, None, None, &non_void_return_type);
+
+        assert_eq!(
+            spec.classes[0].postcondition,
+            Postcondition::Returns {
+                value: json!(null)
+            }
+        );
     }
 
     #[test]
     fn build_spec_empty_classes() {
         let result = make_exploration_result("unused", 0, 0);
-        let spec = build_spec(&result, &[], None, None);
+        let spec = build_spec(&result, &[], None, None, &TypeInfo::Unknown);
 
         assert!(spec.classes.is_empty());
         assert_eq!(spec.function_name, "unused");
@@ -1205,7 +1318,7 @@ mod tests {
             ),
         ];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
 
         assert_eq!(spec.classes[0].precondition_provenance, Provenance::Proven);
         assert_eq!(spec.classes[0].postcondition_provenance, Provenance::Proven);
@@ -1245,7 +1358,7 @@ mod tests {
             5,
         )];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
         assert_eq!(spec.classes[0].precondition_provenance, Provenance::Proven);
         assert_eq!(spec.classes[0].postcondition_provenance, Provenance::Proven);
     }
@@ -1267,7 +1380,7 @@ mod tests {
             10,
         )];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
         assert_eq!(
             spec.classes[0].precondition_provenance,
             Provenance::Observed
@@ -1296,7 +1409,7 @@ mod tests {
             ),
         ];
 
-        let spec = build_spec(&result, &classes, Some("math.ts:5".to_string()), None);
+        let spec = build_spec(&result, &classes, Some("math.ts:5".to_string()), None, &TypeInfo::Unknown);
         let md = format_spec_markdown(&spec);
 
         assert!(md.contains("# Specification: `classify`"), "missing title");
@@ -1330,7 +1443,7 @@ mod tests {
             3,
         )];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
         let md = format_spec_markdown(&spec);
 
         assert!(md.contains("throws TypeError: null input"), "missing error");
@@ -1349,7 +1462,7 @@ mod tests {
             15,
         )];
 
-        let spec = build_spec(&result, &classes, Some("math.ts:1".to_string()), None);
+        let spec = build_spec(&result, &classes, Some("math.ts:1".to_string()), None, &TypeInfo::Unknown);
         let json_str = format_spec_json(&spec).expect("json serialization");
 
         let deserialized: FunctionSpec =
@@ -1379,7 +1492,7 @@ mod tests {
             5,
         )];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
         let json_str = format_spec_json(&spec).expect("json serialization");
         let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("json parse");
 
@@ -1415,6 +1528,7 @@ mod tests {
                 },
             },
             Postcondition::ReturnsVoid,
+            Postcondition::Unobserved,
         ];
 
         for post in &postconditions {
@@ -1498,7 +1612,7 @@ mod tests {
             5,
         )];
 
-        let spec = build_spec(&result, &classes, None, None);
+        let spec = build_spec(&result, &classes, None, None, &TypeInfo::Unknown);
         let md = format_spec_markdown(&spec);
 
         assert!(
@@ -1510,7 +1624,7 @@ mod tests {
     #[test]
     fn format_spec_markdown_no_location() {
         let result = make_exploration_result("fn1", 10, 1);
-        let spec = build_spec(&result, &[], None, None);
+        let spec = build_spec(&result, &[], None, None, &TypeInfo::Unknown);
         let md = format_spec_markdown(&spec);
 
         assert!(!md.contains("**Location:**"), "should not have location");
@@ -1607,6 +1721,7 @@ mod tests {
             )],
             None,
             None,
+            &TypeInfo::Unknown,
         );
         spec.invariants = vec![ClassifiedInvariant {
             invariant: Invariant {
@@ -1651,6 +1766,7 @@ mod tests {
             )],
             None,
             None,
+            &TypeInfo::Unknown,
         );
         spec.classes[0].invariants = vec![ClassifiedInvariant {
             invariant: Invariant {
@@ -1694,6 +1810,7 @@ mod tests {
             )],
             None,
             None,
+            &TypeInfo::Unknown,
         );
 
         let json_str = format_spec_json(&spec).expect("json serialization");
@@ -1727,6 +1844,7 @@ mod tests {
             )],
             None,
             None,
+            &TypeInfo::Unknown,
         );
         spec.invariants = vec![ClassifiedInvariant {
             invariant: Invariant {
@@ -1762,6 +1880,7 @@ mod tests {
             &[],
             Some("src/math.ts:1".to_string()),
             None,
+            &TypeInfo::Unknown,
         );
         let bundle = FileSpecBundle {
             file: "src/math.ts".to_string(),
@@ -1796,6 +1915,7 @@ mod tests {
                 )],
                 Some("src/math.ts:1".to_string()),
                 Some("abc123".to_string()),
+                &TypeInfo::Unknown,
             )],
             ..FileSpecBundle::default()
         };

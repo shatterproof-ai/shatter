@@ -32,6 +32,11 @@ pub enum NormalizedOutput {
     Throws { message: String },
     /// The function returned void/undefined/null.
     Void,
+    /// No return value was observed for this input at all (distinct from an
+    /// explicit null/undefined observation, which is `Void`). Never collapsed
+    /// into `Void` — an unobserved return is not evidence the function is
+    /// void (str-wvfke).
+    Unobserved,
 }
 
 impl fmt::Display for NormalizedOutput {
@@ -40,6 +45,7 @@ impl fmt::Display for NormalizedOutput {
             Self::Returns { value } => write!(f, "{}", format_value_short(value)),
             Self::Throws { message } => write!(f, "throws: {message}"),
             Self::Void => write!(f, "void"),
+            Self::Unobserved => write!(f, "unobserved"),
         }
     }
 }
@@ -88,6 +94,16 @@ pub struct CompareResult {
     pub only_in_a: Vec<UniqueBehavior>,
     /// Behaviors present only in spec B.
     pub only_in_b: Vec<UniqueBehavior>,
+    /// Inputs for which neither spec observed a return value at all.
+    ///
+    /// Both sides normalize to `NormalizedOutput::Unobserved`, which derive-equal
+    /// each other -- but neither side actually demonstrated any behavior for
+    /// these inputs, so counting them as a confirmed match would recreate the
+    /// exact false-confidence collapse str-wvfke removed from spec
+    /// classification, one layer up in cross-language comparison. Excluded from
+    /// `matching`, `divergent`, and `similarity_percent`'s denominator.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub both_unobserved: Vec<Vec<serde_json::Value>>,
 }
 
 impl CompareResult {
@@ -159,7 +175,7 @@ fn normalize_example_output(
         Some(v) => NormalizedOutput::Returns {
             value: normalize_value(v),
         },
-        None => NormalizedOutput::Void,
+        None => NormalizedOutput::Unobserved,
     }
 }
 
@@ -176,10 +192,15 @@ pub fn compare_specs(a: &FunctionSpec, b: &FunctionSpec) -> CompareResult {
     let mut matching = Vec::new();
     let mut divergent = Vec::new();
     let mut only_in_a = Vec::new();
+    let mut both_unobserved = Vec::new();
 
     for (key, (inputs, output_a)) in &map_a {
         if let Some((_, output_b)) = map_b.get(key) {
-            if output_a == output_b {
+            if *output_a == NormalizedOutput::Unobserved && output_a == output_b {
+                // Neither side observed a return value for this input --
+                // derive-equal, but not a demonstrated behavioral match.
+                both_unobserved.push(inputs.clone());
+            } else if output_a == output_b {
                 matching.push(MatchingBehavior {
                     inputs: inputs.clone(),
                     output: output_a.clone(),
@@ -215,6 +236,7 @@ pub fn compare_specs(a: &FunctionSpec, b: &FunctionSpec) -> CompareResult {
         divergent,
         only_in_a,
         only_in_b,
+        both_unobserved,
     }
 }
 
@@ -348,6 +370,22 @@ pub fn format_compare_text(result: &CompareResult) -> String {
         out.push('\n');
     }
 
+    // Inputs where neither side observed a return value -- not a demonstrated
+    // match, so kept separate from "Matching behaviors" (str-wvfke).
+    if !result.both_unobserved.is_empty() {
+        out.push_str(&format!(
+            "## Unobserved on both sides ({})\n\n",
+            result.both_unobserved.len()
+        ));
+        out.push_str(
+            "_Neither side observed a return value for these inputs — not a confirmed match._\n\n",
+        );
+        for inputs in &result.both_unobserved {
+            out.push_str(&format!("- Input {}\n", format_inputs_short(inputs)));
+        }
+        out.push('\n');
+    }
+
     out
 }
 
@@ -385,7 +423,7 @@ mod tests {
                     (_, Some(err)) => Postcondition::Throws { error: err.clone() },
                     (Some(v), None) if v.is_null() => Postcondition::ReturnsVoid,
                     (Some(v), None) => Postcondition::Returns { value: v.clone() },
-                    (None, None) => Postcondition::ReturnsVoid,
+                    (None, None) => Postcondition::Unobserved,
                 },
                 side_effects: Vec::new(),
                 examples: vec![example],
@@ -568,7 +606,44 @@ mod tests {
     }
 
     #[test]
-    fn void_returns_match() {
+    fn explicit_null_returns_match() {
+        let spec_a = make_spec(
+            "noop_ts",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: Some(json!(null)),
+                    thrown_error: None,
+                },
+            )],
+        );
+        let spec_b = make_spec(
+            "noop_go",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: Some(json!(null)),
+                    thrown_error: None,
+                },
+            )],
+        );
+
+        let result = compare_specs(&spec_a, &spec_b);
+        assert_eq!(
+            result.matching.len(),
+            1,
+            "two explicit null observations should match as Void"
+        );
+    }
+
+    #[test]
+    fn unobserved_return_does_not_match_explicit_null() {
+        // str-wvfke: an unobserved return (return_value: None, e.g. because the
+        // execution wasn't captured) must not be silently treated as the same
+        // as an explicitly observed null/void return — that hides a real
+        // difference in what each side actually demonstrated.
         let spec_a = make_spec(
             "noop_ts",
             vec![(
@@ -593,10 +668,60 @@ mod tests {
         );
 
         let result = compare_specs(&spec_a, &spec_b);
+        assert!(
+            result.matching.is_empty(),
+            "unobserved (None) must not match an explicit null observation"
+        );
+        assert_eq!(result.divergent.len(), 1);
+    }
+
+    #[test]
+    fn both_sides_unobserved_is_not_a_confirmed_match() {
+        // Regression for the team-lead review of str-wvfke: two sides that both
+        // never observed a return value for the same input derive-equal as
+        // `NormalizedOutput::Unobserved`, but neither side actually demonstrated
+        // any behavior. Silently counting that as `matching` would recreate the
+        // exact false-confidence collapse str-wvfke removed from spec
+        // classification, one layer up in cross-language comparison.
+        let spec_a = make_spec(
+            "noop_ts",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: None,
+                    thrown_error: None,
+                },
+            )],
+        );
+        let spec_b = make_spec(
+            "noop_go",
+            vec![(
+                vec![json!(1)],
+                ConcreteExample {
+                    inputs: vec![json!(1)],
+                    return_value: None,
+                    thrown_error: None,
+                },
+            )],
+        );
+
+        let result = compare_specs(&spec_a, &spec_b);
+        assert!(
+            result.matching.is_empty(),
+            "both-unobserved must not count as matching: {:?}",
+            result.matching
+        );
+        assert!(
+            result.divergent.is_empty(),
+            "both-unobserved is not a demonstrated divergence either: {:?}",
+            result.divergent
+        );
+        assert_eq!(result.both_unobserved, vec![vec![json!(1)]]);
         assert_eq!(
-            result.matching.len(),
-            1,
-            "None and null should both normalize to Void"
+            result.similarity_percent(),
+            None,
+            "an unobserved-only pair should not count toward similarity"
         );
     }
 

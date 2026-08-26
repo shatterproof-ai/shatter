@@ -63,9 +63,21 @@ pub(crate) fn run_specify(opts: SpecifyOptions<'_>) -> Result<(), Box<dyn std::e
         ));
 
         let spec = if opts.detect_invariants {
-            shatter_core::spec::build_spec_with_invariants(observation, &eq_classes, location, None)
+            shatter_core::spec::build_spec_with_invariants(
+                observation,
+                &eq_classes,
+                location,
+                None,
+                &analysis.return_type,
+            )
         } else {
-            shatter_core::spec::build_spec(observation, &eq_classes, location, None)
+            shatter_core::spec::build_spec(
+                observation,
+                &eq_classes,
+                location,
+                None,
+                &analysis.return_type,
+            )
         };
 
         let formatted = if opts.as_json {

@@ -3679,9 +3679,16 @@ fn assemble_function_result(
                     eq_classes,
                     location,
                     fingerprint,
+                    &func.return_type,
                 )
             } else {
-                shatter_core::spec::build_spec(result, eq_classes, location, fingerprint)
+                shatter_core::spec::build_spec(
+                    result,
+                    eq_classes,
+                    location,
+                    fingerprint,
+                    &func.return_type,
+                )
             }
         };
         if opts.output_path_set {
