@@ -353,13 +353,16 @@ impl CompatFn {
 }
 
 /// Cache key for a crate-backed file-level dispatch harness.
-/// One harness per (file, source_hash, mocks, native replays) — handles all compatible functions via dispatch.
+///
+/// One harness per file, source, mocks, Cargo lockfile, runtime crate, and native replay inputs.
+/// Each harness handles all compatible functions via dispatch.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrateHarnessKey {
     file_path: String,
     source_hash: u64,
     mocks_hash: u64,
     cargo_lock_hash: u64,
+    runtime_hash: u64,
     /// Hash of native generator replay metadata baked into the dispatch harness source.
     native_replay_hash: u64,
 }
@@ -383,6 +386,7 @@ impl CrateHarnessKey {
             source_hash: 0,
             mocks_hash: 0,
             cargo_lock_hash: 0,
+            runtime_hash: 0,
             native_replay_hash: 0,
         }
     }
@@ -837,6 +841,7 @@ fn stable_crate_harness_dir(
     src_hash: u64,
     mocks_hash: u64,
     native_replay_hash: u64,
+    runtime_hash: u64,
 ) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -844,10 +849,38 @@ fn stable_crate_harness_dir(
     src_hash.hash(&mut h);
     mocks_hash.hash(&mut h);
     native_replay_hash.hash(&mut h);
+    runtime_hash.hash(&mut h);
     let key = h.finish();
     harness_cache_root()
         .map(|c| c.join("rust").join("bin-only").join(format!("{key:016x}")))
         .unwrap_or_else(|| std::env::temp_dir().join(format!("shatter-bin-only-{key:016x}")))
+}
+
+fn crate_harness_cache_identity(
+    file_path: &str,
+    src_hash: u64,
+    mocks_hash: u64,
+    cargo_lock_hash: u64,
+    native_replay_hash: u64,
+    runtime_hash: u64,
+) -> (CrateHarnessKey, PathBuf) {
+    (
+        CrateHarnessKey {
+            file_path: file_path.to_string(),
+            source_hash: src_hash,
+            mocks_hash,
+            cargo_lock_hash,
+            runtime_hash,
+            native_replay_hash,
+        },
+        stable_crate_harness_dir(
+            file_path,
+            src_hash,
+            mocks_hash,
+            native_replay_hash,
+            runtime_hash,
+        ),
+    )
 }
 
 /// Extract the `[dependencies]` section lines from a Cargo.toml file.
@@ -4103,6 +4136,74 @@ fn cargo_lock_hash_for_crate(crate_root: &Path) -> io::Result<u64> {
     }
 }
 
+fn runtime_source_hash(runtime_root: &Path) -> io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let mut files = Vec::new();
+    let mut pending = vec![runtime_root.to_path_buf()];
+    let mut visited_dirs = std::collections::HashSet::new();
+    while let Some(dir) = pending.pop() {
+        let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        if !visited_dirs.insert(canonical_dir) {
+            continue;
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let rel = path.strip_prefix(runtime_root).unwrap_or(path.as_path());
+            if matches!(
+                rel.components()
+                    .next()
+                    .and_then(|component| match component {
+                        std::path::Component::Normal(name) => name.to_str(),
+                        _ => None,
+                    }),
+                Some("target" | ".git" | ".hg" | ".svn")
+            ) {
+                continue;
+            }
+            let metadata = std::fs::metadata(&path)?;
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if metadata.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for path in files {
+        path.strip_prefix(runtime_root)
+            .unwrap_or(&path)
+            .hash(&mut hasher);
+        std::fs::read(path)?.hash(&mut hasher);
+    }
+    Ok(hasher.finish())
+}
+
+/// Resolve and fingerprint the runtime crate once per frontend process.
+///
+/// A rebuilt Shatter frontend starts a new process and computes a new identity. A runtime tree
+/// edited underneath an already-running frontend is intentionally observed after that process is
+/// restarted, avoiding filesystem traversal on every dispatch-cache hit.
+fn runtime_cache_identity() -> Result<&'static (PathBuf, u64), ExecuteError> {
+    static IDENTITY: std::sync::OnceLock<(PathBuf, u64)> = std::sync::OnceLock::new();
+
+    if let Some(identity) = IDENTITY.get() {
+        return Ok(identity);
+    }
+
+    let runtime_path = find_runtime_crate_path()?;
+    let runtime_hash = runtime_source_hash(&runtime_path).map_err(|e| {
+        ExecuteError::FileError(format!("cannot hash shatter-rust-runtime crate inputs: {e}"))
+    })?;
+    let _ = IDENTITY.set((runtime_path, runtime_hash));
+    IDENTITY.get().ok_or_else(|| {
+        ExecuteError::FileError("runtime cache identity initialization failed".to_string())
+    })
+}
+
 fn copy_cargo_lock_for_driver(crate_root: &Path, driver_root: &Path) -> io::Result<()> {
     if let Some(lock_source) = cargo_lock_source_for_crate(crate_root) {
         let lock_content = std::fs::read_to_string(&lock_source)?;
@@ -5838,14 +5939,15 @@ fn execute_function_crate_backed(
     let native_replay_hash = native_replay_hash(&native_replays);
     let cargo_lock_hash = cargo_lock_hash_for_crate(crate_root)
         .map_err(|e| ExecuteError::FileError(format!("cannot read Cargo.lock: {e}")))?;
-
-    let key = CrateHarnessKey {
-        file_path: file_path.to_string(),
-        source_hash: src_hash,
-        mocks_hash: mh,
+    let (runtime_path, runtime_hash) = runtime_cache_identity()?;
+    let (key, harness_dir) = crate_harness_cache_identity(
+        file_path,
+        src_hash,
+        mh,
         cargo_lock_hash,
         native_replay_hash,
-    };
+        *runtime_hash,
+    );
 
     // Fast path: dispatch harness running, function in dispatch table.
     {
@@ -5936,16 +6038,14 @@ fn execute_function_crate_backed(
     let user_cargo_toml_path = crate_root.join("Cargo.toml");
     let user_cargo_toml = std::fs::read_to_string(&user_cargo_toml_path).unwrap_or_default();
 
-    let runtime_path = find_runtime_crate_path()?;
     let cargo_toml_content = generate_cargo_toml_with_user_deps(
         &user_cargo_toml,
-        &runtime_path,
+        runtime_path,
         needs_tokio,
         false,
         false,
     );
 
-    let harness_dir = stable_crate_harness_dir(file_path, src_hash, mh, native_replay_hash);
     std::fs::create_dir_all(&harness_dir)?;
     copy_cargo_lock_for_driver(crate_root, &harness_dir)?;
 
@@ -13959,6 +14059,7 @@ edition = "2021"
             source_hash: 1,
             mocks_hash: 2,
             cargo_lock_hash: old_hash,
+            runtime_hash: 0,
             native_replay_hash: 3,
         };
         let old_bridge_key = CrateBridgeHarnessKey {
@@ -13990,6 +14091,59 @@ edition = "2021"
         );
 
         let _ = std::fs::remove_dir_all(&crate_root);
+    }
+
+    #[test]
+    fn crate_harness_cache_identity_changes_when_runtime_source_changes() {
+        let runtime_root = unique_tmp_dir("bin-only-runtime-cache-hash");
+        std::fs::create_dir_all(runtime_root.join("src")).unwrap();
+        let runtime_source = runtime_root.join("src/lib.rs");
+        std::fs::write(&runtime_source, "pub fn marker() -> u64 { 1 }\n").unwrap();
+
+        let old_runtime_hash = runtime_source_hash(&runtime_root).unwrap();
+        let old_identity = crate_harness_cache_identity(
+            "src/lib.rs",
+            1,
+            2,
+            3,
+            4,
+            old_runtime_hash,
+        );
+
+        std::fs::write(&runtime_source, "pub fn marker() -> u64 { 2 }\n").unwrap();
+        let new_runtime_hash = runtime_source_hash(&runtime_root).unwrap();
+        let new_identity = crate_harness_cache_identity(
+            "src/lib.rs",
+            1,
+            2,
+            3,
+            4,
+            new_runtime_hash,
+        );
+
+        assert_ne!(old_runtime_hash, new_runtime_hash);
+        assert_ne!(
+            old_identity.0, new_identity.0,
+            "bin-only in-memory harness cache key must change when runtime source changes",
+        );
+        assert_ne!(
+            old_identity.1, new_identity.1,
+            "bin-only persistent harness directory must change when runtime source changes",
+        );
+
+        let before_manifest_hash = runtime_source_hash(&runtime_root).unwrap();
+        std::fs::write(
+            runtime_root.join("Cargo.toml"),
+            "[package]\nname = \"shatter-rust-runtime\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let after_manifest_hash = runtime_source_hash(&runtime_root).unwrap();
+        assert_ne!(
+            before_manifest_hash, after_manifest_hash,
+            "bin-only harness cache identity must change when the runtime manifest changes",
+        );
+
+        let _ = std::fs::remove_dir_all(&runtime_root);
     }
 
     #[test]
