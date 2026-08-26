@@ -1076,7 +1076,7 @@ async fn main() -> ExitCode {
                     finalize_exit_code(
                         &subcommand_name,
                         dm,
-                        1,
+                        error_exit_code(&*e),
                         &timing_config,
                         timing_start_unix_ms,
                         timing_handle.as_ref(),
@@ -1132,7 +1132,7 @@ async fn main() -> ExitCode {
                     finalize_exit_code(
                         &subcommand_name,
                         dm,
-                        1,
+                        error_exit_code(&*e),
                         &timing_config,
                         timing_start_unix_ms,
                         timing_handle.as_ref(),
@@ -1168,7 +1168,7 @@ async fn main() -> ExitCode {
                     finalize_exit_code(
                         &subcommand_name,
                         dm,
-                        1,
+                        error_exit_code(&*e),
                         &timing_config,
                         timing_start_unix_ms,
                         timing_handle.as_ref(),
@@ -1194,7 +1194,7 @@ async fn main() -> ExitCode {
                     finalize_exit_code(
                         &subcommand_name,
                         dm,
-                        1,
+                        error_exit_code(&*e),
                         &timing_config,
                         timing_start_unix_ms,
                         timing_handle.as_ref(),
@@ -1220,7 +1220,7 @@ async fn main() -> ExitCode {
                     finalize_exit_code(
                         &subcommand_name,
                         dm,
-                        1,
+                        error_exit_code(&*e),
                         &timing_config,
                         timing_start_unix_ms,
                         timing_handle.as_ref(),
@@ -1247,7 +1247,7 @@ async fn main() -> ExitCode {
                     finalize_exit_code(
                         &subcommand_name,
                         dm,
-                        1,
+                        error_exit_code(&*e),
                         &timing_config,
                         timing_start_unix_ms,
                         timing_handle.as_ref(),
@@ -1274,7 +1274,7 @@ async fn main() -> ExitCode {
             finalize_exit_code(
                 &subcommand_name,
                 duration_ms,
-                1,
+                error_exit_code(&*e),
                 &timing_config,
                 timing_start_unix_ms,
                 timing_handle.as_ref(),
@@ -1306,10 +1306,22 @@ fn finalize_exit_code(
         timing_start_unix_ms,
         timing_handle,
     );
-    if exit_code == 0 {
-        ExitCode::SUCCESS
+    // Exit-code convention (str-9fn2, documented in SPEC.md): 0 = success/no
+    // differences, 1 = differences or failures found (a gate fired), 2 =
+    // usage or tool error. `exit_code` is always one of these three values —
+    // see `error_exit_code` for how a command's `Err` resolves to 1 vs 2.
+    ExitCode::from(exit_code as u8)
+}
+
+/// Resolve the process exit code for a command-level error: 1 if the error is
+/// a [`GateFailure`] (an opt-in gate such as `--fail-on-failures` or a
+/// coverage budget gate fired as designed), 2 for any other error (a tool or
+/// usage error — the command could not complete the operation at all).
+fn error_exit_code(err: &(dyn std::error::Error + 'static)) -> i32 {
+    if err.downcast_ref::<crate::helpers::GateFailure>().is_some() {
+        1
     } else {
-        ExitCode::FAILURE
+        2
     }
 }
 
@@ -1405,5 +1417,28 @@ fn queue_command_error_event(subcommand: &str, err: &dyn std::error::Error) {
         },
     ) {
         let _ = telemetry::queue_event(&event);
+    }
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::error_exit_code;
+    use crate::helpers::GateFailure;
+
+    #[test]
+    fn gate_failure_resolves_to_exit_1() {
+        let err: Box<dyn std::error::Error> =
+            Box::new(GateFailure("scan failed: too many failures".to_string()));
+        assert_eq!(error_exit_code(&*err), 1);
+    }
+
+    #[test]
+    fn other_errors_resolve_to_exit_2() {
+        let err: Box<dyn std::error::Error> = "malformed spec file".into();
+        assert_eq!(error_exit_code(&*err), 2);
+
+        let io_err: Box<dyn std::error::Error> =
+            Box::new(std::io::Error::other("frontend crashed"));
+        assert_eq!(error_exit_code(&*io_err), 2);
     }
 }

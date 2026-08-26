@@ -252,7 +252,7 @@ Every command accepts the [global options](#210-global-options) in §2.10.
 | `--core-sample SPEC` | — | Explore only a representative sample (`"50%"` or `"20"`); pair with `--seed` and progressive `--batch`. |
 | `--stratum RANGE` | — | Explore only specific call-graph layers (e.g. `"0"`, `"0..3"`, `"-2..-0"`). |
 | `--no-cache` | false | Disable every on-disk cache the scan reads or writes (behavior-map, fingerprint, stored-inputs). |
-| `--fail-on-failures[=PERCENT]` | — | Exit nonzero on attempted-function failures; with `=PERCENT`, only when the failure rate exceeds that threshold. Omitted → partial-failure scans still exit 0. |
+| `--fail-on-failures[=PERCENT]` | — | Exit `1` on attempted-function failures; with `=PERCENT`, only when the failure rate exceeds that threshold. Omitted → partial-failure scans still exit 0. A scan that can't produce any result (frontend crash, 0 functions explored) exits `2` regardless of this flag (§2.11). |
 
 **Output**:
 - Markdown report (default): human-readable summary of all explored functions.
@@ -358,7 +358,9 @@ random explorer, and `--solver-timeout` bounds each Z3 query on that path.
 `run` also accepts a coverage-budget gate group (`--min-source-representation-percent`,
 `--max-failed-span-percent`, `--max-unsupported-span-percent`,
 `--fail-on-stale-source-set`, `--fail-on-missing-artifacts`,
-`--fail-on-low-report-validity`) for CI thresholds.
+`--fail-on-low-report-validity`) for CI thresholds. Exit `0` on success, `1` if
+any coverage budget gate fails, `2` on a tool error — e.g. discovery/analyze
+failure or an invalid/unusable run report (§2.11).
 
 **Property discovery is intentionally not wired into `run`.** `run` produces a
 repo-wide markdown coverage summary; invariant/property discovery is a distinct
@@ -397,8 +399,8 @@ emits the behavioral spec enriched with property descriptions.
 Compare two behavior snapshots to detect regressions. For each function present
 in both snapshots, behaviors are classified **matched** (same exemplar input and
 output), **added** (in current only), or **removed/regressed** (in snapshot
-only). Exit `0` when all behaviors match, nonzero on regressions. `--json` for
-machine-readable output.
+only). Exit `0` when all behaviors match, `1` on regressions, `2` if a snapshot
+fails to load or parse (§2.11). `--json` for machine-readable output.
 
 #### `shatter spec-diff <OLD> <NEW>`
 
@@ -409,15 +411,19 @@ Compare two behavioral specs (from `--spec-json`) by branch path:
 - **Changed preconditions**: same branch path, different input constraints.
 - **Lost properties**: invariants that held in old but not new.
 
-Exit `0` when specs are equivalent, nonzero on regressions. `--json` for machine-readable output.
+Exit `0` when specs are equivalent, `1` on regressions, `2` if a spec file fails
+to load or parse (§2.11) — e.g. a malformed `--spec-json` file distinguishably
+from a spec that parsed cleanly and diverged. `--json` for machine-readable
+output.
 
 #### `shatter compare <SPEC_A> <SPEC_B>`
 
 Compare two spec JSON files **across languages** by input/output behavior only,
 ignoring branch paths (which are language-specific). Same inputs should produce
-same outputs. Exit `0` when all shared behaviors match, nonzero on divergence.
-`--json` for machine-readable output. Typical use: verify a TypeScript and a Go
-implementation of the same function agree.
+same outputs. Exit `0` when all shared behaviors match, `1` on divergence, `2`
+if a spec fails to load or parse (§2.11). `--json` for machine-readable output.
+Typical use: verify a TypeScript and a Go implementation of the same function
+agree.
 
 ### 2.7 Freshness: `stale`, `revalidate`
 
@@ -427,9 +433,10 @@ Report which functions in a source file are stale relative to a spec JSON file.
 Functions classify as **fresh** (tracked, fingerprint matches), **stale**
 (tracked, fingerprint differs), **removed** (in spec, gone from source), or
 **untracked** (in source, never tracked). Exit `0` when no *tracked* function is
-stale or removed; `1` otherwise. `--strict` also fails on untracked functions
-(full-file coverage mode). `<SOURCE>` must be a concrete file path — wildcards
-are rejected.
+stale or removed; `1` otherwise; `2` if the frontend or spec file can't be read
+(§2.11). `--strict` also fails (exit `1`) on untracked functions (full-file
+coverage mode). `<SOURCE>` must be a concrete file path — wildcards are
+rejected.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -444,8 +451,9 @@ are rejected.
 
 Re-execute cached behaviors for a source file: load behavior maps from the cache,
 replay each recorded input through a fresh frontend, and compare observed against
-cached behavior. Exit `0` = no regressions, `1` = issues found. `<SOURCE>` must
-be a concrete file path.
+cached behavior. Exit `0` = no regressions, `1` = issues found, `2` = tool error
+(e.g. the cache or frontend couldn't be reached, §2.11). `<SOURCE>` must be a
+concrete file path.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -569,6 +577,23 @@ Accepted by every command (clap `global = true`):
 
 `shatter --version` prints the package version plus build-time embedded frontend
 hashes (Go source/binary, TS bundle) so a stale binary is self-describing.
+
+### 2.11 Exit Codes
+
+Every command follows the same three-way convention, so CI can distinguish "the
+gate fired" from "the tool couldn't run" without parsing stderr (str-9fn2):
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success — no differences, no failures, no gate fired. |
+| `1` | An opt-in gate or comparison fired as designed: `diff`/`spec-diff`/`compare` found regressions or divergence, `stale` found drift (or, with `--strict`, untracked functions), `scan --fail-on-failures`/`--failure-threshold` tripped, or a `run` coverage budget gate (`--fail-on-stale-source-set`, `--fail-on-missing-artifacts`, `--fail-on-low-report-validity`, or a percent threshold) failed. |
+| `2` | A usage or tool error: invalid arguments/config, a malformed input file (e.g. an unparseable spec passed to `spec-diff`), a frontend crash or timeout, or any other failure that means the requested comparison or gate never ran to a verdict. |
+
+Code `1` only ever comes from a command's own designed pass/fail result (its
+`Ok` path). Any `Err` — the command raised an error instead of producing a
+verdict — always exits `2`, except for the specific opt-in gate checks listed
+above, which are errors by construction (they must abort the run) but still
+report as `1` since they represent a fired gate, not a broken tool.
 
 ---
 
