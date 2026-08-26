@@ -111,3 +111,25 @@ This branch must remain unlanded while either blocker is open.
 Both blockers are now closed and landed on `main`: `str-gnagk` at
 `067be28624cdd10730ebaf634ca742986cfa9153` and `str-6jwyw` at
 `7e255d10cb5117676a6b2490294274c85e0ed2fc`. The landing guard is satisfied.
+
+## Exact-candidate refresh
+
+The rebased candidate `f27adf8eb2cf0b9f1f47a3157dabdeb439a63c6f`, which includes both
+cache-invalidation fixes above, was validated again on 2026-08-25. Two warm
+gauntlets sharing a fresh `SHATTER_DEMO_CACHE` completed all 60 steps in
+641.89s and 470.34s, so the second run was 26.7% faster. The start load averages
+were 137.06 and 55.87, however, so this remains evidence of a measurable warm
+speedup rather than controlled proof under the plan's 20% load-comparability
+rule. A cold gauntlet completed all 60 steps in 378.35s.
+
+The exact-candidate concurrency harness also passed: its two warm gauntlets
+exited 0 in 491s and 245s, its two smoke runs exited 0 in 9s each, and the
+evidence parser found no foreign run paths. The worktree was clean after every
+run. Exact-candidate `task --force meta`, `task smoke`, and `task e2e` also
+passed.
+
+Two warm walkthrough runs completed all 11 steps. Under one-minute host loads
+above 40, their standalone TypeScript scans reported per-function execution or
+task timeouts while the scripts continued successfully. The full E2E suite was
+green, including the affected TypeScript exploration paths. The presentation
+rubric remains MIXED for the pre-existing C/E/G/H reasons documented above.
