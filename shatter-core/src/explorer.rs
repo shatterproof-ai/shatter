@@ -1941,9 +1941,12 @@ pub async fn explore_function(
     // str-o7b8z: classify from final state (after the shrink phase may have
     // further advanced `timed_out_due_to_budget`), not from whichever `break`
     // branch happened to fire, so a one-iteration result is self-explaining.
+    // Trusts `timed_out_due_to_budget` alone (no independent fresh deadline
+    // check here) so `stop_reason` can never disagree with the `timed_out`
+    // bool set below from that same value — a fresh recheck at this point
+    // could cross the deadline in the gap after the post-loop/shrink-phase
+    // checks ran, producing TimeoutExplore alongside timed_out=false.
     let stop_reason = classify_stop_reason(
-        config,
-        explore_start,
         timed_out_due_to_budget,
         aggregator.iterations() + unsupported_iterations,
         effective_budget,
@@ -1994,13 +1997,11 @@ fn explore_deadline_crossed(config: &ExploreConfig, explore_start: Instant) -> b
 /// plus its post-phase `deadline_crossed()` recheck (str-jeen.65) does for
 /// the concolic path.
 fn classify_stop_reason(
-    config: &ExploreConfig,
-    explore_start: Instant,
     timed_out_due_to_budget: bool,
     iterations_used: u32,
     effective_budget: Option<u32>,
 ) -> StopReason {
-    if timed_out_due_to_budget || explore_deadline_crossed(config, explore_start) {
+    if timed_out_due_to_budget {
         StopReason::TimeoutExplore
     } else if effective_budget.is_some_and(|budget| iterations_used >= budget) {
         StopReason::MaxIterations
@@ -2616,8 +2617,6 @@ async fn explore_function_with_observer_pool(
     );
     let stubbed_modules = collect_stubbed_modules(aggregator.raw_results());
     let stop_reason = classify_stop_reason(
-        config,
-        explore_start,
         timed_out_due_to_budget,
         aggregator.iterations() + unsupported_seen,
         config.max_iterations,
@@ -5282,6 +5281,84 @@ for line in sys.stdin:
             execute_pids.len() >= 2,
             "observer_pool=2 should execute candidates on at least two frontend processes; \
              pids={execute_pids:?}, log={log}"
+        );
+    }
+
+    /// str-o7b8z regression, observer-pool variant: same scenario as
+    /// `single_slow_execute_overruns_timeout_reports_timed_out` (a single
+    /// execute alone outlasting `timeout_explore`, with `max_iterations`
+    /// small enough that the producer loop's budget-exhaustion check can win
+    /// the race against the timeout check), but through
+    /// `explore_function_with_observer_pool` (`observer_pool > 1`) rather
+    /// than the single-observer path — the two loops have independent
+    /// post-loop deadline rechecks, so a fix verified only against one
+    /// variant would leave the other's regression unverified.
+    #[tokio::test]
+    async fn observer_pool_single_slow_execute_overruns_timeout_reports_timed_out() {
+        use std::time::Duration;
+        let (_log_dir, log_path) = observer_log_path("pool-slow-execute-overrun");
+        let observer_frontend_config = {
+            let mut c = recording_frontend_config(&log_path);
+            c.env_vars.retain(|(k, _)| k != "SHATTER_OBSERVER_EXEC_SLEEP");
+            c.env_vars.push((
+                "SHATTER_OBSERVER_EXEC_SLEEP".to_string(),
+                "1".to_string(),
+            ));
+            c.request_timeout = Duration::from_secs(30);
+            c
+        };
+        let mut frontend = spawn_recording_frontend(&log_path).await;
+        let analysis = stub_analysis();
+        let config = ExploreConfig {
+            file: "test.ts".into(),
+            max_iterations: Some(1),
+            observer_pool: 2,
+            observer_frontend_config: Some(observer_frontend_config),
+            candidate_queue_capacity: None,
+            seed: Some(42),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: FrontendCapabilities::default(),
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: LoopBuckets::default(),
+            // Single execute takes ~1s; budget is 300ms, so a single
+            // round-trip alone should exceed it ~3x.
+            timeout_explore: Some(Duration::from_millis(300)),
+            meta_config: crate::strategy::MetaConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: crate::scan_orchestrator::ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+
+        let result = explore_function(&mut frontend, &analysis, &config, None, None)
+            .await
+            .expect("observer-pool exploration should return Ok");
+        frontend.shutdown().await.expect("shutdown failed");
+
+        assert!(
+            result.timed_out,
+            "observer-pool path: a single execute 3x over timeout_explore must \
+             report timed_out=true, not a clean completion"
+        );
+        assert_eq!(
+            result.stop_reason,
+            StopReason::TimeoutExplore,
+            "observer-pool path: stop_reason must reflect the wall-clock overrun"
         );
     }
 
