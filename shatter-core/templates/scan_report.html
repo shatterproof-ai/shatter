@@ -49,6 +49,12 @@
 {%- endif %}
 </div></details>
 {%- endfor %}
+{%- if !interrupted_note.is_empty() %}
+<h2>Not Attempted</h2>
+<div class="card">
+<p>{{ interrupted_note|safe }}</p>
+</div>
+{%- endif %}
 {%- if !skipped.is_empty() %}
 <h2>Skipped Functions</h2>
 <div class="card">

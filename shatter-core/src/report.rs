@@ -67,7 +67,16 @@ const MAX_LOW_COVERAGE_AREAS: usize = 10;
 /// plus a branch-heavy ranking and per-area rollups. The field is
 /// `#[serde(default)]`, so pre-fix reports decode to an all-zero
 /// [`LowCoverageBuckets`]; the change is additive. Schema bumps to v8.
-pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 8;
+///
+/// str-jjt2h adds `codebase.budget_total_secs`, the run's effective
+/// total-scan budget in seconds when one was configured. The field is
+/// `#[serde(default)]`, so pre-fix reports decode to `None`; the change is
+/// additive. Schema bumps to v9. Paired with this: the Markdown/text
+/// renderers now summarize never-attempted (total-scan-budget-interrupted)
+/// functions as a single count captioned with this value, instead of one
+/// row per function — the JSON `skipped_functions` array is unaffected and
+/// still carries the full per-function list.
+pub const SCAN_REPORT_SCHEMA_VERSION: u32 = 9;
 
 /// Aggregated counts derived from a scan's outcome list.
 struct ScanOutcomeCounts {
@@ -126,7 +135,11 @@ fn language_from_path(file_path: &str) -> Option<String> {
 ///
 /// - `"timed out during build after Ns"` / `"timed out during execution after Ns"`
 /// - `"timed out after Ns"` (legacy / total budget)
-/// - `"timed out (total scan budget exceeded)"`
+/// - `"timed out (total scan budget exceeded)"` (legacy string kept for
+///   backward-compat parsing of pre-str-jjt2h reports; current runs use
+///   `SkipCategory::Interrupted` with reason `"not attempted: total scan
+///   budget exceeded"`, which is never routed through this classifier —
+///   see `split_skipped_into_failed`)
 /// - `"error: exploration error: frontend error: <msg>"`
 /// - `"error: exploration error: <msg>"`
 /// - `"error: <msg>"`
@@ -745,6 +758,14 @@ pub struct CodebaseReport {
     /// caused by the run-level scan budget ending. Functions that were
     /// attempted and failed live in [`Self::failed`] instead.
     pub skipped_functions: Vec<SkippedFunctionReport>,
+    /// The run's configured total-scan budget in seconds (`--timeout-total`),
+    /// when one was in effect (str-jjt2h). `None` when the scan had no total
+    /// timeout. Used to caption the never-attempted-function summary in the
+    /// Markdown/text renderers rather than leaving the reader to guess why
+    /// functions were interrupted or what to raise. `#[serde(default)]`
+    /// keeps pre-str-jjt2h reports readable (they decode to `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_total_secs: Option<u64>,
     /// Dependency graph edges.
     pub dependency_graph: Vec<DependencyEdge>,
 }
@@ -1537,11 +1558,32 @@ fn build_cumulative_report(state: &BatchState) -> CumulativeReport {
 /// The `file_map` maps function names to their source file paths.
 /// When `batch_state` is provided, the report includes cumulative progress
 /// across all completed batches.
+///
+/// Equivalent to [`generate_report_with_budget`] with `effective_timeout_total`
+/// set to `None` — the report's `budget_total_secs` field is left unset. Most
+/// callers (in particular every test fixture in this file) don't care about
+/// the total-scan-budget caption, so this thin wrapper keeps their call
+/// sites unchanged (str-jjt2h).
 pub fn generate_report(
     result: &ParallelScanResult,
     file_map: &std::collections::HashMap<String, String>,
     batch_state: Option<&BatchState>,
 ) -> ScanReport {
+    generate_report_with_budget(result, file_map, batch_state, None)
+}
+
+/// Generate a [`ScanReport`] from a [`ParallelScanResult`], stamping the
+/// report's `budget_total_secs` field with the run's effective total-scan
+/// timeout in seconds (str-jjt2h). Pass `None` when the scan had no total
+/// timeout configured. The value is used to caption the
+/// never-attempted-function summary in the Markdown/text renderers.
+pub fn generate_report_with_budget(
+    result: &ParallelScanResult,
+    file_map: &std::collections::HashMap<String, String>,
+    batch_state: Option<&BatchState>,
+    effective_timeout_total: Option<std::time::Duration>,
+) -> ScanReport {
+    let budget_total_secs = effective_timeout_total.map(|d| d.as_secs());
     let functions: Vec<FunctionReport> = result
         .function_results
         .iter()
@@ -1609,6 +1651,7 @@ pub fn generate_report(
             low_coverage,
             failed,
             skipped_functions,
+            budget_total_secs,
             dependency_graph,
         },
         test_order: result.test_order.clone(),
@@ -1691,6 +1734,9 @@ pub fn generate_report_from_scan(
             low_coverage,
             failed,
             skipped_functions,
+            // The sequential `ScanResult` path doesn't carry a total-scan
+            // budget value.
+            budget_total_secs: None,
             dependency_graph,
         },
         test_order: result.test_order.clone(),
@@ -1841,7 +1887,11 @@ pub fn format_markdown_report(report: &ScanReport) -> String {
     write_md_uncovered_branches(&mut out, &report.functions);
     write_md_interesting_inputs(&mut out, &report.functions);
     write_md_failed_functions(&mut out, &report.codebase.failed);
-    write_md_skipped_functions(&mut out, &report.codebase.skipped_functions);
+    write_md_skipped_functions(
+        &mut out,
+        &report.codebase.skipped_functions,
+        report.codebase.budget_total_secs,
+    );
 
     out
 }
@@ -2430,7 +2480,11 @@ fn write_md_interesting_inputs(out: &mut String, functions: &[FunctionReport]) {
     }
 }
 
-fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport]) {
+fn write_md_skipped_functions(
+    out: &mut String,
+    skipped: &[SkippedFunctionReport],
+    budget_total_secs: Option<u64>,
+) {
     if skipped.is_empty() {
         return;
     }
@@ -2471,10 +2525,26 @@ fn write_md_skipped_functions(out: &mut String, skipped: &[SkippedFunctionReport
     }
 
     if !interrupted.is_empty() {
+        // str-jjt2h: never-attempted functions get a single summary line
+        // naming the effective budget, not one row per function — a large
+        // module can have thousands of these and each row carries no
+        // information beyond "not attempted". "timed out" is deliberately
+        // not used here: it implies the function was attempted and failed
+        // to finish, which is false for every entry in this bucket.
         let _ = writeln!(out, "## Skipped (Interrupted)\n");
-        for s in &interrupted {
-            let _ = writeln!(out, "- `{}`: {}", s.function_name, s.reason);
-        }
+        let budget_caption = match budget_total_secs {
+            Some(secs) => format!("total budget {secs}s exhausted"),
+            None => "total scan budget exhausted".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "{} function(s) not attempted ({budget_caption}).",
+            interrupted.len()
+        );
+        let _ = writeln!(
+            out,
+            "Raise --timeout-total or narrow the target to reach the remaining functions."
+        );
         out.push('\n');
     }
 
@@ -3713,7 +3783,7 @@ mod tests {
                 },
                 SkippedFunction {
                     function_name: "unrun".to_string(),
-                    reason: "timed out (total scan budget exceeded)".to_string(),
+                    reason: "not attempted: total scan budget exceeded".to_string(),
                     category: crate::scan_orchestrator::SkipCategory::Interrupted,
                 },
             ],
@@ -3736,6 +3806,93 @@ mod tests {
         assert_eq!(report.codebase.skipped_functions[0].function_name, "unrun");
         assert_eq!(report.codebase.skipped_functions[0].category, "interrupted");
         assert_eq!(report.codebase.total_discovered_functions, 3);
+    }
+
+    #[test]
+    fn budget_exhausted_scan_summarizes_never_attempted_functions() {
+        // str-jjt2h: a scan that exhausts its total budget must not emit
+        // one Markdown row per never-attempted function — thousands of
+        // rows carrying no information beyond "not attempted". It must
+        // instead state a single count, name the effective budget, and
+        // never use "timed out" wording for functions that were never
+        // dispatched. Functions that WERE attempted and failed (a
+        // per-function timeout, here `slow`) must still be reported
+        // distinctly from those never attempted at all.
+        const NEVER_ATTEMPTED: usize = 2_000;
+        let mut skipped: Vec<SkippedFunction> = (0..NEVER_ATTEMPTED)
+            .map(|i| SkippedFunction {
+                function_name: format!("unrun_{i}"),
+                reason: "not attempted: total scan budget exceeded".to_string(),
+                category: crate::scan_orchestrator::SkipCategory::Interrupted,
+            })
+            .collect();
+        skipped.push(SkippedFunction {
+            function_name: "slow".to_string(),
+            reason: "timed out during execution after 30s".to_string(),
+            category: crate::scan_orchestrator::SkipCategory::Error,
+        });
+
+        let parallel_result = ParallelScanResult {
+            function_results: vec![make_function_result("good", 5, 1, 3, 5, vec![])],
+            test_order: vec!["good".into()],
+            skipped,
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+
+        let file_map = HashMap::new();
+        let report = generate_report_with_budget(
+            &parallel_result,
+            &file_map,
+            None,
+            Some(std::time::Duration::from_secs(300)),
+        );
+
+        // JSON keeps the full per-function list — no information is lost.
+        assert_eq!(report.codebase.skipped_functions.len(), NEVER_ATTEMPTED);
+        assert_eq!(report.codebase.budget_total_secs, Some(300));
+
+        let md = format_markdown_report(&report);
+
+        // At most one summary line for never-attempted functions.
+        assert_eq!(
+            md.matches("not attempted").count(),
+            1,
+            "should render exactly one never-attempted summary, not one per function: {md}"
+        );
+        assert!(
+            md.contains(&format!("{NEVER_ATTEMPTED} function(s) not attempted")),
+            "should state the never-attempted count: {md}"
+        );
+        assert!(
+            md.contains("total budget 300s exhausted"),
+            "should state the effective budget value and that it was exhausted: {md}"
+        );
+        assert!(
+            md.contains("Raise --timeout-total"),
+            "should suggest the next step: {md}"
+        );
+        for i in 0..NEVER_ATTEMPTED {
+            assert!(
+                !md.contains(&format!("unrun_{i}")),
+                "never-attempted functions must not each get their own row"
+            );
+        }
+
+        // "timed out" is no longer used for never-attempted functions...
+        assert!(
+            !md.contains("timed out (total scan budget exceeded)")
+                && !md.contains("timed out (total scan budget"),
+            "must not use 'timed out' wording for never-attempted functions: {md}"
+        );
+        // ...but functions that WERE attempted and interrupted mid-flight
+        // (a real per-function timeout) still report distinctly.
+        assert!(
+            md.contains("slow") && md.contains("timed out during execution after 30s"),
+            "attempted-and-failed functions must still be reported distinctly: {md}"
+        );
     }
 
     #[test]
