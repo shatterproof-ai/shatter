@@ -9651,6 +9651,7 @@ mod tests {
             stubbed_modules: vec![],
             solver_guided_inputs: 0,
             timed_out: false,
+            stop_reason: Default::default(),
             oracle_stats: None,
         }
     }
