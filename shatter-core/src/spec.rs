@@ -470,11 +470,10 @@ fn build_spec_class(
     } else {
         let is_void = is_void_return_type(return_type);
         match &ec.canonical_return_value {
-            Some(v) if !v.is_null() => Postcondition::Returns { value: v.clone() },
-            // An explicit value was observed (including a literal null) — report
-            // it rather than collapsing to void, unless the return type really
-            // is void.
-            Some(v) if !is_void => Postcondition::Returns { value: v.clone() },
+            // An explicit value was observed (including a literal null) —
+            // report it rather than collapsing to void, unless the return
+            // type really is void.
+            Some(v) if !v.is_null() || !is_void => Postcondition::Returns { value: v.clone() },
             Some(_) => Postcondition::ReturnsVoid,
             None if is_void => Postcondition::ReturnsVoid,
             None => Postcondition::Unobserved,
