@@ -10,8 +10,13 @@ import * as path from "node:path";
 
 import fc from "fast-check";
 
-import { executeAdapterOwned, type ResolverAdapter } from "./executor.js";
+import {
+  executeAdapterOwned,
+  loadModuleExports,
+  type ResolverAdapter,
+} from "./executor.js";
 import { instrumentFunction } from "./instrumentor.js";
+import { getReactShim } from "./react-shim.js";
 import {
   findCallable,
   createReactHookFactory,
@@ -138,6 +143,67 @@ describe("react-hook invocation hook", () => {
     expect(result.thrown_error).toBeNull();
     const rv = result.return_value as Record<string, unknown>;
     expect(rv.state).toBe("off");
+  });
+
+  it("loads a hook module reached through a real import cycle without stack overflow (str-aatcq)", () => {
+    // Reproduces str-aatcq at the exact vulnerable layer: `loadModuleExports`
+    // called with an explicit resolverAdapters array — precisely what the
+    // react-hook adapter's mount/rerender scenarios do (react-hook-invocation.ts
+    // `loadTargetExports`), which bypasses `compiledModuleCache` by design
+    // (str-26fhi: fresh coverage per invocation). Without cycle-breaking, a
+    // real (non-type-only) import cycle reached this way recurses through
+    // `loadModule` forever.
+    //
+    // A resolverAdapter (not a relative "./x.js" import through Node's
+    // require) drives resolution here so the test exercises `loadModule`'s
+    // own recursion/caching behavior directly, without depending on the test
+    // runner's module loader (ts-jest globally intercepts `.ts`/`.tsx` files
+    // reached via *any* require, including "native" ones created via
+    // `createRequire`, using this project's own tsconfig — which excludes
+    // `src/__fixtures__` and has no `react` dependency — so a relative
+    // require reaching these fixtures through Jest's own resolver fails for
+    // reasons unrelated to str-aatcq). A tsconfig-paths-style rewrite adapter
+    // is exactly how production reaches this same `loadModule` call for
+    // absolute-path imports (see `resolveModuleWithAdapters` in executor.ts).
+    const componentPath = path.join(
+      FIXTURES_DIR,
+      "adapter-circular",
+      "component.ts",
+    );
+    const storePath = path.join(FIXTURES_DIR, "adapter-circular", "store.ts");
+    const cycleAdapter: ResolverAdapter = {
+      id: "test.adapter-circular-cycle",
+      resolveModule({ module_id }) {
+        if (module_id === "./store.js") {
+          return { kind: "rewrite", module_id: storePath };
+        }
+        if (module_id === "./component.js") {
+          return { kind: "rewrite", module_id: componentPath };
+        }
+        return { kind: "continue" };
+      },
+    };
+    const reactShimAdapter: ResolverAdapter = {
+      id: "test.react-shim",
+      resolveModule({ module_id }) {
+        if (module_id === "react") {
+          return { kind: "resolved", value: getReactShim("react") };
+        }
+        return { kind: "continue" };
+      },
+    };
+
+    const moduleExports = loadModuleExports(componentPath, [
+      reactShimAdapter,
+      cycleAdapter,
+    ]);
+    const useBookmarkButton = moduleExports["useBookmarkButton"] as (
+      bookmarked: boolean,
+    ) => Record<string, unknown>;
+    expect(typeof useBookmarkButton).toBe("function");
+
+    const rv = useBookmarkButton(true);
+    expect(rv.label).toBe("Bookmarked");
   });
 
   it("mounts useGreeting with non-callable return (graceful fallback)", async () => {

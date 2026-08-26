@@ -555,6 +555,23 @@ function transpileAndCompile(
 const compiledModuleCache = new Map<string, Record<string, unknown>>();
 
 /**
+ * Modules currently being loaded, keyed by absolute path, mapped to their
+ * (possibly still-empty) exports object. `loadModule` calls that bypass
+ * `compiledModuleCache` — the react-hook adapter path and any recursive
+ * `.ts`/`.tsx` resolution reached via `resolveModuleWithAdapters`, both of
+ * which pass `resolverAdapters` explicitly and so skip the cache by design
+ * (str-26fhi: fresh coverage per adapter invocation) — have no other way to
+ * detect a require cycle. Node's native CommonJS loader breaks cycles by
+ * returning the in-progress module's exports object from its cache; without
+ * an equivalent here, a cycle reached through an uncached path (e.g. a
+ * barrel `index.ts` that re-exports a component which itself imports that
+ * barrel) recurses through `loadModule` forever and overflows the stack
+ * (str-aatcq). This map restores that cycle-breaking regardless of the
+ * caching decision.
+ */
+const inFlightModules = new Map<string, Record<string, unknown>>();
+
+/**
  * Cache of pre-compiled vm.Script objects for instrumented sources.
  * Keyed by instrument key ("resolvedFilePath:functionName").
  * Avoids re-transpiling and re-compiling JS on every instrumented execute call.
@@ -1019,6 +1036,13 @@ function loadModule(
   const cached = useCache ? compiledModuleCache.get(absolutePath) : undefined;
   if (cached) return cached;
 
+  // Break require cycles reached via an uncached path (see `inFlightModules`
+  // doc comment): return the in-progress exports object instead of
+  // re-entering `loadModule` for a file already being loaded higher up this
+  // same call stack.
+  const inFlight = inFlightModules.get(absolutePath);
+  if (inFlight) return inFlight;
+
   const source = fs.readFileSync(absolutePath, "utf-8");
   // We still call ts.transpileModule directly here (rather than reusing
   // transpileAndCompile) because we need the JS *text* — the script is
@@ -1099,34 +1123,51 @@ function loadModule(
     }
   }
 
+  // Register before execution (Node CJS semantics: a require cycle reached
+  // mid-execution sees this pre-reassignment `moduleExports` object). Always
+  // cleared in `finally` so a failed load doesn't wedge later top-level loads
+  // of the same path with a stale in-progress entry.
+  //
+  // Same caveat Node's own CJS loader has: a caller mid-cycle only sees
+  // properties assigned onto THIS `moduleExports` object. A cyclic module
+  // that fully reassigns `module.exports = {...}` (rather than mutating the
+  // existing `exports` object — the shape TS's own CJS transpile output
+  // produces for `export const`/`export function`) replaces the sandbox's
+  // reference, but a caller that already captured the pre-reassignment
+  // object via this cycle-break won't see the new one.
+  inFlightModules.set(absolutePath, moduleExports);
   try {
-    vm.runInContext(transformDynamicImports(result.outputText), sandbox, {
-      filename: absolutePath,
-      timeout: getExecTimeoutMs(),
-    });
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      throw new TranspileError({
-        category: "compile_failed",
-        fileName: absolutePath,
-        message: `JavaScript compile failed for ${absolutePath} after TS transpile: ${err.message}. ` +
-          `This usually means TypeScript type syntax survived transpile (for example, JSX in a file the transpiler treated as plain TS, or an unsupported TS construct).`,
-        cause: err,
+    try {
+      vm.runInContext(transformDynamicImports(result.outputText), sandbox, {
+        filename: absolutePath,
+        timeout: getExecTimeoutMs(),
       });
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        throw new TranspileError({
+          category: "compile_failed",
+          fileName: absolutePath,
+          message: `JavaScript compile failed for ${absolutePath} after TS transpile: ${err.message}. ` +
+            `This usually means TypeScript type syntax survived transpile (for example, JSX in a file the transpiler treated as plain TS, or an unsupported TS construct).`,
+          cause: err,
+        });
+      }
+      throw err;
     }
-    throw err;
-  }
 
-  // After CommonJS execution, module.exports may have been reassigned
-  const finalExports = (sandbox as Record<string, unknown>)["module"] as {
-    exports: Record<string, unknown>;
-  };
-  const resolvedExports = finalExports.exports;
+    // After CommonJS execution, module.exports may have been reassigned
+    const finalExports = (sandbox as Record<string, unknown>)["module"] as {
+      exports: Record<string, unknown>;
+    };
+    const resolvedExports = finalExports.exports;
 
-  if (useCache) {
-    compiledModuleCache.set(absolutePath, resolvedExports);
+    if (useCache) {
+      compiledModuleCache.set(absolutePath, resolvedExports);
+    }
+    return resolvedExports;
+  } finally {
+    inFlightModules.delete(absolutePath);
   }
-  return resolvedExports;
 }
 
 /**
@@ -3262,6 +3303,7 @@ function isTimeoutError(err: ErrorInfo): boolean {
  */
 export function clearModuleCache(): void {
   compiledModuleCache.clear();
+  inFlightModules.clear();
 }
 
 /** Number of cached compiled modules. Exposed for testing. */
