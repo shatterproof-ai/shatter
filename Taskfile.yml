@@ -317,6 +317,9 @@ tasks:
       - scripts/test_walkthrough_examples_checkout.py
       - scripts/setup-hooks.sh
       - scripts/test_setup_hooks.sh
+      - demo/walkthrough.sh
+      - demo/gauntlet.sh
+      - scripts/test_demo_cache_modes.sh
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_drift_patrol
@@ -327,6 +330,7 @@ tasks:
       - bash scripts/test_cleanup_merged_remote_branches.sh
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
       - bash scripts/test_setup_hooks.sh
+      - bash scripts/test_demo_cache_modes.sh
       - cd shatter-go-tool && go test ./...
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
@@ -488,18 +492,30 @@ tasks:
       - git status --short
 
   walkthrough:
-    desc: Run the compact walkthrough demo
+    desc: Run the compact walkthrough demo with reusable per-user caches
     deps: [build]
     # str-gg9v: demo/walkthrough.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
       - bash scripts/gate-wrapper.sh walkthrough bash demo/walkthrough.sh --auto --delay 0
 
+  walkthrough-cold:
+    desc: Run the compact walkthrough with isolated disposable caches (release validation)
+    deps: [build]
+    cmds:
+      - bash scripts/gate-wrapper.sh walkthrough-cold bash demo/walkthrough.sh --cold --auto --delay 0
+
   gauntlet:
-    desc: Run the broad CLI coverage gauntlet
+    desc: Run the broad CLI coverage gauntlet with reusable per-user caches
     deps: [build]
     # str-gg9v: demo/gauntlet.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
       - bash scripts/gate-wrapper.sh gauntlet bash demo/gauntlet.sh --auto --delay 0
+
+  gauntlet-cold:
+    desc: Run the gauntlet with isolated disposable caches (hermetic/release validation)
+    deps: [build]
+    cmds:
+      - bash scripts/gate-wrapper.sh gauntlet-cold bash demo/gauntlet.sh --cold --auto --delay 0
 
   broad-run-corpus:
     desc: Run the broad-run validation corpus gate (Kapow failure-class fixtures)

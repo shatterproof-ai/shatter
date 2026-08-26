@@ -29,9 +29,11 @@ NAMES=()
 run_case smoke-1 task --force smoke
 run_case smoke-2 task --force smoke
 run_case gauntlet-1 env \
+    SHATTER_DEMO_CACHE="$RUN_ROOT/demo-cache" \
     SHATTER_GAUNTLET_EVIDENCE_DIR="$RUN_ROOT/gauntlet-1-evidence" \
     bash demo/gauntlet.sh --auto --delay 0 --step-timeout 300
 run_case gauntlet-2 env \
+    SHATTER_DEMO_CACHE="$RUN_ROOT/demo-cache" \
     SHATTER_GAUNTLET_EVIDENCE_DIR="$RUN_ROOT/gauntlet-2-evidence" \
     bash demo/gauntlet.sh --auto --delay 0 --step-timeout 300
 

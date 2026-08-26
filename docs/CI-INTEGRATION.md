@@ -105,7 +105,7 @@ Recommended commands:
 
 ```bash
 task e2e
-task gauntlet
+task gauntlet-cold
 ```
 
 Notes:
@@ -148,7 +148,7 @@ task e2e
 Optionally add:
 
 ```bash
-task gauntlet
+task gauntlet-cold
 ```
 
 ### Nightly or scheduled validation
@@ -157,7 +157,7 @@ Use the full quality stack, including:
 
 - aggregate checks
 - E2E tests
-- gauntlet
+- cold gauntlet (`task gauntlet-cold`)
 - future vulnerability scans and dependency freshness checks
 
 ### Weekly perf tracking

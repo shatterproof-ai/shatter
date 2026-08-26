@@ -24,35 +24,150 @@ DRY_RUN=false
 STEP_TIMEOUT=120  # seconds per step; 0 = no limit
 TIMING_DIR=""
 TOTAL_STEP_WALL_MS=0
+COLD=false
 
-# Use temporary directories so the gauntlet never pollutes repo-local state
-# and never contends with Cargo's workspace artifact lock (avoids silent stalls
-# when another cargo command is active).
-export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR SHATTER_ARTIFACT_DIR RUST_BACKTRACE XDG_CACHE_HOME GOCACHE CARGO_NET_OFFLINE CARGO_TARGET_DIR
-SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
-SHATTER_SEEDS_DIR="${SHATTER_CACHE_DIR}/seeds"
+# Color support. Keep argument-only exits free of filesystem side effects.
+if [[ -t 1 ]]; then
+    BOLD=$'\033[1m'
+    DIM=$'\033[2m'
+    GREEN=$'\033[32m'
+    CYAN=$'\033[36m'
+    YELLOW=$'\033[33m'
+    RED=$'\033[31m'
+    RESET=$'\033[0m'
+    SHATTER_COLOR="always"
+else
+    BOLD="" DIM="" GREEN="" CYAN="" YELLOW="" RED="" RESET=""
+    SHATTER_COLOR="never"
+fi
+
+usage() {
+    cat <<EOF
+${BOLD}Shatter Gauntlet${RESET} — broad CLI coverage run against example code
+
+${BOLD}USAGE${RESET}
+    ./demo/gauntlet.sh [OPTIONS]
+
+${BOLD}OPTIONS${RESET}
+    --interactive   Pause after each step (press Enter to continue)
+    --auto          (no-op, auto is the default)
+    --delay N       Seconds between steps in auto mode (default: 2)
+    --step-timeout N  Per-step timeout in seconds (default: 120, 0 = no limit)
+    --timing-dir DIR  Persist timing artifacts there and print a 3-line summary per shatter step
+    --cold          Use isolated per-run build and Shatter caches
+    --dry-run       Print commands without executing them
+    --help, -h      Show this help
+
+${BOLD}MODES${RESET}
+    Auto (default)          Runs continuously with optional delay
+    Interactive             Pauses after each step, press Enter to continue
+    Dry-run                 Shows what would run, useful before core is built
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --auto) MODE="auto"; shift ;;
+        --interactive) MODE="interactive"; shift ;;
+        --delay|--step-timeout|--timing-dir)
+            option="$1"
+            if [[ $# -lt 2 ]]; then
+                echo "${RED}Missing value for ${option}${RESET}" >&2
+                exit 2
+            fi
+            case "$option" in
+                --delay) DELAY="$2" ;;
+                --step-timeout) STEP_TIMEOUT="$2" ;;
+                --timing-dir)
+                    if [[ -z "$2" ]]; then
+                        echo "${RED}--timing-dir must not be empty${RESET}" >&2
+                        exit 2
+                    fi
+                    TIMING_DIR="$2"
+                    ;;
+            esac
+            shift 2
+            ;;
+        --cold) COLD=true; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        --help|-h) usage; exit 0 ;;
+        *)
+            echo "${RED}Unknown option: $1${RESET}" >&2
+            echo "Run with --help for usage." >&2
+            exit 2
+            ;;
+    esac
+done
+if [[ ! "$DELAY" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "${RED}--delay must be a non-negative number${RESET}" >&2
+    exit 2
+fi
+if [[ ! "$STEP_TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "${RED}--step-timeout must be a non-negative integer${RESET}" >&2
+    exit 2
+fi
+
+# Resolve cache ownership only after every argument has been validated. Warm
+# runs hold one exclusive lock for the complete process so persistent Cargo and
+# harness state is never mutated by two demos simultaneously.
+export SHATTER_CACHE_DIR SHATTER_SEEDS_DIR SHATTER_HARNESS_CACHE
+export SHATTER_ARTIFACT_DIR RUST_BACKTRACE CARGO_NET_OFFLINE CARGO_TARGET_DIR
+OWN_SHATTER_CACHE_DIR=false
+OWN_XDG_CACHE_HOME=false
+OWN_GOCACHE=false
+OWN_CARGO_TARGET_DIR=false
+if [[ "$COLD" == true ]]; then
+    SHATTER_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cache.XXXXXX")"
+    OWN_SHATTER_CACHE_DIR=true
+    unset SHATTER_HARNESS_CACHE
+else
+    if [[ -n "${SHATTER_DEMO_CACHE:-}" ]]; then
+        WARM_ROOT="$SHATTER_DEMO_CACHE"
+    elif [[ -n "${HOME:-}" ]]; then
+        WARM_ROOT="$HOME/.cache/shatter-demo"
+    else
+        echo "${RED}HOME is unset; set SHATTER_DEMO_CACHE for warm mode${RESET}" >&2
+        exit 2
+    fi
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "${RED}flock is required for the shared warm demo cache${RESET}" >&2
+        exit 2
+    fi
+    mkdir -p "$WARM_ROOT"
+    exec {DEMO_LOCK_FD}>"$WARM_ROOT/demo.lock"
+    echo "${DIM}waiting for shared demo cache lock: ${WARM_ROOT}/demo.lock${RESET}" >&2
+    flock "$DEMO_LOCK_FD"
+    SHATTER_CACHE_DIR="$WARM_ROOT/cache"
+    SHATTER_HARNESS_CACHE="$WARM_ROOT/harness"
+    mkdir -p "$SHATTER_CACHE_DIR" "$SHATTER_HARNESS_CACHE"
+fi
+SHATTER_SEEDS_DIR="$SHATTER_CACHE_DIR/seeds"
+mkdir -p "$SHATTER_SEEDS_DIR"
 # Redirect explore/scan artifact writes (shatter-artifacts/) out of the repo
 # so the gauntlet does not leave multi-GB ignored output behind. See
 # str-jeen.58.
 SHATTER_ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-artifacts.XXXXXX")"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
-OWN_XDG_CACHE_HOME=false
-if [[ -z "${XDG_CACHE_HOME:-}" ]]; then
-    XDG_CACHE_HOME="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")"
-    OWN_XDG_CACHE_HOME=true
-fi
-OWN_GOCACHE=false
-if [[ -z "${GOCACHE:-}" ]]; then
-    GOCACHE="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")"
-    OWN_GOCACHE=true
+if [[ "$COLD" == true ]]; then
+    if [[ -z "${XDG_CACHE_HOME:-}" ]]; then
+        XDG_CACHE_HOME="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-xdg.XXXXXX")"
+        export XDG_CACHE_HOME
+        OWN_XDG_CACHE_HOME=true
+    fi
+    if [[ -z "${GOCACHE:-}" ]]; then
+        GOCACHE="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-gocache.XXXXXX")"
+        export GOCACHE
+        OWN_GOCACHE=true
+    fi
 fi
 CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
-# Isolate Cargo's target directory so the gauntlet doesn't contend with
-# concurrent cargo commands (e.g. cargo test) over the shared artifact lock.
-OWN_CARGO_TARGET_DIR=false
 if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
-    CARGO_TARGET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cargo-target.XXXXXX")"
-    OWN_CARGO_TARGET_DIR=true
+    if [[ "$COLD" == true ]]; then
+        CARGO_TARGET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-demo-cargo-target.XXXXXX")"
+        OWN_CARGO_TARGET_DIR=true
+    else
+        CARGO_TARGET_DIR="$WARM_ROOT/cargo-target"
+    fi
 fi
 
 # HTML reports are written here; intentionally NOT cleaned up so user can inspect after.
@@ -83,8 +198,9 @@ preserve_concurrency_evidence() {
 
 cleanup() {
     preserve_concurrency_evidence || true
-    rm -rf "$SHATTER_CACHE_DIR" "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" \
+    rm -rf "$SHATTER_ARTIFACT_DIR" "$ERROR_LOG" \
         "$EXAMPLES_ROOT" "$BENCH_MANIFEST_TMP" "$GAUNTLET_TMP_DIR" || true
+    [[ "$OWN_SHATTER_CACHE_DIR" == false ]] || rm -rf "$SHATTER_CACHE_DIR"
     [[ "$OWN_XDG_CACHE_HOME" == false ]] || rm -rf "$XDG_CACHE_HOME"
     [[ "$OWN_GOCACHE" == false ]] || rm -rf "$GOCACHE"
     [[ "$OWN_CARGO_TARGET_DIR" == false ]] || rm -rf "$CARGO_TARGET_DIR"
@@ -93,24 +209,8 @@ trap cleanup EXIT
 
 # Ensure bindgen can find stdbool.h via GCC's include path (avoids requiring libclang-dev)
 if command -v gcc &>/dev/null; then
-    export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I$(gcc -print-file-name=include)"
-fi
-
-# Color support (disabled if not a terminal)
-if [[ -t 1 ]]; then
-    BOLD=$'\033[1m'
-    DIM=$'\033[2m'
-    GREEN=$'\033[32m'
-    CYAN=$'\033[36m'
-    YELLOW=$'\033[33m'
-    RED=$'\033[31m'
-    RESET=$'\033[0m'
-    # Force color in shatter commands — stdout goes through tee for error
-    # capture, which breaks TTY detection in the child process.
-    SHATTER_COLOR="always"
-else
-    BOLD="" DIM="" GREEN="" CYAN="" YELLOW="" RED="" RESET=""
-    SHATTER_COLOR="never"
+    BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:-} -I$(gcc -print-file-name=include)"
+    export BINDGEN_EXTRA_CLANG_ARGS
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -168,44 +268,6 @@ else
     echo "Build it first with: cargo build --manifest-path shatter-rust/Cargo.toml"
     exit 1
 fi
-
-usage() {
-    cat <<EOF
-${BOLD}Shatter Gauntlet${RESET} — broad CLI coverage run against example code
-
-${BOLD}USAGE${RESET}
-    ./demo/gauntlet.sh [OPTIONS]
-
-${BOLD}OPTIONS${RESET}
-    --interactive   Pause after each step (press Enter to continue)
-    --auto          (no-op, auto is the default)
-    --delay N       Seconds between steps in auto mode (default: 2)
-    --step-timeout N  Per-step timeout in seconds (default: 120, 0 = no limit)
-    --timing-dir DIR  Persist timing artifacts there and print a 3-line summary per shatter step
-    --dry-run       Print commands without executing them
-    --help, -h      Show this help
-
-${BOLD}MODES${RESET}
-    Auto (default)          Runs continuously with optional delay
-    Interactive             Pauses after each step, press Enter to continue
-    Dry-run                 Shows what would run, useful before core is built
-EOF
-    exit 0
-}
-
-# Parse args
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --auto)    MODE="auto"; shift ;;  # no-op, auto is already the default
-        --interactive) MODE="interactive"; shift ;;
-        --delay)   DELAY="$2"; shift 2 ;;
-        --step-timeout) STEP_TIMEOUT="$2"; shift 2 ;;
-        --timing-dir) TIMING_DIR="$2"; shift 2 ;;
-        --dry-run) DRY_RUN=true; shift ;;
-        --help|-h) usage ;;
-        *)         echo "${RED}Unknown option: $1${RESET}"; echo "Run with --help for usage."; exit 1 ;;
-    esac
-done
 
 banner() {
     local num="$1" total="$2" title="$3" desc="$4"
@@ -812,10 +874,14 @@ step 59 $TOTAL "Benchmark Run (Smoke)" \
     "Run the benchmark harness on the smoke tier with 1 repeat, 0 warmups." \
     $SHATTER bench --manifest "$BENCH_MANIFEST_TMP" --tier smoke --repeats 1 --warmups 0
 
-# Stage 59: Cache clear
+# Stage 59: Cache clear. Exercise the command against disposable state so a
+# warm gauntlet does not erase the persistent cache it just populated.
+CACHE_CLEAR_DIR="$GAUNTLET_TMP_DIR/cache-clear"
+mkdir -p "$CACHE_CLEAR_DIR/seeds"
 step 60 $TOTAL "Cache Clear" \
     "Clear all on-disk caches (analysis + results). Reports file count and bytes freed." \
-    $SHATTER cache clear
+    env SHATTER_CACHE_DIR="$CACHE_CLEAR_DIR" SHATTER_SEEDS_DIR="$CACHE_CLEAR_DIR/seeds" \
+    "$SHATTER" --color "$SHATTER_COLOR" cache clear
 
 
 # ─── Step inventory check ────────────────────────────────────────────

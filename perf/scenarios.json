@@ -16,7 +16,7 @@
       "id": "gauntlet-auto-cold",
       "kind": "gauntlet",
       "description": "Full automated gauntlet with isolated cold caches.",
-      "command": ["bash", "demo/gauntlet.sh", "--auto", "--delay", "0"],
+      "command": ["bash", "demo/gauntlet.sh", "--cold", "--auto", "--delay", "0"],
       "timing_target": "gauntlet",
       "cache_mode": "cold",
       "warmups": 0,
