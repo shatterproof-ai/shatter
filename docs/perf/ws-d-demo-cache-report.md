@@ -107,3 +107,7 @@ defaults until both cache-invalidation blockers are closed:
 - `str-6jwyw`: Rust harness cache is not invalidated by runtime-source changes.
 
 This branch must remain unlanded while either blocker is open.
+
+Both blockers are now closed and landed on `main`: `str-gnagk` at
+`067be28624cdd10730ebaf634ca742986cfa9153` and `str-6jwyw` at
+`7e255d10cb5117676a6b2490294274c85e0ed2fc`. The landing guard is satisfied.
