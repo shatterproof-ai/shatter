@@ -458,13 +458,8 @@ fn parse_hunk_range(range: &str) -> Option<(u32, u32)> {
 /// Detect the SCM provider for the given directory.
 /// Currently only supports Git.
 pub fn detect_provider(root: &Path) -> Result<GitProvider, ScmError> {
-    // Clear GIT_DIR / GIT_WORK_TREE so the child process discovers the repo
-    // from `root` rather than inheriting stale values (e.g. from git hooks).
-    let status = Command::new("git")
+    let status = git_command(root)
         .args(["rev-parse", "--git-dir"])
-        .current_dir(root)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -498,9 +493,8 @@ pub fn show_file_at_ref(
 ) -> Result<Vec<u8>, ScmError> {
     let path_str = relative_path.to_string_lossy();
     let spec = format!("{git_ref}:{path_str}");
-    let output = Command::new("git")
+    let output = git_command(root)
         .args(["show", &spec])
-        .current_dir(root)
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -576,12 +570,9 @@ pub fn is_path_tracked(root: &Path, relative_path: &Path) -> bool {
 /// for commands that don't print pathnames (e.g. `rev-parse`, `hash-object`).
 /// The config flag must precede the git subcommand.
 pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
-    let output = Command::new("git")
+    let output = git_command(root)
         .args(["-c", "core.quotepath=false"])
         .args(args)
-        .current_dir(root)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -598,6 +589,24 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Build a Git subprocess that discovers repository state from `root`.
+///
+/// Git hooks and parent Git processes export repository-local variables that
+/// override `current_dir`. Clear every variable that can redirect repository
+/// metadata, the index, or object lookup before invoking Git.
+fn git_command(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+    command
 }
 
 fn repo_root(root: &Path) -> Result<PathBuf, ScmError> {
@@ -1411,6 +1420,72 @@ index 1111111..2222222 100644
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let result = show_file_at_ref(root, "HEAD", Path::new("nonexistent-file.xyz"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_git_commands_ignore_foreign_repository_environment() {
+        const CHILD_TEST: &str = "scm::tests::git_environment_isolation_child";
+        const TARGET_REPO: &str = "SHATTER_SCM_TARGET_REPO";
+
+        let foreign_dir = init_repo();
+        let foreign = foreign_dir.path();
+        fs::write(foreign.join("tracked.txt"), "foreign\n").expect("write foreign file");
+        git_ok(foreign, &["add", "."]);
+        git_ok(foreign, &["commit", "-q", "-m", "foreign"]);
+
+        let target_dir = init_repo();
+        let target = target_dir.path();
+        fs::write(target.join("tracked.txt"), "target\n").expect("write target file");
+        git_ok(target, &["add", "."]);
+        git_ok(target, &["commit", "-q", "-m", "target"]);
+        fs::write(target.join("new.ts"), "export const value = 1;\n")
+            .expect("write staged target file");
+        git_ok(target, &["add", "new.ts"]);
+
+        let git_dir = foreign
+            .join(".git")
+            .canonicalize()
+            .expect("canonicalize foreign git dir");
+        let index = git_dir.join("index");
+        let objects = git_dir.join("objects");
+
+        let output = Command::new(std::env::current_exe().expect("resolve test executable"))
+            .args(["--exact", CHILD_TEST, "--nocapture"])
+            .env(TARGET_REPO, target)
+            .env("GIT_DIR", &git_dir)
+            .env("GIT_COMMON_DIR", &git_dir)
+            .env("GIT_WORK_TREE", foreign)
+            .env("GIT_INDEX_FILE", index)
+            .env("GIT_OBJECT_DIRECTORY", &objects)
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects)
+            .output()
+            .expect("run isolated child test");
+
+        assert!(
+            output.status.success(),
+            "isolated child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn git_environment_isolation_child() {
+        let Some(target) = std::env::var_os("SHATTER_SCM_TARGET_REPO") else {
+            return;
+        };
+        let target = PathBuf::from(target);
+
+        detect_provider(&target).expect("target repository should be detected");
+
+        let files = GitProvider
+            .changed_files(&target, false)
+            .expect("target changed files should be readable");
+        assert_contains_canonicalized(&files, &target.join("new.ts"));
+
+        let content = show_file_at_ref(&target, "HEAD", Path::new("tracked.txt"))
+            .expect("target HEAD file should be readable");
+        assert_eq!(content, b"target\n");
     }
 
     #[test]
