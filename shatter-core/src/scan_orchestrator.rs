@@ -42,7 +42,12 @@ use crate::status_export::{
 };
 use crate::types::TypeInfo;
 
-const TOTAL_SCAN_TIMEOUT_REASON: &str = "timed out (total scan budget exceeded)";
+// str-jjt2h: "timed out" implies the function was attempted and failed to
+// finish, which is false for functions this reason ever applies to — they
+// were never dispatched because the run-level scan budget was already
+// exhausted when their turn came. Kept distinct from the per-function
+// build/execution timeout wording used for `SkipCategory::Error` rows.
+const TOTAL_SCAN_TIMEOUT_REASON: &str = "not attempted: total scan budget exceeded";
 
 /// Shared budget surplus within a topological layer.
 ///
@@ -190,7 +195,7 @@ pub struct ScanConfig {
     pub resume_path: Option<PathBuf>,
     /// Total scan wall-clock timeout. When set, the scan checks elapsed
     /// time at the start of each layer; if exceeded, remaining functions
-    /// are skipped with reason "timed out (total scan budget exceeded)".
+    /// are skipped with reason "not attempted: total scan budget exceeded".
     pub timeout_total: Option<Duration>,
     /// Path to the interesting input pool file (e.g., `.shatter/seeds/pool.json`).
     /// When `Some`, interesting inputs discovered during exploration are
@@ -6053,7 +6058,15 @@ fn format_mock_misses(misses: &[MockMiss]) -> String {
 }
 
 /// Format a parallel scan result as a human-readable report.
-pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
+///
+/// `effective_timeout_total` is the run's configured total-scan budget
+/// (str-jjt2h), used to caption the never-attempted-function summary when
+/// the budget was exhausted. Pass `None` when the scan had no total
+/// timeout configured.
+pub fn format_parallel_scan_report(
+    result: &ParallelScanResult,
+    effective_timeout_total: Option<Duration>,
+) -> String {
     let mut out = String::new();
 
     if let Some(ref ctx) = result.sampling {
@@ -6150,7 +6163,7 @@ pub fn format_parallel_scan_report(result: &ParallelScanResult) -> String {
         }
     }
 
-    format_skip_sections(&expected, &interrupted, &errors, &mut out);
+    format_skip_sections(&expected, &interrupted, &errors, effective_timeout_total, &mut out);
 
     out
 }
@@ -6237,7 +6250,9 @@ pub fn format_scan_report(result: &ScanResult) -> String {
         }
     }
 
-    format_skip_sections(&expected, &interrupted, &errors, &mut out);
+    // The sequential `ScanResult` path doesn't carry a total-scan-budget
+    // value, so the caption falls back to the budget-agnostic phrasing.
+    format_skip_sections(&expected, &interrupted, &errors, None, &mut out);
 
     out
 }
@@ -6247,6 +6262,7 @@ fn format_skip_sections(
     expected: &[&SkippedFunction],
     interrupted: &[&SkippedFunction],
     errors: &[&SkippedFunction],
+    effective_timeout_total: Option<Duration>,
     out: &mut String,
 ) {
     if !expected.is_empty() {
@@ -6256,14 +6272,19 @@ fn format_skip_sections(
         }
     }
 
+    // str-jjt2h: never-attempted functions get a single summary line
+    // naming the effective budget, not one row per function — a large
+    // module can have thousands of these and each row carries no
+    // information beyond "not attempted".
     if !interrupted.is_empty() {
         out.push_str(&format!(
-            "\nSkipped (interrupted, {}):\n",
-            interrupted.len()
+            "\n{} function(s) not attempted ({})\n",
+            interrupted.len(),
+            budget_exhausted_caption(effective_timeout_total),
         ));
-        for skip in interrupted {
-            out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
-        }
+        out.push_str(
+            "  Raise --timeout-total or narrow the target to reach the remaining functions.\n",
+        );
     }
 
     if !errors.is_empty() {
@@ -6271,6 +6292,16 @@ fn format_skip_sections(
         for skip in errors {
             out.push_str(&format!("  {}: {}\n", skip.function_name, skip.reason));
         }
+    }
+}
+
+/// Caption naming the effective total-scan budget for the never-attempted
+/// summary (str-jjt2h). Falls back to a budget-agnostic phrase when the
+/// caller doesn't know the configured timeout (e.g. legacy call sites).
+fn budget_exhausted_caption(effective_timeout_total: Option<Duration>) -> String {
+    match effective_timeout_total {
+        Some(d) => format!("total budget {}s exhausted", d.as_secs()),
+        None => "total scan budget exhausted".to_string(),
     }
 }
 
@@ -8262,7 +8293,7 @@ for line in sys.stdin:
             source_files: vec![],
         };
 
-        let report = format_parallel_scan_report(&result);
+        let report = format_parallel_scan_report(&result, None);
         assert!(report.contains("1 completed"));
         assert!(report.contains("1 failed"));
         assert!(report.contains("0 unsupported"));
@@ -8319,13 +8350,48 @@ for line in sys.stdin:
             source_files: vec![],
         };
 
-        let report = format_parallel_scan_report(&result);
+        let report = format_parallel_scan_report(&result, None);
         assert!(report.contains("1 completed"));
         assert!(report.contains("0 failed"));
         assert!(report.contains("0 unsupported"));
         assert!(report.contains("0 skipped"));
         assert!(!report.contains("Skipped (expected"));
         assert!(!report.contains("Errors ("));
+    }
+
+    #[test]
+    fn format_parallel_scan_report_states_effective_budget_when_configured() {
+        // str-jjt2h review follow-up: format_parallel_scan_report (the
+        // non-Markdown CLI output path) is the one renderer whose
+        // Some(budget) -> budget_exhausted_caption wiring had no test with
+        // an actual budget value -- only the None (legacy/no-timeout)
+        // path was covered here, unlike report.rs and render.rs which both
+        // exercise a real Some(300) case. A swapped Some/None branch or a
+        // dropped plumbing wire in this specific renderer would otherwise
+        // slip through untested.
+        let result = ParallelScanResult {
+            test_order: vec![],
+            function_results: vec![],
+            skipped: vec![SkippedFunction {
+                function_name: "unrun".into(),
+                reason: "not attempted: total scan budget exceeded".into(),
+                category: SkipCategory::Interrupted,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+
+        let report = format_parallel_scan_report(&result, Some(Duration::from_secs(300)));
+        assert!(
+            report.contains("1 function(s) not attempted (total budget 300s exhausted)"),
+            "should state the configured budget value: {report}"
+        );
+        assert!(
+            !report.contains("timed out"),
+            "never-attempted functions must not use \"timed out\" wording: {report}"
+        );
     }
 
     // ── parallel_scan integration test ──────────────────────────────
@@ -8715,7 +8781,7 @@ for line in sys.stdin:
         );
         assert_eq!(result.skipped.len(), 2);
         for s in &result.skipped {
-            assert_eq!(s.reason, "timed out (total scan budget exceeded)");
+            assert_eq!(s.reason, "not attempted: total scan budget exceeded");
             assert_eq!(s.category, SkipCategory::Interrupted);
         }
     }
@@ -9288,7 +9354,7 @@ for line in sys.stdin:
         assert!(result.function_results.is_empty());
         assert_eq!(result.skipped.len(), 2);
         for skipped in &result.skipped {
-            assert_eq!(skipped.reason, "timed out (total scan budget exceeded)");
+            assert_eq!(skipped.reason, "not attempted: total scan budget exceeded");
             assert_eq!(skipped.category, SkipCategory::Interrupted);
         }
     }
@@ -9382,7 +9448,7 @@ for line in sys.stdin:
         assert_eq!(result.skipped.len(), 1);
         assert_eq!(
             result.skipped[0].reason,
-            "timed out (total scan budget exceeded)"
+            "not attempted: total scan budget exceeded"
         );
         assert_eq!(result.skipped[0].category, SkipCategory::Interrupted);
     }

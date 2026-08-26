@@ -3,6 +3,8 @@
 //! View models convert domain types (`ObservationOutput`, `ParallelScanResult`)
 //! into structs that Askama templates render as Markdown for termimad.
 
+use std::time::Duration;
+
 use askama::Template;
 
 use shatter_core::explorer::ObservationOutput;
@@ -39,7 +41,6 @@ pub(crate) struct PathView {
 pub(crate) struct ScanView {
     pub functions: Vec<FnScanView>,
     pub skipped_expected: Vec<SkippedView>,
-    pub skipped_interrupted: Vec<SkippedView>,
     pub skipped_errors: Vec<SkippedView>,
     pub workers_used: usize,
     /// Pre-formatted sampling line, or empty string if no sampling was active.
@@ -48,6 +49,15 @@ pub(crate) struct ScanView {
     /// Count of discovered functions that were never attempted because their
     /// shape is unsupported (str-izhn).
     pub unsupported_count: usize,
+    /// Count of discovered functions that were never attempted because the
+    /// run-level total-scan budget expired before their turn came
+    /// (str-jjt2h). Rendered as a single summary line rather than one row
+    /// per function.
+    pub interrupted_count: usize,
+    /// Pre-formatted "the never-attempted functions weren't attempted
+    /// because budget X was exhausted, raise --timeout-total" note.
+    /// Empty when `interrupted_count` is 0.
+    pub interrupted_note: String,
 }
 
 /// Per-function summary row in a scan result.
@@ -144,7 +154,14 @@ pub(crate) fn explore_fn_view(
 }
 
 /// Build a [`ScanView`] from a [`ParallelScanResult`].
-pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
+///
+/// `effective_timeout_total` is the run's configured total-scan budget
+/// (str-jjt2h), used to caption the never-attempted-function summary.
+/// Pass `None` when the scan had no total timeout configured.
+pub(crate) fn scan_view(
+    result: &ParallelScanResult,
+    effective_timeout_total: Option<Duration>,
+) -> ScanView {
     let functions = result
         .function_results
         .iter()
@@ -193,6 +210,23 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
         reason: s.reason.clone(),
     };
 
+    // str-jjt2h: never-attempted functions are summarized as a count with
+    // an explicit budget caption, not rendered one row per function — see
+    // `scan_orchestrator::format_skip_sections` for the parallel text-report
+    // path and `report::write_md_skipped_functions` for the `-o` file path.
+    let interrupted_note = if interrupted.is_empty() {
+        String::new()
+    } else {
+        let budget = match effective_timeout_total {
+            Some(d) => format!("total budget {}s exhausted", d.as_secs()),
+            None => "total scan budget exhausted".to_string(),
+        };
+        format!(
+            "**{} function(s) not attempted** ({budget}). Raise --timeout-total or narrow the target to reach the remaining functions.",
+            interrupted.len(),
+        )
+    };
+
     let sampling_info = result
         .sampling
         .as_ref()
@@ -215,11 +249,12 @@ pub(crate) fn scan_view(result: &ParallelScanResult) -> ScanView {
         total_tested: result.function_results.len(),
         functions,
         skipped_expected: expected.iter().map(to_view).collect(),
-        skipped_interrupted: interrupted.iter().map(to_view).collect(),
         skipped_errors: errors.iter().map(to_view).collect(),
         workers_used: result.workers_used,
         sampling_info,
         unsupported_count,
+        interrupted_count: interrupted.len(),
+        interrupted_note,
     }
 }
 
@@ -340,34 +375,57 @@ mod tests {
     }
 
     #[test]
-    fn scan_view_renders_interrupted_skips_separately() {
+    fn scan_view_summarizes_interrupted_skips_as_a_count() {
+        // str-jjt2h: never-attempted functions (total-scan-budget
+        // interruptions) render as a single summary line naming the
+        // effective budget, not one row per function, and never use
+        // "timed out" wording (that implies the function was attempted).
         let result = ParallelScanResult {
             function_results: vec![],
-            test_order: vec!["slow".into()],
-            skipped: vec![shatter_core::scan_orchestrator::SkippedFunction {
-                function_name: "slow".into(),
-                reason: "timed out (total scan budget exceeded)".into(),
-                category: SkipCategory::Interrupted,
-            }],
+            test_order: vec!["slow".into(), "slower".into()],
+            skipped: vec![
+                shatter_core::scan_orchestrator::SkippedFunction {
+                    function_name: "slow".into(),
+                    reason: "not attempted: total scan budget exceeded".into(),
+                    category: SkipCategory::Interrupted,
+                },
+                shatter_core::scan_orchestrator::SkippedFunction {
+                    function_name: "slower".into(),
+                    reason: "not attempted: total scan budget exceeded".into(),
+                    category: SkipCategory::Interrupted,
+                },
+            ],
             workers_used: 1,
             workers_reaped: 0,
             sampling: None,
             source_files: vec![],
         };
 
-        let md = render_scan(&scan_view(&result));
+        let md = render_scan(&scan_view(&result, Some(Duration::from_secs(300))));
 
         assert!(
-            md.contains("**1 interrupted**"),
-            "summary should expose total-budget interruptions"
+            md.contains("**2 interrupted**"),
+            "top summary line should expose total-budget interruptions: {md}"
         );
         assert!(
-            md.contains("**Interrupted:**"),
-            "interrupted skips should not be hidden under expected skips"
+            md.contains("2 function(s) not attempted"),
+            "should summarize never-attempted functions as a count: {md}"
         );
         assert!(
-            md.contains("slow"),
-            "interrupted function name should be rendered"
+            md.contains("total budget 300s exhausted"),
+            "should state the effective budget value: {md}"
+        );
+        assert!(
+            md.contains("Raise --timeout-total"),
+            "should suggest the next step: {md}"
+        );
+        assert!(
+            !md.contains("`slow`") && !md.contains("`slower`"),
+            "never-attempted functions must not each get their own row: {md}"
+        );
+        assert!(
+            !md.contains("timed out"),
+            "'timed out' must not be used for functions that were never attempted: {md}"
         );
         assert!(
             !md.contains("**0 skipped** (1 worker"),

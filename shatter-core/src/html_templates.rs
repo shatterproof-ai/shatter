@@ -323,7 +323,14 @@ pub(crate) struct ScanReportTemplate {
     /// Pre-rendered overall coverage bar HTML (HTML-safe).
     pub overall_cov_bar_html: String,
     pub functions: Vec<ScanFnView>,
+    /// Functions that were attempted-but-failed or benignly skipped
+    /// (expected/unsupported). Excludes never-attempted (interrupted)
+    /// entries — see `interrupted_note` (str-jjt2h).
     pub skipped: Vec<SkippedView>,
+    /// Pre-formatted, HTML-escaped "N function(s) not attempted (budget
+    /// exhausted)" note. Empty when no functions were interrupted by the
+    /// total-scan budget (str-jjt2h).
+    pub interrupted_note: String,
 }
 
 /// Build a `PathEntry` from a `DiscoveredInput`.
@@ -430,10 +437,15 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
         })
         .collect();
 
+    // str-jjt2h: never-attempted functions (total-scan-budget interruptions)
+    // are excluded from the per-row list and summarized as a count instead —
+    // a large module can have thousands of these and each row carries no
+    // information beyond "not attempted".
     let skipped: Vec<SkippedView> = report
         .codebase
         .skipped_functions
         .iter()
+        .filter(|s| s.category != "interrupted")
         .map(|s| {
             let function_display_name = report_display_name(&s.display_name, &s.function_name);
 
@@ -444,6 +456,24 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
         })
         .collect();
 
+    let interrupted_count = report
+        .codebase
+        .skipped_functions
+        .iter()
+        .filter(|s| s.category == "interrupted")
+        .count();
+    let interrupted_note = if interrupted_count == 0 {
+        String::new()
+    } else {
+        let budget_caption = match report.codebase.budget_total_secs {
+            Some(secs) => format!("total budget {secs}s exhausted"),
+            None => "total scan budget exhausted".to_string(),
+        };
+        html_escape(&format!(
+            "{interrupted_count} function(s) not attempted ({budget_caption}). Raise --timeout-total or narrow the target to reach the remaining functions."
+        ))
+    };
+
     let tmpl = ScanReportTemplate {
         total_fn,
         total_paths,
@@ -451,6 +481,7 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
         overall_cov_bar_html,
         functions,
         skipped,
+        interrupted_note,
     };
 
     tmpl.render().expect("ScanReportTemplate rendering failed")

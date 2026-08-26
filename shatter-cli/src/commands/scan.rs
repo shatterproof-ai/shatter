@@ -1356,12 +1356,24 @@ pub(crate) async fn run_scan(
             let json_to_stdout =
                 (outputs.is_empty() || stdout) && format == crate::args::StdoutFormat::Json;
             if !json_to_stdout {
+                // str-jjt2h: report the originally configured total-scan
+                // budget (not the orchestrator's shrunken remaining-time
+                // deadline) so the report states the number the user
+                // actually passed to --timeout-total.
+                let effective_timeout_total = if timeout_total > 0 {
+                    Some(Duration::from_secs(timeout_total))
+                } else {
+                    None
+                };
                 if output_format == crate::args::OutputFormat::Md {
-                    let view = crate::render::scan_view(&result);
+                    let view = crate::render::scan_view(&result, effective_timeout_total);
                     print_markdown(&crate::render::render_scan(&view), use_color);
                 } else {
                     print_markdown(
-                        &scan_orchestrator::format_parallel_scan_report(&result),
+                        &scan_orchestrator::format_parallel_scan_report(
+                            &result,
+                            effective_timeout_total,
+                        ),
                         use_color,
                     );
                 }
@@ -1416,8 +1428,19 @@ pub(crate) async fn run_scan(
                 None
             };
 
-            let scan_report =
-                report::generate_report(&result, &scan_config.file_map, batch_state.as_ref());
+            // str-jjt2h: stamp the effective total-scan budget onto the
+            // report so the never-attempted-function summary can name it.
+            let effective_timeout_total = if timeout_total > 0 {
+                Some(Duration::from_secs(timeout_total))
+            } else {
+                None
+            };
+            let scan_report = report::generate_report_with_budget(
+                &result,
+                &scan_config.file_map,
+                batch_state.as_ref(),
+                effective_timeout_total,
+            );
 
             // Write to each -o file (format inferred from extension).
             for path in outputs {
