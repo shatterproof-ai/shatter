@@ -133,3 +133,12 @@ above 40, their standalone TypeScript scans reported per-function execution or
 task timeouts while the scripts continued successfully. The full E2E suite was
 green, including the affected TypeScript exploration paths. The presentation
 rubric remains MIXED for the pre-existing C/E/G/H reasons documented above.
+An exact-candidate cold walkthrough subsequently completed all 11 steps in
+45.27s at a 4.61 one-minute load average with no failed-function or timeout
+summary.
+
+The exact refresh logs and wall-time files use
+`/tmp/str-35vtk6-exact-{gauntlet-run1,gauntlet-run2,gauntlet-cold,walkthrough-cold}.*`.
+The concurrency harness retained its run root at
+`/tmp/str-35vtk4-acceptance.C4SCUF` and its summary at
+`/tmp/str-35vtk6-exact-concurrency.log`.
