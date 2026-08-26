@@ -3879,6 +3879,16 @@ fn crate_bridge_pool_root(harness_dir: &Path) -> Option<PathBuf> {
         .then(|| bridge_root.join("target-pool"))
 }
 
+/// Open a crate-bridge build slot lock file without truncating it.
+fn open_crate_bridge_target_lock(lock_path: &Path) -> Option<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .ok()
+}
+
 /// Resolve the `CARGO_TARGET_DIR` for a crate-bridge harness build.
 ///
 /// Crate-bridge harnesses under a shared `SHATTER_HARNESS_CACHE` previously
@@ -3905,12 +3915,7 @@ fn acquire_crate_bridge_target(harness_dir: &Path) -> CrateBridgeBuildTarget {
 
     for slot in 0..crate_bridge_build_slot_count() {
         let lock_path = pool_root.join(format!("{slot}.lock"));
-        let Ok(file) = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-        else {
+        let Some(file) = open_crate_bridge_target_lock(&lock_path) else {
             continue;
         };
         if file.try_lock().is_ok() {
@@ -3924,12 +3929,7 @@ fn acquire_crate_bridge_target(harness_dir: &Path) -> CrateBridgeBuildTarget {
     // Every slot is busy: block on slot 0 rather than fail the build or fall
     // back to the contention-prone fully-shared dir.
     let lock_path = pool_root.join("0.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .ok();
+    let file = open_crate_bridge_target_lock(&lock_path);
     if let Some(file) = &file {
         let _ = file.lock();
     }
