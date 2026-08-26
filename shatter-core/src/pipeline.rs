@@ -904,6 +904,35 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
                 r.termination_reason,
                 crate::orchestrator::TerminationReason::TimeoutExplore
             );
+        // str-o7b8z: mirror `timed_out`'s "trust the wall-clock verdict over
+        // the raw termination branch" rule — a tail phase (float-probe,
+        // refine, shrink) can overshoot the deadline after the main loop
+        // already exited via a non-timeout reason, so force TimeoutExplore
+        // here too whenever `timed_out` ends up true.
+        let stop_reason = if timed_out {
+            crate::explorer::StopReason::TimeoutExplore
+        } else {
+            match r.termination_reason {
+                crate::orchestrator::TerminationReason::MaxIterations => {
+                    crate::explorer::StopReason::MaxIterations
+                }
+                crate::orchestrator::TerminationReason::MaxExecutions => {
+                    crate::explorer::StopReason::MaxExecutions
+                }
+                crate::orchestrator::TerminationReason::CoveragePlateau => {
+                    crate::explorer::StopReason::CoveragePlateau
+                }
+                crate::orchestrator::TerminationReason::WorklistExhausted => {
+                    crate::explorer::StopReason::WorklistExhausted
+                }
+                crate::orchestrator::TerminationReason::TimeoutExplore => {
+                    crate::explorer::StopReason::TimeoutExplore
+                }
+                crate::orchestrator::TerminationReason::McdcComplete => {
+                    crate::explorer::StopReason::McdcComplete
+                }
+            }
+        };
         Self {
             function_name: r.function_name,
             iterations: r.total_executions as u32,
@@ -924,6 +953,7 @@ impl From<crate::orchestrator::ExploreResult> for ObservationOutput {
             opaque_suggestions: r.opaque_suggestions,
             stubbed_modules: r.stubbed_modules,
             timed_out,
+            stop_reason,
             oracle_stats: r.oracle_stats,
         }
     }
@@ -2000,6 +2030,11 @@ mod tests {
             output.timed_out,
             "TerminationReason::TimeoutExplore must propagate as ObservationOutput.timed_out=true"
         );
+        assert_eq!(
+            output.stop_reason,
+            crate::explorer::StopReason::TimeoutExplore,
+            "str-o7b8z: stop_reason must mirror timed_out for a direct timeout termination"
+        );
     }
 
     /// str-jeen.65: the regression case — a function whose main loop exited
@@ -2046,6 +2081,80 @@ mod tests {
             output.timed_out,
             "ExploreResult.timed_out=true must propagate to ObservationOutput \
              even when termination_reason != TimeoutExplore (str-jeen.65)",
+        );
+        assert_eq!(
+            output.stop_reason,
+            crate::explorer::StopReason::TimeoutExplore,
+            "str-o7b8z: stop_reason must reflect the wall-clock verdict (timed_out), \
+             not the raw termination_reason the loop actually broke on -- the same \
+             rule timed_out itself follows, and for the same reason (a post-loop \
+             phase can overshoot the deadline after a 'normal' loop exit)"
+        );
+    }
+
+    /// str-o7b8z: when `timed_out` is false, `stop_reason` must reflect the
+    /// actual `termination_reason` the orchestrator recorded, covering each
+    /// non-timeout variant's direct mapping into the smaller, `Serialize`-able
+    /// `StopReason` enum (`orchestrator::TerminationReason` itself is not
+    /// `Serialize`, hence the parallel enum).
+    #[test]
+    fn observation_output_maps_non_timeout_termination_reasons_directly() {
+        fn with_reason(
+            reason: crate::orchestrator::TerminationReason,
+        ) -> crate::explorer::StopReason {
+            let concolic = crate::orchestrator::ExploreResult {
+                function_name: "f".into(),
+                total_lines: 5,
+                executions: vec![],
+                unique_paths: 1,
+                total_executions: 3,
+                z3_generated: 0,
+                fuzz_generated: 0,
+                boundary_generated: 0,
+                drill_generated: 0,
+                termination_reason: reason,
+                raw_results: vec![],
+                discoveries: vec![],
+                triage_skipped: 0,
+                triage_mispredictions: 0,
+                nondeterministic_fields: vec![],
+                float_probe_results: vec![],
+                boundary_results: vec![],
+                shrunk_witnesses: std::collections::HashMap::new(),
+                mcdc_summary: None,
+                pipeline_overlaps: 0,
+                shrink_stats: crate::shrink::ShrinkStats::default(),
+                abandoned_frontiers: vec![],
+                opaque_suggestions: vec![],
+                stubbed_modules: vec![],
+                timed_out: false,
+                oracle_stats: None,
+            };
+            let output: ObservationOutput = concolic.into();
+            output.stop_reason
+        }
+
+        use crate::explorer::StopReason;
+        use crate::orchestrator::TerminationReason;
+        assert_eq!(
+            with_reason(TerminationReason::MaxIterations),
+            StopReason::MaxIterations
+        );
+        assert_eq!(
+            with_reason(TerminationReason::MaxExecutions),
+            StopReason::MaxExecutions
+        );
+        assert_eq!(
+            with_reason(TerminationReason::CoveragePlateau),
+            StopReason::CoveragePlateau
+        );
+        assert_eq!(
+            with_reason(TerminationReason::WorklistExhausted),
+            StopReason::WorklistExhausted
+        );
+        assert_eq!(
+            with_reason(TerminationReason::McdcComplete),
+            StopReason::McdcComplete
         );
     }
 

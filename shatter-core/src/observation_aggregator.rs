@@ -354,6 +354,10 @@ impl ObservationAggregator {
             opaque_suggestions,
             stubbed_modules,
             timed_out,
+            // Caller overwrites with the correctly classified value once all
+            // post-loop phases (shrink, etc.) have run to completion; see
+            // `classify_stop_reason` call sites in explorer.rs (str-o7b8z).
+            stop_reason: crate::explorer::StopReason::default(),
             oracle_stats: None,
         }
     }
