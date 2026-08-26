@@ -100,6 +100,19 @@ class GoldenEnvelopeTest(unittest.TestCase):
             result = _run(["append", "--path", str(path)], stdin="[1,2,3]")
             self.assertEqual(result.returncode, EXIT_INVALID)
 
+    def test_non_utf8_stdin_is_invalid_not_a_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gate-events.jsonl"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "append", "--path", str(path)],
+                input=b"\xff\xfe{\"a\":1}",
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, EXIT_INVALID, result.stderr)
+            self.assertNotIn(b"Traceback", result.stderr)
+            self.assertFalse(path.exists())
+
     def test_bad_schema_variants_are_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gate-events.jsonl"

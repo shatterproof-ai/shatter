@@ -68,7 +68,9 @@ def validate_envelope_fields(obj: object) -> None:
     if not isinstance(timestamp, str) or not RFC3339_UTC_RE.fullmatch(timestamp):
         raise EnvelopeError("timestamp must be RFC3339 UTC ending in Z")
     try:
-        datetime.fromisoformat(timestamp)
+        # datetime.fromisoformat() only accepts a trailing "Z" since Python
+        # 3.11; normalize to a numeric offset so this works on any Python 3.
+        datetime.fromisoformat(timestamp[:-1] + "+00:00")
     except ValueError as exc:
         raise EnvelopeError("timestamp is not a valid date/time") from exc
 
@@ -184,7 +186,7 @@ def cmd_append(path_arg: str | None) -> int:
     raw_stdin = sys.stdin.buffer.read()
     try:
         obj = json.loads(raw_stdin)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return EXIT_INVALID
     try:
         validate_envelope_fields(obj)
