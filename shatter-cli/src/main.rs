@@ -75,7 +75,7 @@ async fn main() -> ExitCode {
         Ok(config) => config,
         Err(err) => {
             eprintln!("Error: {err}");
-            return ExitCode::FAILURE;
+            return exit_tool_error();
         }
     };
 
@@ -152,7 +152,7 @@ async fn main() -> ExitCode {
             return finalize_exit_code(
                 &subcommand_name,
                 duration_ms,
-                1,
+                2,
                 &timing_config,
                 timing_start_unix_ms,
                 timing_handle.as_ref(),
@@ -249,7 +249,7 @@ async fn main() -> ExitCode {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    return ExitCode::FAILURE;
+                    return exit_tool_error();
                 }
             };
             // Set SHATTER_SETUP_TIMEOUT env var for frontends if --setup-timeout provided.
@@ -273,7 +273,7 @@ async fn main() -> ExitCode {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    return ExitCode::FAILURE;
+                    return exit_tool_error();
                 }
             };
 
@@ -535,7 +535,7 @@ async fn main() -> ExitCode {
                     Ok(p) => p,
                     Err(e) => {
                         eprintln!("Error: invalid --scheduler-policy: {e}");
-                        return ExitCode::FAILURE;
+                        return exit_tool_error();
                     }
                 };
 
@@ -639,7 +639,7 @@ async fn main() -> ExitCode {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    return ExitCode::FAILURE;
+                    return exit_tool_error();
                 }
             };
             // For Vec/bool fields: CLI non-empty/true overrides config.
@@ -909,7 +909,7 @@ async fn main() -> ExitCode {
                 return finalize_exit_code(
                     &subcommand_name,
                     cmd_start.elapsed().as_millis() as u64,
-                    1,
+                    2,
                     &timing_config,
                     timing_start_unix_ms,
                     timing_handle.as_ref(),
@@ -928,7 +928,7 @@ async fn main() -> ExitCode {
                             }
                             Err(e) => {
                                 eprintln!("Error serializing report: {e}");
-                                return ExitCode::FAILURE;
+                                return exit_tool_error();
                             }
                         }
                     } else {
@@ -1281,6 +1281,17 @@ async fn main() -> ExitCode {
             )
         }
     }
+}
+
+/// Exit code for a usage/tool error that happens before a command's
+/// `finalize_exit_code`-routed dispatch runs at all (argument validation,
+/// timing-config parsing, JSON serialization of a report, etc.) — e.g.
+/// `discover-deps --strace` missing. Under the str-9fn2 exit-code
+/// convention (SPEC.md §2.11) these are tool errors (code 2), not a
+/// "differences/failures found" gate (code 1); `ExitCode::FAILURE` (which
+/// maps to 1) would be indistinguishable from a fired gate.
+fn exit_tool_error() -> ExitCode {
+    ExitCode::from(2u8)
 }
 
 fn finalize_exit_code(
