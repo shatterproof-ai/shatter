@@ -8359,6 +8359,41 @@ for line in sys.stdin:
         assert!(!report.contains("Errors ("));
     }
 
+    #[test]
+    fn format_parallel_scan_report_states_effective_budget_when_configured() {
+        // str-jjt2h review follow-up: format_parallel_scan_report (the
+        // non-Markdown CLI output path) is the one renderer whose
+        // Some(budget) -> budget_exhausted_caption wiring had no test with
+        // an actual budget value -- only the None (legacy/no-timeout)
+        // path was covered here, unlike report.rs and render.rs which both
+        // exercise a real Some(300) case. A swapped Some/None branch or a
+        // dropped plumbing wire in this specific renderer would otherwise
+        // slip through untested.
+        let result = ParallelScanResult {
+            test_order: vec![],
+            function_results: vec![],
+            skipped: vec![SkippedFunction {
+                function_name: "unrun".into(),
+                reason: "not attempted: total scan budget exceeded".into(),
+                category: SkipCategory::Interrupted,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+
+        let report = format_parallel_scan_report(&result, Some(Duration::from_secs(300)));
+        assert!(
+            report.contains("1 function(s) not attempted (total budget 300s exhausted)"),
+            "should state the configured budget value: {report}"
+        );
+        assert!(
+            !report.contains("timed out"),
+            "never-attempted functions must not use \"timed out\" wording: {report}"
+        );
+    }
+
     // ── parallel_scan integration test ──────────────────────────────
 
     #[tokio::test]
