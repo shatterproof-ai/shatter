@@ -697,6 +697,11 @@ tasks:
     cmds:
       - python3 -m unittest scripts.test_kapow_refute_agent
 
+  build-doctor:
+    desc: "Diagnose build acceleration (sccache wrapper + linker) configuration"
+    cmds:
+      - python3 scripts/build-cache-doctor.py
+
   clean:
     desc: Remove all build artifacts and checksum cache
     cmds:
