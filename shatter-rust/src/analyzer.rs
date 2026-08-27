@@ -23,13 +23,15 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use proc_macro2::{Spacing, TokenTree};
 use quote::ToTokens;
 use syn::spanned::Spanned;
 
 use crate::adapters::FileContext;
 use crate::protocol::{
     BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind, ExternalDependency,
-    FunctionAnalysis, InvocationModel, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
+    FunctionAnalysis, InvocationModel, LiteralValue, ParamInfo, StaticOpacityReason, SymExpr,
+    TypeInfo, UnOpKind,
 };
 use crate::timing::TimingCollector;
 
@@ -1231,8 +1233,13 @@ fn convert_type_inner(
                 })
                 .collect::<Vec<_>>()
                 .join(" + ");
+            // A trait object is Rust's abstract type: it has no constructor and
+            // no value of it can be synthesized, so record the structural
+            // evidence rather than leaving the core to infer opacity from the
+            // label alone (str-dcelm).
             TypeInfo::Opaque {
                 label: format!("dyn {label}"),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         }
         syn::Type::BareFn(_) => TypeInfo::Complex {
@@ -1406,7 +1413,7 @@ fn convert_type_path(
                 // Guard against self-referential / mutually-recursive structs,
                 // whose blast radius widens once cross-file types are resolved.
                 if !converting.insert(name.clone()) {
-                    return TypeInfo::Opaque { label: name };
+                    return TypeInfo::opaque(name);
                 }
                 let object = TypeInfo::Object {
                     fields: fields
@@ -1425,7 +1432,7 @@ fn convert_type_path(
             } else if let Some(def) = enums.get(&name) {
                 // Guard against recursive enums
                 if !converting.insert(name.clone()) {
-                    return TypeInfo::Opaque { label: name };
+                    return TypeInfo::opaque(name);
                 }
                 // str-2nfoe: for a fieldless enum whose serde-accepted values we
                 // can prove, emit a value domain (variant-name strings, or
@@ -1474,7 +1481,7 @@ fn convert_type_path(
                 // for synthesis (and `serde(flatten)` fields accept any object).
                 TypeInfo::Object { fields: Vec::new() }
             } else {
-                TypeInfo::Opaque { label: name }
+                TypeInfo::opaque(name)
             }
         }
     }
@@ -1629,7 +1636,79 @@ fn walk_stmt_for_branches(
                 }
             }
         }
-        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+        syn::Stmt::Macro(stmt_macro) => {
+            push_select_branches(&stmt_macro.mac, branches, next_id);
+        }
+        syn::Stmt::Item(_) => {}
+    }
+}
+
+/// Emits one `Select` branch per arm of a `select!`-family macro.
+///
+/// `tokio::select!`, `futures::select!`/`select_biased!`, and
+/// `crossbeam_channel::select!` are Rust's multi-way concurrent wait — the
+/// analogue of Go's `select` statement, which the Go frontend reports as
+/// `BranchType::Select`. Their arms are not parseable as `syn` expressions
+/// (`pattern = future [, if precondition] => body` is not match syntax), so
+/// the arms are walked off the raw token stream in a single pass rather than
+/// pre-split on commas: an arm's `, if <precondition>` clause uses a
+/// top-level comma too, at the same nesting depth as the comma that actually
+/// separates it from the next arm, so a comma only ends the current arm once
+/// that arm's `=>` has already been seen. Conditions stay `None` — an arm
+/// fires on future readiness, not on a symbolic predicate over parameters.
+fn push_select_branches(mac: &syn::Macro, branches: &mut Vec<BranchInfo>, next_id: &mut u32) {
+    let Some(name) = mac.path.segments.last().map(|s| s.ident.to_string()) else {
+        return;
+    };
+    if name != "select" && name != "select_biased" {
+        return;
+    }
+
+    let mut guard: Vec<TokenTree> = Vec::new();
+    let mut in_body = false;
+    let mut iter = mac.tokens.clone().into_iter().peekable();
+
+    while let Some(tt) = iter.next() {
+        if in_body {
+            // The arm's body runs until the next top-level comma, which is
+            // the real arm separator now that this arm's arrow was seen.
+            if matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
+                in_body = false;
+                guard.clear();
+            }
+            continue;
+        }
+
+        // Still accumulating this arm's `pattern = future [, if precondition]`
+        // guard. Keep scanning for the arrow rather than bailing on the first
+        // `=`-shaped token (e.g. the `==` in `if a == b`), so a comparison in
+        // a precondition can't be mistaken for the arrow and drop the arm.
+        if let TokenTree::Punct(p) = &tt
+            && p.as_char() == '='
+            && p.spacing() == Spacing::Joint
+            && matches!(iter.peek(), Some(TokenTree::Punct(p2)) if p2.as_char() == '>')
+        {
+            iter.next(); // consume the '>' half of the arrow.
+            if let Some(first) = guard.first() {
+                branches.push(BranchInfo {
+                    id: *next_id,
+                    line: first.span().start().line as u32,
+                    condition_text: guard
+                        .iter()
+                        .map(TokenTree::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    condition: None,
+                    branch_type: BranchType::Select,
+                });
+                *next_id += 1;
+            }
+            in_body = true;
+            guard.clear();
+            continue;
+        }
+
+        guard.push(tt);
     }
 }
 
@@ -1860,6 +1939,10 @@ fn walk_expr_for_branches(
 
         syn::Expr::Unsafe(expr_unsafe) => {
             walk_block_for_branches(&expr_unsafe.block, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Macro(expr_macro) => {
+            push_select_branches(&expr_macro.mac, branches, next_id);
         }
 
         _ => {}
@@ -2201,8 +2284,19 @@ fn convert_lit(lit: &syn::Lit) -> ConstValue {
         syn::Lit::Float(lf) => ConstValue::Float(lf.base10_parse::<f64>().unwrap_or(0.0)),
         syn::Lit::Str(ls) => ConstValue::Str(ls.value()),
         syn::Lit::Bool(lb) => ConstValue::Bool(lb.value),
-        syn::Lit::Char(lc) => ConstValue::Int(lc.value() as i64),
-        _ => ConstValue::Null,
+        // A char literal is a codepoint, not an integer. Carrying the
+        // ComplexKind::Char envelope keeps that distinction on the wire; the
+        // core solver unwraps `repr` and reasons about the same i64 it saw
+        // before (str-dcelm).
+        syn::Lit::Char(lc) => ConstValue::Complex {
+            kind: ComplexKind::Char,
+            repr: Box::new(ConstValue::Int(lc.value() as i64)),
+        },
+        syn::Lit::Byte(lb) => ConstValue::Int(lb.value() as i64),
+        // Byte strings, C strings, and verbatim tokens have no representation
+        // in the constant vocabulary. Rust has no `undefined`, so this is the
+        // "no representable value" signal rather than a genuine null.
+        _ => ConstValue::Undefined,
     }
 }
 
@@ -2923,9 +3017,7 @@ mod tests {
         let f = analyze_fn("fn f(x: MyStruct) {}", "f");
         assert_eq!(
             f.params[0].typ,
-            TypeInfo::Opaque {
-                label: "MyStruct".to_string()
-            }
+            TypeInfo::opaque("MyStruct")
         );
     }
 
@@ -2997,9 +3089,7 @@ mod tests {
         let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
         assert_eq!(
             fns[0].params[0].typ,
-            TypeInfo::Opaque {
-                label: "Widget".to_string()
-            },
+            TypeInfo::opaque("Widget"),
             "ambiguous cross-file bare name must stay Opaque"
         );
     }
@@ -3019,9 +3109,7 @@ mod tests {
         let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
         assert_eq!(
             fns[0].params[0].typ,
-            TypeInfo::Opaque {
-                label: "Widget".to_string()
-            },
+            TypeInfo::opaque("Widget"),
             "struct/enum cross-kind name collision must stay Opaque"
         );
     }
@@ -3219,6 +3307,108 @@ mod tests {
     }
 
     #[test]
+    fn extracts_tokio_select_branches() {
+        let f = analyze_fn(
+            r#"
+            async fn f(a: i32, b: i32) {
+                tokio::select! {
+                    _ = ready(a) => {},
+                    _ = ready(b) => {},
+                }
+            }
+            "#,
+            "f",
+        );
+        let select_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Select)
+            .collect();
+        assert_eq!(select_branches.len(), 2, "one branch per select! arm");
+        assert!(select_branches.iter().all(|b| b.condition.is_none()));
+    }
+
+    #[test]
+    fn extracts_select_biased_branches() {
+        let f = analyze_fn(
+            r#"
+            async fn f() {
+                futures::select_biased! {
+                    _ = a => {},
+                    _ = b => {},
+                    _ = c => {},
+                }
+            }
+            "#,
+            "f",
+        );
+        let select_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Select)
+            .collect();
+        assert_eq!(select_branches.len(), 3, "one branch per select_biased! arm");
+    }
+
+    #[test]
+    fn select_arm_with_precondition_is_not_mistaken_for_arm_boundary() {
+        // The `, if <precondition>` clause's comma sits at the same
+        // top-level nesting depth as the real arm-separator comma; a naive
+        // comma split would mis-count arms and lose the future/pattern text.
+        // The precondition's `==` also must not be mistaken for the arrow.
+        let f = analyze_fn(
+            r#"
+            async fn f(enabled: bool, x: i32) {
+                tokio::select! {
+                    _ = ready(x), if enabled == true => {},
+                    _ = ready(x) => {},
+                }
+            }
+            "#,
+            "f",
+        );
+        let select_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Select)
+            .collect();
+        assert_eq!(
+            select_branches.len(),
+            2,
+            "precondition clause must not be split into a spurious extra arm"
+        );
+        assert!(
+            select_branches[0].condition_text.contains("ready"),
+            "guard text must keep the future/pattern, not just the precondition: {:?}",
+            select_branches[0].condition_text
+        );
+        assert!(
+            select_branches[0].condition_text.contains("enabled"),
+            "guard text must include the precondition: {:?}",
+            select_branches[0].condition_text
+        );
+    }
+
+    #[test]
+    fn other_macros_do_not_emit_select_branches() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) {
+                println!("{}", x);
+                vec![x, x];
+            }
+            "#,
+            "f",
+        );
+        assert!(
+            f.branches
+                .iter()
+                .all(|b| b.branch_type != BranchType::Select),
+            "non-select! macros must not be mistaken for a select arm set"
+        );
+    }
+
+    #[test]
     fn extracts_try_operator_branch() {
         let f = analyze_fn(
             r#"
@@ -3319,6 +3509,47 @@ mod tests {
                 }),
                 right: Box::new(SymExpr::Const(ConstValue::Int(5))),
             }
+        );
+    }
+
+    #[test]
+    fn char_literal_builds_complex_const() {
+        let params: HashSet<String> = ["c".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("c == 'x'").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Param {
+                    name: "c".to_string(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Complex {
+                    kind: ComplexKind::Char,
+                    repr: Box::new(ConstValue::Int('x' as i64)),
+                })),
+            },
+            "a char literal must carry the ComplexKind::Char envelope, not a bare int"
+        );
+    }
+
+    #[test]
+    fn byte_string_literal_builds_undefined_const() {
+        let params: HashSet<String> = ["x".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("x == b\"abc\"").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Param {
+                    name: "x".to_string(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Undefined)),
+            },
+            "a byte-string literal has no representable value in the constant vocabulary"
         );
     }
 
@@ -3840,9 +4071,7 @@ mod tests {
         let f = analyze_fn("fn f(x: ExternalEnum) {}", "f");
         assert_eq!(
             f.params[0].typ,
-            TypeInfo::Opaque {
-                label: "ExternalEnum".to_string()
-            }
+            TypeInfo::opaque("ExternalEnum")
         );
     }
 
@@ -3889,9 +4118,7 @@ mod tests {
         let f = analyze_fn("fn f(x: MyStruct) {}", "f");
         assert_eq!(
             f.params[0].typ,
-            TypeInfo::Opaque {
-                label: "MyStruct".to_string()
-            }
+            TypeInfo::opaque("MyStruct")
         );
     }
 
@@ -4128,7 +4355,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn DataStore".to_string()
+                label: "dyn DataStore".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
@@ -4142,7 +4370,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn W".to_string()
+                label: "dyn W".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
@@ -4153,7 +4382,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn std::fmt::Debug + Send".to_string()
+                label: "dyn std::fmt::Debug + Send".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
@@ -4171,7 +4401,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn Handler".to_string()
+                label: "dyn Handler".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
