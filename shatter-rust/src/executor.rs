@@ -2544,7 +2544,7 @@ fn generate_harness(
 
     // Call the function with panic recovery and timing via the runtime helper.
     if is_async {
-        h.push_str("        let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+        h.push_str("        let __tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();\n");
         h.push_str("        let (result, wall_time_ms) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
         h.push_str(&format!(
             "            __tokio_rt.block_on(user_code::{function_name}({args}))\n"
@@ -2842,7 +2842,7 @@ fn generate_dispatch_harness(
         // Call with timing + panic recovery via runtime helper.
         if fn_info.is_async {
             h.push_str(
-                "                let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n",
+                "                let __tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();\n",
             );
             h.push_str("                let (result, wt) = shatter_rust_runtime::execute_with_timing(std::panic::AssertUnwindSafe(|| {\n");
             h.push_str(&format!(
@@ -4939,7 +4939,7 @@ fn generate_crate_bridge_wrapper(
                 .as_ref()
                 .is_some_and(|ty| is_axum_return_shape(ty));
         if fn_info.is_async {
-            w.push_str("    let __tokio_rt = tokio::runtime::Runtime::new().unwrap();\n");
+            w.push_str("    let __tokio_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();\n");
         }
 
         for (i, (name, ty)) in param_names.iter().zip(param_types.iter()).enumerate() {
@@ -9221,8 +9221,8 @@ pub struct Nested {
         )
         .unwrap();
         assert!(
-            harness.contains("tokio::runtime::Runtime::new()"),
-            "async harness must create Tokio runtime\n\nharness:\n{harness}"
+            harness.contains("tokio::runtime::Builder::new_current_thread().enable_all().build()"),
+            "async harness must create a current-thread Tokio runtime\n\nharness:\n{harness}"
         );
         assert!(
             harness.contains("block_on(user_code::fetch(url))"),
@@ -12587,6 +12587,148 @@ fn enabled(config: Config) -> bool {
             Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
                 eprintln!(
                     "skipping crate_bridge_reports_executed_branch_lines: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    fn spawned_async_branch_source() -> &'static str {
+        r#"
+pub async fn classify(value: i64) -> String {
+    tokio::spawn(async move {
+        if value > 10 {
+            "large".to_string()
+        } else {
+            "small".to_string()
+        }
+    })
+    .await
+    .unwrap()
+}
+"#
+    }
+
+    fn assert_spawned_async_branch_coverage(result: &ExecuteResult, harness_kind: &str) {
+        assert_eq!(
+            result.return_value,
+            Some(serde_json::json!("large")),
+            "{harness_kind} should return the spawned task result"
+        );
+        assert!(
+            result.lines_executed.iter().any(|line| *line > 0),
+            "{harness_kind} should report executed lines from a spawned async branch: {result:?}"
+        );
+        assert!(
+            !result.branch_path.is_empty(),
+            "{harness_kind} should report branch decisions from a spawned async branch: {result:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_async_harness_with_spawned_await_reports_executed_branch_lines() {
+        let dir = unique_tmp_dir("standalone-spawned-await-coverage");
+        let src_file = dir.join("target.rs");
+        std::fs::write(&src_file, spawned_async_branch_source()).unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_function(
+            src_file.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!(11)],
+            &[],
+            60_000,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(result) => assert_spawned_async_branch_coverage(&result, "standalone async harness"),
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping standalone_async_harness_with_spawned_await_reports_executed_branch_lines: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_harness_with_spawned_await_reports_executed_branch_lines() {
+        let dir = unique_tmp_dir("dispatch-spawned-await-coverage");
+        let src_file = write_test_crate(&dir, spawned_async_branch_source());
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\ntokio = { version = \"1\", features = [\"rt-multi-thread\"] }\n",
+        )
+        .unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_function(
+            src_file.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!(11)],
+            &[],
+            60_000,
+            None,
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(result) => assert_spawned_async_branch_coverage(&result, "dispatch harness"),
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping dispatch_harness_with_spawned_await_reports_executed_branch_lines: cargo unavailable ({msg})"
+                );
+            }
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn crate_bridge_harness_with_spawned_await_reports_executed_branch_lines() {
+        let dir = unique_tmp_dir("bridge-spawned-await-coverage");
+        let src_file = write_test_crate(&dir, spawned_async_branch_source());
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\ntokio = { version = \"1\", features = [\"rt-multi-thread\"] }\n",
+        )
+        .unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let result = execute_function(
+            src_file.to_str().unwrap(),
+            "classify",
+            &[serde_json::json!(11)],
+            &[],
+            60_000,
+            Some("crate_bridge"),
+            &cache,
+            &crate_cache,
+            &bridge_cache,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        match result {
+            Ok(result) => assert_spawned_async_branch_coverage(&result, "crate-bridge harness"),
+            Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                eprintln!(
+                    "skipping crate_bridge_harness_with_spawned_await_reports_executed_branch_lines: cargo unavailable ({msg})"
                 );
             }
             Err(e) => panic!("unexpected error: {e:?}"),
