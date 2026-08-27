@@ -679,7 +679,15 @@ pub(crate) async fn run_scan(
     // to avoid emitting stale plans; full scans use the same run-start
     // deadline so discovery/analysis time is charged before the remaining
     // budget is handed to the scan orchestrator.
-    let registry = {
+    // str-z160s: a per-file frontend error no longer aborts the whole batch
+    // -- batch_analyze returns the functions from every file that DID
+    // analyze successfully, plus a separate list of per-file failures
+    // (`analyze_failures`), reported below and folded into the opt-in
+    // --fail-on-failures / --failure-threshold exit-code policy.
+    let batch_analyze::BatchAnalyzeOutcome {
+        registry,
+        failures: analyze_failures,
+    } = {
         let fut = batch_analyze::batch_analyze(
             &mut frontends,
             &analyzable_files,
@@ -711,6 +719,16 @@ pub(crate) async fn run_scan(
                 .map_err(|e| format!("batch analyze failed: {e}"))?
         }
     };
+
+    if !analyze_failures.is_empty() {
+        eprintln!(
+            "\n{} file(s) failed to analyze (excluded from this scan; the rest of the batch still ran):",
+            analyze_failures.len()
+        );
+        for f in &analyze_failures {
+            eprintln!("  {}: {}", f.file, f.source);
+        }
+    }
 
     log::debug!(
         "Found {} function(s) across {} file(s)",
@@ -1529,6 +1547,38 @@ pub(crate) async fn run_scan(
             // completed/failed/unsupported counts.
             if let Some(reason) = result.evaluate_failure_policy(failure_policy) {
                 return Err(Box::new(GateFailure(format!("scan failed: {reason}"))));
+            }
+
+            // str-z160s: a file that failed to analyze never produced any
+            // function-level attempts for `evaluate_failure_policy` above to
+            // count, so it must be checked against the same opt-in policy
+            // separately here -- otherwise a broken/slow file could silently
+            // escape --fail-on-failures / --failure-threshold entirely.
+            if !analyze_failures.is_empty() {
+                if failure_policy.fail_on_failures {
+                    return Err(format!(
+                        "scan failed: {} file(s) failed to analyze (--fail-on-failures)",
+                        analyze_failures.len()
+                    )
+                    .into());
+                }
+                if let Some(threshold) = failure_policy.failure_threshold_percent {
+                    let counts = result.counts();
+                    let attempted =
+                        counts.completed + counts.failed + analyze_failures.len();
+                    if attempted > 0 {
+                        let failed = counts.failed + analyze_failures.len();
+                        let pct = (failed as f64 / attempted as f64) * 100.0;
+                        if pct > threshold as f64 {
+                            return Err(format!(
+                                "scan failed: failure rate {pct:.1}% ({failed} of {attempted} attempted, \
+                                 including {} file-analyze failure(s)) exceeds --failure-threshold {threshold}%",
+                                analyze_failures.len()
+                            )
+                            .into());
+                        }
+                    }
+                }
             }
         }
         Err(e) => {

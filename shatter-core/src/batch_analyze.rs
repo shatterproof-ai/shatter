@@ -135,14 +135,41 @@ impl FunctionRegistry {
 }
 
 /// Errors that can occur during batch analysis.
+///
+/// This enum now covers only *whole-run* failures — conditions that make
+/// continuing the batch pointless (e.g. no frontend configured for a
+/// language at all). Per-file frontend errors (a single file's analyze
+/// request fails) no longer abort the batch; they are collected into
+/// [`BatchAnalyzeOutcome::failures`] instead so the rest of the files still
+/// get analyzed (str-z160s).
 #[derive(Debug, thiserror::Error)]
 pub enum BatchAnalyzeError {
-    /// A frontend communication error.
-    #[error("frontend error for {file}: {source}")]
-    Frontend { file: String, source: FrontendError },
     /// No frontend available for a language.
     #[error("no frontend configured for language: {0:?}")]
     NoFrontend(Language),
+}
+
+/// A single file's frontend analyze failure, recorded rather than aborting
+/// the batch (str-z160s).
+#[derive(Debug)]
+pub struct FileFailure {
+    /// Path to the file that failed to analyze.
+    pub file: String,
+    /// The underlying frontend error.
+    pub source: FrontendError,
+}
+
+/// Result of [`batch_analyze`]: the registry built from every file that
+/// analyzed successfully, plus any per-file failures encountered along the
+/// way. A non-empty `failures` does not by itself indicate the overall run
+/// failed — callers decide whether/how failures affect exit status (see
+/// `ScanFailurePolicy` in `scan_orchestrator`).
+#[derive(Debug)]
+pub struct BatchAnalyzeOutcome {
+    /// Functions successfully analyzed across all files.
+    pub registry: FunctionRegistry,
+    /// Per-file failures, attributable to the specific file that failed.
+    pub failures: Vec<FileFailure>,
 }
 
 /// Analyze multiple files using the appropriate frontends and build a [`FunctionRegistry`].
@@ -150,6 +177,14 @@ pub enum BatchAnalyzeError {
 /// For each `(file_path, language)` pair, sends an Analyze request to the corresponding
 /// frontend and aggregates results. Files are grouped by language to minimize frontend
 /// switching overhead.
+///
+/// A per-file frontend error (transport failure or a non-`not_supported`/
+/// non-`preflight_failed` protocol error) is recorded in
+/// [`BatchAnalyzeOutcome::failures`] and does not abort the batch — the
+/// remaining files still get analyzed (str-z160s). Only whole-run
+/// conditions (e.g. [`BatchAnalyzeError::NoFrontend`]) short-circuit the
+/// call.
+///
 /// `analyzer_versions` maps each language to its frontend analyzer version
 /// (source/bundle hash). It is folded into the analysis cache key so that a
 /// frontend whose analyze behavior changed for unchanged source — a new build
@@ -162,10 +197,11 @@ pub async fn batch_analyze(
     analysis_cache: Option<&AnalysisCache>,
     analyzer_versions: &HashMap<Language, String>,
     project_root: Option<&str>,
-) -> Result<FunctionRegistry, BatchAnalyzeError> {
+) -> Result<BatchAnalyzeOutcome, BatchAnalyzeError> {
     let mut entries = Vec::new();
     let mut index = HashMap::new();
     let mut analyses_by_qn: HashMap<String, FunctionAnalysis> = HashMap::new();
+    let mut failures: Vec<FileFailure> = Vec::new();
 
     // Load crypto registry once for classifying dependencies across all files.
     let crypto_registry = match CryptoRegistry::load() {
@@ -209,7 +245,7 @@ pub async fn batch_analyze(
             .get_mut(language)
             .ok_or(BatchAnalyzeError::NoFrontend(*language))?;
 
-        let response = frontend
+        let response = match frontend
             .send(ProtoCommand::Analyze {
                 file: file_path.to_string_lossy().into_owned(),
                 function: None,
@@ -217,10 +253,20 @@ pub async fn batch_analyze(
                 execution_profile: None,
             })
             .await
-            .map_err(|e| BatchAnalyzeError::Frontend {
-                file: file_path.to_string_lossy().into_owned(),
-                source: e,
-            })?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!(
+                    "frontend error analyzing {}, continuing with remaining files: {e}",
+                    file_path.display()
+                );
+                failures.push(FileFailure {
+                    file: file_path.to_string_lossy().into_owned(),
+                    source: e,
+                });
+                continue;
+            }
+        };
 
         let functions = match response.result {
             ResponseResult::Analyze { functions } => functions,
@@ -248,7 +294,11 @@ pub async fn batch_analyze(
                     );
                     continue;
                 }
-                return Err(BatchAnalyzeError::Frontend {
+                log::warn!(
+                    "frontend error analyzing {}, continuing with remaining files: {message}",
+                    file_path.display()
+                );
+                failures.push(FileFailure {
                     file: file_path.to_string_lossy().into_owned(),
                     source: FrontendError::Protocol {
                         code,
@@ -256,9 +306,14 @@ pub async fn batch_analyze(
                         details,
                     },
                 });
+                continue;
             }
             other => {
-                return Err(BatchAnalyzeError::Frontend {
+                log::warn!(
+                    "unexpected analyze response for {}, continuing with remaining files: {other:?}",
+                    file_path.display()
+                );
+                failures.push(FileFailure {
                     file: file_path.to_string_lossy().into_owned(),
                     source: FrontendError::Protocol {
                         code: crate::protocol::ErrorCode::InvalidRequest,
@@ -266,6 +321,7 @@ pub async fn batch_analyze(
                         details: None,
                     },
                 });
+                continue;
             }
         };
 
@@ -292,10 +348,13 @@ pub async fn batch_analyze(
         }
     }
 
-    Ok(FunctionRegistry {
-        entries,
-        index,
-        analyses: analyses_by_qn,
+    Ok(BatchAnalyzeOutcome {
+        registry: FunctionRegistry {
+            entries,
+            index,
+            analyses: analyses_by_qn,
+        },
+        failures,
     })
 }
 
@@ -753,9 +812,11 @@ mod tests {
             (PathBuf::from("src/utils.ts"), Language::TypeScript),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
+        let outcome = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze failed");
+        let registry = outcome.registry;
+        assert!(outcome.failures.is_empty());
 
         // Noop frontend returns one "stub" function per file
         assert_eq!(registry.len(), 2);
@@ -797,11 +858,12 @@ mod tests {
 
         let files: Vec<(PathBuf, Language)> = vec![];
 
-        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
+        let outcome = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze failed");
 
-        assert!(registry.is_empty());
+        assert!(outcome.registry.is_empty());
+        assert!(outcome.failures.is_empty());
     }
 
     #[tokio::test]
@@ -821,9 +883,11 @@ mod tests {
             (PathBuf::from("pkg/handler.go"), Language::Go),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
+        let outcome = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze failed");
+        let registry = outcome.registry;
+        assert!(outcome.failures.is_empty());
 
         assert_eq!(registry.len(), 2);
         assert_eq!(registry.functions_in_file(Path::new("src/app.ts")).len(), 1);
@@ -922,13 +986,78 @@ mod tests {
             (PathBuf::from("pkg/handler.go"), Language::Go),
         ];
 
-        let registry = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
+        let outcome = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
             .await
             .expect("batch analyze should soft-skip unsupported files");
+        let registry = outcome.registry;
+        assert!(outcome.failures.is_empty());
 
         assert_eq!(registry.len(), 1);
         assert!(registry.functions_in_file(Path::new("pkg/generated/generated.go")).is_empty());
         assert_eq!(registry.functions_in_file(Path::new("pkg/handler.go")).len(), 1);
+
+        for (_, frontend) in frontends {
+            frontend.shutdown().await.expect("shutdown failed");
+        }
+    }
+
+    fn failing_file_frontend_path() -> PathBuf {
+        let manifest_dir = StdPath::new(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir.join("../protocol/failing-file-frontend.sh")
+    }
+
+    fn failing_file_config() -> crate::frontend::FrontendConfig {
+        let mut config = crate::frontend::FrontendConfig::new(PathBuf::from("bash"));
+        config.args = vec![failing_file_frontend_path().to_string_lossy().into_owned()];
+        config.request_timeout = std::time::Duration::from_secs(5);
+        config
+    }
+
+    // str-z160s: a per-file frontend error must not abort the batch — the
+    // remaining files still get analyzed, and the failure is attributable to
+    // the specific file that errored.
+    #[tokio::test]
+    async fn batch_analyze_continues_past_one_file_frontend_error() {
+        let config = failing_file_config();
+        let frontend = Frontend::spawn(&config).await.expect("spawn failed");
+
+        let mut frontends = HashMap::new();
+        frontends.insert(Language::Go, frontend);
+
+        let files = vec![
+            (PathBuf::from("pkg/a.go"), Language::Go),
+            (PathBuf::from("pkg/broken.go"), Language::Go),
+            (PathBuf::from("pkg/b.go"), Language::Go),
+        ];
+
+        let outcome = batch_analyze(&mut frontends, &files, None, &HashMap::new(), None)
+            .await
+            .expect("batch analyze should continue past a single file's frontend error");
+
+        // The other N-1 files still analyzed successfully.
+        assert_eq!(outcome.registry.len(), 2);
+        assert_eq!(
+            outcome
+                .registry
+                .functions_in_file(Path::new("pkg/a.go"))
+                .len(),
+            1
+        );
+        assert_eq!(
+            outcome
+                .registry
+                .functions_in_file(Path::new("pkg/b.go"))
+                .len(),
+            1
+        );
+        assert!(outcome
+            .registry
+            .functions_in_file(Path::new("pkg/broken.go"))
+            .is_empty());
+
+        // The failure is attributable to the specific file.
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].file, "pkg/broken.go");
 
         for (_, frontend) in frontends {
             frontend.shutdown().await.expect("shutdown failed");
