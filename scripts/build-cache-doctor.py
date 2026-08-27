@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -114,6 +113,31 @@ def load_toml(path: Path | None) -> tuple[dict | None, bool]:
         return None, True
 
 
+def safe_table(container: object, key: str) -> dict:
+    """Return container[key] if it is a table, else {} -- never raises on structurally-wrong TOML."""
+    if not isinstance(container, dict):
+        return {}
+    value = container.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def config_structure_is_valid(cfg: dict | None) -> bool:
+    """Reject configs where 'build' or 'target'/'target.<triple>' exist but aren't tables."""
+    if not cfg:
+        return True
+    build = cfg.get("build")
+    if build is not None and not isinstance(build, dict):
+        return False
+    target = cfg.get("target")
+    if target is not None:
+        if not isinstance(target, dict):
+            return False
+        triple = target.get(TARGET_TRIPLE)
+        if triple is not None and not isinstance(triple, dict):
+            return False
+    return True
+
+
 def find_executable(names: Sequence[str], path_dirs: Sequence[str]) -> Path | None:
     for directory in path_dirs:
         for name in names:
@@ -135,7 +159,7 @@ def extract_fuse_ld(value: object) -> str | None:
 def get_target_rustflags(cfg: dict | None) -> object | None:
     if not cfg:
         return None
-    return cfg.get("target", {}).get(TARGET_TRIPLE, {}).get("rustflags")
+    return safe_table(safe_table(cfg, "target"), TARGET_TRIPLE).get("rustflags")
 
 
 def resolve_wrapper(
@@ -146,12 +170,14 @@ def resolve_wrapper(
 ) -> tuple[WrapperInfo, str]:
     configured: str | None = None
     source = "none"
+    user_wrapper = safe_table(user_cfg, "build").get("rustc-wrapper")
+    repo_wrapper = safe_table(repo_cfg, "build").get("rustc-wrapper")
     if env.get("RUSTC_WRAPPER"):
         configured, source = env["RUSTC_WRAPPER"], "environment"
-    elif user_cfg is not None and user_cfg.get("build", {}).get("rustc-wrapper"):
-        configured, source = user_cfg["build"]["rustc-wrapper"], "user_config"
-    elif repo_cfg is not None and repo_cfg.get("build", {}).get("rustc-wrapper"):
-        configured, source = repo_cfg["build"]["rustc-wrapper"], "repo_config"
+    elif isinstance(user_wrapper, str) and user_wrapper:
+        configured, source = user_wrapper, "user_config"
+    elif isinstance(repo_wrapper, str) and repo_wrapper:
+        configured, source = repo_wrapper, "repo_config"
 
     if configured is None:
         return WrapperInfo(configured=None, resolved_path=None, source="none"), "ok"
@@ -279,18 +305,29 @@ def compute_cache_size(cache_dir: str) -> int | None:
     path = Path(cache_dir)
     if not path.is_dir():
         return None
+
     total = 0
+    unreadable = False
+
+    def on_walk_error(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+
     try:
-        for root, _dirs, files in os.walk(path, followlinks=False):
+        for root, _dirs, files in os.walk(path, onerror=on_walk_error, followlinks=False):
             for name in files:
                 file_path = Path(root) / name
                 try:
                     file_stat = file_path.lstat()
                 except OSError:
+                    unreadable = True
                     continue
                 if stat.S_ISREG(file_stat.st_mode):
                     total += file_stat.st_size
     except OSError:
+        return None
+
+    if unreadable:
         return None
     return total
 
@@ -356,7 +393,7 @@ def resolve_sccache(
 def resolve_cargo_budget(env: dict[str, str], repo_cfg: dict | None) -> tuple[str | None, str]:
     if env.get("CARGO_BUILD_JOBS"):
         return env["CARGO_BUILD_JOBS"], "gate_environment"
-    jobs = (repo_cfg or {}).get("build", {}).get("jobs")
+    jobs = safe_table(repo_cfg, "build").get("jobs")
     if jobs is not None:
         return str(jobs), "repo_config"
     return None, "default"
@@ -382,6 +419,8 @@ def build_report(
 
     user_cfg, user_cfg_err = load_toml(user_cfg_path)
     repo_cfg, repo_cfg_err = load_toml(repo_cfg_path)
+    user_cfg_err = user_cfg_err or not config_structure_is_valid(user_cfg)
+    repo_cfg_err = repo_cfg_err or not config_structure_is_valid(repo_cfg)
     config_error = user_cfg_err or repo_cfg_err
 
     wrapper, wrapper_exec = resolve_wrapper(env, user_cfg, repo_cfg, path_dirs)

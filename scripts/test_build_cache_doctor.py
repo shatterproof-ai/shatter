@@ -315,6 +315,24 @@ class SccacheStateTest(DoctorReportTestBase):
         )
         self.assertIsNone(report.sccache.cache_size_bytes)
 
+    def test_cache_size_null_when_dir_exists_but_unreadable(self) -> None:
+        make_executable(self.bin_a / "sccache")
+        cache_dir = self.root / "locked-cache"
+        cache_dir.mkdir()
+        (cache_dir / "a.bin").write_bytes(b"1234567890")
+        original_mode = cache_dir.stat().st_mode
+        cache_dir.chmod(0o000)
+        self.addCleanup(cache_dir.chmod, original_mode)
+
+        try:
+            report = self.build(
+                env={"RUSTC_WRAPPER": "sccache", "SCCACHE_DIR": str(cache_dir)},
+            )
+        finally:
+            cache_dir.chmod(original_mode)
+
+        self.assertIsNone(report.sccache.cache_size_bytes)
+
 
 class BudgetsTest(DoctorReportTestBase):
     def test_cargo_build_jobs_env_wins_over_repo_config(self) -> None:
@@ -402,6 +420,41 @@ class TopStatusTest(DoctorReportTestBase):
         report = self.build(env={})
         self.assertEqual(report.status, "error")
         self.assertIn(doctor.DIAG_INVALID_CONFIG, report.diagnostics)
+
+    def test_error_on_structurally_wrong_repo_target_table(self) -> None:
+        # Syntactically valid TOML, but `target` is a string instead of a
+        # table -- must not raise AttributeError out of get_target_rustflags.
+        write_toml(self.repo_root / ".cargo" / "config.toml", 'target = "oops"\n')
+        report = self.build(env={})
+        self.assertEqual(report.status, "error")
+        self.assertIn(doctor.DIAG_INVALID_CONFIG, report.diagnostics)
+
+    def test_error_on_structurally_wrong_user_build_table(self) -> None:
+        # Syntactically valid TOML, but `build` is a string instead of a
+        # table -- must not raise AttributeError out of resolve_wrapper /
+        # resolve_cargo_budget.
+        write_toml(self.cargo_home / "config.toml", 'build = "x"\n')
+        report = self.build(env={})
+        self.assertEqual(report.status, "error")
+        self.assertIn(doctor.DIAG_INVALID_CONFIG, report.diagnostics)
+
+    def test_error_on_structurally_wrong_target_triple_table(self) -> None:
+        write_toml(
+            self.repo_root / ".cargo" / "config.toml",
+            "[target]\nx86_64-unknown-linux-gnu = \"oops\"\n",
+        )
+        report = self.build(env={})
+        self.assertEqual(report.status, "error")
+        self.assertIn(doctor.DIAG_INVALID_CONFIG, report.diagnostics)
+
+    def test_valid_config_with_unrelated_non_table_keys_is_not_flagged(self) -> None:
+        write_toml(
+            self.repo_root / ".cargo" / "config.toml",
+            '[build]\njobs = 4\nsomething-else = "fine"\n',
+        )
+        report = self.build(env={})
+        self.assertNotEqual(report.status, "error")
+        self.assertNotIn(doctor.DIAG_INVALID_CONFIG, report.diagnostics)
 
 
 class DiagnosticOrderingTest(DoctorReportTestBase):
