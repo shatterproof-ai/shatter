@@ -18,9 +18,38 @@ use crate::helpers::Colors;
 /// configured report outputs — so generated files never pollute `git status`
 /// (str-1fwt). The entries are driven by `shatter.config.json` values when
 /// present, falling back to the documented defaults.
+///
+/// An explicit `shatter init` invocation from the user (via this function)
+/// always writes/refreshes the `.gitignore` block, exactly as documented
+/// above.
 pub(crate) fn run_init(
     directory: Option<&Path>,
+    colors: &Colors,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_init_impl(directory, colors, /* implicit = */ false)
+}
+
+/// Same as [`run_init`], but for the implicit init that `scan`/`explore`/
+/// `analyze` trigger on their own when `.shatter/` is missing (str-w5jt9).
+///
+/// A plain `shatter scan`/`explore`/`analyze` must never dirty a file that is
+/// already tracked in git — the user did not ask for that write. This variant
+/// still creates `.shatter/` and a *new* `.gitignore` exactly like an explicit
+/// `init` (that preserves today's first-run ergonomics), but if `.gitignore`
+/// is already tracked in git, the managed block is left untouched rather than
+/// appended to it. Re-running `shatter init` explicitly still repairs/refreshes
+/// a tracked `.gitignore` as before.
+pub(crate) fn run_implicit_init(
+    directory: Option<&Path>,
+    colors: &Colors,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_init_impl(directory, colors, /* implicit = */ true)
+}
+
+fn run_init_impl(
+    directory: Option<&Path>,
     _colors: &Colors,
+    implicit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve the target directory.
     let resolved_dir: PathBuf = if let Some(dir) = directory {
@@ -63,17 +92,33 @@ pub(crate) fn run_init(
     }
 
     // Write or verify the managed .gitignore block for generated output paths.
-    let ignore_entries = collect_generated_ignore_entries(&resolved_dir);
-    match sync_gitignore(&resolved_dir, &ignore_entries)? {
-        GitignoreOutcome::Created => println!(
-            "  Created  .gitignore  ({} generated path(s) ignored)",
-            ignore_entries.len()
-        ),
-        GitignoreOutcome::Updated => println!(
-            "  Updated  .gitignore  ({} generated path(s) ignored)",
-            ignore_entries.len()
-        ),
-        GitignoreOutcome::AlreadyCurrent => {}
+    //
+    // An implicit init (str-w5jt9) must not modify a `.gitignore` that is
+    // already tracked in git — a bare `shatter scan` should never dirty a
+    // tracked file the user didn't ask to change. A brand-new `.gitignore`
+    // (untracked, or not yet created) is still written so first-run
+    // ergonomics are unchanged; only the "append to an existing tracked file"
+    // case is skipped.
+    let gitignore_relative = Path::new(".gitignore");
+    let skip_tracked_gitignore =
+        implicit && shatter_core::scm::is_path_tracked(&resolved_dir, gitignore_relative);
+    if skip_tracked_gitignore {
+        println!(
+            "  Skipped  .gitignore  (tracked in git; run `shatter init` explicitly to refresh it)"
+        );
+    } else {
+        let ignore_entries = collect_generated_ignore_entries(&resolved_dir);
+        match sync_gitignore(&resolved_dir, &ignore_entries)? {
+            GitignoreOutcome::Created => println!(
+                "  Created  .gitignore  ({} generated path(s) ignored)",
+                ignore_entries.len()
+            ),
+            GitignoreOutcome::Updated => println!(
+                "  Updated  .gitignore  ({} generated path(s) ignored)",
+                ignore_entries.len()
+            ),
+            GitignoreOutcome::AlreadyCurrent => {}
+        }
     }
 
     if !already_initialized {
@@ -292,5 +337,110 @@ mod tests {
         // Even on the already-initialized path, the gitignore block is written.
         let gitignore = read_gitignore(dir.path());
         assert!(gitignore.contains(".shatter/seeds/"));
+    }
+
+    // --- str-w5jt9: implicit init must never touch a tracked .gitignore ---
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"));
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    fn init_git_repo(dir: &Path) {
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "user.name", "Test User"]);
+    }
+
+    #[test]
+    fn run_implicit_init_skips_a_gitignore_already_tracked_in_git() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping: git not available on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n*.log\n").unwrap();
+        git(dir.path(), &["add", ".gitignore"]);
+        git(dir.path(), &["commit", "-q", "-m", "track gitignore"]);
+
+        let colors = Colors::new(false);
+        run_implicit_init(Some(dir.path()), &colors).unwrap();
+
+        // .shatter/ is still created — implicit init's first-run ergonomics
+        // are unchanged.
+        assert!(dir.path().join(".shatter").exists());
+
+        // But the tracked .gitignore is byte-for-byte untouched: no managed
+        // block appended.
+        let gitignore = read_gitignore(dir.path());
+        assert_eq!(gitignore, "node_modules/\n*.log\n");
+        assert!(!gitignore.contains(GITIGNORE_BEGIN));
+    }
+
+    #[test]
+    fn run_implicit_init_still_creates_a_brand_new_gitignore() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping: git not available on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        // No .gitignore committed at all.
+
+        let colors = Colors::new(false);
+        run_implicit_init(Some(dir.path()), &colors).unwrap();
+
+        // No pre-existing tracked file to protect, so a fresh .gitignore with
+        // the managed block is written exactly like an explicit `init`.
+        let gitignore = read_gitignore(dir.path());
+        assert!(gitignore.contains(GITIGNORE_BEGIN));
+        assert!(gitignore.contains(".shatter/seeds/"));
+    }
+
+    #[test]
+    fn run_implicit_init_still_updates_an_untracked_gitignore() {
+        // No git repo at all: nothing is "tracked", so the untracked
+        // .gitignore in a bare directory is still synced as before.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+
+        let colors = Colors::new(false);
+        run_implicit_init(Some(dir.path()), &colors).unwrap();
+
+        let gitignore = read_gitignore(dir.path());
+        assert!(gitignore.contains("node_modules/"));
+        assert!(gitignore.contains(GITIGNORE_BEGIN));
+    }
+
+    #[test]
+    fn run_init_explicit_still_refreshes_a_tracked_gitignore() {
+        // The explicit `shatter init` entry point (run_init, not
+        // run_implicit_init) must keep writing exactly as before — only the
+        // implicit path skips tracked files.
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping: git not available on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+        git(dir.path(), &["add", ".gitignore"]);
+        git(dir.path(), &["commit", "-q", "-m", "track gitignore"]);
+
+        let colors = Colors::new(false);
+        run_init(Some(dir.path()), &colors).unwrap();
+
+        let gitignore = read_gitignore(dir.path());
+        assert!(
+            gitignore.contains(GITIGNORE_BEGIN),
+            "explicit `shatter init` must still refresh a tracked .gitignore"
+        );
     }
 }
