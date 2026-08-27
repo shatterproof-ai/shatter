@@ -39,11 +39,27 @@ tasks:
 
   build:
     desc: Build everything (Rust + TS + Go)
-    deps: [core:build, cli:build, ts:build, go:build, rust-fe:build, rust-rt:build]
+    deps: [workspace-build, ts:build, go:build, rust-fe:build, rust-rt:build]
 
   build-rust:
     desc: Build all Rust crates
-    deps: [core:build, cli:build, rust-fe:build, rust-rt:build]
+    deps: [workspace-build, rust-fe:build, rust-rt:build]
+
+  workspace-build:
+    internal: true
+    sources:
+      - Cargo.toml
+      - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
+      - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
+      - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
+      - shatter-llm/**/*.rs
+    cmds:
+      - cargo build --workspace
 
   build-examples:
     desc: Build example targets
@@ -70,50 +86,72 @@ tasks:
 
   test:
     desc: Run all tests (all languages)
-    # Same frontends-built / core-cli-tests split as test-standard below:
-    # core:test/cli:test only start once ts:build/go:build/rust-fe:build
-    # finish, while frontends-built and the other :test tasks still run in
-    # parallel with each other.
+    # The root workspace test starts only after the frontends are built, so
+    # core integration tests can use their prebuilt binaries.
     deps: [frontends-built, ts:test, go:test, rust-fe:test, rust-rt:test]
     cmds:
-      - task: core-cli-tests
+      - task: workspace-test
 
   test-quick:
     desc: "Quick: cargo workspace tests only"
-    # Same frontends-built / core-cli-tests split as test-standard below:
-    # core:test/cli:test only start once ts:build/go:build/rust-fe:build
-    # finish. This is the tier CLAUDE.md documents for use during
-    # development, i.e. the one most likely to hit the race in a fresh
-    # checkout.
+    # Keep the frontend-build ordering used by the regular workspace test;
+    # this is the development tier documented in CLAUDE.md.
     deps: [frontends-built]
     cmds:
-      - task: core-cli-tests
+      - task: workspace-test
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
-    # core:test exercises shatter-core/tests/e2e_concolic.rs, which panics if
-    # the TS frontend isn't built yet (str-6y5w8). Two internal tasks instead
-    # of one so core:test/cli:test still run in parallel with each other
-    # (as they did before this fix) rather than serializing behind a single
-    # combined dep list, which would slow every test-standard run down.
-    # frontends-built and the clippy tasks don't depend on each other, so
-    # they still run in parallel too; core-cli-tests only starts once
-    # frontends-built finishes.
-    deps: [frontends-built, core:clippy, cli:clippy]
+    # The workspace test includes shatter-core's e2e_concolic suite, which
+    # needs the TypeScript frontend built first (str-6y5w8).
+    deps: [frontends-built, workspace-clippy]
     cmds:
-      - task: core-cli-tests
+      - task: workspace-test
+
+  workspace-test:
+    internal: true
+    sources:
+      - Cargo.toml
+      - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
+      - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
+      - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
+      - shatter-llm/**/*.rs
+      - scripts/examples_checkout.py
+    cmds:
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py)"
+        export SHATTER_EXAMPLES_DIR="$examples_root"
+        export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
+        cargo test --workspace
+
+  workspace-clippy:
+    internal: true
+    sources:
+      - Cargo.toml
+      - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
+      - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
+      - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
+      - shatter-llm/**/*.rs
+    cmds:
+      - cargo clippy --workspace -- -D warnings
 
   frontends-built:
     internal: true
     deps: [ts:build, go:build, rust-fe:build]
 
-  core-cli-tests:
-    internal: true
-    deps: [core:test, cli:test]
-
   lint:
     desc: Run all linters
-    deps: [core:clippy, cli:clippy, rust-fe:clippy, rust-rt:clippy, go:vet]
+    deps: [workspace-clippy, rust-fe:clippy, rust-rt:clippy, go:vet]
 
   check-fast:
     desc: "Fast quality gate (pre-push: clippy + tests + TS + Go; nested-build suites serialized)"
@@ -302,6 +340,7 @@ tasks:
   meta:
     desc: Run repository meta checks (workflow lint, Semgrep)
     sources:
+      - Taskfile.yml
       - .github/workflows/**/*.yml
       - .semgrep/**/*
       - install.sh
@@ -322,6 +361,7 @@ tasks:
       - demo/walkthrough.sh
       - demo/gauntlet.sh
       - scripts/test_demo_cache_modes.sh
+      - scripts/test_root_cargo_phases.py
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_drift_patrol
@@ -333,6 +373,7 @@ tasks:
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
       - bash scripts/test_setup_hooks.sh
       - bash scripts/test_demo_cache_modes.sh
+      - python3 -m unittest scripts.test_root_cargo_phases
       - cd shatter-go-tool && go test ./...
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
