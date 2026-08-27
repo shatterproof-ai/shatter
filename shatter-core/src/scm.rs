@@ -550,22 +550,18 @@ pub fn working_tree_dirty(root: &Path) -> Result<bool, ScmError> {
 ///
 /// Best-effort: returns `false` when `root` is not inside a git repo, git is
 /// unavailable, or the check otherwise fails to run. `false` is the safe
-/// default for callers deciding whether a write is safe to perform — "not a
-/// repo" means there is no tracked-file risk to guard against, and "not
-/// tracked" is the permissive branch for a genuinely untracked path (str-w5jt9:
+/// default for the "not a repo" and "genuinely untracked" cases (str-w5jt9:
 /// used to keep implicit `init` from ever touching a tracked `.gitignore`).
+/// Note this is *not* a hard safety guarantee against every failure mode: a
+/// spurious/transient git error (e.g. the binary momentarily locked) on a
+/// path that IS actually tracked also resolves to `false` here, which lets
+/// the caller proceed to write as if the path were untracked — a narrow,
+/// best-effort residual gap consistent with how [`working_tree_dirty`] and
+/// `detect_provider` already fail open/closed on git errors elsewhere in
+/// this module, not a correctness contract this function can fully uphold.
 pub fn is_path_tracked(root: &Path, relative_path: &Path) -> bool {
     let path_str = relative_path.to_string_lossy();
-    Command::new("git")
-        .args(["ls-files", "--error-unmatch", "--", &path_str])
-        .current_dir(root)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    run_git(root, &["ls-files", "--error-unmatch", "--", &path_str]).is_ok()
 }
 
 /// Run a git command in the given directory and return stdout as a string.
