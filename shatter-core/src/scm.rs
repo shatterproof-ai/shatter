@@ -546,6 +546,28 @@ pub fn working_tree_dirty(root: &Path) -> Result<bool, ScmError> {
     Ok(!output.trim().is_empty())
 }
 
+/// Return whether `relative_path` (relative to `root`) is tracked in git.
+///
+/// Best-effort: returns `false` when `root` is not inside a git repo, git is
+/// unavailable, or the check otherwise fails to run. `false` is the safe
+/// default for callers deciding whether a write is safe to perform — "not a
+/// repo" means there is no tracked-file risk to guard against, and "not
+/// tracked" is the permissive branch for a genuinely untracked path (str-w5jt9:
+/// used to keep implicit `init` from ever touching a tracked `.gitignore`).
+pub fn is_path_tracked(root: &Path, relative_path: &Path) -> bool {
+    let path_str = relative_path.to_string_lossy();
+    Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--", &path_str])
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 /// Run a git command in the given directory and return stdout as a string.
 ///
 /// Always prepends `-c core.quotepath=false` so git never C-quotes
@@ -1408,5 +1430,46 @@ index 1111111..2222222 100644
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let result = validate_ref(root, "nonexistent-ref-abc123");
         assert!(result.is_err());
+    }
+
+    // --- is_path_tracked (str-w5jt9) ---
+
+    #[test]
+    fn is_path_tracked_true_for_a_committed_file() {
+        let dir = init_repo();
+        let repo = dir.path();
+        fs::write(repo.join("tracked.txt"), "hello").unwrap();
+        git_ok(repo, &["add", "tracked.txt"]);
+        git_ok(repo, &["commit", "-q", "-m", "add tracked.txt"]);
+
+        assert!(is_path_tracked(repo, Path::new("tracked.txt")));
+    }
+
+    #[test]
+    fn is_path_tracked_false_for_an_untracked_file() {
+        let dir = init_repo();
+        let repo = dir.path();
+        fs::write(repo.join("untracked.txt"), "hello").unwrap();
+        // Not `git add`-ed or committed.
+
+        assert!(!is_path_tracked(repo, Path::new("untracked.txt")));
+    }
+
+    #[test]
+    fn is_path_tracked_false_for_a_nonexistent_path() {
+        let dir = init_repo();
+        let repo = dir.path();
+
+        assert!(!is_path_tracked(repo, Path::new("does-not-exist.txt")));
+    }
+
+    #[test]
+    fn is_path_tracked_false_outside_a_git_repo() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        fs::write(dir.path().join("file.txt"), "hello").unwrap();
+
+        // No `git init` at all: not a repo, so nothing is "tracked" — the
+        // safe default for a caller deciding whether a write is permitted.
+        assert!(!is_path_tracked(dir.path(), Path::new("file.txt")));
     }
 }

@@ -35,13 +35,17 @@ fn clap_error_kind_label(kind: clap::error::ErrorKind) -> &'static str {
 }
 
 /// If `.shatter/` does not exist under `project_dir` (or the current directory),
-/// run `init` implicitly so first-time users get the config structure automatically.
+/// run `init` implicitly so first-time users get the config structure
+/// automatically. Uses `run_implicit_init` rather than `run_init` so this
+/// never appends to a `.gitignore` that's already tracked in git (str-w5jt9)
+/// — a plain `scan`/`explore`/`analyze` must not dirty a tracked file the
+/// user didn't ask to change.
 fn maybe_implicit_init(project_dir: Option<&std::path::Path>, colors: &crate::helpers::Colors) {
     let base = project_dir.unwrap_or_else(|| std::path::Path::new("."));
     let shatter_dir = base.join(".shatter");
     if !shatter_dir.exists() {
         eprintln!("No .shatter/ found — initializing project");
-        if let Err(e) = commands::init::run_init(project_dir, colors) {
+        if let Err(e) = commands::init::run_implicit_init(project_dir, colors) {
             eprintln!("Warning: implicit init failed: {e}");
         }
     }
