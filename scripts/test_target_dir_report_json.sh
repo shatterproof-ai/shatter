@@ -123,4 +123,47 @@ HUMAN_HEADER="$(head -n1 <<<"$HUMAN_OUTPUT")"
 [[ "$HUMAN_HEADER" == $'KIB\tSIZE\tTARGET_DIR' ]] \
     || fail "human-mode header must be unchanged when --json is not passed"
 
+# ── regression: a permission-denied subdirectory must degrade, not crash ───
+# find exits non-zero on an unreadable subtree; under `set -euo pipefail`
+# that must not abort the whole --json invocation (it must report a
+# best-effort partial size for the affected target instead).
+PERM_ROOT="$SCRATCH/perm-wt"
+PERM_STDERR_FILE="$SCRATCH/perm-wt-stderr"
+mkdir -p "$PERM_ROOT/target/readable" "$PERM_ROOT/target/locked"
+dd if=/dev/zero of="$PERM_ROOT/target/readable/a.bin" bs=1024 count=2 status=none
+dd if=/dev/zero of="$PERM_ROOT/target/locked/b.bin" bs=1024 count=4 status=none
+chmod 000 "$PERM_ROOT/target/locked"
+trap 'chmod 755 "$PERM_ROOT/target/locked" 2>/dev/null; rm -rf "$SCRATCH"' EXIT
+
+if PERM_OUTPUT="$("$SCRIPT" --json --worktree "$PERM_ROOT" 2>"$PERM_STDERR_FILE")"; then
+    PERM_EXIT=0
+else
+    PERM_EXIT=$?
+fi
+PERM_STDERR="$(cat "$PERM_STDERR_FILE")"
+chmod 755 "$PERM_ROOT/target/locked"
+
+[[ "$PERM_EXIT" -eq 0 ]] || fail "an unreadable subdirectory must not abort the --json invocation"
+jq -e . >/dev/null <<<"$PERM_OUTPUT" || fail "output with an unreadable subdirectory must still be valid JSON"
+[[ "$(jq -r '.worktrees[0].targets[] | select(.kind == "root target") | .bytes' <<<"$PERM_OUTPUT")" == "2048" ]] \
+    || fail "an unreadable subdirectory must not drop the readable sibling's bytes from the partial total"
+[[ "$PERM_STDERR" == *"warning:"* ]] \
+    || fail "an unreadable subdirectory must produce a warning, not silent data loss"
+
+# ── regression: a target's path must be resolved, not the raw --worktree arg ─
+# The worktree-level `path` is a realpath; every target's `path` must be
+# derived from that same resolved base, not the literal (possibly relative
+# or symlinked) --worktree argument. Run from inside BASE_REPO (a real git
+# repo) rather than SCRATCH so the script's own `git worktree list` call
+# succeeds cleanly instead of just degrading on a "not a git repository" error.
+REL_ROOT="$BASE_REPO/rel-wt"
+mkdir -p "$REL_ROOT/target"
+dd if=/dev/zero of="$REL_ROOT/target/a.bin" bs=1024 count=1 status=none
+REL_OUTPUT="$(cd "$BASE_REPO" && "$SCRIPT" --json --worktree "rel-wt")"
+WT_PATH="$(jq -r '.worktrees[0].path' <<<"$REL_OUTPUT")"
+TARGET_PATH="$(jq -r '.worktrees[0].targets[] | select(.kind == "root target") | .path' <<<"$REL_OUTPUT")"
+[[ "$WT_PATH" == /* ]] || fail "worktree path must be resolved to an absolute path"
+[[ "$TARGET_PATH" == "$WT_PATH/target" ]] \
+    || fail "target path must be derived from the resolved worktree path, got worktree=$WT_PATH target=$TARGET_PATH"
+
 echo "[ok] target-dir-report --json produces the v1 schema with exact byte counts"

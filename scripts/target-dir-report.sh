@@ -14,6 +14,46 @@ TARGET_KIND_LABELS=("root target" "shatter-rust target" "runtime target")
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BEADS_JSONL="${TARGET_DIR_REPORT_BEADS_JSONL:-$REPO_ROOT/.beads/issues.jsonl}"
 
+# Resolve the real (symlink-free, absolute) path of a worktree, falling
+# back to the literal argument when the directory no longer exists.
+real_path() {
+    local raw="$1"
+    (cd "$raw" 2>/dev/null && pwd -P) || printf '%s\n' "$raw"
+}
+
+# Parses `git worktree list --porcelain` exactly once per run (memoized via
+# PORCELAIN_PARSED), regardless of how many call sites need it: the default
+# (no --worktree) worktree list, and --json mode's branch/primary metadata,
+# both draw from the same single subprocess call instead of one each.
+declare -A PORCELAIN_BRANCH
+PRIMARY_REAL_PATH=""
+DISCOVERED_WORKTREES=()
+PORCELAIN_PARSED=false
+parse_porcelain_once() {
+    [[ "$PORCELAIN_PARSED" == true ]] && return 0
+    PORCELAIN_PARSED=true
+    local line cur_path="" cur_branch="" real seen_primary=false
+    while IFS= read -r line; do
+        if [[ "$line" == "worktree "* ]]; then
+            cur_path="${line#worktree }"
+            cur_branch=""
+            DISCOVERED_WORKTREES+=("$cur_path")
+        elif [[ "$line" == "branch "* ]]; then
+            cur_branch="${line#branch refs/heads/}"
+        elif [[ -z "$line" ]]; then
+            if [[ -n "$cur_path" ]]; then
+                real="$(real_path "$cur_path")"
+                PORCELAIN_BRANCH["$real"]="$cur_branch"
+                if [[ "$seen_primary" == false ]]; then
+                    PRIMARY_REAL_PATH="$real"
+                    seen_primary=true
+                fi
+            fi
+            cur_path=""
+        fi
+    done < <(git worktree list --porcelain; echo)
+}
+
 WORKTREES=()
 JSON_MODE=false
 while [[ "$#" -gt 0 ]]; do
@@ -38,11 +78,8 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 if [[ "${#WORKTREES[@]}" -eq 0 ]]; then
-    while IFS= read -r LINE; do
-        if [[ "$LINE" == "worktree "* ]]; then
-            WORKTREES+=("${LINE#worktree }")
-        fi
-    done < <(git worktree list --porcelain)
+    parse_porcelain_once
+    WORKTREES=("${DISCOVERED_WORKTREES[@]}")
 fi
 
 if [[ "$JSON_MODE" == false ]]; then
@@ -75,16 +112,19 @@ fi
 # hardlinked file contributes once per directory entry that names it, not
 # deduplicated by inode). `find` without -L uses lstat for its type test,
 # so -type f already excludes symlinks and never resolves them.
+#
+# `find` exits non-zero (with pipefail propagating it here) when it hits an
+# unreadable subdirectory, even with stderr silenced; GNU find still finishes
+# traversing every readable sibling first, so `sum` holds a real best-effort
+# total. Report that instead of aborting the whole run, mirroring how human
+# mode degrades (lines above) rather than tripping `set -e`.
 byte_count() {
     local dir="$1"
-    find "$dir" -type f -printf '%s\n' 2>/dev/null | awk '{sum += $1} END {print sum + 0}'
-}
-
-# Resolve the real (symlink-free, absolute) path of a worktree, falling
-# back to the literal argument when the directory no longer exists.
-real_path() {
-    local raw="$1"
-    (cd "$raw" 2>/dev/null && pwd -P) || printf '%s\n' "$raw"
+    local sum
+    if ! sum="$(find "$dir" -type f -printf '%s\n' 2>/dev/null | awk '{sum += $1} END {print sum + 0}')"; then
+        echo "warning: could not fully measure $dir (permission denied on a subdirectory?); reporting partial size" >&2
+    fi
+    printf '%s\n' "${sum:-0}"
 }
 
 # Beads issue id embedded at the start of a branch name (str-xxxx or
@@ -110,29 +150,8 @@ issue_status_of_id() {
 
 # Authoritative worktree/branch/primary metadata from git itself, keyed by
 # real path. The first worktree git reports is always the primary one.
-declare -A PORCELAIN_BRANCH
-PRIMARY_REAL_PATH=""
-CUR_PATH=""
-CUR_BRANCH=""
-SEEN_PRIMARY=false
-while IFS= read -r LINE; do
-    if [[ "$LINE" == "worktree "* ]]; then
-        CUR_PATH="${LINE#worktree }"
-        CUR_BRANCH=""
-    elif [[ "$LINE" == "branch "* ]]; then
-        CUR_BRANCH="${LINE#branch refs/heads/}"
-    elif [[ -z "$LINE" ]]; then
-        if [[ -n "$CUR_PATH" ]]; then
-            REAL="$(real_path "$CUR_PATH")"
-            PORCELAIN_BRANCH["$REAL"]="$CUR_BRANCH"
-            if [[ "$SEEN_PRIMARY" == false ]]; then
-                PRIMARY_REAL_PATH="$REAL"
-                SEEN_PRIMARY=true
-            fi
-        fi
-        CUR_PATH=""
-    fi
-done < <(git worktree list --porcelain; echo)
+# No-op if the default-discovery path above already parsed it.
+parse_porcelain_once
 
 PWD_REAL="$(pwd -P)"
 
@@ -159,7 +178,7 @@ for WORKTREE in "${WORKTREES[@]}"; do
     for I in "${!TARGET_KINDS[@]}"; do
         RELATIVE="${TARGET_KINDS[$I]}"
         KIND="${TARGET_KIND_LABELS[$I]}"
-        TARGET_DIR="$WORKTREE/$RELATIVE"
+        TARGET_DIR="$REAL/$RELATIVE"
         if [[ -d "$TARGET_DIR" ]]; then
             EXISTS=true
             BYTES="$(byte_count "$TARGET_DIR")"
