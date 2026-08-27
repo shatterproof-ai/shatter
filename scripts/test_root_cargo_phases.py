@@ -47,24 +47,48 @@ class RootCargoPhaseTests(unittest.TestCase):
                 self.assertEqual(self._logged_argv(log), [argv])
 
                 llm_source = fixture / "shatter-llm" / "src" / "lib.rs"
-                llm_source.touch()
+                # go-task fingerprints source content, so a touch writes a
+                # harmless marker rather than relying on mtime granularity.
+                llm_source.write_text(f"// touch invalidation for {task}\n")
                 self._run_task(fixture, environment, task)
                 self.assertEqual(self._logged_argv(log), [argv, argv])
                 log.unlink()
 
+                llm_source.write_text(f"// LLM-only failure fixture for {task}\n")
+                (fixture / ".llm-only-failure").touch()
+                failed = self._run_task(
+                    fixture,
+                    environment,
+                    task,
+                    check=False,
+                    force=True,
+                )
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertEqual(self._logged_argv(log), [argv])
+                log.unlink()
+                (fixture / ".llm-only-failure").unlink()
+
     @staticmethod
-    def _run_task(fixture: Path, environment: dict[str, str], task: str) -> None:
+    def _run_task(
+        fixture: Path,
+        environment: dict[str, str],
+        task: str,
+        *,
+        check: bool = True,
+        force: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
         completed = subprocess.run(
-            ["task", task],
+            ["task", *( ["--force"] if force else [] ), task],
             cwd=fixture,
             env=environment,
             text=True,
             capture_output=True,
         )
-        if completed.returncode:
+        if check and completed.returncode:
             raise AssertionError(
                 f"task {task} failed:\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
             )
+        return completed
 
     @staticmethod
     def _logged_argv(log: Path) -> list[list[str]]:
@@ -78,6 +102,10 @@ class RootCargoPhaseTests(unittest.TestCase):
             destination = fixture / path
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.touch()
+
+        examples_checkout = fixture / "scripts" / "examples_checkout.py"
+        examples_checkout.parent.mkdir()
+        examples_checkout.write_text("print('/tmp')\n")
 
         for directory in (
             "shatter-core",
@@ -93,7 +121,13 @@ class RootCargoPhaseTests(unittest.TestCase):
 
         cargo = fixture / "bin" / "cargo"
         cargo.parent.mkdir()
-        cargo.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" | tr ' ' '\\037' >> \"$CARGO_LOG\"\n")
+        cargo.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" | tr ' ' '\\037' >> \"$CARGO_LOG\"\n"
+            "if [ -f .llm-only-failure ] && [ \"$2\" = \"--workspace\" ]; then\n"
+            "  exit 42\n"
+            "fi\n"
+        )
         cargo.chmod(0o755)
 
 
