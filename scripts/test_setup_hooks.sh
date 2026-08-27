@@ -197,3 +197,55 @@ assert_rc 0 "tag push with SHATTER_FULL_PUSH"
 assert_task_log "check" "tag push with SHATTER_FULL_PUSH"
 
 echo "[ok] setup-hooks pre-push template classifies ref updates and picks the strongest gate"
+
+### Pre-push input validation must run even when no gate can be invoked ###
+# Regression: exit-64 malformed-input validation must not live inside the
+# "Taskfile.yml exists and task is on PATH" guard — only the actual gate
+# invocation may be skipped when those preconditions are missing.
+
+run_prepush_env() {
+    # $1 = stdin content, $2 = PATH to use for the hook invocation
+    : > "$TASK_LOG"
+    set +e
+    printf '%s' "$1" | env PATH="$2" TASK_LOG="$TASK_LOG" \
+        bash -c 'cd "$0" && exec "$1"' "$TEST_REPO" "$PRE_PUSH_HOOK" \
+        > "$SCRATCH/prepush.out" 2>&1
+    RC=$?
+    set -e
+}
+
+# 15. malformed input still exits 64 when Taskfile.yml is absent
+mv "$TEST_REPO/Taskfile.yml" "$SCRATCH/Taskfile.yml.bak"
+run_prepush_env "refs/heads/feature ${SHA256_A} refs/heads/main ${SHA_B}
+" "$TASK_BIN_DIR:$PATH"
+assert_rc 64 "malformed sha length, Taskfile.yml absent"
+assert_task_log "" "malformed sha length, Taskfile.yml absent"
+
+# 16. valid input with Taskfile.yml absent: no crash, gate skipped, exit 0
+run_prepush_env "refs/heads/feature ${SHA_A} refs/heads/main ${SHA_B}
+" "$TASK_BIN_DIR:$PATH"
+assert_rc 0 "valid feature->main push, Taskfile.yml absent"
+assert_task_log "" "valid feature->main push, Taskfile.yml absent"
+if ! grep -q "skipping check gate" "$SCRATCH/prepush.out"; then
+    echo "[FAIL] expected skip message when Taskfile.yml absent" >&2
+    cat "$SCRATCH/prepush.out" >&2
+    exit 1
+fi
+mv "$SCRATCH/Taskfile.yml.bak" "$TEST_REPO/Taskfile.yml"
+
+# 17. malformed input still exits 64 when `task` is missing from PATH
+run_prepush_env "refs/heads/feature ${NONHEX40} refs/heads/main ${SHA_B}
+" "/usr/bin:/bin"
+assert_rc 64 "malformed non-hex sha, task missing from PATH"
+
+# 18. valid input with `task` missing from PATH: no crash, gate skipped, exit 0
+run_prepush_env "refs/heads/feature ${SHA_A} refs/heads/main ${SHA_B}
+" "/usr/bin:/bin"
+assert_rc 0 "valid feature->main push, task missing from PATH"
+if ! grep -q "skipping check gate" "$SCRATCH/prepush.out"; then
+    echo "[FAIL] expected skip message when task missing from PATH" >&2
+    cat "$SCRATCH/prepush.out" >&2
+    exit 1
+fi
+
+echo "[ok] setup-hooks pre-push malformed-input validation runs even without Taskfile.yml or task on PATH"

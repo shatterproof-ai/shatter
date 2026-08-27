@@ -144,78 +144,80 @@ fi'
 #   tags / other non-head refs, and any deletion (all-zero local sha) -> no gate
 #   empty/blank stdin -> check-fast (conservative fallback)
 #   malformed input (wrong field count, non-hex/wrong-length sha) -> exit 64
+# Input validation and gate classification always run, independent of
+# whether Taskfile.yml/task are available — only the actual gate
+# invocation is skipped when those preconditions are missing.
 # Set SHATTER_FULL_PUSH=1 to force the full suite on any push.
-PRE_PUSH_BODY='if [ -f "Taskfile.yml" ] && command -v task >/dev/null 2>&1; then
-  shatter_is_sha1() {
-    sha="$1"
-    if [ "${#sha}" -ne 40 ]; then
-      return 1
-    fi
-    case "${sha}" in
-      *[!0-9a-f]*) return 1 ;;
-    esac
-    return 0
-  }
+PRE_PUSH_BODY='shatter_is_sha1() {
+  sha="$1"
+  if [ "${#sha}" -ne 40 ]; then
+    return 1
+  fi
+  case "${sha}" in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  return 0
+}
 
-  SHATTER_ZERO_SHA="0000000000000000000000000000000000000000"
-  SHATTER_GATE_RANK=0
-  SHATTER_LINE_COUNT=0
+SHATTER_ZERO_SHA="0000000000000000000000000000000000000000"
+SHATTER_GATE_RANK=0
+SHATTER_LINE_COUNT=0
 
-  while IFS= read -r shatter_line || [ -n "${shatter_line}" ]; do
-    [ -z "${shatter_line}" ] && continue
-    SHATTER_LINE_COUNT=$((SHATTER_LINE_COUNT + 1))
+while IFS= read -r shatter_line || [ -n "${shatter_line}" ]; do
+  [ -z "${shatter_line}" ] && continue
+  SHATTER_LINE_COUNT=$((SHATTER_LINE_COUNT + 1))
 
-    set -f
-    # shellcheck disable=SC2086
-    set -- ${shatter_line}
-    set +f
-    if [ "$#" -ne 4 ]; then
-      echo "[shatter] malformed pre-push input: expected 4 fields, got $#" >&2
-      exit 64
-    fi
-    shatter_local_ref="$1"
-    shatter_local_sha="$2"
-    shatter_remote_ref="$3"
-    shatter_remote_sha="$4"
+  set -f
+  # shellcheck disable=SC2086
+  set -- ${shatter_line}
+  set +f
+  if [ "$#" -ne 4 ]; then
+    echo "[shatter] malformed pre-push input: expected 4 fields, got $#" >&2
+    exit 64
+  fi
+  shatter_local_sha="$2"
+  shatter_remote_ref="$3"
+  shatter_remote_sha="$4"
 
-    if ! shatter_is_sha1 "${shatter_local_sha}" || ! shatter_is_sha1 "${shatter_remote_sha}"; then
-      echo "[shatter] malformed pre-push input: non-hex or wrong-length SHA" >&2
-      exit 64
-    fi
-
-    if [ "${shatter_local_sha}" = "${SHATTER_ZERO_SHA}" ]; then
-      continue # deletion: contributes no gate requirement
-    fi
-
-    case "${shatter_remote_ref}" in
-      refs/heads/main|refs/heads/master)
-        [ "${SHATTER_GATE_RANK}" -lt 2 ] && SHATTER_GATE_RANK=2
-        ;;
-      refs/heads/*)
-        [ "${SHATTER_GATE_RANK}" -lt 1 ] && SHATTER_GATE_RANK=1
-        ;;
-      *) : ;; # tags / other non-head refs: no gate
-    esac
-  done
-
-  if [ "${SHATTER_FULL_PUSH:-0}" = "1" ]; then
-    PUSH_TASK="check"
-  elif [ "${SHATTER_LINE_COUNT}" -eq 0 ]; then
-    PUSH_TASK="check-fast"
-  else
-    case "${SHATTER_GATE_RANK}" in
-      2) PUSH_TASK="check" ;;
-      1) PUSH_TASK="check-fast" ;;
-      *) PUSH_TASK="" ;;
-    esac
+  if ! shatter_is_sha1 "${shatter_local_sha}" || ! shatter_is_sha1 "${shatter_remote_sha}"; then
+    echo "[shatter] malformed pre-push input: non-hex or wrong-length SHA" >&2
+    exit 64
   fi
 
-  if [ -n "${PUSH_TASK}" ]; then
-    echo "[shatter] Running task ${PUSH_TASK}..."
-    task "${PUSH_TASK}" 2>&1 || exit 1
-  else
-    echo "[shatter] No product gate required for this push."
+  if [ "${shatter_local_sha}" = "${SHATTER_ZERO_SHA}" ]; then
+    continue # deletion: contributes no gate requirement
   fi
+
+  case "${shatter_remote_ref}" in
+    refs/heads/main|refs/heads/master)
+      [ "${SHATTER_GATE_RANK}" -lt 2 ] && SHATTER_GATE_RANK=2
+      ;;
+    refs/heads/*)
+      [ "${SHATTER_GATE_RANK}" -lt 1 ] && SHATTER_GATE_RANK=1
+      ;;
+    *) : ;; # tags / other non-head refs: no gate
+  esac
+done
+
+if [ "${SHATTER_FULL_PUSH:-0}" = "1" ]; then
+  PUSH_TASK="check"
+elif [ "${SHATTER_LINE_COUNT}" -eq 0 ]; then
+  PUSH_TASK="check-fast"
+else
+  case "${SHATTER_GATE_RANK}" in
+    2) PUSH_TASK="check" ;;
+    1) PUSH_TASK="check-fast" ;;
+    *) PUSH_TASK="" ;;
+  esac
+fi
+
+if [ -z "${PUSH_TASK}" ]; then
+  echo "[shatter] No product gate required for this push."
+elif [ -f "Taskfile.yml" ] && command -v task >/dev/null 2>&1; then
+  echo "[shatter] Running task ${PUSH_TASK}..."
+  task "${PUSH_TASK}" 2>&1 || exit 1
+else
+  echo "[shatter] Taskfile.yml or task command unavailable; skipping ${PUSH_TASK} gate."
 fi'
 
 MISSING=0
