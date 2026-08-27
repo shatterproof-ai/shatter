@@ -679,7 +679,15 @@ pub(crate) async fn run_scan(
     // to avoid emitting stale plans; full scans use the same run-start
     // deadline so discovery/analysis time is charged before the remaining
     // budget is handed to the scan orchestrator.
-    let registry = {
+    // str-z160s: a per-file frontend error no longer aborts the whole batch
+    // -- batch_analyze returns the functions from every file that DID
+    // analyze successfully, plus a separate list of per-file failures
+    // (`analyze_failures`), reported below and folded into the opt-in
+    // --fail-on-failures / --failure-threshold exit-code policy.
+    let batch_analyze::BatchAnalyzeOutcome {
+        registry,
+        failures: analyze_failures,
+    } = {
         let fut = batch_analyze::batch_analyze(
             &mut frontends,
             &analyzable_files,
@@ -711,6 +719,16 @@ pub(crate) async fn run_scan(
                 .map_err(|e| format!("batch analyze failed: {e}"))?
         }
     };
+
+    if !analyze_failures.is_empty() {
+        log::error!(
+            "{} file(s) failed to analyze (excluded from this scan; the rest of the batch still ran):",
+            analyze_failures.len()
+        );
+        for f in &analyze_failures {
+            log::error!("  {}: {}", f.file, f.source);
+        }
+    }
 
     log::debug!(
         "Found {} function(s) across {} file(s)",
@@ -1527,7 +1545,15 @@ pub(crate) async fn run_scan(
             // want CI to fail on any failure pass `--fail-on-failures` or
             // `--failure-threshold`. The summary above already names the
             // completed/failed/unsupported counts.
-            if let Some(reason) = result.evaluate_failure_policy(failure_policy) {
+            //
+            // str-z160s: a file that failed to analyze never produced any
+            // function-level attempts for `counts()` to count, so it is
+            // folded in via `extra_failures` -- otherwise a broken/slow file
+            // could silently escape --fail-on-failures / --failure-threshold
+            // entirely.
+            if let Some(reason) =
+                result.evaluate_failure_policy(failure_policy, analyze_failures.len())
+            {
                 return Err(Box::new(GateFailure(format!("scan failed: {reason}"))));
             }
         }

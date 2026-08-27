@@ -346,7 +346,16 @@ pub(crate) async fn run_run(
     log::debug!("Analyzing {} file(s)...", analyzable_files.len());
     // `run` does not use the analysis cache, so analyzer versions are
     // irrelevant here — pass an empty map (str-2cihu).
-    let registry = batch_analyze::batch_analyze(
+    //
+    // str-z160s: a per-file frontend error no longer aborts the whole batch;
+    // the remaining files still get analyzed. Print the per-file failures
+    // and continue, same as scan (`run` has no equivalent
+    // --fail-on-failures gate of its own for analyze failures -- its
+    // existing coverage-budget gates are unaffected).
+    let batch_analyze::BatchAnalyzeOutcome {
+        registry,
+        failures: analyze_failures,
+    } = batch_analyze::batch_analyze(
         &mut frontends,
         &analyzable_files,
         None,
@@ -355,6 +364,16 @@ pub(crate) async fn run_run(
     )
     .await
     .map_err(|e| format!("batch analyze failed: {e}"))?;
+
+    if !analyze_failures.is_empty() {
+        log::warn!(
+            "{} file(s) failed to analyze (excluded from this run; the rest of the batch still ran):",
+            analyze_failures.len()
+        );
+        for f in &analyze_failures {
+            log::warn!("  {}: {}", f.file, f.source);
+        }
+    }
 
     let total_functions = registry.len();
     let total_branches: usize = registry.entries().iter().map(|e| e.branch_count).sum();

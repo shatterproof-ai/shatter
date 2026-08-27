@@ -2021,27 +2021,38 @@ impl ParallelScanResult {
     /// Apply a [`ScanFailurePolicy`] to the result and return the reason the
     /// scan should exit nonzero, or `None` if the policy is satisfied.
     ///
+    /// `extra_failures` folds in failures that never produced a
+    /// function-level attempt for [`Self::counts`] to count — e.g. a whole
+    /// file that failed to analyze (str-z160s) — into both the numerator and
+    /// the attempted denominator, so such failures can't silently escape the
+    /// policy.
+    ///
     /// The default policy is permissive (returns `None` for partial failures)
     /// to preserve backwards-compatible exit codes; CI/workflows opt in via
     /// `--fail-on-failures` or `--failure-threshold` (str-izhn).
     #[must_use]
-    pub fn evaluate_failure_policy(&self, policy: ScanFailurePolicy) -> Option<String> {
+    pub fn evaluate_failure_policy(
+        &self,
+        policy: ScanFailurePolicy,
+        extra_failures: usize,
+    ) -> Option<String> {
         let counts = self.counts();
-        let attempted = counts.completed + counts.failed;
-        if policy.fail_on_failures && counts.failed > 0 {
+        let failed = counts.failed + extra_failures;
+        let attempted = counts.completed + failed;
+        if policy.fail_on_failures && failed > 0 {
             return Some(format!(
                 "{} of {} attempted function(s) failed (--fail-on-failures)",
-                counts.failed, attempted,
+                failed, attempted,
             ));
         }
         if let Some(threshold) = policy.failure_threshold_percent
             && attempted > 0
         {
-            let pct = (counts.failed as f64 / attempted as f64) * 100.0;
+            let pct = (failed as f64 / attempted as f64) * 100.0;
             if pct > threshold as f64 {
                 return Some(format!(
                     "failure rate {:.1}% ({} of {} attempted) exceeds --failure-threshold {}%",
-                    pct, counts.failed, attempted, threshold,
+                    pct, failed, attempted, threshold,
                 ));
             }
         }
@@ -13659,7 +13670,7 @@ defaults:
         };
         assert!(
             result
-                .evaluate_failure_policy(ScanFailurePolicy::default())
+                .evaluate_failure_policy(ScanFailurePolicy::default(), 0)
                 .is_none(),
             "default permissive policy must not flag partial failures",
         );
@@ -13680,10 +13691,13 @@ defaults:
             sampling: None,
             source_files: vec![],
         };
-        let reason = result.evaluate_failure_policy(ScanFailurePolicy {
-            fail_on_failures: true,
-            failure_threshold_percent: None,
-        });
+        let reason = result.evaluate_failure_policy(
+            ScanFailurePolicy {
+                fail_on_failures: true,
+                failure_threshold_percent: None,
+            },
+            0,
+        );
         assert!(
             reason.as_deref().is_some_and(|r| r.contains("1 of 2")),
             "fail-on-failures must name the failed/attempted counts; got: {reason:?}",
@@ -13712,10 +13726,13 @@ defaults:
         };
         assert!(
             result
-                .evaluate_failure_policy(ScanFailurePolicy {
-                    fail_on_failures: false,
-                    failure_threshold_percent: Some(50),
-                })
+                .evaluate_failure_policy(
+                    ScanFailurePolicy {
+                        fail_on_failures: false,
+                        failure_threshold_percent: Some(50),
+                    },
+                    0,
+                )
                 .is_none(),
             "25% failure rate must satisfy a 50% threshold",
         );
@@ -13749,15 +13766,78 @@ defaults:
             sampling: None,
             source_files: vec![],
         };
-        let reason = result.evaluate_failure_policy(ScanFailurePolicy {
-            fail_on_failures: false,
-            failure_threshold_percent: Some(50),
-        });
+        let reason = result.evaluate_failure_policy(
+            ScanFailurePolicy {
+                fail_on_failures: false,
+                failure_threshold_percent: Some(50),
+            },
+            0,
+        );
         assert!(
             reason
                 .as_deref()
                 .is_some_and(|r| r.contains("75.0%") && r.contains("--failure-threshold 50")),
             "threshold breach must name the rate and limit; got: {reason:?}",
+        );
+    }
+
+    #[test]
+    fn evaluate_failure_policy_extra_failures_fold_into_fail_on_failures() {
+        // No function-level failures at all -- extra_failures alone must
+        // still trip --fail-on-failures (str-z160s: a file that failed to
+        // analyze never produces a function-level attempt).
+        let result = ParallelScanResult {
+            function_results: vec![make_function_result("ok", vec![])],
+            test_order: vec!["ok".into()],
+            skipped: vec![],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        let reason = result.evaluate_failure_policy(
+            ScanFailurePolicy {
+                fail_on_failures: true,
+                failure_threshold_percent: None,
+            },
+            2,
+        );
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("2 of 3")),
+            "extra_failures must count toward both failed and attempted; got: {reason:?}",
+        );
+    }
+
+    #[test]
+    fn evaluate_failure_policy_extra_failures_fold_into_threshold() {
+        // 1 function failure + 2 extra failures out of 4 attempted = 75%,
+        // threshold 50 should trip even though the function-only rate
+        // (1 of 2 = 50%) would not.
+        let result = ParallelScanResult {
+            function_results: vec![make_function_result("ok", vec![])],
+            test_order: vec!["ok".into(), "bad".into()],
+            skipped: vec![SkippedFunction {
+                function_name: "bad".into(),
+                reason: "panic".into(),
+                category: SkipCategory::Error,
+            }],
+            workers_used: 1,
+            workers_reaped: 0,
+            sampling: None,
+            source_files: vec![],
+        };
+        let reason = result.evaluate_failure_policy(
+            ScanFailurePolicy {
+                fail_on_failures: false,
+                failure_threshold_percent: Some(50),
+            },
+            2,
+        );
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|r| r.contains("75.0%") && r.contains("3 of 4")),
+            "extra_failures must shift the threshold percentage; got: {reason:?}",
         );
     }
 
