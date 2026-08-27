@@ -3306,6 +3306,69 @@ mod tests {
     }
 
     #[test]
+    fn extracts_tokio_select_branches() {
+        let f = analyze_fn(
+            r#"
+            async fn f(a: i32, b: i32) {
+                tokio::select! {
+                    _ = ready(a) => {},
+                    _ = ready(b) => {},
+                }
+            }
+            "#,
+            "f",
+        );
+        let select_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Select)
+            .collect();
+        assert_eq!(select_branches.len(), 2, "one branch per select! arm");
+        assert!(select_branches.iter().all(|b| b.condition.is_none()));
+    }
+
+    #[test]
+    fn extracts_select_biased_branches() {
+        let f = analyze_fn(
+            r#"
+            async fn f() {
+                futures::select_biased! {
+                    _ = a => {},
+                    _ = b => {},
+                    _ = c => {},
+                }
+            }
+            "#,
+            "f",
+        );
+        let select_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Select)
+            .collect();
+        assert_eq!(select_branches.len(), 3, "one branch per select_biased! arm");
+    }
+
+    #[test]
+    fn other_macros_do_not_emit_select_branches() {
+        let f = analyze_fn(
+            r#"
+            fn f(x: i32) {
+                println!("{}", x);
+                vec![x, x];
+            }
+            "#,
+            "f",
+        );
+        assert!(
+            f.branches
+                .iter()
+                .all(|b| b.branch_type != BranchType::Select),
+            "non-select! macros must not be mistaken for a select arm set"
+        );
+    }
+
+    #[test]
     fn extracts_try_operator_branch() {
         let f = analyze_fn(
             r#"
@@ -3406,6 +3469,47 @@ mod tests {
                 }),
                 right: Box::new(SymExpr::Const(ConstValue::Int(5))),
             }
+        );
+    }
+
+    #[test]
+    fn char_literal_builds_complex_const() {
+        let params: HashSet<String> = ["c".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("c == 'x'").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Param {
+                    name: "c".to_string(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Complex {
+                    kind: ComplexKind::Char,
+                    repr: Box::new(ConstValue::Int('x' as i64)),
+                })),
+            },
+            "a char literal must carry the ComplexKind::Char envelope, not a bare int"
+        );
+    }
+
+    #[test]
+    fn byte_string_literal_builds_undefined_const() {
+        let params: HashSet<String> = ["x".to_string()].into();
+        let expr: syn::Expr = syn::parse_str("x == b\"abc\"").expect("parse");
+        let sym = build_sym_expr(&expr, &params);
+        assert_eq!(
+            sym,
+            SymExpr::BinOp {
+                op: BinOpKind::Eq,
+                left: Box::new(SymExpr::Param {
+                    name: "x".to_string(),
+                    path: vec![],
+                }),
+                right: Box::new(SymExpr::Const(ConstValue::Undefined)),
+            },
+            "a byte-string literal has no representable value in the constant vocabulary"
         );
     }
 

@@ -979,6 +979,38 @@ mod tests {
     }
 
     #[test]
+    fn typeinfo_opaque_with_static_opacity_round_trips() {
+        round_trip(&TypeInfo::Opaque {
+            label: "dyn DataStore".to_string(),
+            static_opacity: Some(StaticOpacityReason::AbstractType),
+        });
+    }
+
+    #[test]
+    fn const_value_undefined_round_trips() {
+        round_trip(&ConstValue::Undefined);
+    }
+
+    #[test]
+    fn const_value_complex_round_trips() {
+        round_trip(&ConstValue::Complex {
+            kind: ComplexKind::Char,
+            repr: Box::new(ConstValue::Int('x' as i64)),
+        });
+    }
+
+    #[test]
+    fn branch_type_select_round_trips() {
+        round_trip(&BranchInfo {
+            id: 0,
+            line: 1,
+            condition_text: "a = ready(x)".to_string(),
+            condition: None,
+            branch_type: BranchType::Select,
+        });
+    }
+
+    #[test]
     fn opaque_in_function_analysis_json_deserializes() {
         // Verify TypeInfo::Opaque works when embedded in a FunctionAnalysis-shaped JSON,
         // parsed as a generic Value and then extracting the type field.
