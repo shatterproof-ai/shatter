@@ -50,6 +50,27 @@ pub enum ComplexKind {
     GoByte,
 }
 
+/// Reason a type was detected as opaque via static analysis.
+/// Matches `StaticOpacityReason` in shatter-core/src/types.rs.
+///
+/// The Rust analyzer emits `AbstractType` for trait objects (`dyn Trait`),
+/// Rust's direct analogue of an abstract class: the type has no constructor
+/// and no value of it can ever be synthesized. The remaining variants are
+/// declared for wire parity — see `shatter-rust/CLAUDE.md`'s Static Opacity
+/// Parity Contract for which of them the single-file Rust analyzer can prove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaticOpacityReason {
+    /// No public constructor and no exported create*/new*/open* factory function.
+    NoConstructor,
+    /// All constructors require an already-opaque argument.
+    TransitivelyOpaque,
+    /// Abstract class or private/protected constructor. Rust: `dyn Trait`.
+    AbstractType,
+    /// Interface or abstract class with no concrete implementors in scope.
+    NoImplementors,
+}
+
 /// Describes the type of a value, as reported by a language frontend.
 /// Matches `TypeInfo` in shatter-core/src/types.rs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,8 +115,24 @@ pub enum TypeInfo {
     },
     Opaque {
         label: String,
+        /// Reason the type was detected as opaque via static analysis, if
+        /// available. Absent for types detected via the runtime opaque-type
+        /// tables. The core's `medium_opacity` companion field is not emitted
+        /// by this frontend — see parity-matrix `medium-opacity-analyze-partial`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        static_opacity: Option<StaticOpacityReason>,
     },
     Unknown,
+}
+
+impl TypeInfo {
+    /// Build an `Opaque` type with no static-opacity evidence.
+    pub fn opaque(label: impl Into<String>) -> Self {
+        TypeInfo::Opaque {
+            label: label.into(),
+            static_opacity: None,
+        }
+    }
 }
 
 /// Binary operation kind for symbolic expressions.
@@ -142,6 +179,18 @@ pub enum ConstValue {
     Str(String),
     Bool(bool),
     Null,
+    /// No representable value. Rust has no `undefined` literal; the analyzer
+    /// emits this for literal kinds whose value the constant vocabulary cannot
+    /// carry (byte strings, C strings, verbatim tokens). The core solver treats
+    /// it exactly like `Null`.
+    Undefined,
+    /// Complex constant (e.g. a `char` literal in a comparison).
+    /// `repr` is the underlying value the solver reasons about
+    /// (codepoint for char, epoch millis for dates, digit string for bigint).
+    Complex {
+        kind: ComplexKind,
+        repr: Box<ConstValue>,
+    },
 }
 
 /// Symbolic expression tree for branch conditions.
@@ -190,6 +239,10 @@ pub enum BranchType {
     LogicalOr,
     While,
     For,
+    /// Multi-way wait over concurrent operations. Rust: the arms of a
+    /// `select!`-family macro (`tokio::select!`, `futures::select!`,
+    /// `crossbeam_channel::select!`), the analogue of Go's `select` statement.
+    Select,
 }
 
 /// Outcome of an individual condition within a compound decision.
@@ -791,16 +844,12 @@ mod tests {
 
     #[test]
     fn typeinfo_opaque_round_trips() {
-        round_trip(&TypeInfo::Opaque {
-            label: "net.Socket".to_string(),
-        });
+        round_trip(&TypeInfo::opaque("net.Socket"));
     }
 
     #[test]
     fn typeinfo_opaque_serializes_with_correct_kind() {
-        let ti = TypeInfo::Opaque {
-            label: "fs.FileHandle".to_string(),
-        };
+        let ti = TypeInfo::opaque("fs.FileHandle");
         let json: serde_json::Value = serde_json::to_value(&ti).expect("serialize");
         assert_eq!(json["kind"], "opaque");
         assert_eq!(json["label"], "fs.FileHandle");
@@ -809,18 +858,14 @@ mod tests {
     #[test]
     fn typeinfo_opaque_inside_array_round_trips() {
         round_trip(&TypeInfo::Array {
-            element: Box::new(TypeInfo::Opaque {
-                label: "stream.Readable".to_string(),
-            }),
+            element: Box::new(TypeInfo::opaque("stream.Readable")),
         });
     }
 
     #[test]
     fn typeinfo_opaque_inside_nullable_round_trips() {
         round_trip(&TypeInfo::Nullable {
-            inner: Box::new(TypeInfo::Opaque {
-                label: "channel".to_string(),
-            }),
+            inner: Box::new(TypeInfo::opaque("channel")),
         });
     }
 
@@ -830,9 +875,7 @@ mod tests {
             fields: vec![
                 (
                     "conn".into(),
-                    TypeInfo::Opaque {
-                        label: "pg.Client".to_string(),
-                    },
+                    TypeInfo::opaque("pg.Client"),
                 ),
                 ("name".into(), TypeInfo::Str),
             ],
@@ -943,9 +986,7 @@ mod tests {
         let param_type: TypeInfo = serde_json::from_str(json).expect("deserialize param type");
         assert_eq!(
             param_type,
-            TypeInfo::Opaque {
-                label: "stream.Readable".to_string(),
-            }
+            TypeInfo::opaque("stream.Readable")
         );
 
         // Nested inside an object field (simulating a return_type in analysis results)
@@ -955,9 +996,7 @@ mod tests {
             assert_eq!(fields.len(), 2);
             assert_eq!(
                 fields[0].1,
-                TypeInfo::Opaque {
-                    label: "pg.Client".to_string(),
-                }
+                TypeInfo::opaque("pg.Client")
             );
         } else {
             panic!("expected Object, got {:?}", nested);

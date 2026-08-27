@@ -23,13 +23,15 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use proc_macro2::{Spacing, TokenTree};
 use quote::ToTokens;
 use syn::spanned::Spanned;
 
 use crate::adapters::FileContext;
 use crate::protocol::{
     BinOpKind, BranchInfo, BranchType, ComplexKind, ConstValue, DependencyKind, ExternalDependency,
-    FunctionAnalysis, InvocationModel, LiteralValue, ParamInfo, SymExpr, TypeInfo, UnOpKind,
+    FunctionAnalysis, InvocationModel, LiteralValue, ParamInfo, StaticOpacityReason, SymExpr,
+    TypeInfo, UnOpKind,
 };
 use crate::timing::TimingCollector;
 
@@ -1231,8 +1233,13 @@ fn convert_type_inner(
                 })
                 .collect::<Vec<_>>()
                 .join(" + ");
+            // A trait object is Rust's abstract type: it has no constructor and
+            // no value of it can be synthesized, so record the structural
+            // evidence rather than leaving the core to infer opacity from the
+            // label alone (str-dcelm).
             TypeInfo::Opaque {
                 label: format!("dyn {label}"),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         }
         syn::Type::BareFn(_) => TypeInfo::Complex {
@@ -1406,7 +1413,7 @@ fn convert_type_path(
                 // Guard against self-referential / mutually-recursive structs,
                 // whose blast radius widens once cross-file types are resolved.
                 if !converting.insert(name.clone()) {
-                    return TypeInfo::Opaque { label: name };
+                    return TypeInfo::opaque(name);
                 }
                 let object = TypeInfo::Object {
                     fields: fields
@@ -1425,7 +1432,7 @@ fn convert_type_path(
             } else if let Some(def) = enums.get(&name) {
                 // Guard against recursive enums
                 if !converting.insert(name.clone()) {
-                    return TypeInfo::Opaque { label: name };
+                    return TypeInfo::opaque(name);
                 }
                 // str-2nfoe: for a fieldless enum whose serde-accepted values we
                 // can prove, emit a value domain (variant-name strings, or
@@ -1474,7 +1481,7 @@ fn convert_type_path(
                 // for synthesis (and `serde(flatten)` fields accept any object).
                 TypeInfo::Object { fields: Vec::new() }
             } else {
-                TypeInfo::Opaque { label: name }
+                TypeInfo::opaque(name)
             }
         }
     }
@@ -1629,8 +1636,79 @@ fn walk_stmt_for_branches(
                 }
             }
         }
-        syn::Stmt::Item(_) | syn::Stmt::Macro(_) => {}
+        syn::Stmt::Macro(stmt_macro) => {
+            push_select_branches(&stmt_macro.mac, branches, next_id);
+        }
+        syn::Stmt::Item(_) => {}
     }
+}
+
+/// Emits one `Select` branch per arm of a `select!`-family macro.
+///
+/// `tokio::select!`, `futures::select!`/`select_biased!`, and
+/// `crossbeam_channel::select!` are Rust's multi-way concurrent wait — the
+/// analogue of Go's `select` statement, which the Go frontend reports as
+/// `BranchType::Select`. Their arms are not parseable as `syn` expressions
+/// (`pattern = future => body` is not match syntax), so the arms are split off
+/// the raw token stream: top-level commas separate arms, and the `=>` inside an
+/// arm separates its guard from its body. Conditions stay `None` — an arm fires
+/// on future readiness, not on a symbolic predicate over parameters.
+fn push_select_branches(mac: &syn::Macro, branches: &mut Vec<BranchInfo>, next_id: &mut u32) {
+    let Some(name) = mac.path.segments.last().map(|s| s.ident.to_string()) else {
+        return;
+    };
+    if name != "select" && name != "select_biased" {
+        return;
+    }
+
+    for arm in split_top_level_commas(mac.tokens.clone()) {
+        let Some(arrow) = arm
+            .iter()
+            .position(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == '='
+                && p.spacing() == Spacing::Joint))
+            .filter(|i| {
+                matches!(arm.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '>')
+            })
+        else {
+            continue;
+        };
+        let guard = &arm[..arrow];
+        let Some(first) = guard.first() else {
+            continue;
+        };
+
+        branches.push(BranchInfo {
+            id: *next_id,
+            line: first.span().start().line as u32,
+            condition_text: guard
+                .iter()
+                .map(TokenTree::to_string)
+                .collect::<Vec<_>>()
+                .join(" "),
+            condition: None,
+            branch_type: BranchType::Select,
+        });
+        *next_id += 1;
+    }
+}
+
+/// Splits a token stream on commas at nesting depth zero. Delimited groups
+/// (`{}`, `()`, `[]`) arrive as single `TokenTree`s, so their inner commas are
+/// already invisible here.
+fn split_top_level_commas(tokens: proc_macro2::TokenStream) -> Vec<Vec<TokenTree>> {
+    let mut segments = Vec::new();
+    let mut current = Vec::new();
+    for tt in tokens {
+        if matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
+            segments.push(std::mem::take(&mut current));
+        } else {
+            current.push(tt);
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
 }
 
 fn walk_expr_for_branches(
@@ -1860,6 +1938,10 @@ fn walk_expr_for_branches(
 
         syn::Expr::Unsafe(expr_unsafe) => {
             walk_block_for_branches(&expr_unsafe.block, param_names, branches, next_id, false);
+        }
+
+        syn::Expr::Macro(expr_macro) => {
+            push_select_branches(&expr_macro.mac, branches, next_id);
         }
 
         _ => {}
@@ -2201,8 +2283,19 @@ fn convert_lit(lit: &syn::Lit) -> ConstValue {
         syn::Lit::Float(lf) => ConstValue::Float(lf.base10_parse::<f64>().unwrap_or(0.0)),
         syn::Lit::Str(ls) => ConstValue::Str(ls.value()),
         syn::Lit::Bool(lb) => ConstValue::Bool(lb.value),
-        syn::Lit::Char(lc) => ConstValue::Int(lc.value() as i64),
-        _ => ConstValue::Null,
+        // A char literal is a codepoint, not an integer. Carrying the
+        // ComplexKind::Char envelope keeps that distinction on the wire; the
+        // core solver unwraps `repr` and reasons about the same i64 it saw
+        // before (str-dcelm).
+        syn::Lit::Char(lc) => ConstValue::Complex {
+            kind: ComplexKind::Char,
+            repr: Box::new(ConstValue::Int(lc.value() as i64)),
+        },
+        syn::Lit::Byte(lb) => ConstValue::Int(lb.value() as i64),
+        // Byte strings, C strings, and verbatim tokens have no representation
+        // in the constant vocabulary. Rust has no `undefined`, so this is the
+        // "no representable value" signal rather than a genuine null.
+        _ => ConstValue::Undefined,
     }
 }
 
@@ -2923,9 +3016,7 @@ mod tests {
         let f = analyze_fn("fn f(x: MyStruct) {}", "f");
         assert_eq!(
             f.params[0].typ,
-            TypeInfo::Opaque {
-                label: "MyStruct".to_string()
-            }
+            TypeInfo::opaque("MyStruct")
         );
     }
 
@@ -2997,9 +3088,7 @@ mod tests {
         let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
         assert_eq!(
             fns[0].params[0].typ,
-            TypeInfo::Opaque {
-                label: "Widget".to_string()
-            },
+            TypeInfo::opaque("Widget"),
             "ambiguous cross-file bare name must stay Opaque"
         );
     }
@@ -3019,9 +3108,7 @@ mod tests {
         let fns = analyze_file(&logic, Some("describe")).expect("analysis should succeed");
         assert_eq!(
             fns[0].params[0].typ,
-            TypeInfo::Opaque {
-                label: "Widget".to_string()
-            },
+            TypeInfo::opaque("Widget"),
             "struct/enum cross-kind name collision must stay Opaque"
         );
     }
@@ -3840,9 +3927,7 @@ mod tests {
         let f = analyze_fn("fn f(x: ExternalEnum) {}", "f");
         assert_eq!(
             f.params[0].typ,
-            TypeInfo::Opaque {
-                label: "ExternalEnum".to_string()
-            }
+            TypeInfo::opaque("ExternalEnum")
         );
     }
 
@@ -3889,9 +3974,7 @@ mod tests {
         let f = analyze_fn("fn f(x: MyStruct) {}", "f");
         assert_eq!(
             f.params[0].typ,
-            TypeInfo::Opaque {
-                label: "MyStruct".to_string()
-            }
+            TypeInfo::opaque("MyStruct")
         );
     }
 
@@ -4128,7 +4211,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn DataStore".to_string()
+                label: "dyn DataStore".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
@@ -4142,7 +4226,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn W".to_string()
+                label: "dyn W".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
@@ -4153,7 +4238,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn std::fmt::Debug + Send".to_string()
+                label: "dyn std::fmt::Debug + Send".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
@@ -4171,7 +4257,8 @@ mod tests {
         assert_eq!(
             f.params[0].typ,
             TypeInfo::Opaque {
-                label: "dyn Handler".to_string()
+                label: "dyn Handler".to_string(),
+                static_opacity: Some(StaticOpacityReason::AbstractType),
             }
         );
     }
