@@ -986,10 +986,7 @@ async fn fetch_planner_extra_seeds(
     // `--planner go`. `--planner` remains accepted (and still forces
     // consultation) for explicit selection and backward compatibility.
     if explore_config.planner.is_none()
-        && !task_frontend
-            .capabilities()
-            .iter()
-            .any(|cap| cap == "get_invocation_plan")
+        && !shatter_core::planner_consumer::frontend_supports_invocation_plan(task_frontend)
     {
         return (Vec::new(), None);
     }

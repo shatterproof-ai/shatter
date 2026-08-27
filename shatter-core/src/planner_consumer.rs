@@ -68,6 +68,23 @@ pub enum PlannerConsumerError {
     Frontend(#[from] FrontendError),
 }
 
+/// Whether the connected frontend advertises the `get_invocation_plan`
+/// capability, i.e. whether consulting its invocation planner is worth
+/// attempting at all.
+///
+/// Single source of truth for this gate: `fetch_planner_seeds` guards itself
+/// with it, the `explore` CLI uses it for its auto-detect fast path, and the
+/// scan orchestrator uses it before priming the analysis cache. Keeping the
+/// predicate in one place means a capability rename cannot drift between the
+/// parallel explore / scan paths.
+#[must_use]
+pub fn frontend_supports_invocation_plan(frontend: &Frontend) -> bool {
+    frontend
+        .capabilities()
+        .iter()
+        .any(|cap| cap == "get_invocation_plan")
+}
+
 /// Result of one planner consultation.
 #[derive(Debug, Clone, Default)]
 pub struct PlannerSeedBundle {
@@ -96,11 +113,7 @@ pub async fn fetch_planner_seeds(
     target_id: &str,
     param_infos: &[ParamInfo],
 ) -> Result<PlannerSeedBundle, PlannerConsumerError> {
-    if !frontend
-        .capabilities()
-        .iter()
-        .any(|cap| cap == "get_invocation_plan")
-    {
+    if !frontend_supports_invocation_plan(frontend) {
         return Err(PlannerConsumerError::CapabilityMissing);
     }
 

@@ -5233,11 +5233,7 @@ async fn fetch_default_execute_plan_for_method(
     if !is_method_target_name(&analysis.name) {
         return None;
     }
-    if !frontend
-        .capabilities()
-        .iter()
-        .any(|cap| cap == "get_invocation_plan")
-    {
+    if !crate::planner_consumer::frontend_supports_invocation_plan(frontend) {
         return None;
     }
 
@@ -5296,11 +5292,7 @@ async fn fetch_planner_seeds_for_scan(
     project_root: Option<&str>,
 ) -> (Vec<Vec<serde_json::Value>>, Option<crate::protocol::InvocationPlan>) {
     let none = (Vec::new(), None);
-    if !frontend
-        .capabilities()
-        .iter()
-        .any(|cap| cap == "get_invocation_plan")
-    {
+    if !crate::planner_consumer::frontend_supports_invocation_plan(frontend) {
         return none;
     }
 
