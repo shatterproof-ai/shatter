@@ -50,8 +50,13 @@ tasks:
     sources:
       - Cargo.toml
       - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
       - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
       - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
       - shatter-llm/**/*.rs
     cmds:
       - cargo build --workspace
@@ -108,8 +113,13 @@ tasks:
     sources:
       - Cargo.toml
       - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
       - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
       - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
       - shatter-llm/**/*.rs
       - scripts/examples_checkout.py
     cmds:
@@ -124,8 +134,13 @@ tasks:
     sources:
       - Cargo.toml
       - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
       - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
       - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
       - shatter-llm/**/*.rs
     cmds:
       - cargo clippy --workspace -- -D warnings
