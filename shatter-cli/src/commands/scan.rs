@@ -721,12 +721,12 @@ pub(crate) async fn run_scan(
     };
 
     if !analyze_failures.is_empty() {
-        eprintln!(
-            "\n{} file(s) failed to analyze (excluded from this scan; the rest of the batch still ran):",
+        log::error!(
+            "{} file(s) failed to analyze (excluded from this scan; the rest of the batch still ran):",
             analyze_failures.len()
         );
         for f in &analyze_failures {
-            eprintln!("  {}: {}", f.file, f.source);
+            log::error!("  {}: {}", f.file, f.source);
         }
     }
 
@@ -1545,40 +1545,16 @@ pub(crate) async fn run_scan(
             // want CI to fail on any failure pass `--fail-on-failures` or
             // `--failure-threshold`. The summary above already names the
             // completed/failed/unsupported counts.
-            if let Some(reason) = result.evaluate_failure_policy(failure_policy) {
-                return Err(Box::new(GateFailure(format!("scan failed: {reason}"))));
-            }
-
+            //
             // str-z160s: a file that failed to analyze never produced any
-            // function-level attempts for `evaluate_failure_policy` above to
-            // count, so it must be checked against the same opt-in policy
-            // separately here -- otherwise a broken/slow file could silently
-            // escape --fail-on-failures / --failure-threshold entirely.
-            if !analyze_failures.is_empty() {
-                if failure_policy.fail_on_failures {
-                    return Err(format!(
-                        "scan failed: {} file(s) failed to analyze (--fail-on-failures)",
-                        analyze_failures.len()
-                    )
-                    .into());
-                }
-                if let Some(threshold) = failure_policy.failure_threshold_percent {
-                    let counts = result.counts();
-                    let attempted =
-                        counts.completed + counts.failed + analyze_failures.len();
-                    if attempted > 0 {
-                        let failed = counts.failed + analyze_failures.len();
-                        let pct = (failed as f64 / attempted as f64) * 100.0;
-                        if pct > threshold as f64 {
-                            return Err(format!(
-                                "scan failed: failure rate {pct:.1}% ({failed} of {attempted} attempted, \
-                                 including {} file-analyze failure(s)) exceeds --failure-threshold {threshold}%",
-                                analyze_failures.len()
-                            )
-                            .into());
-                        }
-                    }
-                }
+            // function-level attempts for `counts()` to count, so it is
+            // folded in via `extra_failures` -- otherwise a broken/slow file
+            // could silently escape --fail-on-failures / --failure-threshold
+            // entirely.
+            if let Some(reason) =
+                result.evaluate_failure_policy(failure_policy, analyze_failures.len())
+            {
+                return Err(Box::new(GateFailure(format!("scan failed: {reason}"))));
             }
         }
         Err(e) => {

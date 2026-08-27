@@ -366,12 +366,12 @@ pub(crate) async fn run_run(
     .map_err(|e| format!("batch analyze failed: {e}"))?;
 
     if !analyze_failures.is_empty() {
-        eprintln!(
-            "\n{} file(s) failed to analyze (excluded from this run; the rest of the batch still ran):",
+        log::warn!(
+            "{} file(s) failed to analyze (excluded from this run; the rest of the batch still ran):",
             analyze_failures.len()
         );
         for f in &analyze_failures {
-            eprintln!("  {}: {}", f.file, f.source);
+            log::warn!("  {}: {}", f.file, f.source);
         }
     }
 
