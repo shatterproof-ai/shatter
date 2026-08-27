@@ -293,9 +293,11 @@ tasks:
       - scripts/test_seed_worktree.sh
       - scripts/target-dir-report.sh
       - scripts/test_target_dir_report.sh
+      - scripts/test_target_dir_report_json.sh
     cmds:
       - bash scripts/test_seed_worktree.sh
       - bash scripts/test_target_dir_report.sh
+      - bash scripts/test_target_dir_report_json.sh
 
   meta:
     desc: Run repository meta checks (workflow lint, Semgrep)
