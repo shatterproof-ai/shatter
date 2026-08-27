@@ -54,6 +54,12 @@ class RootCargoPhaseTests(unittest.TestCase):
                 self.assertEqual(self._logged_argv(log), [argv, argv])
                 log.unlink()
 
+                llm_manifest = fixture / "shatter-llm" / "Cargo.toml"
+                llm_manifest.write_text(f"# manifest invalidation for {task}\n")
+                self._run_task(fixture, environment, task)
+                self.assertEqual(self._logged_argv(log), [argv])
+                log.unlink()
+
                 llm_source.write_text(f"// LLM-only failure fixture for {task}\n")
                 (fixture / ".llm-only-failure").touch()
                 failed = self._run_task(
@@ -98,7 +104,16 @@ class RootCargoPhaseTests(unittest.TestCase):
 
     @staticmethod
     def _write_fixture_tree(fixture: Path) -> None:
-        for path in ("Cargo.toml", "Cargo.lock", "shatter-llm/src/lib.rs"):
+        for path in (
+            "Cargo.toml",
+            "Cargo.lock",
+            "shatter-core/Cargo.toml",
+            "shatter-core/build.rs",
+            "shatter-cli/Cargo.toml",
+            "shatter-cli/build.rs",
+            "shatter-llm/Cargo.toml",
+            "shatter-llm/src/lib.rs",
+        ):
             destination = fixture / path
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.touch()
