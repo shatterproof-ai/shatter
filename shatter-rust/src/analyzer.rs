@@ -1649,10 +1649,13 @@ fn walk_stmt_for_branches(
 /// `crossbeam_channel::select!` are Rust's multi-way concurrent wait — the
 /// analogue of Go's `select` statement, which the Go frontend reports as
 /// `BranchType::Select`. Their arms are not parseable as `syn` expressions
-/// (`pattern = future => body` is not match syntax), so the arms are split off
-/// the raw token stream: top-level commas separate arms, and the `=>` inside an
-/// arm separates its guard from its body. Conditions stay `None` — an arm fires
-/// on future readiness, not on a symbolic predicate over parameters.
+/// (`pattern = future [, if precondition] => body` is not match syntax), so
+/// the arms are walked off the raw token stream in a single pass rather than
+/// pre-split on commas: an arm's `, if <precondition>` clause uses a
+/// top-level comma too, at the same nesting depth as the comma that actually
+/// separates it from the next arm, so a comma only ends the current arm once
+/// that arm's `=>` has already been seen. Conditions stay `None` — an arm
+/// fires on future readiness, not on a symbolic predicate over parameters.
 fn push_select_branches(mac: &syn::Macro, branches: &mut Vec<BranchInfo>, next_id: &mut u32) {
     let Some(name) = mac.path.segments.last().map(|s| s.ident.to_string()) else {
         return;
@@ -1661,54 +1664,52 @@ fn push_select_branches(mac: &syn::Macro, branches: &mut Vec<BranchInfo>, next_i
         return;
     }
 
-    for arm in split_top_level_commas(mac.tokens.clone()) {
-        let Some(arrow) = arm
-            .iter()
-            .position(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == '='
-                && p.spacing() == Spacing::Joint))
-            .filter(|i| {
-                matches!(arm.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '>')
-            })
-        else {
-            continue;
-        };
-        let guard = &arm[..arrow];
-        let Some(first) = guard.first() else {
-            continue;
-        };
+    let mut guard: Vec<TokenTree> = Vec::new();
+    let mut in_body = false;
+    let mut iter = mac.tokens.clone().into_iter().peekable();
 
-        branches.push(BranchInfo {
-            id: *next_id,
-            line: first.span().start().line as u32,
-            condition_text: guard
-                .iter()
-                .map(TokenTree::to_string)
-                .collect::<Vec<_>>()
-                .join(" "),
-            condition: None,
-            branch_type: BranchType::Select,
-        });
-        *next_id += 1;
-    }
-}
-
-/// Splits a token stream on commas at nesting depth zero. Delimited groups
-/// (`{}`, `()`, `[]`) arrive as single `TokenTree`s, so their inner commas are
-/// already invisible here.
-fn split_top_level_commas(tokens: proc_macro2::TokenStream) -> Vec<Vec<TokenTree>> {
-    let mut segments = Vec::new();
-    let mut current = Vec::new();
-    for tt in tokens {
-        if matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
-            segments.push(std::mem::take(&mut current));
-        } else {
-            current.push(tt);
+    while let Some(tt) = iter.next() {
+        if in_body {
+            // The arm's body runs until the next top-level comma, which is
+            // the real arm separator now that this arm's arrow was seen.
+            if matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
+                in_body = false;
+                guard.clear();
+            }
+            continue;
         }
+
+        // Still accumulating this arm's `pattern = future [, if precondition]`
+        // guard. Keep scanning for the arrow rather than bailing on the first
+        // `=`-shaped token (e.g. the `==` in `if a == b`), so a comparison in
+        // a precondition can't be mistaken for the arrow and drop the arm.
+        if let TokenTree::Punct(p) = &tt
+            && p.as_char() == '='
+            && p.spacing() == Spacing::Joint
+            && matches!(iter.peek(), Some(TokenTree::Punct(p2)) if p2.as_char() == '>')
+        {
+            iter.next(); // consume the '>' half of the arrow.
+            if let Some(first) = guard.first() {
+                branches.push(BranchInfo {
+                    id: *next_id,
+                    line: first.span().start().line as u32,
+                    condition_text: guard
+                        .iter()
+                        .map(TokenTree::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    condition: None,
+                    branch_type: BranchType::Select,
+                });
+                *next_id += 1;
+            }
+            in_body = true;
+            guard.clear();
+            continue;
+        }
+
+        guard.push(tt);
     }
-    if !current.is_empty() {
-        segments.push(current);
-    }
-    segments
 }
 
 fn walk_expr_for_branches(
@@ -3347,6 +3348,45 @@ mod tests {
             .filter(|b| b.branch_type == BranchType::Select)
             .collect();
         assert_eq!(select_branches.len(), 3, "one branch per select_biased! arm");
+    }
+
+    #[test]
+    fn select_arm_with_precondition_is_not_mistaken_for_arm_boundary() {
+        // The `, if <precondition>` clause's comma sits at the same
+        // top-level nesting depth as the real arm-separator comma; a naive
+        // comma split would mis-count arms and lose the future/pattern text.
+        // The precondition's `==` also must not be mistaken for the arrow.
+        let f = analyze_fn(
+            r#"
+            async fn f(enabled: bool, x: i32) {
+                tokio::select! {
+                    _ = ready(x), if enabled == true => {},
+                    _ = ready(x) => {},
+                }
+            }
+            "#,
+            "f",
+        );
+        let select_branches: Vec<_> = f
+            .branches
+            .iter()
+            .filter(|b| b.branch_type == BranchType::Select)
+            .collect();
+        assert_eq!(
+            select_branches.len(),
+            2,
+            "precondition clause must not be split into a spurious extra arm"
+        );
+        assert!(
+            select_branches[0].condition_text.contains("ready"),
+            "guard text must keep the future/pattern, not just the precondition: {:?}",
+            select_branches[0].condition_text
+        );
+        assert!(
+            select_branches[0].condition_text.contains("enabled"),
+            "guard text must include the precondition: {:?}",
+            select_branches[0].condition_text
+        );
     }
 
     #[test]

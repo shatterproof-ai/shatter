@@ -85,6 +85,15 @@ For a parameter whose type resolves to a **fieldless enum defined in the analyze
 
 E2E: `e2e_rust_nested_enum_field_domain_reaches_several_arms` in `shatter-core/tests/e2e_concolic_rust.rs` — a NESTED, cross-file enum field (unlike `enum-color`'s top-level, same-file case), which is what actually exercises the raw-token-name and raw-pattern-value gaps above.
 
+## Static Opacity Parity Contract (str-dcelm)
+
+`TypeInfo::Opaque` carries an optional `static_opacity: Option<StaticOpacityReason>` (`shatter-core/src/types.rs`'s `StaticOpacityReason`, mirrored in `shatter-rust/src/protocol.rs`) recording *why* a type was detected as opaque via static analysis, when that evidence is provable from the single file being analyzed.
+
+- **`AbstractType`** — the only variant this frontend currently proves. Emitted for a trait object (`dyn Trait`, including `Box<dyn Trait>` and multi-bound objects) in `convert_type_inner`: Rust's direct analogue of an abstract class, since a trait object has no constructor and no value of it can ever be synthesized.
+- **`NoConstructor`, `TransitivelyOpaque`, `NoImplementors`** — declared for wire parity with core and the other frontends, but NOT emitted by this frontend. Proving them would require cross-file/cross-crate visibility into whether a type has a public constructor, whether every constructor argument is itself opaque, or whether a trait has any implementor at all — all out of scope for the single-file constraint (`convert_type_inner` only sees structs/enums it can resolve within the current file's `structs`/`enums` registries; see this crate's single-file analysis boundary elsewhere in this file).
+- **No evidence** — the common case. An "unknown struct/enum" opaque type (a name that resolves to neither a same-file struct nor a same-file enum) carries `static_opacity: None` via the `TypeInfo::opaque(label)` constructor, since the analyzer has no structural reason to believe it's non-constructible — it may simply be defined elsewhere.
+- The core's `medium_opacity` companion field (`StaticOpacityReason` for opacity detected via the runtime opaque-type tables rather than static analysis) is not emitted by this frontend — tracked separately as `medium-opacity-analyze-partial` in `protocol/parity-matrix.yaml`.
+
 ## Prepare Parity Contract
 
 Rust implements `prepare` to pre-build the harness binary so subsequent execute calls skip compilation. Handler: `handle_prepare()` in `src/handler.rs`. Advertised in capabilities list. `prepare_id` is SHA-256 of `file:function:sorted-mock-symbols`, first 16 hex chars (`compute_prepare_id` in `executor.rs`). Storage: `handler.prepared_harnesses: HashMap<String, PreparedHarnessInfo>`. Idempotent. Source file must exist and function must be analyzable. `prepared_harnesses.clear()` on function-level teardown + shutdown.
