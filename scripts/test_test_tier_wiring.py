@@ -52,6 +52,7 @@ class TestTestTierWiring(unittest.TestCase):
             self.assertIn("cargo test", content)
         self.assertIn("cargo test -p shatter-core --doc", contents["core"])
         self.assertIn("cargo test --doc", contents["rust"])
+        self.assertIn("cargo test --doc", contents["runtime"])
         self.assertIn("--run-ignored all", contents["core"])
         for standalone in (contents["rust"], contents["runtime"]):
             self.assertIn(

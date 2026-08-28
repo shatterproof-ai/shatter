@@ -105,8 +105,9 @@ tasks:
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
-    # The workspace test includes shatter-core's e2e_concolic suite, which
-    # needs the TypeScript frontend built first (str-6y5w8).
+    # The 26 subprocess TypeScript E2E tests are intentionally excluded here
+    # and restored by core:test-ignored in the Full gate. Keep frontend build
+    # ordering for the remaining workspace integration tests.
     deps: [frontends-built, workspace-clippy]
     cmds:
       - task: workspace-test
