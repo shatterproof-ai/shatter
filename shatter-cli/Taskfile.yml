@@ -22,7 +22,12 @@ tasks:
       - ../shatter-core/src/**/*.rs
       - ../shatter-core/Cargo.toml
     cmds:
-      - cargo test -p shatter-cli
+      - |
+        if command -v cargo-nextest >/dev/null 2>&1; then
+          cargo nextest run -p shatter-cli
+        else
+          cargo test -p shatter-cli
+        fi
 
   clippy:
     desc: Run clippy on shatter-cli

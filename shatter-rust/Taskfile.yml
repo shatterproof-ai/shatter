@@ -17,7 +17,13 @@ tasks:
       - Cargo.toml
       - Cargo.lock
     cmds:
-      - cargo test
+      - |
+        if command -v cargo-nextest >/dev/null 2>&1; then
+          cargo test --doc
+          cargo nextest run --config-file ../.config/nextest.toml
+        else
+          cargo test
+        fi
 
   clippy:
     desc: Run clippy
