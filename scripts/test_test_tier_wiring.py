@@ -54,8 +54,20 @@ class TestTestTierWiring(unittest.TestCase):
         self.assertIn("cargo test --doc", contents["rust"])
         self.assertIn("--run-ignored all", contents["core"])
         for standalone in (contents["rust"], contents["runtime"]):
-            self.assertIn("cargo nextest run --test-threads 4", standalone)
+            self.assertIn(
+                "cargo nextest run --config-file ../.config/nextest-standalone.toml",
+                standalone,
+            )
             self.assertNotIn("--config-file ../.config/nextest.toml", standalone)
+
+        standalone_config = tomllib.loads(
+            (ROOT / ".config/nextest-standalone.toml").read_text()
+        )
+        for profile_name in ("default", "ci"):
+            profile = standalone_config["profile"][profile_name]
+            self.assertEqual(profile["test-threads"], 4)
+            self.assertEqual(profile["slow-timeout"]["period"], "60s")
+            self.assertEqual(profile["slow-timeout"]["terminate-after"], 2)
 
     def test_fast_and_full_task_budgets_are_distinct(self) -> None:
         root_taskfile = (ROOT / "Taskfile.yml").read_text()
