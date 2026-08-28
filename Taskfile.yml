@@ -112,6 +112,8 @@ tasks:
     cmds:
       - task: workspace-test
 
+  # Keep this body in sync with workspace-test-quick; the wiring regression
+  # test enforces parity while their separate IDs protect Task's cache.
   workspace-test:
     internal: true
     sources:
@@ -133,7 +135,8 @@ tasks:
         export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
         cargo test --workspace
 
-  # Keep a distinct checksum identity for the reduced property/fuzz budget.
+  # Keep this body in sync with workspace-test above. Its distinct checksum
+  # identity protects the reduced property/fuzz budget.
   # Task does not fingerprint caller-provided environment variables, so using
   # workspace-test here could let a quick result satisfy test-standard later.
   workspace-test-quick:

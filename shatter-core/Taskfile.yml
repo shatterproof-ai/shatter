@@ -31,6 +31,8 @@ tasks:
           cargo test -p shatter-core
         fi
 
+  # Keep this body in sync with test-ignored-fast; the wiring regression test
+  # normalizes their descriptions and gate labels, then enforces parity.
   test-ignored:
     desc: Run shatter-core tests including slow/ignored tests
     sources:
@@ -55,7 +57,8 @@ tasks:
           bash ../scripts/gate-wrapper.sh core:test-ignored cargo test -p shatter-core -- --include-ignored
         fi
 
-  # Separate checksum identity for check-fast's reduced property/fuzz budget.
+  # Keep this body in sync with test-ignored above. Its separate checksum
+  # identity protects check-fast's reduced property/fuzz budget.
   # Task does not include caller-provided environment variables in its cache.
   test-ignored-fast:
     desc: Run shatter-core tests including ignored tests with the caller's fast budget

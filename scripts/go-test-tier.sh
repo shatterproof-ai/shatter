@@ -34,12 +34,13 @@ rapid_packages="$({
 } | sort -u)"
 
 plain_packages=""
+all_packages="$(go list ./...)"
 while IFS= read -r package; do
   [[ -n "$package" ]] || continue
   if ! grep -Fqx "$package" <<<"$rapid_packages"; then
     plain_packages+=" $package"
   fi
-done < <(go list ./...)
+done <<<"$all_packages"
 
 if [[ -n "$plain_packages" ]]; then
   # Package import paths cannot contain whitespace.

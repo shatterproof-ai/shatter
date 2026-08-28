@@ -16,13 +16,36 @@ HARNESS_BINARIES = {
 
 
 class TestTestTierWiring(unittest.TestCase):
+    @staticmethod
+    def _task_body(taskfile: str, task_name: str) -> str:
+        match = re.search(
+            rf"(?ms)^  {re.escape(task_name)}:\n(.*?)(?=^  [a-z][a-z0-9-]*:|\Z)",
+            taskfile,
+        )
+        if match is None:
+            raise AssertionError(f"task {task_name!r} not found")
+        return match.group(1)
+
+    @staticmethod
+    def _canonical_cached_task_body(body: str) -> str:
+        lines = []
+        for line in body.splitlines():
+            if line.lstrip().startswith("#") or line.lstrip().startswith("desc:"):
+                continue
+            lines.append(line.replace("core:test-ignored-fast", "core:test-ignored"))
+        return "\n".join(lines).strip()
+
     def test_nextest_serializes_every_rust_frontend_harness_binary(self) -> None:
         config = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
         self.assertEqual(config["test-groups"]["rust-frontend-harness"]["max-threads"], 1)
 
-        discovered = {"e2e_concolic_rust"}
+        discovered = set()
         for test_file in (ROOT / "shatter-core/tests").glob("*.rs"):
-            if "rust_frontend_harness.rs" in test_file.read_text():
+            source = test_file.read_text()
+            if (
+                "rust_frontend_harness.rs" in source
+                or "fn rust_frontend_path()" in source
+            ):
                 discovered.add(test_file.stem)
         self.assertEqual(discovered, HARNESS_BINARIES)
 
@@ -92,6 +115,22 @@ class TestTestTierWiring(unittest.TestCase):
         self.assertIn("- task: core:test-ignored", root_taskfile)
         self.assertRegex(root_taskfile, r"(?m)^  workspace-test-quick:$")
         self.assertRegex(core_taskfile, r"(?m)^  test-ignored-fast:$")
+        self.assertEqual(
+            self._canonical_cached_task_body(
+                self._task_body(root_taskfile, "workspace-test")
+            ),
+            self._canonical_cached_task_body(
+                self._task_body(root_taskfile, "workspace-test-quick")
+            ),
+        )
+        self.assertEqual(
+            self._canonical_cached_task_body(
+                self._task_body(core_taskfile, "test-ignored")
+            ),
+            self._canonical_cached_task_body(
+                self._task_body(core_taskfile, "test-ignored-fast")
+            ),
+        )
 
     def test_every_ts_e2e_test_is_in_the_integration_tier(self) -> None:
         source = (ROOT / "shatter-core/tests/e2e_concolic.rs").read_text()
@@ -155,6 +194,34 @@ fi
                 text=True,
             )
         self.assertIn("example/external -rapid.checks=32", result.stdout)
+
+    def test_go_runner_fails_when_package_discovery_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_go = Path(temp_dir) / "go"
+            fake_go.write_text(
+                """#!/usr/bin/env bash
+if [[ "$1" == "list" && "$2" == "-f" ]]; then
+  exit 0
+elif [[ "$1" == "list" ]]; then
+  echo "package discovery failed" >&2
+  exit 23
+fi
+exit 99
+"""
+            )
+            fake_go.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{temp_dir}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts/go-test-tier.sh"), "short"],
+                cwd=ROOT / "shatter-go",
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("package discovery failed", result.stderr)
 
     def test_go_runner_help_succeeds(self) -> None:
         result = subprocess.run(
