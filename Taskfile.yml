@@ -97,9 +97,6 @@ tasks:
     # Keep the frontend-build ordering used by the regular workspace test;
     # this is the development tier documented in CLAUDE.md.
     deps: [frontends-built]
-    env:
-      PROPTEST_CASES: '32'
-      SHATTER_FUZZ_CASES: '32'
     cmds:
       - task: workspace-test-quick
 
@@ -107,7 +104,8 @@ tasks:
     desc: "Standard: cargo tests + clippy"
     # The 26 subprocess TypeScript E2E tests are intentionally excluded here
     # and restored by core:test-ignored in the Full gate. Keep frontend build
-    # ordering for the remaining workspace integration tests.
+    # ordering for the remaining workspace integration tests; the Rust and Go
+    # frontend E2E suites remain in this Standard workspace tier.
     deps: [frontends-built, workspace-clippy]
     cmds:
       - task: workspace-test
@@ -141,6 +139,9 @@ tasks:
   # workspace-test here could let a quick result satisfy test-standard later.
   workspace-test-quick:
     internal: true
+    env:
+      PROPTEST_CASES: '32'
+      SHATTER_FUZZ_CASES: '32'
     sources:
       - Cargo.toml
       - Cargo.lock

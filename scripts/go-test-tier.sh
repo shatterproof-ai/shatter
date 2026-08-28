@@ -37,6 +37,14 @@ plain_packages=""
 all_packages="$(go list ./...)"
 while IFS= read -r package; do
   [[ -n "$package" ]] || continue
+  if ! grep -Fqx "$package" <<<"$all_packages"; then
+    echo "rapid package $package was not returned by go list ./..." >&2
+    exit 1
+  fi
+done <<<"$rapid_packages"
+
+while IFS= read -r package; do
+  [[ -n "$package" ]] || continue
   if ! grep -Fqx "$package" <<<"$rapid_packages"; then
     plain_packages+=" $package"
   fi

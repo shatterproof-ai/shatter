@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -29,7 +30,14 @@ class TestTestTierWiring(unittest.TestCase):
     @staticmethod
     def _canonical_cached_task_body(body: str) -> str:
         lines = []
+        skipping_env = False
         for line in body.splitlines():
+            if line.startswith("    env:"):
+                skipping_env = True
+                continue
+            if skipping_env and line.startswith("      "):
+                continue
+            skipping_env = False
             if line.lstrip().startswith("#") or line.lstrip().startswith("desc:"):
                 continue
             lines.append(line.replace("core:test-ignored-fast", "core:test-ignored"))
@@ -132,6 +140,44 @@ class TestTestTierWiring(unittest.TestCase):
             ),
         )
 
+    def test_quick_rust_budget_reaches_workspace_test_process(self) -> None:
+        task = shutil.which("task")
+        if task is None:
+            self.skipTest("task is not installed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tool_dir = Path(temp_dir)
+            capture = tool_dir / "cargo-env.log"
+            fake_tool = """#!/usr/bin/env bash
+if [[ "$(basename "$0")" == cargo ]]; then
+  printf '%s|%s|%s\\n' "$*" "${PROPTEST_CASES:-}" "${SHATTER_FUZZ_CASES:-}" >> "$SHATTER_TEST_ENV_CAPTURE"
+fi
+exit 0
+"""
+            for tool_name in ("cargo", "go", "npm"):
+                tool = tool_dir / tool_name
+                tool.write_text(fake_tool)
+                tool.chmod(0o755)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{tool_dir}:{env['PATH']}"
+            env["SHATTER_TEST_ENV_CAPTURE"] = str(capture)
+            subprocess.run(
+                [task, "--force", "test-quick"],
+                cwd=ROOT,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            workspace_test = next(
+                line
+                for line in capture.read_text().splitlines()
+                if line.startswith("test --workspace|")
+            )
+        self.assertEqual(workspace_test, "test --workspace|32|32")
+
     def test_every_ts_e2e_test_is_in_the_integration_tier(self) -> None:
         source = (ROOT / "shatter-core/tests/e2e_concolic.rs").read_text()
         self.assertEqual(source.count("#[tokio::test]"), 26)
@@ -222,6 +268,34 @@ exit 99
             )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("package discovery failed", result.stderr)
+
+    def test_go_runner_rejects_inconsistent_package_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_go = Path(temp_dir) / "go"
+            fake_go.write_text(
+                """#!/usr/bin/env bash
+if [[ "$1" == "list" && "$2" == "-f" ]]; then
+  printf '%s\\n' example/rapid
+elif [[ "$1" == "list" ]]; then
+  printf '%s\\n' example/plain
+elif [[ "$1" == "test" ]]; then
+  exit 0
+fi
+"""
+            )
+            fake_go.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{temp_dir}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts/go-test-tier.sh"), "short"],
+                cwd=ROOT / "shatter-go",
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not returned by go list ./...", result.stderr)
 
     def test_go_runner_help_succeeds(self) -> None:
         result = subprocess.run(
