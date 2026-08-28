@@ -140,12 +140,6 @@ pub(crate) fn unignored_generated_paths(project_root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Maximum number of ancestor directories to search for a git root above
-/// `project_root`. Bounds the walk so a directory with no `.git` anywhere
-/// above it (e.g. a bare temp directory in a test) never reads unrelated
-/// `.gitignore` files from outside the repository.
-const MAX_GIT_ROOT_ANCESTORS: usize = 32;
-
 /// A `.gitignore` file discovered while walking from `project_root` up to the
 /// enclosing git root, paired with `project_root`'s path relative to the
 /// directory that `.gitignore` lives in.
@@ -170,34 +164,42 @@ struct AncestorGitignore {
 /// prefix needed to check its patterns against `project_root`-relative
 /// entries (see [`AncestorGitignore`]).
 ///
-/// If no `.git` directory is found within `MAX_GIT_ROOT_ANCESTORS` levels
-/// above `project_root`, only `project_root`'s own `.gitignore` is read — this
-/// keeps the check hermetic (it never wanders into unrelated ancestor
-/// directories) when `project_root` is not part of a git checkout at all.
+/// The enclosing repository is located with [`shatter_core::scm::repo_root_or_none`],
+/// the same helper the rest of the codebase uses, so git itself decides what
+/// counts as a root: linked worktrees and submodules (whose `.git` is a *file*,
+/// not a directory), `core.worktree` setups, and ceiling-directory limits all
+/// resolve exactly as they do for every other Shatter git operation, and a
+/// stray/invalid `.git` entry is not mistaken for a repository root (str-dj10p).
+///
+/// If `project_root` is not inside a git repository — or git is unavailable, or
+/// the resolved root is not a prefix of `project_root` (e.g. an unresolved
+/// symlink in the path) — only `project_root`'s own `.gitignore` is read. That
+/// keeps the check hermetic: it never wanders into unrelated ancestor
+/// directories when `project_root` is not part of a git checkout at all.
 fn collect_gitignore_text(project_root: &Path) -> Vec<AncestorGitignore> {
     let mut ancestors: Vec<PathBuf> = vec![project_root.to_path_buf()];
-    let mut found_git_root = project_root.join(".git").exists();
 
-    if !found_git_root {
-        let mut dir = project_root.to_path_buf();
-        for _ in 0..MAX_GIT_ROOT_ANCESTORS {
-            let Some(parent) = dir.parent() else { break };
-            if parent == dir {
-                break;
-            }
-            dir = parent.to_path_buf();
-            ancestors.push(dir.clone());
-            if dir.join(".git").exists() {
-                found_git_root = true;
-                break;
+    if let Some(git_root) = shatter_core::scm::repo_root_or_none(project_root) {
+        // `repo_root_or_none` returns a fully resolved path, so compare against
+        // the resolved `project_root`; the walk itself climbs the canonical
+        // path so `parent()` is well defined and each `file_name()` component
+        // is the one git would see.
+        let base = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.to_path_buf());
+        let depth = base
+            .strip_prefix(&git_root)
+            .map(|rel| rel.components().count())
+            .unwrap_or(0);
+        if depth > 0 {
+            ancestors[0] = base.clone();
+            let mut dir = base;
+            for _ in 0..depth {
+                let Some(parent) = dir.parent() else { break };
+                dir = parent.to_path_buf();
+                ancestors.push(dir.clone());
             }
         }
-    }
-
-    if !found_git_root {
-        // No enclosing git repo found nearby: fall back to `project_root`'s
-        // own `.gitignore` only, exactly as before this walk existed.
-        ancestors.truncate(1);
     }
 
     let mut result = Vec::new();
@@ -395,6 +397,30 @@ mod tests {
 
     fn read_gitignore(dir: &Path) -> String {
         std::fs::read_to_string(dir.join(".gitignore")).unwrap()
+    }
+
+    /// Run a git command in `cwd`, clearing the hook-injected environment so it
+    /// operates on `cwd`'s repository rather than the ambient Shatter checkout
+    /// (mirrors `shatter_core::scm`'s own test helper).
+    fn git_ok(cwd: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .status()
+            .expect("git must be available for these tests");
+        assert!(status.success(), "git {args:?} failed in {}", cwd.display());
+    }
+
+    /// Initialize a real git repository at `dir`. The generated-paths git-root
+    /// lookup goes through `git rev-parse`, so tests need an actual repo — a
+    /// hand-made `.git` directory is not one.
+    fn git_init(dir: &Path) {
+        git_ok(dir, &["init", "--quiet"]);
     }
 
     #[test]
@@ -636,7 +662,7 @@ mod tests {
         // `.gitignore` would false-positive every generated path as
         // un-ignored.
         let repo = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        git_init(repo.path());
         std::fs::write(
             repo.path().join(".gitignore"),
             ".shatter-cache\n.shatter\nshatter-artifacts\n",
@@ -660,7 +686,7 @@ mod tests {
         // path, even though the trailing path components are identical.
         // Reported by review of str-1fwt.
         let repo = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        git_init(repo.path());
         std::fs::write(
             repo.path().join(".gitignore"),
             // Anchored to the repo root — covers only `<root>/.shatter/seeds/`.
@@ -701,6 +727,90 @@ mod tests {
             missing,
             collect_generated_ignore_entries(&nested),
             "an ancestor .gitignore above a non-git directory must not be consulted"
+        );
+    }
+
+    #[test]
+    fn unignored_finds_gitignore_at_linked_worktree_root() {
+        // A package inside a *linked worktree*: the worktree root's `.git` is a
+        // file pointing at the main checkout's `.git/worktrees/...`, not a
+        // directory. Resolving the root through `shatter_core::scm` means git
+        // itself follows that pointer, so the worktree's own `.gitignore` is
+        // consulted exactly as it would be for any other Shatter git operation
+        // (str-dj10p).
+        let tmp = tempfile::tempdir().unwrap();
+        let main_checkout = tmp.path().join("main");
+        std::fs::create_dir_all(&main_checkout).unwrap();
+        git_init(&main_checkout);
+        // `git worktree add` needs a commit to branch from.
+        git_ok(
+            &main_checkout,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "init",
+            ],
+        );
+        let worktree = tmp.path().join("wt");
+        git_ok(
+            &main_checkout,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            worktree.join(".git").is_file(),
+            "a linked worktree's .git must be a file for this test to be meaningful"
+        );
+
+        std::fs::write(
+            worktree.join(".gitignore"),
+            ".shatter-cache\n.shatter\nshatter-artifacts\n",
+        )
+        .unwrap();
+        let package_dir = worktree.join("packages/foo");
+        std::fs::create_dir_all(package_dir.join(".shatter")).unwrap();
+
+        assert!(
+            unignored_generated_paths(&package_dir).is_empty(),
+            "the linked worktree root's .gitignore must be consulted"
+        );
+    }
+
+    #[test]
+    fn unignored_walks_past_an_invalid_git_directory_to_the_real_root() {
+        // The improvement over the previous hand-rolled walk (str-dj10p): that
+        // walk stopped at the first path whose `.git` merely *existed*, so a
+        // stray/incomplete `.git` directory in an intermediate package hid the
+        // enclosing repository's `.gitignore` and false-positived every
+        // generated path. Git's own discovery rejects a `.git` directory with
+        // no HEAD and keeps climbing, and so does the shared helper.
+        let repo = tempfile::tempdir().unwrap();
+        git_init(repo.path());
+        std::fs::write(
+            repo.path().join(".gitignore"),
+            ".shatter-cache\n.shatter\nshatter-artifacts\n",
+        )
+        .unwrap();
+
+        let package_dir = repo.path().join("packages/foo");
+        std::fs::create_dir_all(package_dir.join(".shatter")).unwrap();
+        // Not a repository: an empty directory that only looks like one.
+        std::fs::create_dir_all(package_dir.join(".git")).unwrap();
+
+        assert!(
+            unignored_generated_paths(&package_dir).is_empty(),
+            "an invalid `.git` directory must not shadow the enclosing repo's .gitignore"
         );
     }
 }
