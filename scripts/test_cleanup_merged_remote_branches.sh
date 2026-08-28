@@ -126,6 +126,9 @@ FAKEBIN="$WORKDIR2/fakebin"
 mkdir -p "$FAKEBIN"
 
 git init --quiet --bare "$BARE2"
+# See the matching comment on $BARE above: don't rely on the invoking
+# environment's `init.defaultBranch` for this bare repo's HEAD either.
+git -C "$BARE2" symbolic-ref HEAD refs/heads/main
 git init --quiet -b main "$CLONE2"
 cd "$CLONE2"
 git config user.email "test@example.com"
