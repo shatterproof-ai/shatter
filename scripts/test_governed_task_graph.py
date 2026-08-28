@@ -42,6 +42,17 @@ CACHED_GOVERNED_TASKS = {
     "e2e-go",
     "e2e-rust",
 }
+GATE_BUDGETS = {
+    "check-fast": {
+        "PROPTEST_CASES": "32",
+        "SHATTER_FUZZ_CASES": "32",
+    },
+    "check": {
+        "PROPTEST_CASES": "256",
+        "SHATTER_FUZZ_CASES": "1000",
+        "SHATTER_FAST_CHECK_NUM_RUNS": "default",
+    },
+}
 TASK_NAME_TOKEN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 
 
@@ -54,21 +65,25 @@ def command_text(command: object) -> str | None:
     return command if isinstance(command, str) else None
 
 
-def task_references(task: dict) -> list[str]:
-    references: list[str] = []
-    for dependency in task.get("deps", []):
-        if isinstance(dependency, str):
-            references.append(dependency)
-        elif isinstance(dependency, dict) and isinstance(dependency.get("task"), str):
-            references.append(dependency["task"])
+def command_references(command: object) -> list[str]:
+    if isinstance(command, str):
+        return TASK_NAME_TOKEN.findall(command)
+    if isinstance(command, list):
+        return [reference for item in command for reference in command_references(item)]
+    if isinstance(command, dict):
+        return [
+            reference
+            for key in ("task", "cmd", "defer")
+            if key in command
+            for reference in command_references(command[key])
+        ]
+    return []
 
-    for command in task.get("cmds", []):
-        if isinstance(command, dict) and isinstance(command.get("task"), str):
-            references.append(command["task"])
-        text = command_text(command)
-        if text:
-            references.extend(TASK_NAME_TOKEN.findall(text))
-    return references
+
+def task_references(task: dict) -> list[str]:
+    return command_references(task.get("deps", [])) + command_references(
+        [task.get("cmd"), task.get("cmds", [])]
+    )
 
 
 class GovernedTaskGraphTests(unittest.TestCase):
@@ -90,8 +105,11 @@ class GovernedTaskGraphTests(unittest.TestCase):
                 "task --force check-governed",
                 "task --dir . conformance-governed",
                 {"task": "parity-governed"},
+                {"cmd": "task e2e-governed", "silent": True},
+                {"defer": "task e2e-ts-governed"},
                 "sh -c 'task e2e-rust-governed",
             ],
+            "cmd": {"cmd": "task check-governed"},
         }
         self.assertEqual(implementations.intersection(task_references(task)), implementations)
 
@@ -106,8 +124,8 @@ class GovernedTaskGraphTests(unittest.TestCase):
         for public, (label, implementation) in GOVERNED_TASKS.items():
             with self.subTest(task=public):
                 public_task = tasks[public]
-                for key in ("deps", "env"):
-                    self.assertNotIn(key, public_task)
+                self.assertNotIn("deps", public_task)
+                self.assertEqual(public_task.get("env", {}), GATE_BUDGETS.get(public, {}))
                 self.assertEqual(len(public_task.get("cmds", [])), 1)
                 self.assertEqual(
                     self._wrapper_argv(public_task["cmds"][0]),
@@ -124,6 +142,7 @@ class GovernedTaskGraphTests(unittest.TestCase):
                 self.assertNotIn("internal", implementation_task)
                 self.assertNotIn("sources", implementation_task)
                 self.assertNotIn("preconditions", implementation_task)
+                self.assertNotIn("env", implementation_task)
                 self.assertTrue(
                     implementation_task.get("deps") or implementation_task.get("cmds"),
                     f"{implementation} does not own any work",
@@ -159,6 +178,37 @@ class GovernedTaskGraphTests(unittest.TestCase):
         self.assertTrue(
             all(tasks[task_name].get("sources") for task_name in CACHED_GOVERNED_TASKS)
         )
+
+    def test_public_gate_budgets_reach_nested_stages(self) -> None:
+        tasks = load_tasks()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = Path(temp_dir)
+            self._write_runtime_fixture_tools(fixture)
+            fixture_tasks: dict[str, dict] = {}
+            for public, expected in GATE_BUDGETS.items():
+                implementation = GOVERNED_TASKS[public][1]
+                fixture_tasks[public] = {
+                    "env": tasks[public].get("env", {}),
+                    "cmds": [tasks[public]["cmds"][0]],
+                }
+                fixture_tasks[implementation] = {"cmds": [{"task": f"probe-{public}"}]}
+                values = " ".join(f"{name}=${{{name}:-missing}}" for name in expected)
+                fixture_tasks[f"probe-{public}"] = {
+                    "cmds": [f'echo "{public} {values}" >> "$EVENT_LOG"']
+                }
+            (fixture / "Taskfile.yml").write_text(
+                yaml.safe_dump({"version": "3", "tasks": fixture_tasks}, sort_keys=False)
+            )
+
+            event_log = fixture / "events.log"
+            environment = self._fixture_environment(fixture, event_log)
+            for public, expected in GATE_BUDGETS.items():
+                with self.subTest(task=public):
+                    event_log.unlink(missing_ok=True)
+                    self._run_task(fixture, environment, public)
+                    event_text = event_log.read_text()
+                    for name, value in expected.items():
+                        self.assertIn(f"{name}={value}", event_text)
 
     def test_lease_is_acquired_before_every_injected_prerequisite(self) -> None:
         self.assertIsNotNone(shutil.which("task"), "task is required")
