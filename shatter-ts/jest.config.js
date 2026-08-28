@@ -5,6 +5,7 @@ module.exports = {
   testTimeout: 30000,
   // Force exit to avoid hanging on worker threads that outlive tests.
   forceExit: true,
+  setupFilesAfterEnv: ["<rootDir>/src/fast-check-setup.ts"],
   roots: ["<rootDir>/src"],
   testMatch: ["**/*.test.ts"],
   moduleNameMapper: {

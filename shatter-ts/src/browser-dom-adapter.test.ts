@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import fc from "fast-check";
+import { fastCheckParameters } from "./fast-check-config.js";
 
 import {
   createBrowserGlobalsSandbox,
@@ -416,7 +417,7 @@ describe("localStorage stub property tests", () => {
           return storage.getItem(key) === value;
         },
       ),
-      { numRuns: 200 },
+      fastCheckParameters(200),
     );
   });
 
@@ -432,7 +433,7 @@ describe("localStorage stub property tests", () => {
           return storage.getItem(key) === null;
         },
       ),
-      { numRuns: 200 },
+      fastCheckParameters(200),
     );
   });
 
@@ -452,7 +453,7 @@ describe("localStorage stub property tests", () => {
           return storage.length === uniqueKeys.size;
         },
       ),
-      { numRuns: 200 },
+      fastCheckParameters(200),
     );
   });
 });

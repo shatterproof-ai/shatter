@@ -6,6 +6,10 @@
  */
 import fc from "fast-check";
 import ts from "typescript";
+import {
+  fastCheckParameters,
+  parseFastCheckNumRuns,
+} from "./fast-check-config.js";
 import { serializeReplacer } from "./serialize.js";
 import { reconstructValue } from "./reconstruct.js";
 import type {
@@ -647,6 +651,23 @@ const arbResponse: fc.Arbitrary<Response> = fc.oneof(
 // Tests
 // ---------------------------------------------------------------------------
 
+describe("fast-check case tiers", () => {
+  test("preserves defaults or accepts a positive override", () => {
+    expect(parseFastCheckNumRuns(undefined)).toBeUndefined();
+    expect(parseFastCheckNumRuns("default")).toBeUndefined();
+    expect(parseFastCheckNumRuns("32")).toBe(32);
+  });
+
+  test("rejects invalid overrides", () => {
+    expect(() => parseFastCheckNumRuns("0")).toThrow(
+      "must be \"default\" or a positive integer",
+    );
+    expect(() => parseFastCheckNumRuns("3.5")).toThrow(
+      "must be \"default\" or a positive integer",
+    );
+  });
+});
+
 describe("error code parity", () => {
   it("ALL_ERROR_CODES has exactly 12 entries matching registry.yaml", () => {
     expect(ALL_ERROR_CODES.length).toBe(12);
@@ -658,7 +679,10 @@ describe("error code parity", () => {
       fc.property(arbErrorCode, (code) => {
         seen.add(code);
       }),
-      { numRuns: 500 },
+      {
+        ...fastCheckParameters(500),
+        examples: ALL_ERROR_CODES.map((code) => [code]),
+      },
     );
     for (const code of ALL_ERROR_CODES) {
       expect(seen.has(code)).toBe(true);
@@ -1166,7 +1190,7 @@ describe("property: buildSymExpr / buildSymExprWithFlow parity", () => {
           expect(exprResult).toBe(true);
         }
       }),
-      { numRuns: 500 },
+      fastCheckParameters(500),
     );
   });
 
@@ -1554,7 +1578,7 @@ describe("flattenConditions", () => {
           expect(result.operator).toBe(op);
         }
       }),
-      { numRuns: 200 },
+      fastCheckParameters(200),
     );
   });
 
@@ -1571,7 +1595,7 @@ describe("flattenConditions", () => {
         const result = flattenConditions(expr, params, flow);
         expect(result).toBeNull();
       }),
-      { numRuns: 100 },
+      fastCheckParameters(100),
     );
   });
 
@@ -1618,7 +1642,7 @@ describe("MC/DC short-circuit masking semantics", () => {
           }
         }
       }),
-      { numRuns: 500 },
+      fastCheckParameters(500),
     );
   });
 
@@ -1650,7 +1674,7 @@ describe("MC/DC short-circuit masking semantics", () => {
           }
         }
       }),
-      { numRuns: 500 },
+      fastCheckParameters(500),
     );
   });
 
@@ -1666,7 +1690,7 @@ describe("MC/DC short-circuit masking semantics", () => {
           expect(conditions[i]!.condition_index).toBe(i);
         }
       }),
-      { numRuns: 500 },
+      fastCheckParameters(500),
     );
   });
 
@@ -1684,7 +1708,7 @@ describe("MC/DC short-circuit masking semantics", () => {
         expect(andResult.decision).toBe(jsAnd);
         expect(orResult.decision).toBe(jsOr);
       }),
-      { numRuns: 500 },
+      fastCheckParameters(500),
     );
   });
 });
@@ -2678,7 +2702,7 @@ describe("convertTypeWithNode array fidelity on cyclic types (str-9cqde)", () =>
           assertAllFieldsArray(paramType);
         }
       }),
-      { numRuns: 25 },
+      fastCheckParameters(25),
     );
   });
 });

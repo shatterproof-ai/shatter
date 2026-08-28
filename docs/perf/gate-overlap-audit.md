@@ -5,8 +5,10 @@ remove only provably identical coverage.
 
 ## `core:test-ignored` ⊇ `task e2e` — VERIFIED
 
-`core:test-ignored` runs `cargo test -p shatter-core -- --include-ignored`
-(shatter-core/Taskfile.yml), which builds and runs **every** test target of
+`core:test-ignored` runs the shatter-core doctests plus
+`cargo nextest run -p shatter-core --run-ignored all` when nextest is available,
+and falls back to `cargo test -p shatter-core -- --include-ignored` otherwise
+(shatter-core/Taskfile.yml). Either path runs **every** non-doctest target of
 shatter-core — unit tests plus all integration-test binaries under
 `shatter-core/tests/`, including `e2e_concolic.rs`, `e2e_concolic_rust.rs`,
 and `e2e_concolic_go.rs`, with `#[ignore]`d tests included.

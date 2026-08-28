@@ -15,13 +15,51 @@ use shatter_core::spec::FunctionSpec;
 use shatter_core::sym_expr::SymExpr;
 use shatter_core::types::TypeInfo;
 
-const FUZZ_CASES: u32 = 1000;
+const DEFAULT_FUZZ_CASES: u32 = 1000;
+const FUZZ_CASES_ENV: &str = "SHATTER_FUZZ_CASES";
 const MAX_INPUT_LEN: usize = 1024;
 
 fn fuzz_config() -> ProptestConfig {
     ProptestConfig {
-        cases: FUZZ_CASES,
+        cases: fuzz_cases(),
         ..ProptestConfig::default()
+    }
+}
+
+fn fuzz_cases() -> u32 {
+    let value = std::env::var(FUZZ_CASES_ENV).ok();
+    parse_fuzz_cases(value.as_deref()).unwrap_or_else(|message| panic!("{message}"))
+}
+
+fn parse_fuzz_cases(value: Option<&str>) -> Result<u32, String> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_FUZZ_CASES);
+    };
+    let cases = value
+        .parse::<u32>()
+        .map_err(|_| format!("{FUZZ_CASES_ENV} must be a positive integer, got {value:?}"))?;
+    if cases == 0 {
+        return Err(format!(
+            "{FUZZ_CASES_ENV} must be a positive integer, got {value:?}"
+        ));
+    }
+    Ok(cases)
+}
+
+#[cfg(test)]
+mod case_tier_tests {
+    use super::{DEFAULT_FUZZ_CASES, parse_fuzz_cases};
+
+    #[test]
+    fn fuzz_case_override_preserves_full_default() {
+        assert_eq!(parse_fuzz_cases(None), Ok(DEFAULT_FUZZ_CASES));
+        assert_eq!(parse_fuzz_cases(Some("32")), Ok(32));
+    }
+
+    #[test]
+    fn fuzz_case_override_rejects_invalid_values() {
+        assert!(parse_fuzz_cases(Some("0")).is_err());
+        assert!(parse_fuzz_cases(Some("many")).is_err());
     }
 }
 

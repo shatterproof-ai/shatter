@@ -98,18 +98,50 @@ tasks:
     # this is the development tier documented in CLAUDE.md.
     deps: [frontends-built]
     cmds:
-      - task: workspace-test
+      - task: workspace-test-quick
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
-    # The workspace test includes shatter-core's e2e_concolic suite, which
-    # needs the TypeScript frontend built first (str-6y5w8).
+    # The 26 subprocess TypeScript E2E tests are intentionally excluded here
+    # and restored by core:test-ignored in the Full gate. Keep frontend build
+    # ordering for the remaining workspace integration tests; the Rust and Go
+    # frontend E2E suites remain in this Standard workspace tier.
     deps: [frontends-built, workspace-clippy]
     cmds:
       - task: workspace-test
 
+  # Keep this body in sync with workspace-test-quick; the wiring regression
+  # test enforces parity while their separate IDs protect Task's cache.
   workspace-test:
     internal: true
+    sources:
+      - Cargo.toml
+      - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
+      - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
+      - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
+      - shatter-llm/**/*.rs
+      - scripts/examples_checkout.py
+    cmds:
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py)"
+        export SHATTER_EXAMPLES_DIR="$examples_root"
+        export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
+        cargo test --workspace
+
+  # Keep this body in sync with workspace-test above. Its distinct checksum
+  # identity protects the reduced property/fuzz budget.
+  # Task does not fingerprint caller-provided environment variables, so using
+  # workspace-test here could let a quick result satisfy test-standard later.
+  workspace-test-quick:
+    internal: true
+    env:
+      PROPTEST_CASES: '32'
+      SHATTER_FUZZ_CASES: '32'
     sources:
       - Cargo.toml
       - Cargo.lock
@@ -155,12 +187,15 @@ tasks:
 
   check-fast:
     desc: "Fast quality gate (pre-push: clippy + tests + TS + Go; nested-build suites serialized)"
-    deps: [core:clippy, cli:clippy, ts:test, go:test]
+    deps: [core:clippy, cli:clippy, ts:test-fast, go:test-short]
+    env:
+      PROPTEST_CASES: '32'
+      SHATTER_FUZZ_CASES: '32'
     cmds:
       # Same starvation hazard as check-unit: cli:test and core:test-ignored
       # spawn cargo/go builds from inside tests; run them after the parallel
       # deps, one at a time, inside one heavyweight slot.
-      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test && task core:test-ignored"
+      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test-fast && task core:test-ignored-fast"
 
   # --- Cross-cutting quality (issue 5) ---
 
@@ -341,6 +376,8 @@ tasks:
     desc: Run repository meta checks (workflow lint, Semgrep)
     sources:
       - Taskfile.yml
+      - .config/nextest.toml
+      - .config/nextest-standalone.toml
       - .github/workflows/**/*.yml
       - .semgrep/**/*
       - install.sh
@@ -362,6 +399,17 @@ tasks:
       - demo/gauntlet.sh
       - scripts/test_demo_cache_modes.sh
       - scripts/test_root_cargo_phases.py
+      - scripts/go-test-tier.sh
+      - scripts/test_test_tier_wiring.py
+      - shatter-cli/Taskfile.yml
+      - shatter-core/Taskfile.yml
+      - shatter-core/tests/**/*.rs
+      - shatter-go/Taskfile.yml
+      - shatter-rust/Taskfile.yml
+      - shatter-rust-runtime/Taskfile.yml
+      - shatter-ts/Taskfile.yml
+      - shatter-ts/jest.config.js
+      - shatter-ts/src/**/*.ts
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_drift_patrol
@@ -374,6 +422,7 @@ tasks:
       - bash scripts/test_setup_hooks.sh
       - bash scripts/test_demo_cache_modes.sh
       - python3 -m unittest scripts.test_root_cargo_phases
+      - python3 -m unittest scripts.test_test_tier_wiring
       - cd shatter-go-tool && go test ./...
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
@@ -400,6 +449,10 @@ tasks:
 
   check:
     desc: "Full quality suite (staged fail-fast: static -> unit -> integration; one heavyweight slot machine-wide)"
+    env:
+      PROPTEST_CASES: '256'
+      SHATTER_FUZZ_CASES: '1000'
+      SHATTER_FAST_CHECK_NUM_RUNS: default
     cmds:
       # One wrapper = one machine-wide heavyweight slot for the whole check;
       # nested wrapped tasks pass through via SHATTER_GATE_LOCK_HELD.
@@ -470,7 +523,7 @@ tasks:
         examples_root="$(python3 scripts/examples_checkout.py)"
         export SHATTER_EXAMPLES_DIR="$examples_root"
         export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
-        bash scripts/gate-wrapper.sh e2e-ts cargo test --test e2e_concolic
+        bash scripts/gate-wrapper.sh e2e-ts cargo test --test e2e_concolic -- --include-ignored
 
   e2e-go:
     desc: "E2E concolic pipeline: Go frontend (e2e_concolic_go.rs)"

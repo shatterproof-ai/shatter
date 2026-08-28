@@ -28,6 +28,9 @@ jobs:
       # the runner instead (env wins over the config file). The Go caps
       # (-p=4 / GOMAXPROCS=8) already fit a 4-core runner.
       CARGO_BUILD_JOBS: "4"
+      PROPTEST_CASES: "256"
+      SHATTER_FUZZ_CASES: "1000"
+      SHATTER_FAST_CHECK_NUM_RUNS: default
 
     steps:
       - uses: actions/checkout@v4
