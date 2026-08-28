@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -41,6 +42,7 @@ CACHED_GOVERNED_TASKS = {
     "e2e-go",
     "e2e-rust",
 }
+TASK_NAME_TOKEN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 
 
 def load_tasks() -> dict[str, dict]:
@@ -53,22 +55,46 @@ def command_text(command: object) -> str | None:
 
 
 def task_references(task: dict) -> list[str]:
-    references: list[str] = list(task.get("deps", []))
+    references: list[str] = []
+    for dependency in task.get("deps", []):
+        if isinstance(dependency, str):
+            references.append(dependency)
+        elif isinstance(dependency, dict) and isinstance(dependency.get("task"), str):
+            references.append(dependency["task"])
+
     for command in task.get("cmds", []):
         if isinstance(command, dict) and isinstance(command.get("task"), str):
             references.append(command["task"])
         text = command_text(command)
         if text:
-            words = shlex.split(text)
-            references.extend(
-                words[index + 1]
-                for index, word in enumerate(words[:-1])
-                if word == "task"
-            )
+            references.extend(TASK_NAME_TOKEN.findall(text))
     return references
 
 
 class GovernedTaskGraphTests(unittest.TestCase):
+    def test_task_reference_scan_handles_flags_maps_and_unbalanced_shell(self) -> None:
+        implementations = {
+            "check-governed",
+            "conformance-governed",
+            "parity-governed",
+            "e2e-governed",
+            "e2e-ts-governed",
+            "e2e-rust-governed",
+        }
+        task = {
+            "deps": [
+                "e2e-governed",
+                {"task": "e2e-ts-governed", "vars": {"MODE": "full"}},
+            ],
+            "cmds": [
+                "task --force check-governed",
+                "task --dir . conformance-governed",
+                {"task": "parity-governed"},
+                "sh -c 'task e2e-rust-governed",
+            ],
+        }
+        self.assertEqual(implementations.intersection(task_references(task)), implementations)
+
     def test_every_public_spelling_wraps_one_hidden_full_dag(self) -> None:
         tasks = load_tasks()
         implementation_names = {
@@ -90,9 +116,9 @@ class GovernedTaskGraphTests(unittest.TestCase):
                 wrapper_owners.add(public)
 
                 implementation_task = tasks[implementation]
-                # go-task refuses shell entry into internal:true tasks, so the
-                # callable implementation is hidden from the normal task list
-                # by omitting desc/aliases.
+                # The wrapper invokes its implementation through a fresh task
+                # CLI process, which cannot enter internal:true tasks. Omit
+                # desc/aliases instead so it stays off the normal task list.
                 self.assertNotIn("desc", implementation_task)
                 self.assertNotIn("aliases", implementation_task)
                 self.assertNotIn("internal", implementation_task)
