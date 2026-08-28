@@ -85,6 +85,20 @@ jobs:
       - name: Full landing gate (task check)
         run: task check
 
+      # str-35vtk.21: task check's check-static/check-unit deps clippy and
+      # test individual crates (core:clippy, cli:clippy, ...), not the
+      # `workspace-clippy`/`workspace-test` Taskfile tasks that the removed
+      # `task test-standard` step depended on -- so shatter-llm (a real
+      # workspace member) is not covered by `task check` above. Cover it
+      # explicitly here until it can be folded into check-static/check-unit's
+      # deps in Taskfile.yml (tracked separately; see the str-35vtk.21 bd
+      # note).
+      - name: shatter-llm clippy
+        run: cargo clippy -p shatter-llm -- -D warnings
+
+      - name: shatter-llm tests
+        run: cargo test -p shatter-llm
+
       # Mandatory on every host regardless of actionlint availability —
       # asserts this workflow's structural invariants (task check invoked
       # exactly once, no standalone parity/conformance steps) so a future

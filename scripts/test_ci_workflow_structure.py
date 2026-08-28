@@ -39,6 +39,17 @@ REQUIRED_SETUP_ACTIONS = [
 
 STANDALONE_GATES_FOLDED_INTO_CHECK = {"parity", "conformance", "test-standard"}
 
+# shatter-llm is a real Cargo workspace member, but `task check`'s
+# check-static/check-unit deps clippy/test individual crates (core:clippy,
+# cli:clippy, ...) rather than the workspace-wide `workspace-clippy` /
+# `workspace-test` tasks the removed `task test-standard` step used, so it
+# is not covered by `task check`. Until that's folded into Taskfile.yml,
+# ci.yml must run these explicitly.
+REQUIRED_SHATTER_LLM_COMMANDS = [
+    re.compile(r"^\s*cargo\s+clippy\s+-p\s+shatter-llm\b"),
+    re.compile(r"^\s*cargo\s+test\s+-p\s+shatter-llm\b"),
+]
+
 
 def _iter_run_step_task_commands(workflow: dict):
     """Yield the bare `task <name>` command from every run step in every job."""
@@ -51,6 +62,15 @@ def _iter_run_step_task_commands(workflow: dict):
                 match = TASK_COMMAND_RE.match(line)
                 if match:
                     yield match.group("name")
+
+
+def _iter_run_lines(workflow: dict):
+    for job in workflow.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            yield from run.splitlines()
 
 
 class CiWorkflowStructureTests(unittest.TestCase):
@@ -74,6 +94,16 @@ class CiWorkflowStructureTests(unittest.TestCase):
             offenders,
             f"found standalone step(s) for gate(s) already covered by `task check`: {sorted(offenders)}",
         )
+
+    def test_shatter_llm_clippy_and_test_present(self):
+        run_lines = list(_iter_run_lines(self.workflow))
+        for pattern in REQUIRED_SHATTER_LLM_COMMANDS:
+            self.assertTrue(
+                any(pattern.match(line) for line in run_lines),
+                f"expected a run step matching {pattern.pattern!r} covering the "
+                "shatter-llm workspace member, which `task check` does not clippy/test "
+                "(see the str-35vtk.21 bd note)",
+            )
 
     def test_setup_and_cache_steps_retained(self):
         uses_values = [
