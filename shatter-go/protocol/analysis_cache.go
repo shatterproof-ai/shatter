@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -174,12 +176,12 @@ const frontendFingerprintEnvVar = "SHATTER_FRONTEND_FINGERPRINT"
 
 var selfFingerprint = sync.OnceValue(computeSelfFingerprint)
 
-// frontendFingerprint identifies THIS frontend build for cache keying: the
-// SHA-256 of the running executable's bytes (first 32 hex chars), computed
-// once per process. Hashing the binary itself means any frontend change —
+// frontendFingerprint identifies THIS frontend build for cache keying:
+// a SHA-256 (first 32 hex chars) of build identity metadata read from the
+// running executable, computed once per process. Any frontend change —
 // analyzer, wrapper, planner — invalidates cached analyses with zero
 // version-constant maintenance. Falls back to a process-unique string if
-// the executable cannot be read (conservative: never reuses another
+// the executable cannot be identified (conservative: never reuses another
 // build's entries).
 func frontendFingerprint() string {
 	if override := strings.TrimSpace(os.Getenv(frontendFingerprintEnvVar)); override != "" {
@@ -188,11 +190,17 @@ func frontendFingerprint() string {
 	return selfFingerprint()
 }
 
-// computeSelfFingerprint streams the running executable through SHA-256 (via
-// io.Copy, not a whole-file read) since a compiled Go binary can be tens of
-// MB — hashFileBytes above loads its whole target into memory first, and
-// computePrepareID (handler.go) hashes short strings, not files, so neither
-// fits this call site.
+// computeSelfFingerprint identifies the running executable's build without
+// streaming its full contents through SHA-256 (str-gjsb2: a compiled Go
+// binary can be tens of MB, and reading+hashing it all added latency to the
+// first analyze request in every fresh frontend process). debug/buildinfo
+// reads only the build-info section embedded by the Go toolchain (module
+// path/version/sum, dependency versions, and build settings such as
+// vcs.revision / vcs.modified / GOARCH / -trimpath) — the same content that
+// changes whenever the source, dependencies, or build configuration change.
+// Executable size and mtime are folded in too (a cheap os.Stat, not a read)
+// to catch rebuilds that buildinfo alone wouldn't distinguish, e.g. an
+// uncommitted source edit rebuilt against the same dependency set.
 func computeSelfFingerprint() string {
 	executablePath, err := os.Executable()
 	if err != nil {
@@ -200,19 +208,43 @@ func computeSelfFingerprint() string {
 		slog.Default().Warn("frontend self-fingerprint: os.Executable failed; discovery cache will always miss in this process", "error", err, "fallback", fallback)
 		return fallback
 	}
-	file, err := os.Open(executablePath) //nolint:gosec
+	info, err := buildinfo.ReadFile(executablePath)
 	if err != nil {
-		fallback := fmt.Sprintf("unreadable-executable-%d", time.Now().UnixNano())
-		slog.Default().Warn("frontend self-fingerprint: cannot open own executable; discovery cache will always miss in this process", "path", executablePath, "error", err, "fallback", fallback)
+		fallback := fmt.Sprintf("unreadable-buildinfo-%d", time.Now().UnixNano())
+		slog.Default().Warn("frontend self-fingerprint: cannot read build info from own executable; discovery cache will always miss in this process", "path", executablePath, "error", err, "fallback", fallback)
 		return fallback
 	}
-	defer func() { _ = file.Close() }()
+
 	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		fallback := fmt.Sprintf("unhashable-executable-%d", time.Now().UnixNano())
-		slog.Default().Warn("frontend self-fingerprint: cannot hash own executable; discovery cache will always miss in this process", "path", executablePath, "error", err, "fallback", fallback)
-		return fallback
+	writeStringField(hasher, "go_version", info.GoVersion)
+	writeStringField(hasher, "main_path", info.Path)
+	writeStringField(hasher, "main_module", info.Main.Path)
+	writeStringField(hasher, "main_version", info.Main.Version)
+	writeStringField(hasher, "main_sum", info.Main.Sum)
+
+	deps := append([]*debug.Module(nil), info.Deps...)
+	sort.Slice(deps, func(i, j int) bool { return deps[i].Path < deps[j].Path })
+	for _, dep := range deps {
+		if dep == nil {
+			continue
+		}
+		writeStringField(hasher, "dep:"+dep.Path, dep.Version+"@"+dep.Sum)
 	}
+
+	settings := append([]debug.BuildSetting(nil), info.Settings...)
+	sort.Slice(settings, func(i, j int) bool { return settings[i].Key < settings[j].Key })
+	for _, setting := range settings {
+		writeStringField(hasher, "setting:"+setting.Key, setting.Value)
+	}
+
+	if stat, statErr := os.Stat(executablePath); statErr == nil {
+		writeStringField(hasher, "exe_size", strconv.FormatInt(stat.Size(), 10))
+		writeStringField(hasher, "exe_mtime", stat.ModTime().UTC().Format(time.RFC3339Nano))
+	} else {
+		// Non-fatal: buildinfo alone still distinguishes most rebuilds.
+		slog.Default().Warn("frontend self-fingerprint: cannot stat own executable; falling back to build info only", "path", executablePath, "error", statErr)
+	}
+
 	return hex.EncodeToString(hasher.Sum(nil))[:discoveryHashHexLength]
 }
 
