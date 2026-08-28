@@ -7052,10 +7052,9 @@ fn module_path_for_crate_file(crate_root: &Path, file_path: &Path) -> Option<Str
     let last = parts.last_mut()?;
     if last == "lib.rs" || last == "main.rs" || last == "mod.rs" {
         parts.pop();
-    } else if let Some(stripped) = last.strip_suffix(".rs") {
-        *last = stripped.to_string();
     } else {
-        return None;
+        let stripped = last.strip_suffix(".rs")?;
+        *last = stripped.to_string();
     }
     Some(parts.join("::"))
 }
