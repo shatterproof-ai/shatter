@@ -19,7 +19,9 @@ tasks:
     cmds:
       - |
         if command -v cargo-nextest >/dev/null 2>&1; then
-          cargo nextest run --config-file ../.config/nextest.toml
+          # This standalone workspace cannot load the root config because its
+          # root-only harness filter intentionally matches no local binaries.
+          cargo nextest run --test-threads 4
         else
           cargo test
         fi

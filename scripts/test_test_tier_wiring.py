@@ -53,6 +53,9 @@ class TestTestTierWiring(unittest.TestCase):
         self.assertIn("cargo test -p shatter-core --doc", contents["core"])
         self.assertIn("cargo test --doc", contents["rust"])
         self.assertIn("--run-ignored all", contents["core"])
+        for standalone in (contents["rust"], contents["runtime"]):
+            self.assertIn("cargo nextest run --test-threads 4", standalone)
+            self.assertNotIn("--config-file ../.config/nextest.toml", standalone)
 
     def test_fast_and_full_task_budgets_are_distinct(self) -> None:
         root_taskfile = (ROOT / "Taskfile.yml").read_text()
