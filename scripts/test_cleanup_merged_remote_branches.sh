@@ -32,6 +32,13 @@ BARE="$WORKDIR/bare-remote.git"
 CLONE="$WORKDIR/clone"
 
 git init --quiet --bare "$BARE"
+# Set the bare "remote"'s HEAD symref explicitly rather than relying on the
+# invoking environment's `init.defaultBranch`: this dev environment has it
+# set to "main" globally, but CI runners may not, in which case the bare
+# repo's HEAD would default to "master" (or be unset) while only "main" is
+# ever pushed below, making `git remote set-head origin -a` fail with
+# "Cannot determine remote HEAD" and abort this whole test under set -e.
+git -C "$BARE" symbolic-ref HEAD refs/heads/main
 
 git init --quiet -b main "$CLONE"
 cd "$CLONE"
