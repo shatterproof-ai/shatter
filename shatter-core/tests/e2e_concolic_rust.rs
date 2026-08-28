@@ -1987,3 +1987,139 @@ async fn e2e_rust_tuple_param_discovers_all_branches() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// str-s3rf regression gate: a crate_bridge target with an "unusual" fn shape
+/// — a serde `deserialize_with` helper generic over `D: Deserializer<'de>`,
+/// the exact shape identified on the whole-pure-corpus scan
+/// (`api/src/domain.rs::deserialize_some`) — must be classified `Unsupported`
+/// with a specific, human-readable reason, never surfaced as a bare
+/// `dispatch_failed` with no explanation.
+///
+/// ## The bug this guards against
+///
+/// `execute_function_crate_bridge` (`shatter-rust/src/executor.rs`) rejects
+/// any target whose signature `has_generics` with a specific `NonExecutable`
+/// message ("has generic type parameters — cannot deserialise concrete
+/// inputs"). If that reason were ever dropped on its way back to the engine
+/// — e.g. swallowed by a transport error path instead of routed through
+/// `ObserveError::Unsupported` / `ExploreError::Unsupported` — the scan
+/// orchestrator's `all_execute_skip` fallback (`shatter-core/src/report.rs`)
+/// would report the function as `dispatch_failed` with only a generic "no
+/// successful observations recorded" message, exactly the bare/unexplained
+/// failure str-s3rf was filed to prevent (the issue borrows the phrase
+/// "unknown receiver kind" from the analogous Go launcher-wrapper sentinel).
+///
+/// ## What this asserts
+///
+/// `orchestrator::explore()` must return `Err(ExploreError::Unsupported(reason))`
+/// with `reason` naming the actual cause ("generic"), not silently produce an
+/// empty, unexplained result.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_crate_bridge_generic_deserialize_with_fn_reports_unsupported_with_reason() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let crate_dir = tmp.path();
+    let src_dir = crate_dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\n\
+         name = \"shatter_s3rf_fixture\"\n\
+         version = \"0.0.0\"\n\
+         edition = \"2021\"\n\n\
+         [lib]\n\
+         path = \"src/lib.rs\"\n\n\
+         [dependencies]\n\
+         serde = { version = \"1\", features = [\"derive\"] }\n",
+    )
+    .expect("write Cargo.toml");
+
+    std::fs::write(crate_dir.join("src").join("lib.rs"), "pub mod domain;\n")
+        .expect("write lib.rs");
+
+    // Mirrors the real-world shape from the whole-pure-corpus scan:
+    // `api/src/domain.rs::deserialize_some`, a serde `deserialize_with`
+    // helper generic over the `Deserializer` trait.
+    let domain_path = src_dir.join("domain.rs");
+    std::fs::write(
+        &domain_path,
+        r#"
+pub fn deserialize_some<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+"#,
+    )
+    .expect("write domain.rs");
+    let domain_str = domain_path.to_string_lossy().to_string();
+
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &domain_str, "deserialize_some").await;
+    assert_eq!(analysis.params.len(), 1, "deserialize_some takes 1 param");
+
+    instrument_function(&mut frontend, &domain_str, "deserialize_some").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(2),
+        max_executions: Some(2),
+        plateau_threshold: 3,
+        ..Default::default()
+    };
+
+    let seed_inputs = vec![vec![serde_json::json!("hello")]];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "deserialize_some",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    match explore_outcome {
+        Err(orchestrator::ExploreError::Unsupported(reason)) => {
+            assert!(
+                reason.to_lowercase().contains("generic"),
+                "expected the Unsupported reason to name the actual cause \
+                 (generic type parameters), got a reason that does not \
+                 mention it: {reason:?}"
+            );
+        }
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!(
+                    "skipping e2e_rust_crate_bridge_generic_deserialize_with_fn_reports_unsupported_with_reason: {message}"
+                );
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!(
+                "expected ExploreError::Unsupported with a specific reason, got a \
+                 different error (this is the str-s3rf regression: a generic-fn \
+                 crate_bridge target must be cleanly classified unsupported, not \
+                 fail some other way): {message}"
+            );
+        }
+        Ok((result, _)) => {
+            panic!(
+                "expected deserialize_some (generic over D: Deserializer<'de>) to be \
+                 classified Unsupported by crate_bridge's has_generics check, but \
+                 exploration succeeded instead: {result:?}"
+            );
+        }
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
