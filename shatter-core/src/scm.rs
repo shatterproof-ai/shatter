@@ -105,12 +105,18 @@ impl ScmProvider for GitProvider {
         let repo_root = repo_root(root)?;
 
         // Staged + unstaged changes vs HEAD, scoped to `root` via `-- .`.
-        let output = run_git(root, &["diff", "--name-only", "HEAD", "--", "."])?;
-        let mut files = parse_file_list(&output, &repo_root);
+        let mut files = diff_names(
+            root,
+            &repo_root,
+            &["diff", "--name-only", "HEAD", "--", "."],
+        )?;
 
         // Also include staged-only changes (new files that are staged but not yet committed)
-        let staged_output = run_git(root, &["diff", "--name-only", "--cached", "--", "."])?;
-        let staged_files = parse_file_list(&staged_output, &repo_root);
+        let staged_files = diff_names(
+            root,
+            &repo_root,
+            &["diff", "--name-only", "--cached", "--", "."],
+        )?;
         for f in staged_files {
             if !files.contains(&f) {
                 files.push(f);
@@ -121,11 +127,11 @@ impl ScmProvider for GitProvider {
             // --full-name: ls-files prints cwd-relative paths by default,
             // unlike `git diff --name-only` which is repo-root-relative. The
             // scan root may be a repo subdirectory (str-g9i4v).
-            let untracked_output = run_git(
+            let untracked = diff_names(
                 root,
+                &repo_root,
                 &["ls-files", "--others", "--exclude-standard", "--full-name"],
             )?;
-            let untracked = parse_file_list(&untracked_output, &repo_root);
             for f in untracked {
                 if !files.contains(&f) {
                     files.push(f);
@@ -136,11 +142,7 @@ impl ScmProvider for GitProvider {
         // Drop paths git named that no longer exist (deletions, and the old
         // side of a rename that crossed the scan-root boundary). See the
         // existence contract above.
-        files.retain(|path| path.exists());
-
-        files.sort();
-        files.dedup();
-        Ok(files)
+        Ok(finalize_file_list(files))
     }
 
     /// Scoping and existence contracts: same as `changed_files` (str-a2wkn,
@@ -152,12 +154,12 @@ impl ScmProvider for GitProvider {
 
         // Three-dot diff: changes between merge-base(base_ref, HEAD) and HEAD
         let range = format!("{base_ref}...HEAD");
-        let output = run_git(root, &["diff", "--name-only", &range, "--", "."])?;
-        let mut files = parse_file_list(&output, &repo_root);
-        files.retain(|path| path.exists());
-        files.sort();
-        files.dedup();
-        Ok(files)
+        let files = diff_names(
+            root,
+            &repo_root,
+            &["diff", "--name-only", &range, "--", "."],
+        )?;
+        Ok(finalize_file_list(files))
     }
 
     /// Scoping and existence contracts: same as `diff_files` above.
@@ -169,12 +171,12 @@ impl ScmProvider for GitProvider {
     ) -> Result<Vec<PathBuf>, ScmError> {
         let repo_root = repo_root(root)?;
         let range = format!("{since_ref}...{until_ref}");
-        let output = run_git(root, &["diff", "--name-only", &range, "--", "."])?;
-        let mut files = parse_file_list(&output, &repo_root);
-        files.retain(|path| path.exists());
-        files.sort();
-        files.dedup();
-        Ok(files)
+        let files = diff_names(
+            root,
+            &repo_root,
+            &["diff", "--name-only", &range, "--", "."],
+        )?;
+        Ok(finalize_file_list(files))
     }
 
     fn diff_hunks(&self, root: &Path, base_ref: &str) -> Result<DiffHunkSet, ScmError> {
@@ -622,6 +624,26 @@ fn parse_file_list(output: &str, root: &Path) -> Vec<PathBuf> {
         .filter(|line| !line.is_empty())
         .map(|line| root.join(line.trim()))
         .collect()
+}
+
+/// Run a git file-listing command scoped to `root` and parse its output into
+/// `repo_root`-relative absolute paths. Shared by `changed_files`,
+/// `diff_files`, and `diff_files_range` (str-wl1du) — the `run_git ->
+/// parse_file_list` pairing they otherwise each hand-roll.
+fn diff_names(root: &Path, repo_root: &Path, git_args: &[&str]) -> Result<Vec<PathBuf>, ScmError> {
+    let output = run_git(root, git_args)?;
+    Ok(parse_file_list(&output, repo_root))
+}
+
+/// Apply the shared existence-filter + sort + dedup pass to a raw file list.
+/// Shared by `changed_files`, `diff_files`, and `diff_files_range`
+/// (str-wl1du). See the existence contract documented on `changed_files`:
+/// only paths that still exist on disk are returned.
+fn finalize_file_list(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
+    files.retain(|path| path.exists());
+    files.sort();
+    files.dedup();
+    files
 }
 
 #[cfg(test)]
