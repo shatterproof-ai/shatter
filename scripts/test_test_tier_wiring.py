@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -64,6 +67,16 @@ class TestTestTierWiring(unittest.TestCase):
             root_taskfile,
         )
 
+    def test_case_budgeted_rust_tasks_never_reuse_a_different_tier_cache(self) -> None:
+        root_taskfile = (ROOT / "Taskfile.yml").read_text()
+        core_taskfile = (ROOT / "shatter-core/Taskfile.yml").read_text()
+        self.assertIn("- task: workspace-test-quick", root_taskfile)
+        self.assertIn("- task: workspace-test", root_taskfile)
+        self.assertIn("task core:test-ignored-fast", root_taskfile)
+        self.assertIn("- task: core:test-ignored", root_taskfile)
+        self.assertRegex(root_taskfile, r"(?m)^  workspace-test-quick:$")
+        self.assertRegex(core_taskfile, r"(?m)^  test-ignored-fast:$")
+
     def test_every_ts_e2e_test_is_in_the_integration_tier(self) -> None:
         source = (ROOT / "shatter-core/tests/e2e_concolic.rs").read_text()
         self.assertEqual(source.count("#[tokio::test]"), 26)
@@ -98,6 +111,44 @@ class TestTestTierWiring(unittest.TestCase):
         self.assertIn("rapid_checks=100", runner)
         self.assertIn("rapid_checks=32", runner)
         self.assertIn('"pgregory.net/rapid"', runner)
+
+    def test_go_runner_classifies_external_rapid_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_go = Path(temp_dir) / "go"
+            fake_go.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "list" && "$2" == "-f" ]]; then
+  [[ "$3" == *XTestImports* ]] && printf '%s\\n' example/external
+elif [[ "$1" == "list" ]]; then
+  printf '%s\\n' example/external
+elif [[ "$1" == "test" ]]; then
+  printf '%s\\n' "$*"
+fi
+"""
+            )
+            fake_go.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{temp_dir}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts/go-test-tier.sh"), "short"],
+                cwd=ROOT / "shatter-go",
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        self.assertIn("example/external -rapid.checks=32", result.stdout)
+
+    def test_go_runner_help_succeeds(self) -> None:
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/go-test-tier.sh"), "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("full|short", result.stdout)
 
     def test_ci_declares_full_property_budgets(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

@@ -2,11 +2,18 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 full|short" >&2
-  exit 64
+  echo "usage: $0 full|short"
 }
 
-[[ $# -eq 1 ]] || usage
+if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ne 1 ]]; then
+  usage >&2
+  exit 64
+fi
 
 case "$1" in
   full)
@@ -17,13 +24,13 @@ case "$1" in
     rapid_checks=32
     short_arg=(-short)
     ;;
-  *) usage ;;
+  *) usage >&2; exit 64 ;;
 esac
 
 rapid_packages="$({
   # Dollar expressions belong to Go templates, not the shell.
   # shellcheck disable=SC2016
-  go list -f '{{ $package := .ImportPath }}{{ range .TestImports }}{{ if eq . "pgregory.net/rapid" }}{{ $package }}{{ "\n" }}{{ end }}{{ end }}' ./...
+  go list -f '{{ $package := .ImportPath }}{{ range .TestImports }}{{ if eq . "pgregory.net/rapid" }}{{ $package }}{{ "\n" }}{{ end }}{{ end }}{{ range .XTestImports }}{{ if eq . "pgregory.net/rapid" }}{{ $package }}{{ "\n" }}{{ end }}{{ end }}' ./...
 } | sort -u)"
 
 plain_packages=""

@@ -55,6 +55,30 @@ tasks:
           bash ../scripts/gate-wrapper.sh core:test-ignored cargo test -p shatter-core -- --include-ignored
         fi
 
+  # Separate checksum identity for check-fast's reduced property/fuzz budget.
+  # Task does not include caller-provided environment variables in its cache.
+  test-ignored-fast:
+    desc: Run shatter-core tests including ignored tests with the caller's fast budget
+    sources:
+      - src/**/*.rs
+      - tests/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - build.rs
+    cmds:
+      - |
+        examples_root="$(python3 ../scripts/examples_checkout.py)"
+        if [ -x "$PWD/../shatter-go/bin/shatter-go" ]; then
+          export SHATTER_GO_FRONTEND_BIN="$PWD/../shatter-go/bin/shatter-go"
+        fi
+        export SHATTER_EXAMPLES_DIR="$examples_root"
+        if command -v cargo-nextest >/dev/null 2>&1; then
+          cargo test -p shatter-core --doc
+          bash ../scripts/gate-wrapper.sh core:test-ignored-fast cargo nextest run -p shatter-core --run-ignored all
+        else
+          bash ../scripts/gate-wrapper.sh core:test-ignored-fast cargo test -p shatter-core -- --include-ignored
+        fi
+
   clippy:
     desc: Run clippy on shatter-core
     sources:

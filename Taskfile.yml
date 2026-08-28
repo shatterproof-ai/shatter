@@ -101,7 +101,7 @@ tasks:
       PROPTEST_CASES: '32'
       SHATTER_FUZZ_CASES: '32'
     cmds:
-      - task: workspace-test
+      - task: workspace-test-quick
 
   test-standard:
     desc: "Standard: cargo tests + clippy"
@@ -112,6 +112,30 @@ tasks:
       - task: workspace-test
 
   workspace-test:
+    internal: true
+    sources:
+      - Cargo.toml
+      - Cargo.lock
+      - shatter-core/Cargo.toml
+      - shatter-core/build.rs
+      - shatter-core/**/*.rs
+      - shatter-cli/Cargo.toml
+      - shatter-cli/build.rs
+      - shatter-cli/**/*.rs
+      - shatter-llm/Cargo.toml
+      - shatter-llm/**/*.rs
+      - scripts/examples_checkout.py
+    cmds:
+      - |
+        examples_root="$(python3 scripts/examples_checkout.py)"
+        export SHATTER_EXAMPLES_DIR="$examples_root"
+        export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
+        cargo test --workspace
+
+  # Keep a distinct checksum identity for the reduced property/fuzz budget.
+  # Task does not fingerprint caller-provided environment variables, so using
+  # workspace-test here could let a quick result satisfy test-standard later.
+  workspace-test-quick:
     internal: true
     sources:
       - Cargo.toml
@@ -166,7 +190,7 @@ tasks:
       # Same starvation hazard as check-unit: cli:test and core:test-ignored
       # spawn cargo/go builds from inside tests; run them after the parallel
       # deps, one at a time, inside one heavyweight slot.
-      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test && task core:test-ignored"
+      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test && task core:test-ignored-fast"
 
   # --- Cross-cutting quality (issue 5) ---
 
