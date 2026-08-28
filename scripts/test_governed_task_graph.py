@@ -33,6 +33,14 @@ GOVERNED_TASKS = {
     "gauntlet": ("gauntlet", "gauntlet-governed"),
     "gauntlet-cold": ("gauntlet-cold", "gauntlet-cold-governed"),
 }
+CACHED_GOVERNED_TASKS = {
+    "conformance",
+    "parity",
+    "golden-test",
+    "e2e-ts",
+    "e2e-go",
+    "e2e-rust",
+}
 
 
 def load_tasks() -> dict[str, dict]:
@@ -72,7 +80,7 @@ class GovernedTaskGraphTests(unittest.TestCase):
         for public, (label, implementation) in GOVERNED_TASKS.items():
             with self.subTest(task=public):
                 public_task = tasks[public]
-                for key in ("deps", "preconditions", "sources", "env"):
+                for key in ("deps", "env"):
                     self.assertNotIn(key, public_task)
                 self.assertEqual(len(public_task.get("cmds", [])), 1)
                 self.assertEqual(
@@ -88,6 +96,8 @@ class GovernedTaskGraphTests(unittest.TestCase):
                 self.assertNotIn("desc", implementation_task)
                 self.assertNotIn("aliases", implementation_task)
                 self.assertNotIn("internal", implementation_task)
+                self.assertNotIn("sources", implementation_task)
+                self.assertNotIn("preconditions", implementation_task)
                 self.assertTrue(
                     implementation_task.get("deps") or implementation_task.get("cmds"),
                     f"{implementation} does not own any work",
@@ -120,10 +130,13 @@ class GovernedTaskGraphTests(unittest.TestCase):
             )
 
         self.assertEqual(wrapper_owners, set(GOVERNED_TASKS))
+        self.assertTrue(
+            all(tasks[task_name].get("sources") for task_name in CACHED_GOVERNED_TASKS)
+        )
 
     def test_lease_is_acquired_before_every_injected_prerequisite(self) -> None:
-        if shutil.which("task") is None or shutil.which("flock") is None:
-            self.skipTest("task and flock are required")
+        self.assertIsNotNone(shutil.which("task"), "task is required")
+        self.assertIsNotNone(shutil.which("flock"), "flock is required")
 
         tasks = load_tasks()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -158,7 +171,7 @@ class GovernedTaskGraphTests(unittest.TestCase):
             for public in GOVERNED_TASKS:
                 with self.subTest(task=public):
                     event_log.unlink(missing_ok=True)
-                    self._run_task(fixture, environment, public)
+                    self._run_task(fixture, environment, public, force=False)
                     event_text = event_log.read_text()
                     events = event_text.splitlines()
                     self.assertEqual(events[0], "lease-acquired")
@@ -172,8 +185,8 @@ class GovernedTaskGraphTests(unittest.TestCase):
                         )
 
     def test_nested_governed_task_acquires_one_lease(self) -> None:
-        if shutil.which("task") is None or shutil.which("flock") is None:
-            self.skipTest("task and flock are required")
+        self.assertIsNotNone(shutil.which("task"), "task is required")
+        self.assertIsNotNone(shutil.which("flock"), "flock is required")
 
         tasks = load_tasks()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -222,6 +235,49 @@ tasks:
         self.assertIn("inner-prerequisite:lock=1", events)
         self.assertIn("inner-body:lock=1", events)
 
+    def test_unchanged_cached_gate_does_not_acquire_a_lease(self) -> None:
+        self.assertIsNotNone(shutil.which("task"), "task is required")
+        self.assertIsNotNone(shutil.which("flock"), "flock is required")
+
+        tasks = load_tasks()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = Path(temp_dir)
+            self._write_runtime_fixture_tools(fixture)
+            source = fixture / "input.txt"
+            source.write_text("first\n")
+            lines = ["version: '3'", "tasks:"]
+            for public in sorted(CACHED_GOVERNED_TASKS):
+                implementation = GOVERNED_TASKS[public][1]
+                wrapper = command_text(tasks[public]["cmds"][0])
+                self._wrapper_argv(wrapper)
+                lines.extend(
+                    [
+                        f"  {public}:",
+                        "    sources: [input.txt]",
+                        "    cmds:",
+                        "      - |-",
+                        f"          {wrapper}",
+                        f"  {implementation}:",
+                        "    cmds:",
+                        "      - |-",
+                        f"          echo body:{public} >> \"$EVENT_LOG\"",
+                    ]
+                )
+            (fixture / "Taskfile.yml").write_text("\n".join(lines) + "\n")
+
+            event_log = fixture / "events.log"
+            environment = self._fixture_environment(fixture, event_log)
+            for public in sorted(CACHED_GOVERNED_TASKS):
+                with self.subTest(task=public):
+                    event_log.unlink(missing_ok=True)
+                    self._run_task(fixture, environment, public, force=False)
+                    first_events = event_log.read_text().splitlines()
+                    self.assertEqual(first_events.count("lease-acquired"), 1)
+                    self.assertIn(f"body:{public}", first_events)
+
+                    self._run_task(fixture, environment, public, force=False)
+                    self.assertEqual(event_log.read_text().splitlines(), first_events)
+
     @staticmethod
     def _wrapper_argv(command: object) -> list[str]:
         text = command_text(command)
@@ -233,9 +289,15 @@ tasks:
         return argv
 
     @staticmethod
-    def _run_task(fixture: Path, environment: dict[str, str], task_name: str) -> None:
+    def _run_task(
+        fixture: Path,
+        environment: dict[str, str],
+        task_name: str,
+        *,
+        force: bool = True,
+    ) -> None:
         completed = subprocess.run(
-            ["task", "--force", task_name],
+            ["task", *(["--force"] if force else []), task_name],
             cwd=fixture,
             env=environment,
             text=True,

@@ -224,11 +224,6 @@ tasks:
 
   conformance:
     desc: Run protocol conformance tests across all frontends
-    cmds:
-      - bash scripts/gate-wrapper.sh conformance task conformance-governed
-
-  conformance-governed:
-    deps: [ts:build, go:build, rust-fe:build]
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
@@ -240,15 +235,15 @@ tasks:
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
     cmds:
+      - bash scripts/gate-wrapper.sh conformance task conformance-governed
+
+  conformance-governed:
+    deps: [ts:build, go:build, rust-fe:build]
+    cmds:
       - python3 protocol/conformance/conformance_harness.py
 
   parity:
     desc: Validate frontend feature parity (registry consistency + capability contract)
-    cmds:
-      - bash scripts/gate-wrapper.sh parity task parity-governed
-
-  parity-governed:
-    deps: [ts:build, go:build, rust-fe:build]
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
@@ -264,6 +259,11 @@ tasks:
       - shatter-ts/src/**/*.ts
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
+    cmds:
+      - bash scripts/gate-wrapper.sh parity task parity-governed
+
+  parity-governed:
+    deps: [ts:build, go:build, rust-fe:build]
     cmds:
       - python3 scripts/validate-protocol-registry.py
       - python3 scripts/protocol-codegen.py --check
@@ -311,11 +311,6 @@ tasks:
 
   golden-test:
     desc: Run cross-frontend parity golden tests (compare capabilities and outputs against recorded expectations)
-    cmds:
-      - bash scripts/gate-wrapper.sh golden task golden-test-governed
-
-  golden-test-governed:
-    deps: [ts:build, go:build, rust-fe:build]
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
@@ -328,6 +323,11 @@ tasks:
       - shatter-ts/src/**/*.ts
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
+    cmds:
+      - bash scripts/gate-wrapper.sh golden task golden-test-governed
+
+  golden-test-governed:
+    deps: [ts:build, go:build, rust-fe:build]
     cmds:
       - python3 protocol/conformance/run_golden_tests.py
 
@@ -521,6 +521,8 @@ tasks:
       - go:build
     cmds:
       - task: core:test-ignored
+      # Keep the public spellings: their nested wrappers pass through the
+      # existing lease, while their source caches can still skip unchanged work.
       - task: conformance
       - task: parity
 
@@ -542,17 +544,17 @@ tasks:
 
   e2e-ts:
     desc: "E2E concolic pipeline: TypeScript frontend (e2e_concolic.rs; also uses the prebuilt Go frontend for its Go planner section)"
-    cmds:
-      - bash scripts/gate-wrapper.sh e2e-ts task e2e-ts-governed
-
-  e2e-ts-governed:
-    deps: [ts:build, go:build]
     sources:
       - shatter-core/tests/e2e_concolic.rs
       - shatter-core/src/**/*.rs
       - shatter-ts/src/**/*.ts
       - shatter-go/**/*.go
       - scripts/examples_checkout.py
+    cmds:
+      - bash scripts/gate-wrapper.sh e2e-ts task e2e-ts-governed
+
+  e2e-ts-governed:
+    deps: [ts:build, go:build]
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
@@ -562,16 +564,16 @@ tasks:
 
   e2e-go:
     desc: "E2E concolic pipeline: Go frontend (e2e_concolic_go.rs)"
-    cmds:
-      - bash scripts/gate-wrapper.sh e2e-go task e2e-go-governed
-
-  e2e-go-governed:
-    deps: [go:build]
     sources:
       - shatter-core/tests/e2e_concolic_go.rs
       - shatter-core/src/**/*.rs
       - shatter-go/**/*.go
       - scripts/examples_checkout.py
+    cmds:
+      - bash scripts/gate-wrapper.sh e2e-go task e2e-go-governed
+
+  e2e-go-governed:
+    deps: [go:build]
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py --no-update)"
@@ -581,16 +583,16 @@ tasks:
 
   e2e-rust:
     desc: "E2E concolic pipeline: Rust frontend (e2e_concolic_rust.rs)"
-    cmds:
-      - bash scripts/gate-wrapper.sh e2e-rust task e2e-rust-governed
-
-  e2e-rust-governed:
-    deps: [rust-fe:build]
     sources:
       - shatter-core/tests/e2e_concolic_rust.rs
       - shatter-core/src/**/*.rs
       - shatter-rust/src/**/*.rs
       - scripts/examples_checkout.py
+    cmds:
+      - bash scripts/gate-wrapper.sh e2e-rust task e2e-rust-governed
+
+  e2e-rust-governed:
+    deps: [rust-fe:build]
     cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py --no-update)"
