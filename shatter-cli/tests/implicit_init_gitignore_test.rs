@@ -36,7 +36,11 @@ fn git(dir: &Path, args: &[&str]) {
         .args(args)
         .current_dir(dir)
         .env_remove("GIT_DIR")
+        .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .status()
         .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"));
     assert!(status.success(), "git {args:?} failed in {}", dir.display());
@@ -66,6 +70,12 @@ fn plain_scan_on_uninitialized_project_does_not_touch_tracked_gitignore() {
     let command_tmp = tempfile::tempdir().expect("create command tmpdir");
     let _host_tmp_lock = common::host_tmp_shatter_lock();
     let output = Command::new(shatter_binary())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
         .env("TMPDIR", command_tmp.path())
         .current_dir(project_root)
@@ -115,7 +125,11 @@ fn plain_scan_on_uninitialized_project_does_not_touch_tracked_gitignore() {
         .args(["status", "--porcelain", "--", ".gitignore"])
         .current_dir(project_root)
         .env_remove("GIT_DIR")
+        .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .output()
         .expect("run git status");
     let status_text = String::from_utf8_lossy(&status_output.stdout);
