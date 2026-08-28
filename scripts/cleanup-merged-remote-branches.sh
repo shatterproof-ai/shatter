@@ -14,6 +14,8 @@
 #                   Rarely needed: the bead check reads the tracked
 #                   .beads/issues.jsonl and does NOT require a running bd/Dolt
 #                   server. Use only to bypass the check entirely; less safe.
+#                   Also skips the final per-branch live-bd re-check at delete time
+#                   (see SAFETY MODEL below).
 #
 # SAFETY MODEL — a merged remote branch is deleted only when ALL hold:
 #   * it is fully merged into <remote>/main (git for-each-ref --merged);
@@ -24,6 +26,16 @@
 #   * its leading issue id is not an in-progress bead (unless --skip-bd). The
 #     in-progress set is read from the tracked .beads/issues.jsonl (source of
 #     truth committed to git), so it works even when the Dolt server is down.
+#   * (--execute only, unless --skip-bd) immediately before deleting, a fresh
+#     per-branch `bd show <id>` re-confirms the issue is not in-progress/assigned.
+#     This closes the cross-machine gap the other three protections miss: none of
+#     git-worktree-list, the tracked JSONL snapshot, or the one-time bulk `bd list`
+#     supplement above can see a claim made on ANOTHER machine that hasn't synced
+#     to this machine's Dolt/JSONL by classification time. Querying bd fresh, once
+#     per candidate, right at deletion time gives that sync more time to land and
+#     is the last chance to catch it. If the query fails, times out, or can't be
+#     parsed, the branch is treated as protected (fail closed) — this layer never
+#     assumes safety it couldn't confirm.
 # Deleting a merged remote ref loses no work: the commits already live in main, and
 # anyone holding the branch locally keeps their copy. Unmerged branches are never
 # touched. When in doubt the branch is PROTECTED, not deleted.
@@ -125,7 +137,11 @@ PY
   if command -v bd >/dev/null 2>&1; then
     bd_out="$(timeout 20 bd list --status in_progress --json 2>/dev/null || true)"
     if [ -n "$bd_out" ]; then
-      ids="$ids $(printf '%s' "$bd_out" | grep -oE '"id"[[:space:]]*:[[:space:]]*"str-[a-z0-9.]+"' | grep -oE 'str-[a-z0-9.]+')"
+      # str-vsgny: `bd list --status in_progress` legitimately returns zero
+      # matches whenever nothing is in progress (a healthy, common state) --
+      # `|| true` on each grep stops that from tripping `set -o pipefail`
+      # and killing the whole script with no error message.
+      ids="$ids $(printf '%s' "$bd_out" | grep -oE '"id"[[:space:]]*:[[:space:]]*"str-[a-z0-9.]+"' | grep -oE 'str-[a-z0-9.]+' || true)"
     fi
   fi
   if [ -n "$ids" ]; then
@@ -136,6 +152,38 @@ PY
 else
   log "Skipping bead cross-check (--skip-bd); worktree check only."
 fi
+
+# Fourth protection layer (cross-machine, str-vsgny): a fresh, per-branch,
+# fail-closed live bd query, run only at actual delete time (see loop below), and
+# only when the caller has already confirmed bd is available. Distinct from the
+# bulk `bd list --status in_progress` supplement above, which runs once at
+# classification time and is itself subject to the same cross-machine sync lag
+# it's meant to catch. Returns 0 ("safe to delete, per this layer") only when bd
+# answers successfully and reports the issue neither in_progress nor assigned.
+# Any failure to confirm (query error/timeout, unparseable JSON, unexpected shape)
+# returns 1 ("protected") — never silently treated as safe.
+live_bd_ok_to_delete() {
+  local id="$1" out
+  out="$(timeout 10 bd show "$id" --json 2>/dev/null)" || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+if not isinstance(data, list) or not data:
+    sys.exit(1)
+issue = data[0]
+if not isinstance(issue, dict):
+    sys.exit(1)
+status = issue.get("status")
+assignee = issue.get("assignee")
+if status == "in_progress" or assignee not in (None, ""):
+    sys.exit(1)  # claimed elsewhere -- protect
+sys.exit(0)       # confirmed not in-progress / unassigned -- safe per this layer
+' 2>/dev/null
+}
 
 is_protected() {
   local branch="$1" id name
@@ -193,6 +241,14 @@ if [ "$EXECUTE" = false ]; then
 fi
 
 log "Deleting $n_cand merged branches from $REMOTE ..."
+LIVE_BD_CHECK=false
+if [ "$SKIP_BD" = false ]; then
+  if command -v bd >/dev/null 2>&1; then
+    LIVE_BD_CHECK=true
+  else
+    log "WARNING: bd unavailable; skipping final per-branch live-bd re-check (cross-machine protection layer inactive)."
+  fi
+fi
 deleted=0
 for i in "${!candidates[@]}"; do
   b="${candidates[$i]}"
@@ -210,6 +266,13 @@ for i in "${!candidates[@]}"; do
   if [ "$live_sha" != "$expected_sha" ]; then
     echo "    SKIP    $b (moved since classification — new commits pushed; re-run to reconsider)"
     continue
+  fi
+  if [ "$LIVE_BD_CHECK" = true ]; then
+    id="$(issue_id "$b")"
+    if [ -n "$id" ] && ! live_bd_ok_to_delete "$id"; then
+      echo "    SKIP    $b (live bd re-check: $id may be in-progress/assigned elsewhere, or the check failed — cross-machine safety, fail closed)"
+      continue
+    fi
   fi
   if git push "$REMOTE" --delete "$b" >/dev/null 2>&1; then
     echo "    deleted $b"
