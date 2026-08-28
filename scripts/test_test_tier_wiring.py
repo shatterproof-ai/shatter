@@ -87,8 +87,13 @@ class TestTestTierWiring(unittest.TestCase):
         self.assertIn("cargo test --doc", contents["rust"])
         self.assertIn("cargo test --doc", contents["runtime"])
         self.assertIn("--run-ignored all", contents["core"])
-        for standalone in (contents["rust"], contents["runtime"]):
+        for standalone_name in ("rust", "runtime"):
+            standalone = contents[standalone_name]
+            test_task = self._task_body(standalone, "test")
+            build_task = self._task_body(standalone, "build")
             self.assertIn("../.config/nextest-standalone.toml", standalone)
+            self.assertIn("../.config/nextest-standalone.toml", test_task)
+            self.assertNotIn("../.config/nextest-standalone.toml", build_task)
             self.assertIn(
                 "cargo nextest run --config-file ../.config/nextest-standalone.toml",
                 standalone,
