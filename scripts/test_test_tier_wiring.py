@@ -162,6 +162,11 @@ exit 0
             env = os.environ.copy()
             env["PATH"] = f"{tool_dir}:{env['PATH']}"
             env["SHATTER_TEST_ENV_CAPTURE"] = str(capture)
+            # Model a default quick-tier invocation even when this regression
+            # runs inside the Full gate, whose ambient budgets intentionally
+            # remain valid operator overrides.
+            env.pop("PROPTEST_CASES", None)
+            env.pop("SHATTER_FUZZ_CASES", None)
             subprocess.run(
                 [task, "--force", "test-quick"],
                 cwd=ROOT,
