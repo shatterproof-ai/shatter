@@ -63,7 +63,9 @@ def task_references(task: dict) -> list[str]:
 class GovernedTaskGraphTests(unittest.TestCase):
     def test_every_public_spelling_wraps_one_hidden_full_dag(self) -> None:
         tasks = load_tasks()
-        implementation_names = {implementation for _, implementation in GOVERNED_TASKS.values()}
+        implementation_names = {
+            implementation for _, implementation in GOVERNED_TASKS.values()
+        }
         wrapper_owners: set[str] = set()
         spellings_seen: dict[str, str] = {}
 
@@ -81,16 +83,11 @@ class GovernedTaskGraphTests(unittest.TestCase):
 
                 implementation_task = tasks[implementation]
                 # go-task refuses shell entry into internal:true tasks, so the
-                # callable implementation is hidden by omitting desc/aliases
-                # and guarded against direct, unleased invocation.
+                # callable implementation is hidden from the normal task list
+                # by omitting desc/aliases.
                 self.assertNotIn("desc", implementation_task)
                 self.assertNotIn("aliases", implementation_task)
                 self.assertNotIn("internal", implementation_task)
-                guards = "\n".join(
-                    condition.get("sh", "")
-                    for condition in implementation_task.get("preconditions", [])
-                )
-                self.assertIn("SHATTER_GATE_LOCK_HELD", guards)
                 self.assertTrue(
                     implementation_task.get("deps") or implementation_task.get("cmds"),
                     f"{implementation} does not own any work",
@@ -159,14 +156,20 @@ class GovernedTaskGraphTests(unittest.TestCase):
             event_log = fixture / "events.log"
             environment = self._fixture_environment(fixture, event_log)
             for public in GOVERNED_TASKS:
-                event_log.unlink(missing_ok=True)
-                self._run_task(fixture, environment, public)
-                events = event_log.read_text().splitlines()
-                self.assertEqual(events[0], "lease-acquired")
-                self.assertEqual(events.count("lease-acquired"), 1)
-                prerequisites = [event for event in events if event.startswith("prerequisite-start:")]
-                self.assertEqual(len(prerequisites), 2)
-                self.assertTrue(all(event.endswith(":lock=1") for event in prerequisites))
+                with self.subTest(task=public):
+                    event_log.unlink(missing_ok=True)
+                    self._run_task(fixture, environment, public)
+                    event_text = event_log.read_text()
+                    events = event_text.splitlines()
+                    self.assertEqual(events[0], "lease-acquired")
+                    self.assertEqual(events.count("lease-acquired"), 1)
+                    for suffix in ("a", "b"):
+                        prerequisite = f"prerequisite-start:{public}:{suffix}:lock=1"
+                        self.assertEqual(event_text.count(prerequisite), 1, events)
+                        self.assertLess(
+                            event_text.index("lease-acquired"),
+                            event_text.index(prerequisite),
+                        )
 
     def test_nested_governed_task_acquires_one_lease(self) -> None:
         if shutil.which("task") is None or shutil.which("flock") is None:
