@@ -20,6 +20,7 @@ tasks:
       - ../Cargo.lock
       - build.rs
       - ../scripts/examples_checkout.py
+      - ../.config/nextest.toml
     cmds:
       - |
         examples_root="$(python3 ../scripts/examples_checkout.py)"
@@ -41,6 +42,7 @@ tasks:
       - Cargo.toml
       - ../Cargo.lock
       - build.rs
+      - ../.config/nextest.toml
     cmds:
       - |
         examples_root="$(python3 ../scripts/examples_checkout.py)"
@@ -68,6 +70,7 @@ tasks:
       - Cargo.toml
       - ../Cargo.lock
       - build.rs
+      - ../.config/nextest.toml
     cmds:
       - |
         examples_root="$(python3 ../scripts/examples_checkout.py)"

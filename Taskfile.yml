@@ -195,7 +195,7 @@ tasks:
       # Same starvation hazard as check-unit: cli:test and core:test-ignored
       # spawn cargo/go builds from inside tests; run them after the parallel
       # deps, one at a time, inside one heavyweight slot.
-      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test && task core:test-ignored-fast"
+      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test-fast && task core:test-ignored-fast"
 
   # --- Cross-cutting quality (issue 5) ---
 
@@ -376,6 +376,8 @@ tasks:
     desc: Run repository meta checks (workflow lint, Semgrep)
     sources:
       - Taskfile.yml
+      - .config/nextest.toml
+      - .config/nextest-standalone.toml
       - .github/workflows/**/*.yml
       - .semgrep/**/*
       - install.sh
@@ -399,6 +401,15 @@ tasks:
       - scripts/test_root_cargo_phases.py
       - scripts/go-test-tier.sh
       - scripts/test_test_tier_wiring.py
+      - shatter-cli/Taskfile.yml
+      - shatter-core/Taskfile.yml
+      - shatter-core/tests/**/*.rs
+      - shatter-go/Taskfile.yml
+      - shatter-rust/Taskfile.yml
+      - shatter-rust-runtime/Taskfile.yml
+      - shatter-ts/Taskfile.yml
+      - shatter-ts/jest.config.js
+      - shatter-ts/src/**/*.ts
     cmds:
       - bash -n install.sh
       - python3 -m unittest scripts.test_drift_patrol

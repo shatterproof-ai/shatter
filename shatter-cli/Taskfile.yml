@@ -21,6 +21,26 @@ tasks:
       - ../Cargo.lock
       - ../shatter-core/src/**/*.rs
       - ../shatter-core/Cargo.toml
+      - ../.config/nextest.toml
+    cmds:
+      - |
+        if command -v cargo-nextest >/dev/null 2>&1; then
+          cargo nextest run -p shatter-cli
+        else
+          cargo test -p shatter-cli
+        fi
+
+  # Keep this body in sync with test above. Its distinct checksum identity
+  # protects check-fast's reduced property-test budget.
+  test-fast:
+    desc: Run shatter-cli tests with the caller's fast budget
+    sources:
+      - src/**/*.rs
+      - Cargo.toml
+      - ../Cargo.lock
+      - ../shatter-core/src/**/*.rs
+      - ../shatter-core/Cargo.toml
+      - ../.config/nextest.toml
     cmds:
       - |
         if command -v cargo-nextest >/dev/null 2>&1; then

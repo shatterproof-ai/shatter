@@ -82,10 +82,13 @@ class TestTestTierWiring(unittest.TestCase):
             self.assertIn("cargo nextest run", content)
             self.assertIn("cargo test", content)
         self.assertIn("cargo test -p shatter-core --doc", contents["core"])
+        self.assertIn("../.config/nextest.toml", contents["core"])
+        self.assertIn("../.config/nextest.toml", contents["cli"])
         self.assertIn("cargo test --doc", contents["rust"])
         self.assertIn("cargo test --doc", contents["runtime"])
         self.assertIn("--run-ignored all", contents["core"])
         for standalone in (contents["rust"], contents["runtime"]):
+            self.assertIn("../.config/nextest-standalone.toml", standalone)
             self.assertIn(
                 "cargo nextest run --config-file ../.config/nextest-standalone.toml",
                 standalone,
@@ -117,11 +120,15 @@ class TestTestTierWiring(unittest.TestCase):
     def test_case_budgeted_rust_tasks_never_reuse_a_different_tier_cache(self) -> None:
         root_taskfile = (ROOT / "Taskfile.yml").read_text()
         core_taskfile = (ROOT / "shatter-core/Taskfile.yml").read_text()
+        cli_taskfile = (ROOT / "shatter-cli/Taskfile.yml").read_text()
         self.assertIn("- task: workspace-test-quick", root_taskfile)
         self.assertIn("- task: workspace-test", root_taskfile)
+        self.assertIn("task cli:test-fast", root_taskfile)
+        self.assertIn("- task: cli:test", root_taskfile)
         self.assertIn("task core:test-ignored-fast", root_taskfile)
         self.assertIn("- task: core:test-ignored", root_taskfile)
         self.assertRegex(root_taskfile, r"(?m)^  workspace-test-quick:$")
+        self.assertRegex(cli_taskfile, r"(?m)^  test-fast:$")
         self.assertRegex(core_taskfile, r"(?m)^  test-ignored-fast:$")
         self.assertEqual(
             self._canonical_cached_task_body(
@@ -129,6 +136,14 @@ class TestTestTierWiring(unittest.TestCase):
             ),
             self._canonical_cached_task_body(
                 self._task_body(root_taskfile, "workspace-test-quick")
+            ),
+        )
+        self.assertEqual(
+            self._canonical_cached_task_body(
+                self._task_body(cli_taskfile, "test")
+            ),
+            self._canonical_cached_task_body(
+                self._task_body(cli_taskfile, "test-fast")
             ),
         )
         self.assertEqual(
@@ -320,6 +335,24 @@ fi
         self.assertEqual(workflow.count("run: task check"), 1)
         self.assertNotIn("task ts:test-fast", workflow)
         self.assertNotIn("task go:test-short", workflow)
+
+    def test_meta_cache_tracks_test_tier_wiring_inputs(self) -> None:
+        root_taskfile = (ROOT / "Taskfile.yml").read_text()
+        meta = self._task_body(root_taskfile, "meta")
+        for source in (
+            ".config/nextest.toml",
+            ".config/nextest-standalone.toml",
+            "shatter-cli/Taskfile.yml",
+            "shatter-core/Taskfile.yml",
+            "shatter-core/tests/**/*.rs",
+            "shatter-go/Taskfile.yml",
+            "shatter-rust/Taskfile.yml",
+            "shatter-rust-runtime/Taskfile.yml",
+            "shatter-ts/Taskfile.yml",
+            "shatter-ts/jest.config.js",
+            "shatter-ts/src/**/*.ts",
+        ):
+            self.assertIn(f"- {source}", meta)
 
 
 if __name__ == "__main__":
