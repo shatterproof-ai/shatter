@@ -310,13 +310,17 @@ tasks:
 
     @staticmethod
     def _fixture_environment(fixture: Path, event_log: Path) -> dict[str, str]:
-        return os.environ | {
+        environment = os.environ | {
             "EVENT_LOG": str(event_log),
             "HOME": str(fixture / "home"),
             "PATH": f"{fixture / 'bin'}:{os.environ['PATH']}",
             "SHATTER_HEAVY_SLOTS": "1",
             "XDG_RUNTIME_DIR": str(fixture / "runtime"),
         }
+        # meta runs both directly and nested under the production check lease.
+        # The fixture models a fresh top-level invocation in either context.
+        environment.pop("SHATTER_GATE_LOCK_HELD", None)
+        return environment
 
     @staticmethod
     def _write_runtime_fixture_tools(fixture: Path) -> None:
