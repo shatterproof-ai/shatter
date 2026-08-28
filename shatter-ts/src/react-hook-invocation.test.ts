@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import fc from "fast-check";
+import { fastCheckParameters } from "./fast-check-config.js";
 
 import {
   executeAdapterOwned,
@@ -1026,7 +1027,7 @@ describe("react-hook adapter-owned instrumentation coverage (str-26fhi)", () => 
           );
         },
       ),
-      { numRuns: 40 },
+      fastCheckParameters(40),
     );
   });
 

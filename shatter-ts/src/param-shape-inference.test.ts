@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import * as ts from "typescript";
 import fc from "fast-check";
+import { fastCheckParameters } from "./fast-check-config.js";
 import { analyzeFile } from "./analyzer.js";
 import {
   collectParamShapes,
@@ -335,7 +336,7 @@ describe("param-shape-inference: properties", () => {
           checkTypeInfoWellFormed(out[0]!.type, 0);
         },
       ),
-      { numRuns: 100 },
+      fastCheckParameters(100),
     );
   });
 });

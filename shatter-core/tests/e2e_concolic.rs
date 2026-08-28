@@ -147,6 +147,7 @@ fn return_value_set(result: &ExploreResult) -> HashSet<String> {
 /// populated arrays flow end-to-end: analyze (array TypeInfo) → generate → execute
 /// (real iteration) → solve.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_computestats_materializes_iterable_array_param() {
     let file = examples_dir().join("04-errors.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -271,6 +272,7 @@ export function invokeCallback(cb: (n: number) => number): string {
 "#;
 
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_invokecallback_materializes_callable_closure_param() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let file = dir.path().join("invoke-callback.ts");
@@ -365,6 +367,7 @@ async fn concolic_invokecallback_materializes_callable_closure_param() {
 /// is extremely unlikely to hit. Z3 solving should find it by negating the
 /// n < 0 constraint to get n >= 0, then negating n === 0 to get n = 0.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_classifynumber_discovers_all_branches() {
     let file = examples_dir().join("01-arithmetic.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -457,6 +460,7 @@ async fn concolic_classifynumber_discovers_all_branches() {
 /// up at 58% (7/12) under `--concolic`. It also dropped the input witnesses,
 /// rendering every Call→Outcome row with an empty argument list.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_matches_random_line_totals_and_keeps_inputs() {
     use shatter_core::explorer::{LoopBuckets, ObservationOutput};
     use shatter_core::observe::{ObserveConfig, observe_function, reconcile_observation_coverage};
@@ -597,6 +601,7 @@ async fn concolic_matches_random_line_totals_and_keeps_inputs() {
 /// like a=50, b=21 — values that satisfy conflicting magnitude constraints. Z3 should
 /// find such inputs by solving the compound conditions.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_comparemagnitudes_discovers_compound_branches() {
     let file = examples_dir().join("01-arithmetic.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -675,6 +680,7 @@ async fn concolic_comparemagnitudes_discovers_compound_branches() {
 ///
 /// The denominator === 0 case requires exactly 0, which Z3 should solve.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_safedivide_discovers_error_paths() {
     let file = examples_dir().join("04-errors.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -752,6 +758,7 @@ async fn concolic_safedivide_discovers_error_paths() {
 /// and set a modest coverage bar (>=6 paths), with TODOs to raise it as string
 /// solver capabilities improve.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_validateemail_discovers_string_paths() {
     let file = examples_dir().join("15-email-validator.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -846,6 +853,7 @@ async fn concolic_validateemail_discovers_string_paths() {
 /// relevant inputs that reach past guard clauses, enabling Z3 to solve
 /// for deeper branches.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_validateemail_with_literal_seeds() {
     let file = examples_dir().join("15-email-validator.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -997,6 +1005,7 @@ async fn execute_adapter_owned(
 /// capture that direct calls use: coverage is non-empty and consistent with the
 /// prop-selected branch.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn adapter_owned_react_execution_reports_coverage() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let file = dir.path().join("react-greeting.tsx");
@@ -1089,6 +1098,7 @@ fn capabilities_with_setup() -> FrontendCapabilities {
 /// Validates the protocol round-trip: Setup -> context returned -> Teardown -> ack.
 /// This tests the core mechanism that all higher-level setup flows depend on.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn setup_session_context_flows_to_execute() {
     let setup_file = setup_fixtures_dir().join("setup-session.ts");
     let setup_file_str = setup_file.to_string_lossy().to_string();
@@ -1192,6 +1202,7 @@ async fn setup_session_context_flows_to_execute() {
 /// Sends two file-level Setup commands with different scopes, verifying that
 /// each returns a context reflecting its own scope. Then tears down both.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn setup_file_level_scoped_per_file() {
     let setup_file = setup_fixtures_dir().join("setup-file-level.ts");
     let setup_file_str = setup_file.to_string_lossy().to_string();
@@ -1293,6 +1304,7 @@ async fn setup_file_level_scoped_per_file() {
 /// This tests both the TS frontend (returning an error response on setup failure)
 /// and the Rust SetupManager (tracking failures and blocking dependents).
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn setup_failure_skips_dependents() {
     let setup_file = setup_fixtures_dir().join("setup-failing.ts");
     let setup_file_str = setup_file.to_string_lossy().to_string();
@@ -1365,6 +1377,7 @@ async fn setup_failure_skips_dependents() {
 /// (Function -> File -> Session). Each teardown validates its context, confirming
 /// the protocol supports the full lifecycle.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn setup_teardown_runs_in_reverse_order() {
     let setup_file = setup_fixtures_dir().join("setup-teardown-order.ts");
     let setup_file_str = setup_file.to_string_lossy().to_string();
@@ -1470,6 +1483,7 @@ async fn setup_teardown_runs_in_reverse_order() {
 /// that exploration succeeds when setup is active. This validates the explorer
 /// path handles setup correctly (parity requirement with orchestrator).
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn explorer_explore_function_with_setup() {
     let file = examples_dir().join("01-arithmetic.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -1537,6 +1551,7 @@ async fn explorer_explore_function_with_setup() {
 /// that the orchestrator correctly threads setup context through to Execute
 /// commands. This is the parity test for the orchestrator path.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn orchestrator_explore_with_setup_context() {
     let file = examples_dir().join("01-arithmetic.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -1694,6 +1709,7 @@ fn explorer_return_value_set(
 /// values per iteration via mock_params, providing the variety needed to
 /// discover multiple mock-gated branches.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_mock_status_branches_discovered() {
     let file = examples_dir().join("17-mock-branches.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -1788,6 +1804,7 @@ async fn concolic_mock_status_branches_discovered() {
 /// Uses the random explorer which regenerates mock boolean values per
 /// iteration via mock_params, naturally alternating between true/false.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_mock_result_branches_discovered() {
     let file = examples_dir().join("17-mock-branches.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -1881,6 +1898,7 @@ async fn concolic_mock_result_branches_discovered() {
 /// produce different branch outcomes. Empty paths array → "no-comments".
 /// Uses the random explorer for per-iteration mock regeneration.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_mock_loop_branches_discovered() {
     let file = examples_dir().join("17-mock-branches.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -1985,6 +2003,7 @@ async fn concolic_mock_loop_branches_discovered() {
 /// The exploration must discover both return values and the mcdc_summary
 /// must be present (indicating MC/DC tracking was active).
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
     let file = examples_dir().join("13-mcdc-compound.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -2081,6 +2100,7 @@ async fn mcdc_compound_and_discovers_all_branches_and_reports_summary() {
 ///   1. x || y  → "either"
 ///   2. !x && !y → "none"
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn mcdc_compound_or_discovers_all_branches() {
     let file = examples_dir().join("13-mcdc-compound.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -2269,6 +2289,7 @@ fn h5_method_receiver_fixture() -> PathBuf {
 /// `planner.PlanReceivers` + `Compose(IsMethod=true)` end-to-end and
 /// dispatching through the wrapper's receiver-kind switch.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn go_method_planner_driven_e2e() {
     use shatter_core::planner_consumer::fetch_planner_seeds;
     use shatter_core::protocol::{Command, OutcomeStatus, ResponseResult};
@@ -2425,6 +2446,7 @@ async fn go_method_planner_driven_e2e() {
 /// and asserts that at least one execution reached `completed` (i.e., the plan
 /// was threaded into Execute and the Go launcher dispatched via the constructor).
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn go_method_planner_driven_via_orchestrator() {
     use shatter_core::orchestrator::{ExploreConfig, explore};
     use shatter_core::planner_consumer::fetch_planner_seeds;
@@ -2549,6 +2571,7 @@ async fn go_method_planner_driven_via_orchestrator() {
 ///    synthetic targets from the analysis to ensure the GA has work to do.
 /// 3. Runs genetic exploration and asserts it produced a valid `GeneticResult`.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn genetic_opaque_predicate_runs_and_produces_result() {
     let file = examples_dir().join("22-opaque-predicate.ts");
     let file_str = file.to_string_lossy().to_string();
@@ -2802,6 +2825,7 @@ async fn instrument_function_with_profile(
 /// cannot appear. Asserting their presence proves the alias resolved on every
 /// concrete execution that produced them.
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn concolic_tsconfig_at_alias_executes() {
     let fixture_dir = ts_workspace_dir().join("src/__fixtures__/adapter-tsconfig-at-alias");
     let entry_file = fixture_dir.join("src/entry.ts");
@@ -2946,6 +2970,7 @@ export function classifyColor(c: Color): string {
 "#;
 
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn e2e_ts_enum_value_domain_reaches_all_arms() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let file = dir.path().join("enum-color.ts");
@@ -3078,6 +3103,7 @@ ts_runtime_values:
 "#;
 
 #[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
 async fn e2e_ts_opaque_param_stub_registry_explores_both_branches() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let root = dir.path();

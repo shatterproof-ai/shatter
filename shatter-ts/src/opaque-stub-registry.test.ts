@@ -1,4 +1,5 @@
 import * as fc from "fast-check";
+import { fastCheckParameters } from "./fast-check-config.js";
 import {
   buildStubValue,
   deriveModuleSpecifier,
@@ -199,7 +200,7 @@ describe("buildStubValue — property invariants", () => {
         }
         return true;
       }),
-      { numRuns: 300 },
+      fastCheckParameters(300),
     );
   });
 });

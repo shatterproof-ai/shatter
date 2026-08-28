@@ -1,5 +1,6 @@
 import * as ts from "typescript";
 import fc from "fast-check";
+import { fastCheckParameters } from "./fast-check-config.js";
 import {
   recognizeReactHooks,
   isHookName,
@@ -562,7 +563,7 @@ export function ${helper}() {
         expect(hints[0]).toBeDefined();
         expect(hints[1]).toBeUndefined();
       }),
-      { numRuns: 100 },
+      fastCheckParameters(100),
     );
   });
 });

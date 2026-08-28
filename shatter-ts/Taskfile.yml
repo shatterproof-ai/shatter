@@ -41,3 +41,22 @@ tasks:
       - |
         examples_root="$(python3 ../scripts/examples_checkout.py)"
         SHATTER_EXAMPLES_DIR="$examples_root" npm test -- --runInBand
+
+  test-fast:
+    desc: Run TypeScript tests with reduced property cases
+    deps: [build]
+    sources:
+      - src/**/*.ts
+      - package.json
+      - tsconfig.json
+      - ../protocol/schemas/**/*.json
+      - ../protocol/fixtures/**/*.json
+      - ../protocol/registry.yaml
+      - ../shatter-core/src/protocol.rs
+      - ../scripts/examples_checkout.py
+    env:
+      SHATTER_FAST_CHECK_NUM_RUNS: '32'
+    cmds:
+      - |
+        examples_root="$(python3 ../scripts/examples_checkout.py)"
+        SHATTER_EXAMPLES_DIR="$examples_root" npm test -- --runInBand

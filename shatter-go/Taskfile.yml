@@ -32,7 +32,22 @@ tasks:
       # str-35vtk.5) the compile-heavy e2e packages can exceed 10m when other
       # suites run concurrently. Governance trades speed for machine
       # usability; the timeout must not turn that into a failure.
-      - go test -timeout 30m ./...
+      - bash ../scripts/go-test-tier.sh full
+
+  test-short:
+    desc: Run the short Go test tier with reduced property cases
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+      - ../protocol/schemas/**/*.json
+      - ../protocol/fixtures/**/*.json
+      - ../protocol/registry.yaml
+      - ../shatter-core/src/protocol.rs
+    cmds:
+      # Rapid v1.2 registers its flag only in packages that import Rapid. The
+      # helper partitions packages so plain test binaries never see it.
+      - bash ../scripts/go-test-tier.sh short
 
   vet:
     desc: Run go vet
