@@ -188,6 +188,7 @@ class AffectedGateWiringTests(unittest.TestCase):
         )
         implementation = "\n".join(tasks["affected-governed"]["cmds"])
         self.assertIn("python3 scripts/affected-gates.py", implementation)
+        self.assertIn("AFFECTED_BASE:-origin/main", implementation)
         self.assertIn('task "$gate"', implementation)
         self.assertNotIn("&", implementation)
 

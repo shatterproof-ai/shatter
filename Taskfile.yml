@@ -499,7 +499,7 @@ tasks:
   affected-governed:
     cmds:
       - |
-        set --
+        set -- --base "${AFFECTED_BASE:-origin/main}"
         for head in ${AFFECTED_HEADS:-HEAD}; do
           set -- "$@" --head "$head"
         done
