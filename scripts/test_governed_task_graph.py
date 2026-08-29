@@ -80,38 +80,80 @@ def command_references(command: object) -> list[str]:
     return []
 
 
+def command_strings(command: object) -> list[str]:
+    if isinstance(command, str):
+        return [command]
+    if isinstance(command, list):
+        return [text for item in command for text in command_strings(item)]
+    if isinstance(command, dict):
+        return [
+            text
+            for key in ("cmd", "defer")
+            if key in command
+            for text in command_strings(command[key])
+        ]
+    return []
+
+
 def task_references(task: dict) -> list[str]:
     return command_references(task.get("deps", [])) + command_references(
         [task.get("cmd"), task.get("cmds", [])]
     )
 
 
+def wrapper_commands(task: dict) -> list[str]:
+    return [
+        text
+        for text in command_strings([task.get("cmd"), task.get("cmds", [])])
+        if "scripts/gate-wrapper.sh" in text
+    ]
+
+
 class GovernedTaskGraphTests(unittest.TestCase):
     def test_task_reference_scan_handles_flags_maps_and_unbalanced_shell(self) -> None:
-        implementations = {
-            "check-governed",
-            "conformance-governed",
-            "parity-governed",
-            "e2e-governed",
-            "e2e-ts-governed",
-            "e2e-rust-governed",
+        cases = {
+            "string dependency": ({"deps": ["dep-string-governed"]}, "dep-string-governed"),
+            "map dependency": (
+                {"deps": [{"task": "dep-map-governed", "vars": {"MODE": "full"}}]},
+                "dep-map-governed",
+            ),
+            "flags": ({"cmds": ["task --force flags-governed"]}, "flags-governed"),
+            "global option": (
+                {"cmds": ["task --dir . global-option-governed"]},
+                "global-option-governed",
+            ),
+            "task map": ({"cmds": [{"task": "task-map-governed"}]}, "task-map-governed"),
+            "command map": (
+                {"cmds": [{"cmd": "task command-map-governed", "silent": True}]},
+                "command-map-governed",
+            ),
+            "deferred command": (
+                {"cmds": [{"defer": "task deferred-governed"}]},
+                "deferred-governed",
+            ),
+            "unbalanced shell": (
+                {"cmds": ["sh -c 'task unbalanced-governed"]},
+                "unbalanced-governed",
+            ),
+            "top-level command": (
+                {"cmd": {"cmd": "task top-level-governed"}},
+                "top-level-governed",
+            ),
         }
-        task = {
-            "deps": [
-                "e2e-governed",
-                {"task": "e2e-ts-governed", "vars": {"MODE": "full"}},
-            ],
-            "cmds": [
-                "task --force check-governed",
-                "task --dir . conformance-governed",
-                {"task": "parity-governed"},
-                {"cmd": "task e2e-governed", "silent": True},
-                {"defer": "task e2e-ts-governed"},
-                "sh -c 'task e2e-rust-governed",
-            ],
-            "cmd": {"cmd": "task check-governed"},
+        for syntax, (task, expected) in cases.items():
+            with self.subTest(syntax=syntax):
+                self.assertIn(expected, task_references(task))
+
+    def test_wrapper_scan_handles_string_map_and_top_level_commands(self) -> None:
+        wrapper = "bash scripts/gate-wrapper.sh check task check-governed"
+        cases = {
+            "string": {"cmds": [wrapper]},
+            "command map": {"cmds": [{"cmd": wrapper}]},
+            "top-level command": {"cmd": {"cmd": wrapper}},
         }
-        self.assertEqual(implementations.intersection(task_references(task)), implementations)
+        for syntax, task in cases.items():
+            with self.subTest(syntax=syntax):
+                self.assertEqual(wrapper_commands(task), [wrapper])
 
     def test_every_public_spelling_wraps_one_hidden_full_dag(self) -> None:
         tasks = load_tasks()
@@ -153,14 +195,10 @@ class GovernedTaskGraphTests(unittest.TestCase):
                     spellings_seen[spelling] = public
 
         for task_name, task in tasks.items():
-            wrapper_commands = [
-                command
-                for command in task.get("cmds", [])
-                if "scripts/gate-wrapper.sh" in (command_text(command) or "")
-            ]
-            if wrapper_commands:
+            wrappers = wrapper_commands(task)
+            if wrappers:
                 self.assertIn(task_name, GOVERNED_TASKS)
-                self.assertEqual(len(wrapper_commands), 1)
+                self.assertEqual(len(wrappers), 1)
 
             escaped = implementation_names.intersection(task_references(task))
             allowed = (
@@ -396,6 +434,10 @@ tasks:
         # meta runs both directly and nested under the production check lease.
         # The fixture models a fresh top-level invocation in either context.
         environment.pop("SHATTER_GATE_LOCK_HELD", None)
+        # Public gate budgets must win over any full-gate values inherited by
+        # meta or CI; the fixture tests each facade as a fresh invocation.
+        for name in {name for budgets in GATE_BUDGETS.values() for name in budgets}:
+            environment.pop(name, None)
         return environment
 
     @staticmethod
