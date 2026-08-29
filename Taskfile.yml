@@ -412,6 +412,9 @@ tasks:
       - scripts/test_walkthrough_examples_checkout.py
       - scripts/setup-hooks.sh
       - scripts/test_setup_hooks.sh
+      - scripts/affected-gates.py
+      - scripts/test_affected_gates.py
+      - scripts/test_precompletion_bootstrap.py
       - demo/walkthrough.sh
       - demo/gauntlet.sh
       - scripts/test_demo_cache_modes.sh
@@ -438,6 +441,8 @@ tasks:
       - bash scripts/test_cleanup_merged_remote_branches.sh
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
       - bash scripts/test_setup_hooks.sh
+      - python3 -m unittest scripts.test_affected_gates
+      - python3 -m unittest scripts.test_precompletion_bootstrap
       - bash scripts/test_demo_cache_modes.sh
       - python3 -m unittest scripts.test_root_cargo_phases
       - python3 -m unittest scripts.test_governed_task_graph
@@ -485,6 +490,27 @@ tasks:
       - task: check-static
       - task: check-unit
       - task: check-integration
+
+  affected:
+    desc: Run the smallest safe quality gate set for the diff against origin/main
+    cmds:
+      - bash scripts/gate-wrapper.sh affected task affected-governed
+
+  affected-governed:
+    cmds:
+      - |
+        set --
+        for head in ${AFFECTED_HEADS:-HEAD}; do
+          set -- "$@" --head "$head"
+        done
+        gates="$(python3 scripts/affected-gates.py "$@")"
+        printf 'Gates selected:\n%s\n' "$gates"
+        while IFS= read -r gate; do
+          if [ "$gate" = "(none)" ]; then
+            continue
+          fi
+          task "$gate"
+        done <<< "$gates"
 
   check-static:
     desc: "check stage 1: cheap checks — clippy, schemas, docs lint, meta (meta includes small go/python test runs)"
@@ -619,10 +645,9 @@ tasks:
       - bash scripts/test_empty_report_regression.sh
 
   pre-completion:
-    desc: Pre-completion quality gate (smoke + full check + git status)
+    desc: Pre-completion quality gate (diff-selected gates + git status)
     cmds:
-      - task: smoke
-      - task: check
+      - task: affected
       - git status --short
 
   pre-completion-e2e:

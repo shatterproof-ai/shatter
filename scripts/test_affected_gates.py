@@ -169,7 +169,7 @@ class AffectedGateMappingTests(unittest.TestCase):
 
     def test_every_emitted_gate_is_a_real_task(self) -> None:
         completed = subprocess.run(
-            ["task", "--list-all"],
+            ["task", "--list-all", "--json"],
             cwd=ROOT,
             text=True,
             capture_output=True,
