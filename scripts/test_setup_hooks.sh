@@ -122,11 +122,11 @@ run_prepush "refs/heads/feature ${SHA_A} refs/heads/master ${SHA_B}
 assert_rc 0 "feature->master"
 assert_task_log "check" "feature->master"
 
-# 3. local feature -> other remote head: check-fast
+# 3. local feature -> other remote head: affected gates
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/some-feature ${SHA_B}
 "
 assert_rc 0 "feature->feature"
-assert_task_log "check-fast" "feature->feature"
+assert_task_log "affected" "feature->feature"
 
 # 4. tag push: no product gate
 run_prepush "refs/heads/feature ${SHA_A} refs/tags/v1.0 ${SHA_B}
@@ -147,24 +147,24 @@ refs/heads/feature2 ${SHA_A} refs/heads/main ${SHA_B}
 assert_rc 0 "mixed strongest wins"
 assert_task_log "check" "mixed strongest wins"
 
-# 7. mixed: deletion to main + push to feature => check-fast (deletion contributes nothing)
+# 7. mixed: deletion to main + push to feature => affected (deletion contributes nothing)
 run_prepush "(delete) ${ZERO40} refs/heads/main ${SHA_B}
 refs/heads/feature ${SHA_A} refs/heads/other ${SHA_B}
 "
 assert_rc 0 "mixed deletion + feature push"
-assert_task_log "check-fast" "mixed deletion + feature push"
+assert_task_log "affected" "mixed deletion + feature push"
 
-# 8. empty stdin: conservative check-fast fallback
+# 8. empty stdin: conservative affected fallback
 run_prepush ""
 assert_rc 0 "empty stdin"
-assert_task_log "check-fast" "empty stdin"
+assert_task_log "affected" "empty stdin"
 
-# 9. blank stdin (only blank lines): conservative check-fast fallback
+# 9. blank stdin (only blank lines): conservative affected fallback
 run_prepush "
 
 "
 assert_rc 0 "blank stdin"
-assert_task_log "check-fast" "blank stdin"
+assert_task_log "affected" "blank stdin"
 
 # 10. malformed: wrong field count
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/main

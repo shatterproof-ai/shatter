@@ -34,14 +34,22 @@ class PreCompletionBootstrapTest(unittest.TestCase):
         smoke_block = read_task_block("smoke")
         self.assertIn("deps: [ts:build]", smoke_block)
 
-    def test_e2e_task_builds_typescript_frontend(self) -> None:
-        e2e_block = read_task_block("e2e")
-        self.assertIn("deps: [ts:build]", e2e_block)
+    def test_e2e_governed_dag_builds_typescript_frontend(self) -> None:
+        e2e_block = read_task_block("e2e-governed")
+        self.assertIn("deps: [ts:build, go:build, rust-fe:build]", e2e_block)
+        self.assertIn("task: e2e-ts", e2e_block)
 
-    def test_pre_completion_skill_uses_bootstrapped_e2e_task(self) -> None:
+    def test_pre_completion_uses_affected_gates_without_unconditional_e2e(self) -> None:
         skill_text = PRE_COMPLETION_SKILL_PATH.read_text(encoding="utf-8")
-        self.assertIn("task smoke", skill_text)
-        self.assertIn("task e2e", skill_text)
+        self.assertIn("scripts/affected-gates.py", skill_text)
+        self.assertIn("task affected", skill_text)
+        self.assertIn("Gates selected", skill_text)
+        self.assertNotIn("task e2e\n", skill_text)
+
+    def test_pre_completion_task_executes_affected_selection(self) -> None:
+        block = read_task_block("pre-completion")
+        self.assertIn("task: affected", block)
+        self.assertNotIn("task: check", block)
 
 
 if __name__ == "__main__":
