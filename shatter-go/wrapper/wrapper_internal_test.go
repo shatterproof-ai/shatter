@@ -1164,7 +1164,17 @@ func TestSyntheticHTTPClient(t *testing.T) {
 	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
 		t.Fatalf("write overlay: %v", err)
 	}
-	cmd := exec.Command("go", "test", "-overlay", manifestPath, ".")
+	// -vet=off: this is the only overlay-based invocation in this file that
+	// uses `go test` (every sibling test below uses `go build`/`go run`,
+	// which never trigger vet, precisely to avoid this). `go test`'s
+	// implicit vet pass has a caching interaction with -overlay virtual
+	// paths under a persisted GOCACHE (e.g. CI's cross-run build cache):
+	// a stale cache entry can reference a since-deleted t.TempDir() real
+	// path from an earlier run, failing with "no such file or directory"
+	// even though the generated code compiles and runs correctly (which is
+	// what this test actually verifies). Compilation already catches the
+	// type/syntax issues vet would add nothing further for here.
+	cmd := exec.Command("go", "test", "-vet=off", "-overlay", manifestPath, ".")
 	cmd.Dir = appDir
 	cmd.Env = append(os.Environ(), "GOFLAGS=")
 	var stderr bytes.Buffer
