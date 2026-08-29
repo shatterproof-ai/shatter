@@ -85,9 +85,11 @@ echo "[ok] setup-hooks installs an ordered, idempotent 30s Beads timeout for eve
 TASK_BIN_DIR="$SCRATCH/bin"
 mkdir -p "$TASK_BIN_DIR"
 TASK_LOG="$SCRATCH/task.log"
+HEADS_LOG="$SCRATCH/heads.log"
 cat > "$TASK_BIN_DIR/task" <<'EOF'
 #!/usr/bin/env sh
 printf '%s\n' "$1" >> "$TASK_LOG"
+printf '%s\n' "${AFFECTED_HEADS:-}" >> "$HEADS_LOG"
 exit 0
 EOF
 chmod +x "$TASK_BIN_DIR/task"
@@ -97,13 +99,15 @@ SHA_B=$(printf 'b%.0s' {1..40})
 ZERO40=$(printf '0%.0s' {1..40})
 SHA256_A=$(printf 'a%.0s' {1..64})
 NONHEX40=$(printf 'g%.0s' {1..40})
+SHA_C=$(printf 'c%.0s' {1..40})
 
 RC=0
 run_prepush() {
     # $1 = stdin content, $2 = extra env assignment (e.g. SHATTER_FULL_PUSH=1)
     : > "$TASK_LOG"
+    : > "$HEADS_LOG"
     set +e
-    printf '%s' "$1" | env PATH="$TASK_BIN_DIR:$PATH" TASK_LOG="$TASK_LOG" ${2:-} \
+    printf '%s' "$1" | env PATH="$TASK_BIN_DIR:$PATH" TASK_LOG="$TASK_LOG" HEADS_LOG="$HEADS_LOG" ${2:-} \
         bash -c 'cd "$0" && exec "$1"' "$TEST_REPO" "$PRE_PUSH_HOOK" \
         > "$SCRATCH/prepush.out" 2>&1
     RC=$?
@@ -127,6 +131,14 @@ assert_task_log() {
     fi
 }
 
+assert_heads_log() {
+    # $1 = expected AFFECTED_HEADS value, $2 = test name
+    if [[ "$(cat "$HEADS_LOG")" != "$1" ]]; then
+        echo "[FAIL] $2: expected heads.log '$1', got '$(cat "$HEADS_LOG")'" >&2
+        exit 1
+    fi
+}
+
 # 1. local feature -> remote main: full check
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/main ${SHA_B}
 "
@@ -144,6 +156,15 @@ run_prepush "refs/heads/feature ${SHA_A} refs/heads/some-feature ${SHA_B}
 "
 assert_rc 0 "feature->feature"
 assert_task_log "affected" "feature->feature"
+assert_heads_log "$SHA_A" "feature->feature"
+
+# 3b. multiple feature heads union their exact pushed revisions
+run_prepush "refs/heads/feature ${SHA_A} refs/heads/one ${SHA_B}
+refs/heads/feature2 ${SHA_C} refs/heads/two ${SHA_B}
+"
+assert_rc 0 "multiple feature heads"
+assert_task_log "affected" "multiple feature heads"
+assert_heads_log "$SHA_A $SHA_C" "multiple feature heads"
 
 # 4. tag push: no product gate
 run_prepush "refs/heads/feature ${SHA_A} refs/tags/v1.0 ${SHA_B}
@@ -223,8 +244,9 @@ echo "[ok] setup-hooks pre-push template classifies ref updates and picks the st
 run_prepush_env() {
     # $1 = stdin content, $2 = PATH to use for the hook invocation
     : > "$TASK_LOG"
+    : > "$HEADS_LOG"
     set +e
-    printf '%s' "$1" | env PATH="$2" TASK_LOG="$TASK_LOG" \
+    printf '%s' "$1" | env PATH="$2" TASK_LOG="$TASK_LOG" HEADS_LOG="$HEADS_LOG" \
         bash -c 'cd "$0" && exec "$1"' "$TEST_REPO" "$PRE_PUSH_HOOK" \
         > "$SCRATCH/prepush.out" 2>&1
     RC=$?
