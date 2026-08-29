@@ -9,8 +9,8 @@ Hooks delegate to Taskfile tasks so check logic lives in one place.
 ./scripts/setup-hooks.sh
 ```
 
-This is idempotent — run it any time. It appends a guarded section to your git
-hooks without disturbing existing content (e.g. Beads integration).
+This is idempotent — run it any time. It installs or refreshes a versioned,
+guarded section without disturbing existing content (e.g. Beads integration).
 
 `scripts/setup-dev.sh` calls this automatically during initial dev setup.
 
@@ -18,8 +18,12 @@ hooks without disturbing existing content (e.g. Beads integration).
 
 | Hook | Task | Scope |
 |------|------|-------|
-| `pre-commit` | `task core:clippy` | Rust tests + clippy |
-| `pre-push` | `task check` | All language quality gates |
+| `pre-commit` | `scripts/precommit-rust.sh` | Tests + clippy for staged Rust crates |
+| `pre-push` (feature branch) | `task affected` | Union of gates for the exact pushed head(s) |
+| `pre-push` (main/master) | `task check` | Full landing quality gate |
+
+Tag-only and deletion-only pushes run no product gate. Set
+`SHATTER_FULL_PUSH=1` to force `task check` for any push.
 
 ## Skipping hooks
 

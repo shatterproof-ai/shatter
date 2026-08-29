@@ -78,8 +78,10 @@ reproduction test **before** the fix is attempted.
 
 ## Phase 4 — Pre-Completion
 
-Run `/pre-completion` to verify all quality gates, E2E tests, git status, and
-scope. Do not declare the fix complete until `/pre-completion` reports PASS.
+Run `/pre-completion` to verify the diff-selected quality gates (including E2E
+when pipeline paths require it), git status, and scope. The full suite remains
+the landing/CI backstop. Do not declare the fix complete until
+`/pre-completion` reports PASS.
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: pre-completion
-description: Verify all completion criteria before declaring work done. Runs quality gates, E2E tests, checks walkthrough requirements, verifies commits are pushed, and confirms no scope creep.
+description: Verify all completion criteria before declaring work done. Runs diff-selected quality gates, checks walkthrough requirements, verifies commits are pushed, and confirms no scope creep.
 user-invocable: true
 ---
 
@@ -17,85 +17,34 @@ status — go back and fix it first.
 
 ---
 
-## Phase 1 — Determine What Changed
+## Phase 1 — Select Gates
 
-1. **Identify changed files**:
-   ```bash
-   git diff --name-only main...HEAD
-   ```
-   If no commits yet vs main, use `git diff --name-only HEAD` for staged/unstaged changes.
+Preview the exact gate set for the committed diff:
 
-2. **Classify changes** into categories:
-   - `rust-core` — files in `shatter-core/`
-   - `rust-cli` — files in `shatter-cli/`
-   - `typescript` — files in `shatter-ts/`
-   - `go` — files in `shatter-go/`
-   - `rust-frontend` — files in `shatter-rust/`
-   - `protocol` — any `protocol.rs` or `protocol.ts` or `protocol/` files
-   - `pipeline` — solver, instrumentor, explorer, orchestrator, or CLI wiring
-   - `cli-output` — CLI commands, formatting, example files, demo scripts
-   - `other` — docs, config, examples
+```bash
+python3 scripts/affected-gates.py --base origin/main
+```
+
+Record the output verbatim. The selector unions every changed path, adds
+pipeline/E2E and demo gates where required, and falls back to full `check` if
+any path is unknown. A Git error is a failure, not an empty selection.
 
 ---
 
 ## Phase 2 — Quality Gates
 
-Run the appropriate language-specific gates based on what changed, plus E2E tests unconditionally.
+Execute the selected gates serially through the governed task facade:
 
-### Language-specific (if the language was touched):
+```bash
+task affected
+```
 
-1. **Rust** (if `rust-core` or `rust-cli` changed):
-   ```bash
-   cargo test
-   cargo clippy -- -D warnings
-   ```
-
-2. **TypeScript** (if `typescript` changed):
-   ```bash
-   cd shatter-ts && npm test
-   cd shatter-ts && npx tsc --noEmit
-   ```
-
-3. **Go** (if `go` changed):
-   ```bash
-   cd shatter-go && go test ./...
-   cd shatter-go && go vet ./...
-   ```
-
-4. **Rust frontend** (if `rust-frontend` changed):
-   ```bash
-   cd shatter-rust && cargo test
-   cd shatter-rust && cargo clippy -- -D warnings
-   ```
-
-### Always required:
-
-5. **Smoke test** — always run regardless of what changed:
-   ```bash
-   task smoke
-   ```
-   Fast (~15s) pipeline check covering TS and Go frontends. Catches gross
-   pipeline breakages before the slower E2E tests.
-
-6. **E2E concolic tests** — always run regardless of what changed:
-   ```bash
-   task e2e
-   ```
-   These are the only tests that validate the full pipeline end-to-end. A module
-   can pass all its own tests while being silently disconnected from the pipeline.
-   Use the task wrapper so fresh worktrees bootstrap the TypeScript frontend first.
-
-### Conditional:
-
-7. **Protocol sync** (if `protocol` changed):
-   - Verify protocol types are consistent across all languages.
-   - Run cross-language tests (Full tier).
-
-8. **Gauntlet** (if `cli-output` changed):
-   ```bash
-   bash demo/gauntlet.sh --auto --delay 0
-   ```
-   Errors in steps 1-19 indicate regressions — fix before proceeding.
+Copy its `Gates selected:` list into the output table. Do not substitute bare
+language commands or add unconditional E2E: the selector emits the relevant
+frontend E2E gates for pipeline paths, while `task check` remains the full
+landing and CI backstop. In a swarm, the lead runs that full check once at
+batch landing. A solo agent merging directly to `main` also runs the full
+landing check before pushing.
 
 ---
 
@@ -160,6 +109,7 @@ completion announcements that do not include this table.
 ```
 | Check                        | Status      | Notes                   |
 |------------------------------|-------------|-------------------------|
+| Gates selected               | PASS / FAIL | verbatim selector output |
 | Rust tests                   | PASS / FAIL / N/A | ...              |
 | Rust clippy                  | PASS / FAIL / N/A | ...              |
 | TypeScript tests             | PASS / FAIL / N/A | ...              |
@@ -167,7 +117,7 @@ completion announcements that do not include this table.
 | Go tests                     | PASS / FAIL / N/A | ...              |
 | Go vet                       | PASS / FAIL / N/A | ...              |
 | Protocol sync                | PASS / FAIL / N/A | ...              |
-| E2E concolic                 | PASS / FAIL | ...                     |
+| E2E concolic                 | PASS / FAIL / N/A | selected frontend gates or N/A |
 | Walkthrough                  | PASS / FAIL / N/A | ...              |
 | Parallel path parity         | PASS / N/A  | ...                     |
 | Bug repro test exists        | PASS / N/A  | ...                     |

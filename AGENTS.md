@@ -229,7 +229,8 @@ Only add dependencies where there is a real technical ordering constraint (e.g.,
 ### Completing an Issue
 
 Run **`/pre-completion`** before declaring any issue complete. The skill
-verifies quality gates, E2E tests, git status, scope, and acceptance criteria.
+verifies diff-selected quality gates (including E2E when required), git status,
+scope, and acceptance criteria.
 See the [Mandatory Pre-Completion Check](#mandatory-pre-completion-check)
 section for the full policy.
 
@@ -449,9 +450,9 @@ but contain duplicate work that already landed on `main` via a different branch.
 ### Mandatory Pre-Completion Check
 
 Agents MUST run **`/pre-completion`** before announcing work is done — whether
-reporting to a team lead or to the user. This skill verifies quality gates, E2E
-tests, commits pushed, scope, and acceptance criteria. Do not declare completion
-until `/pre-completion` reports PASS.
+reporting to a team lead or to the user. This skill verifies diff-selected
+quality gates, commits pushed, scope, and acceptance criteria. Do not declare
+completion until `/pre-completion` reports PASS.
 
 The `/pre-completion` output table is proof of completion. Agents MUST include
 it verbatim in their completion message. Team leads MUST reject completion

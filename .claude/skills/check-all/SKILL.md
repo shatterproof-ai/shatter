@@ -1,23 +1,24 @@
 ---
 name: check-all
-description: Run all language quality gates (Rust, TypeScript, Go) and report a unified summary. Use before committing or after cross-language changes.
+description: Run the full repository quality suite and report a unified summary. Use for explicit full diagnostics, landing, or CI—not routine pre-commit verification.
 allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-Run all three language checks, capture and examine the output from each for errors:
+Run the governed full suite and capture its output:
 
-## Rust
-1. `cargo test` in workspace root — capture output
-2. `cargo clippy -- -D warnings` — capture output
+```bash
+task check
+```
 
-## TypeScript
-1. `npm test` in `shatter-ts/` — capture output
-2. `npx tsc --noEmit` in `shatter-ts/` — capture output
+This is the landing/CI/fail-safe tier. Routine branch verification uses
+`task affected`, which selects the necessary language, protocol, E2E, and demo
+gates from the diff.
 
-## Go
-1. `go test ./...` in `shatter-go/` — capture output
-2. `go vet ./...` in `shatter-go/` — capture output
+Use the `check-static`, `check-unit`, and `check-integration` stage output to
+populate the language rows below. Do not rerun their underlying commands bare;
+the task graph owns build ordering, full property-test budgets, and machine-wide
+heavyweight admission.
 
 ## Examine & Report
 
