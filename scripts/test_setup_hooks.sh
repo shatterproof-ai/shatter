@@ -26,6 +26,25 @@ done
 (cd "$TEST_REPO" && scripts/setup-hooks.sh)
 (cd "$TEST_REPO" && scripts/setup-hooks.sh --check)
 
+QUALITY_VERSION_MARKER="# SHATTER QUALITY TEMPLATE VERSION: 2"
+PRE_PUSH_HOOK="$TEST_REPO/.git/hooks/pre-push"
+grep -qF "$QUALITY_VERSION_MARKER" "$PRE_PUSH_HOOK"
+sed -i "s/$QUALITY_VERSION_MARKER/# SHATTER QUALITY TEMPLATE VERSION: 1/" "$PRE_PUSH_HOOK"
+set +e
+(cd "$TEST_REPO" && scripts/setup-hooks.sh --check) >/dev/null 2>&1
+STALE_CHECK_RC=$?
+set -e
+if [[ "$STALE_CHECK_RC" -eq 0 ]]; then
+    echo "[FAIL] --check accepted a stale pre-push quality template" >&2
+    exit 1
+fi
+(cd "$TEST_REPO" && scripts/setup-hooks.sh)
+grep -qF "$QUALITY_VERSION_MARKER" "$PRE_PUSH_HOOK"
+if [[ "$(grep -cF '# --- BEGIN SHATTER QUALITY ---' "$PRE_PUSH_HOOK")" -ne 1 ]]; then
+    echo "[FAIL] stale quality template refresh left duplicate sections" >&2
+    exit 1
+fi
+
 BEFORE="$SCRATCH/before.sha256"
 AFTER="$SCRATCH/after.sha256"
 sha256sum "${HOOKS[@]/#/$TEST_REPO/.git/hooks/}" > "$BEFORE"
@@ -72,8 +91,6 @@ printf '%s\n' "$1" >> "$TASK_LOG"
 exit 0
 EOF
 chmod +x "$TASK_BIN_DIR/task"
-
-PRE_PUSH_HOOK="$TEST_REPO/.git/hooks/pre-push"
 
 SHA_A=$(printf 'a%.0s' {1..40})
 SHA_B=$(printf 'b%.0s' {1..40})
