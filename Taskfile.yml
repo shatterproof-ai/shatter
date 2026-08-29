@@ -187,15 +187,20 @@ tasks:
 
   check-fast:
     desc: "Fast quality gate (pre-push: clippy + tests + TS + Go; nested-build suites serialized)"
-    deps: [core:clippy, cli:clippy, ts:test-fast, go:test-short]
     env:
       PROPTEST_CASES: '32'
       SHATTER_FUZZ_CASES: '32'
     cmds:
+      - bash scripts/gate-wrapper.sh check-fast task check-fast-governed
+
+  check-fast-governed:
+    deps: [core:clippy, cli:clippy, ts:test-fast, go:test-short]
+    cmds:
       # Same starvation hazard as check-unit: cli:test and core:test-ignored
       # spawn cargo/go builds from inside tests; run them after the parallel
       # deps, one at a time, inside one heavyweight slot.
-      - bash scripts/gate-wrapper.sh check-fast sh -c "task cli:test-fast && task core:test-ignored-fast"
+      - task: cli:test-fast
+      - task: core:test-ignored-fast
 
   # --- Cross-cutting quality (issue 5) ---
 
@@ -219,7 +224,6 @@ tasks:
 
   conformance:
     desc: Run protocol conformance tests across all frontends
-    deps: [ts:build, go:build, rust-fe:build]
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
@@ -231,11 +235,15 @@ tasks:
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
     cmds:
-      - bash scripts/gate-wrapper.sh conformance python3 protocol/conformance/conformance_harness.py
+      - bash scripts/gate-wrapper.sh conformance task conformance-governed
+
+  conformance-governed:
+    deps: [ts:build, go:build, rust-fe:build]
+    cmds:
+      - python3 protocol/conformance/conformance_harness.py
 
   parity:
     desc: Validate frontend feature parity (registry consistency + capability contract)
-    deps: [ts:build, go:build, rust-fe:build]
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
@@ -252,6 +260,11 @@ tasks:
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
     cmds:
+      - bash scripts/gate-wrapper.sh parity task parity-governed
+
+  parity-governed:
+    deps: [ts:build, go:build, rust-fe:build]
+    cmds:
       - python3 scripts/validate-protocol-registry.py
       - python3 scripts/protocol-codegen.py --check
       - |
@@ -260,7 +273,7 @@ tasks:
         else
           echo "[skip] validate-parity.py not present (pending str-7jgm.2)"
         fi
-      - bash scripts/gate-wrapper.sh golden python3 protocol/conformance/run_golden_tests.py
+      - python3 protocol/conformance/run_golden_tests.py
 
   drift-patrol:
     desc: "Bounded drift patrol (protocol registry/codegen, conformance, parity expiry, tracker hygiene). See docs/DRIFT-PATROL.md."
@@ -298,7 +311,6 @@ tasks:
 
   golden-test:
     desc: Run cross-frontend parity golden tests (compare capabilities and outputs against recorded expectations)
-    deps: [ts:build, go:build, rust-fe:build]
     preconditions:
       - sh: command -v python3
         msg: "python3 not installed"
@@ -312,7 +324,12 @@ tasks:
       - shatter-go/**/*.go
       - shatter-rust/src/**/*.rs
     cmds:
-      - bash scripts/gate-wrapper.sh golden python3 protocol/conformance/run_golden_tests.py
+      - bash scripts/gate-wrapper.sh golden task golden-test-governed
+
+  golden-test-governed:
+    deps: [ts:build, go:build, rust-fe:build]
+    cmds:
+      - python3 protocol/conformance/run_golden_tests.py
 
   docs-smoke:
     desc: "Validate docs examples against the built CLI (stale flags, removed commands, invalid JSON/YAML)"
@@ -399,6 +416,7 @@ tasks:
       - demo/gauntlet.sh
       - scripts/test_demo_cache_modes.sh
       - scripts/test_root_cargo_phases.py
+      - scripts/test_governed_task_graph.py
       - scripts/go-test-tier.sh
       - scripts/test_test_tier_wiring.py
       - shatter-cli/Taskfile.yml
@@ -422,6 +440,7 @@ tasks:
       - bash scripts/test_setup_hooks.sh
       - bash scripts/test_demo_cache_modes.sh
       - python3 -m unittest scripts.test_root_cargo_phases
+      - python3 -m unittest scripts.test_governed_task_graph
       - python3 -m unittest scripts.test_test_tier_wiring
       - cd shatter-go-tool && go test ./...
       - |
@@ -454,12 +473,18 @@ tasks:
       SHATTER_FUZZ_CASES: '1000'
       SHATTER_FAST_CHECK_NUM_RUNS: default
     cmds:
+      - bash scripts/gate-wrapper.sh check task check-governed
+
+  check-governed:
+    cmds:
       # One wrapper = one machine-wide heavyweight slot for the whole check;
       # nested wrapped tasks pass through via SHATTER_GATE_LOCK_HELD.
-      # Note: the sh -c indirection means `task --force check` does NOT
-      # propagate --force into the stages; force a stage directly
-      # (e.g. `task --force check-unit`) when you need a re-run.
-      - bash scripts/gate-wrapper.sh check sh -c "task check-static && task check-unit && task check-integration"
+      # Nested task calls do not propagate `task --force check` into the
+      # stages; force a stage directly (e.g. `task --force check-unit`) when
+      # you need a re-run.
+      - task: check-static
+      - task: check-unit
+      - task: check-integration
 
   check-static:
     desc: "check stage 1: cheap checks — clippy, schemas, docs lint, meta (meta includes small go/python test runs)"
@@ -496,6 +521,8 @@ tasks:
       - go:build
     cmds:
       - task: core:test-ignored
+      # Keep the public spellings: their nested wrappers pass through the
+      # existing lease, while their source caches can still skip unchanged work.
       - task: conformance
       - task: parity
 
@@ -503,15 +530,20 @@ tasks:
 
   e2e:
     desc: Run E2E concolic pipeline tests (TS + Rust + Go frontends)
+    cmds:
+      - bash scripts/gate-wrapper.sh e2e task e2e-governed
+
+  e2e-governed:
     # Build all three frontends in parallel up front; the subtasks' own dep
     # checks then no-op and the test phases run sequentially.
     deps: [ts:build, go:build, rust-fe:build]
     cmds:
-      - bash scripts/gate-wrapper.sh e2e sh -c "task e2e-ts && task e2e-go && task e2e-rust"
+      - task: e2e-ts
+      - task: e2e-go
+      - task: e2e-rust
 
   e2e-ts:
     desc: "E2E concolic pipeline: TypeScript frontend (e2e_concolic.rs; also uses the prebuilt Go frontend for its Go planner section)"
-    deps: [ts:build, go:build]
     sources:
       - shatter-core/tests/e2e_concolic.rs
       - shatter-core/src/**/*.rs
@@ -519,40 +551,53 @@ tasks:
       - shatter-go/**/*.go
       - scripts/examples_checkout.py
     cmds:
+      - bash scripts/gate-wrapper.sh e2e-ts task e2e-ts-governed
+
+  e2e-ts-governed:
+    deps: [ts:build, go:build]
+    cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py)"
         export SHATTER_EXAMPLES_DIR="$examples_root"
         export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
-        bash scripts/gate-wrapper.sh e2e-ts cargo test --test e2e_concolic -- --include-ignored
+        cargo test --test e2e_concolic -- --include-ignored
 
   e2e-go:
     desc: "E2E concolic pipeline: Go frontend (e2e_concolic_go.rs)"
-    deps: [go:build]
     sources:
       - shatter-core/tests/e2e_concolic_go.rs
       - shatter-core/src/**/*.rs
       - shatter-go/**/*.go
       - scripts/examples_checkout.py
     cmds:
+      - bash scripts/gate-wrapper.sh e2e-go task e2e-go-governed
+
+  e2e-go-governed:
+    deps: [go:build]
+    cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py --no-update)"
         export SHATTER_EXAMPLES_DIR="$examples_root"
         export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
-        bash scripts/gate-wrapper.sh e2e-go cargo test --test e2e_concolic_go -- --include-ignored
+        cargo test --test e2e_concolic_go -- --include-ignored
 
   e2e-rust:
     desc: "E2E concolic pipeline: Rust frontend (e2e_concolic_rust.rs)"
-    deps: [rust-fe:build]
     sources:
       - shatter-core/tests/e2e_concolic_rust.rs
       - shatter-core/src/**/*.rs
       - shatter-rust/src/**/*.rs
       - scripts/examples_checkout.py
     cmds:
+      - bash scripts/gate-wrapper.sh e2e-rust task e2e-rust-governed
+
+  e2e-rust-governed:
+    deps: [rust-fe:build]
+    cmds:
       - |
         examples_root="$(python3 scripts/examples_checkout.py --no-update)"
         export SHATTER_EXAMPLES_DIR="$examples_root"
-        bash scripts/gate-wrapper.sh e2e-rust cargo test --test e2e_concolic_rust -- --include-ignored
+        cargo test --test e2e_concolic_rust -- --include-ignored
 
   smoke:
     desc: "Fast pipeline smoke check (~15s). Covers: TS function, Go standalone with func main(), Go library function, failed-instrumentation regression."
@@ -589,29 +634,45 @@ tasks:
 
   walkthrough:
     desc: Run the compact walkthrough demo with reusable per-user caches
+    cmds:
+      - bash scripts/gate-wrapper.sh walkthrough task walkthrough-governed
+
+  walkthrough-governed:
     deps: [build]
     # str-gg9v: demo/walkthrough.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
-      - bash scripts/gate-wrapper.sh walkthrough bash demo/walkthrough.sh --auto --delay 0
+      - bash demo/walkthrough.sh --auto --delay 0
 
   walkthrough-cold:
     desc: Run the compact walkthrough with isolated disposable caches (release validation)
+    cmds:
+      - bash scripts/gate-wrapper.sh walkthrough-cold task walkthrough-cold-governed
+
+  walkthrough-cold-governed:
     deps: [build]
     cmds:
-      - bash scripts/gate-wrapper.sh walkthrough-cold bash demo/walkthrough.sh --cold --auto --delay 0
+      - bash demo/walkthrough.sh --cold --auto --delay 0
 
   gauntlet:
     desc: Run the broad CLI coverage gauntlet with reusable per-user caches
+    cmds:
+      - bash scripts/gate-wrapper.sh gauntlet task gauntlet-governed
+
+  gauntlet-governed:
     deps: [build]
     # str-gg9v: demo/gauntlet.sh self-exports SHATTER_ALLOW_HOST_WRITES.
     cmds:
-      - bash scripts/gate-wrapper.sh gauntlet bash demo/gauntlet.sh --auto --delay 0
+      - bash demo/gauntlet.sh --auto --delay 0
 
   gauntlet-cold:
     desc: Run the gauntlet with isolated disposable caches (hermetic/release validation)
+    cmds:
+      - bash scripts/gate-wrapper.sh gauntlet-cold task gauntlet-cold-governed
+
+  gauntlet-cold-governed:
     deps: [build]
     cmds:
-      - bash scripts/gate-wrapper.sh gauntlet-cold bash demo/gauntlet.sh --cold --auto --delay 0
+      - bash demo/gauntlet.sh --cold --auto --delay 0
 
   broad-run-corpus:
     desc: Run the broad-run validation corpus gate (Kapow failure-class fixtures)
