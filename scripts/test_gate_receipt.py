@@ -39,6 +39,9 @@ TOOL_OUTPUTS = {
     "rustc": "rustc 1.91.0 (fixture)",
     "task": "Task version: v3.44.1",
 }
+GOLDEN_BASE_TREE = "2f198f702c63dc2433b190dd67780712a3a5a229"
+GOLDEN_CANDIDATE_TREE = "b18f574cba7a16806bbcc4808f45b0ed9adf66d4"
+GOLDEN_DIGEST = "sha256:60b989d5115baeafe6fea2de8bc77ee733aad6eb884df23d8b97f2122457de65"
 
 
 def canonical_json(value: object) -> bytes:
@@ -142,7 +145,12 @@ class ReceiptRepo:
         git_shim.chmod(0o755)
         for name, output in TOOL_OUTPUTS.items():
             tool = self.fake_bin / name
-            tool.write_text(f"#!/bin/sh\nprintf '  %s  \\n' '{output}'\n")
+            expected_arg = "version" if name == "go" else "--version"
+            tool.write_text(
+                "#!/bin/sh\n"
+                f'[ "$#" -eq 1 ] && [ "$1" = "{expected_arg}" ] || exit 3\n'
+                f"printf '  %s  \\n' '{output}'\n"
+            )
             tool.chmod(0o755)
 
     @property
@@ -269,8 +277,11 @@ class GoldenReceiptTests(ReceiptTestCase):
         result = self.fixture.run()
         self.assertEqual(result.returncode, EXIT_OK, result.stderr)
         self.assertEqual(result.stderr, "")
+        self.assertEqual(self.fixture.base, GOLDEN_BASE_TREE)
+        self.assertEqual(self.fixture.candidate, GOLDEN_CANDIDATE_TREE)
         expected = self.expected_without_digest()
         digest = f"sha256:{sha256(canonical_json(expected))}"
+        self.assertEqual(digest, GOLDEN_DIGEST)
         expected["digest"] = digest
         self.assertEqual(self.fixture.receipt_path.read_bytes(), canonical_json(expected) + b"\n")
         self.assertEqual(
@@ -315,6 +326,9 @@ class InputRejectionTests(ReceiptTestCase):
         ).stdout.strip()
         self.assert_invalid(self.fixture.run(candidate=commit))
 
+    def test_invalid_base_tree_is_rejected(self) -> None:
+        self.assert_invalid(self.fixture.run(base="0" * 40))
+
     def test_gate_result_schema_timestamp_exit_and_uniqueness(self) -> None:
         bad_values = (
             [],
@@ -343,6 +357,11 @@ class InputRejectionTests(ReceiptTestCase):
         )
         self.assert_invalid(self.fixture.run(results=(path,)))
 
+    def test_invalid_utf8_gate_result_is_invalid(self) -> None:
+        path = self.fixture.root / "invalid-utf8.json"
+        path.write_bytes(b"\xff")
+        self.assert_invalid(self.fixture.run(results=(path,)))
+
     def test_missing_required_candidate_code_is_invalid(self) -> None:
         self.fixture._git("update-index", "--force-remove", "scripts/gate-wrapper.sh")
         tree = self.fixture._git("write-tree").stdout.strip()
@@ -361,6 +380,12 @@ class DiscoveryAndIOTests(ReceiptTestCase):
     def test_missing_tool_is_discovery_error_without_receipt(self) -> None:
         (self.fixture.fake_bin / "cargo").unlink()
         result = self.fixture.run()
+        self.assertEqual(result.returncode, EXIT_IOERR, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse(self.fixture.receipt_path.exists())
+
+    def test_missing_gate_result_file_is_io_error(self) -> None:
+        result = self.fixture.run(results=(self.fixture.root / "missing.json",))
         self.assertEqual(result.returncode, EXIT_IOERR, result.stderr)
         self.assertEqual(result.stdout, "")
         self.assertFalse(self.fixture.receipt_path.exists())
