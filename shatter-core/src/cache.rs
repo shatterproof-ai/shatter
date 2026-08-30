@@ -2404,6 +2404,161 @@ mod tests {
             "stored inputs should exist at {inputs_path:?}"
         );
     }
+
+    // --- CompletedFunctionCache tests (str-8q1b4) ---
+
+    fn sample_function_result(
+        function_id: &str,
+        lines_covered: usize,
+    ) -> crate::scan_orchestrator::FunctionResult {
+        use crate::scan_orchestrator::{FunctionResult, MockSource, MockUsage};
+        FunctionResult {
+            function_name: function_id.to_string(),
+            exploration: crate::explorer::ObservationOutput {
+                function_name: function_id.to_string(),
+                iterations: 7,
+                unique_paths: 2,
+                lines_covered,
+                total_lines: 12,
+                ..Default::default()
+            },
+            behavior_map: sample_map(function_id),
+            behavior_coverage: vec![],
+            mocks_used: vec![MockUsage {
+                name: "src/db.ts:query".into(),
+                source: MockSource::CachedBehaviorMap,
+            }],
+            mock_misses: vec![],
+            coverage_metrics: crate::coverage_metrics::CoverageMetrics::default(),
+            refactoring_recommendations: vec![],
+        }
+    }
+
+    #[test]
+    fn completed_function_cache_roundtrips_report_bearing_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        let result = sample_function_result("src/auth.ts:login", 9);
+
+        cache.store("deep_fp", &result).unwrap();
+        let record = cache
+            .load("src/auth.ts:login", "deep_fp")
+            .expect("record should load under the fingerprint it was stored with");
+
+        assert_eq!(record.function_name, "src/auth.ts:login");
+        assert_eq!(record.exploration.lines_covered, 9);
+        assert_eq!(record.exploration.total_lines, 12);
+        assert_eq!(record.exploration.iterations, 7);
+        assert_eq!(record.mocks_used.len(), 1);
+        assert_eq!(record.mocks_used[0].name, "src/db.ts:query");
+    }
+
+    #[test]
+    fn completed_function_cache_restore_reattaches_behavior_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        let result = sample_function_result("src/auth.ts:login", 9);
+        cache.store("deep_fp", &result).unwrap();
+
+        let record = cache.load("src/auth.ts:login", "deep_fp").unwrap();
+        let restored = record.restore(sample_map("src/auth.ts:login"));
+
+        // The behavior map is not persisted in the sidecar; it must arrive
+        // from BehaviorMapCache so both halves agree.
+        assert_eq!(restored.behavior_map.function_id, "src/auth.ts:login");
+        assert_eq!(restored.behavior_map.behaviors.len(), 1);
+        assert_eq!(restored.exploration.lines_covered, 9);
+        assert_eq!(restored.function_name, "src/auth.ts:login");
+    }
+
+    #[test]
+    fn completed_function_cache_rejects_changed_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        cache
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        assert!(
+            cache.load("src/auth.ts:login", "deep_fp_CHANGED").is_none(),
+            "a record written under a different deep fingerprint is stale"
+        );
+    }
+
+    #[test]
+    fn completed_function_cache_misses_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        assert!(cache.load("src/auth.ts:login", "deep_fp").is_none());
+    }
+
+    #[test]
+    fn completed_function_cache_misses_on_corrupt_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        cache
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        let path = cache.path_for("src/auth.ts:login");
+        fs::write(&path, "{not json").unwrap();
+
+        assert!(
+            cache.load("src/auth.ts:login", "deep_fp").is_none(),
+            "a corrupt sidecar must degrade to a miss, not an error"
+        );
+    }
+
+    #[test]
+    fn completed_function_cache_misses_on_schema_version_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        cache
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        let path = cache.path_for("src/auth.ts:login");
+        let contents = fs::read_to_string(&path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        value["schema_version"] =
+            serde_json::json!(COMPLETED_FUNCTION_SCHEMA_VERSION.saturating_add(1));
+        fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        assert!(cache.load("src/auth.ts:login", "deep_fp").is_none());
+    }
+
+    #[test]
+    fn completed_function_sidecar_does_not_pollute_behavior_map_scans() {
+        // Both caches share a directory, so a `.result.json` sidecar must stay
+        // invisible to every BehaviorMapCache enumeration.
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+        let completed = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+
+        bm_cache.store(&sample_map("src/auth.ts:login")).unwrap();
+        completed
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        assert_eq!(bm_cache.load_all().unwrap().len(), 1);
+        assert_eq!(bm_cache.load_all_for_file("src/auth.ts").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn completed_function_cache_colocates_with_behavior_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+        let completed =
+            CompletedFunctionCache::new(bm_cache.cache_dir().to_path_buf()).unwrap();
+        completed
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        assert!(
+            dir.path().join("src/auth.ts/login.result.json").exists(),
+            "sidecar should sit next to the behavior map it complements"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3055,6 +3210,66 @@ mod proptests {
             let loaded = cache.load_compatible("fid", &b).unwrap();
             prop_assert_eq!(loaded, None);
             prop_assert!(!path.exists(), "incompatible load should unlink");
+        }
+    }
+
+    // --- CompletedFunctionCache proptests (str-8q1b4) ---
+
+    proptest! {
+        /// The report-bearing half of a FunctionResult survives store → load
+        /// unchanged, and only under the deep fingerprint it was written with.
+        /// This is the boundary a resumed scan's report parity rests on.
+        #[test]
+        fn completed_function_cache_roundtrip(
+            file in "[a-z]{1,8}",
+            name in "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            deep_fp in "[a-f0-9]{8,32}",
+            iterations in 0u32..1000,
+            unique_paths in 0usize..20,
+            lines_covered in 0usize..500,
+            total_lines in 0u32..500,
+        ) {
+            let function_id = format!("src/{file}.ts:{name}");
+            let dir = tempfile::tempdir().unwrap();
+            let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+
+            let result = crate::scan_orchestrator::FunctionResult {
+                function_name: function_id.clone(),
+                exploration: crate::explorer::ObservationOutput {
+                    function_name: function_id.clone(),
+                    iterations,
+                    unique_paths,
+                    lines_covered,
+                    total_lines,
+                    ..Default::default()
+                },
+                behavior_map: BehaviorMap {
+                    function_id: function_id.clone(),
+                    behaviors: vec![],
+                    fingerprint: Some(deep_fp.clone()),
+                    nondeterministic_fields: vec![],
+                },
+                behavior_coverage: vec![],
+                mocks_used: vec![],
+                mock_misses: vec![],
+                coverage_metrics: crate::coverage_metrics::CoverageMetrics::default(),
+                refactoring_recommendations: vec![],
+            };
+            cache.store(&deep_fp, &result).unwrap();
+
+            let record = cache
+                .load(&function_id, &deep_fp)
+                .expect("record must load under its own fingerprint");
+            prop_assert_eq!(&record.function_name, &function_id);
+            prop_assert_eq!(record.exploration.iterations, iterations);
+            prop_assert_eq!(record.exploration.unique_paths, unique_paths);
+            prop_assert_eq!(record.exploration.lines_covered, lines_covered);
+            prop_assert_eq!(record.exploration.total_lines, total_lines);
+
+            prop_assert!(
+                cache.load(&function_id, &format!("{deep_fp}x")).is_none(),
+                "a record must never load under a fingerprint it was not written with"
+            );
         }
     }
 }
