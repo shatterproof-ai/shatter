@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 
 use crate::auto_mock;
 use crate::behavior::{BehaviorCoverage, BehaviorMap, CallGraph, CallGraphError, TestOrderEntry};
-use crate::cache::{BehaviorMapCache, StoredInputsCache};
+use crate::cache::{BehaviorMapCache, CompletedFunctionCache, StoredInputsCache};
 use crate::execution_record::ExecutionRecord;
 use crate::explorer::{self, ExploreConfig, ExploreError, IsolationMode, ObservationOutput};
 use crate::fingerprint::FunctionSignature;
@@ -286,7 +286,7 @@ pub struct SamplingContext {
 }
 
 /// Source of a mock used during exploration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MockSource {
     /// Mock derived from a previously computed behavior map.
     CachedBehaviorMap,
@@ -297,7 +297,7 @@ pub enum MockSource {
 }
 
 /// A mock that was used during function exploration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MockUsage {
     /// Symbol name of the mocked dependency.
     pub name: String,
@@ -316,7 +316,7 @@ pub struct MockUsage {
 /// A `MockMiss` surfaces this assumption so users know which callee behaviors
 /// are assumed, not observed. It does **not** trigger re-exploration in this
 /// phase — detection and reporting only.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MockMiss {
     /// Symbol name of the callee whose behavior map was missed.
     pub callee_name: String,
@@ -1432,6 +1432,23 @@ fn compute_scan_id(config: &ScanConfig) -> String {
 
 /// Load an existing checkpoint or create a fresh one. Checks compatibility
 /// (hard: scan_id mismatch → discard) and config drift (soft: warning only).
+/// Open the completed-function sidecar cache colocated with this scan's
+/// behavior map cache (str-8q1b4).
+///
+/// Returns `None` when behavior-map caching is off. A checkpoint hit requires a
+/// cached behavior map, so without one a stored completed-function record could
+/// never be read back and writing it would be pure cost.
+fn completed_function_cache(config: &ScanConfig) -> Option<CompletedFunctionCache> {
+    let cache = config.cache.as_ref()?;
+    match CompletedFunctionCache::new(cache.cache_dir().to_path_buf()) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            log::warn!("completed-function cache unavailable, resumed runs will under-report: {e}");
+            None
+        }
+    }
+}
+
 fn load_or_create_checkpoint(
     resume_path: Option<&Path>,
     scan_id: &str,
@@ -1542,6 +1559,9 @@ pub async fn scan(
     let cfg_hash = scan_config_hash(config);
     let mut checkpoint =
         load_or_create_checkpoint(config.resume_path.as_deref(), &scan_id, &cfg_hash);
+    // str-8q1b4: sidecar records so a later resume can restore completed
+    // functions as completed instead of skipping them.
+    let completed_cache = completed_function_cache(config);
 
     // Load the interesting input pool for cross-function seed sharing.
     let mut input_pool = config
@@ -1585,13 +1605,25 @@ pub async fn scan(
             && checkpoint.is_completed(func_name, dfp, cache)
             && let Ok(Some(cached_map)) = cache.load(func_name)
         {
-            behavior_maps.insert(func_name.clone(), cached_map);
+            behavior_maps.insert(func_name.clone(), cached_map.clone());
             deep_fingerprints.insert(func_name.clone(), dfp.clone());
-            skipped_functions.push(SkippedFunction {
-                function_name: func_name.clone(),
-                reason: "resumed from checkpoint".into(),
-                category: SkipCategory::Expected,
-            });
+            // str-8q1b4: this function *completed* in the interrupted run, so
+            // restore its result row rather than reporting it as a skip —
+            // otherwise it leaves `completed_functions` while staying inside
+            // `attempted_functions` and the resumed report reads as a
+            // regression. A checkpoint written before the sidecar cache
+            // existed has no record; fall back to the historical skip.
+            match completed_cache
+                .as_ref()
+                .and_then(|c| c.load(func_name, dfp))
+            {
+                Some(record) => function_results.push(record.restore(cached_map)),
+                None => skipped_functions.push(SkippedFunction {
+                    function_name: func_name.clone(),
+                    reason: "resumed from checkpoint".into(),
+                    category: SkipCategory::Expected,
+                }),
+            }
             continue;
         }
 
@@ -1905,6 +1937,18 @@ pub async fn scan(
             coverage_metrics: analyze_out.coverage_metrics,
             refactoring_recommendations,
         });
+
+        // str-8q1b4: persist the report-bearing half of the result alongside
+        // the checkpoint entry recorded above, so an interrupted run can be
+        // resumed into an equivalent report.
+        if let (Some(sidecar), Some(dfp), Some(result)) = (
+            completed_cache.as_ref(),
+            current_deep_fp.as_ref(),
+            function_results.last(),
+        ) && let Err(e) = sidecar.store(dfp, result)
+        {
+            log::warn!("failed to cache completed-function record for {func_name}: {e}");
+        }
     }
 
     // Save the interesting input pool if configured.
@@ -3890,6 +3934,10 @@ pub async fn parallel_scan_with_progress(
     let mut checkpoint =
         load_or_create_checkpoint(config.resume_path.as_deref(), &scan_id, &cfg_hash);
 
+    // str-8q1b4: sidecar records so a later resume can restore completed
+    // functions as completed instead of skipping them.
+    let completed_cache = completed_function_cache(config);
+
     let mut all_results: Vec<FunctionResult> = Vec::new();
     let mut test_order: Vec<String> = Vec::new();
     let mut skipped: Vec<SkippedFunction> = Vec::new();
@@ -4099,39 +4147,82 @@ pub async fn parallel_scan_with_progress(
                 && let Ok(Some(cached_map)) = cache.load(func_name)
             {
                 let mut maps = behavior_maps.lock().await;
-                maps.insert(func_name.clone(), cached_map);
+                maps.insert(func_name.clone(), cached_map.clone());
                 drop(maps);
                 layer_deep_fps.push((func_name.clone(), dfp.clone()));
-                skipped.push(SkippedFunction {
-                    function_name: func_name.clone(),
-                    reason: "resumed from checkpoint".into(),
-                    category: SkipCategory::Expected,
-                });
-                write_skipped_scan_artifact(
-                    artifact_root.as_deref(),
-                    current_progress,
-                    total_functions,
-                    func_name,
-                    "resumed from checkpoint",
-                    SkipCategory::Expected,
-                );
-                summary_record_skipped(
-                    &mut summary,
-                    func_name,
-                    current_progress,
-                    "resumed from checkpoint",
-                    SkipCategory::Expected,
-                    scan_start.elapsed(),
-                );
-                maybe_write_summary(&summary);
-                emit_progress(
-                    progress_handler.as_ref(),
-                    func_name,
-                    current_progress,
-                    total_functions,
-                    scan_start.elapsed(),
-                    ScanProgressStatus::Skipped,
-                );
+                // str-8q1b4: mirrors the sequential path — a checkpoint-
+                // satisfied function completed in the interrupted run, so
+                // restore its result row (and report it as completed in the
+                // summary, artifact, and progress stream) instead of counting
+                // it as a skip. A checkpoint written before the sidecar cache
+                // existed has no record; fall back to the historical skip.
+                let restored = completed_cache
+                    .as_ref()
+                    .and_then(|c| c.load(func_name, dfp))
+                    .map(|record| record.restore(cached_map));
+                match restored {
+                    Some(result) => {
+                        write_completed_scan_artifact(
+                            artifact_root.as_deref(),
+                            current_progress,
+                            total_functions,
+                            config
+                                .file_map
+                                .get(func_name)
+                                .map(String::as_str)
+                                .unwrap_or(""),
+                            &result,
+                        );
+                        summary_record_completed(
+                            &mut summary,
+                            func_name,
+                            current_progress,
+                            scan_start.elapsed(),
+                        );
+                        maybe_write_summary(&summary);
+                        emit_progress(
+                            progress_handler.as_ref(),
+                            func_name,
+                            current_progress,
+                            total_functions,
+                            scan_start.elapsed(),
+                            ScanProgressStatus::Completed,
+                        );
+                        all_results.push(result);
+                    }
+                    None => {
+                        skipped.push(SkippedFunction {
+                            function_name: func_name.clone(),
+                            reason: "resumed from checkpoint".into(),
+                            category: SkipCategory::Expected,
+                        });
+                        write_skipped_scan_artifact(
+                            artifact_root.as_deref(),
+                            current_progress,
+                            total_functions,
+                            func_name,
+                            "resumed from checkpoint",
+                            SkipCategory::Expected,
+                        );
+                        summary_record_skipped(
+                            &mut summary,
+                            func_name,
+                            current_progress,
+                            "resumed from checkpoint",
+                            SkipCategory::Expected,
+                            scan_start.elapsed(),
+                        );
+                        maybe_write_summary(&summary);
+                        emit_progress(
+                            progress_handler.as_ref(),
+                            func_name,
+                            current_progress,
+                            total_functions,
+                            scan_start.elapsed(),
+                            ScanProgressStatus::Skipped,
+                        );
+                    }
+                }
                 continue;
             }
 
@@ -4970,6 +5061,17 @@ pub async fn parallel_scan_with_progress(
                         // Record deep FP for this function so downstream layers
                         // can incorporate it into their deep fingerprints.
                         if let Some(ref fp) = result.behavior_map.fingerprint {
+                            // str-8q1b4: persist the report-bearing half of the
+                            // result under the same deep FP the checkpoint is
+                            // about to record, so a resume can restore it.
+                            if let Some(sidecar) = completed_cache.as_ref()
+                                && let Err(e) = sidecar.store(fp, &result)
+                            {
+                                log::warn!(
+                                    "failed to cache completed-function record for {}: {e}",
+                                    result.function_name,
+                                );
+                            }
                             layer_deep_fps.push((result.function_name.clone(), fp.clone()));
                         }
                         all_results.push(*result);
