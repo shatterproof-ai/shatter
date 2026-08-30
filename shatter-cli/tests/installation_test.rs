@@ -139,9 +139,17 @@ fn find_bundle(cache_dir: &str) -> String {
     // Bundle not yet extracted. Run the CLI binary to trigger extraction.
     // We use `shatter explore` with a nonexistent file — it will fail, but not
     // before extracting the embedded frontend.
+    //
+    // str-vr7vq: pin `.current_dir` to a scratch tempdir. Without it this ran
+    // with `cargo test`'s default working directory (the shatter-cli crate
+    // root), and `explore`'s implicit init runs before the target file is
+    // even validated — leaving a stray `.shatter/` + managed `.gitignore`
+    // block behind in the crate directory on every extraction-triggering run.
+    let scratch_cwd = tempfile::tempdir().expect("create scratch cwd for bundle extraction");
     let binary = env!("CARGO_BIN_EXE_shatter");
     let _ = Command::new(binary)
         .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
+        .current_dir(scratch_cwd.path())
         .args(["explore", "/nonexistent/file.ts"])
         .output();
 

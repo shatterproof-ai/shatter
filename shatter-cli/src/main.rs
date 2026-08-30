@@ -240,9 +240,25 @@ async fn main() -> ExitCode {
             // project. Mirrors the scan guard above. Skip the implicit
             // init in that case; run_explore reroutes harness storage to a
             // tempdir for the same reason.
+            //
+            // str-vr7vq: `--from-artifacts` takes the `finalize_explore`
+            // early-return path (see `commands::explore::run_explore`),
+            // which only reads a previously-written artifact directory and
+            // renders a report/spec bundle — it never analyzes, caches, or
+            // seeds against a live project, so there is nothing for
+            // implicit init to prepare. Running it anyway resolves the
+            // project root from the current working directory (not from
+            // `--project-dir`, which finalize-from-artifacts callers rarely
+            // pass), so a `--from-artifacts` invocation with no explicit
+            // `--project-dir` wrote a stray `.shatter/` + managed
+            // `.gitignore` block into whatever directory the process
+            // happened to be launched from (observed as an untracked
+            // `shatter-cli/.gitignore` left behind by `cargo test`
+            // integration tests that invoke the compiled binary without
+            // pinning its working directory).
             let explore_external_audit_mode =
                 !report_outputs.is_empty() && no_cache && no_seeds;
-            if !explore_external_audit_mode {
+            if from_artifacts.is_none() && !explore_external_audit_mode {
                 maybe_implicit_init(cli.project_dir.as_deref(), &colors);
             }
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
