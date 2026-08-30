@@ -351,20 +351,34 @@ fn is_map_encoding(fields: &[(String, TypeInfo)]) -> bool {
     )
 }
 
-/// Allocation bound on a recognized positional-object arity, mirroring
-/// `orchestrator::MAX_OVERLAY_ARRAY_INDEX` (kept as an independent constant
-/// because `orchestrator.rs` cannot depend on this being `pub`, and the two
-/// values MUST stay equal — see that constant's doc comment for the
-/// rationale). A `TypeInfo::Object` whose field names are exactly `0..n` for
-/// `n` above this bound is not recognized as positional here, matching the
-/// cap `resolve_field_path`'s `array_index_segment` already applies when
-/// parsing an overlay path segment.
-const MAX_POSITIONAL_ARITY_INDEX: usize = 63;
+/// Allocation bound on a recognized positional-object arity: writing index
+/// `n` materializes `n + 1` elements, so an unbounded index would let one
+/// malformed constraint allocate without limit. The number is a local safety
+/// valve, NOT a language or analyzer limit — no `MAX_TUPLE_ARITY` exists in
+/// shatter-rust or shatter-core — and it is deliberately far above the
+/// arities the tuple lowering produces in practice.
+///
+/// This is the single shared cap for positional/tuple indexing across
+/// `shatter-core`: `orchestrator::resolve_field_path` and
+/// `orchestrator::numeric_keyed_object_as_array` parse overlay path segments
+/// and object keys through [`index_spelling`] (re-exported to them via
+/// `pub(crate)`), and `positional_object_arity` below applies the same bound
+/// when deciding whether a declared `TypeInfo::Object` is tuple-shaped. A
+/// `TypeInfo::Object` whose field names are exactly `0..n` for `n` above this
+/// bound is not recognized as positional.
+pub(crate) const MAX_POSITIONAL_ARITY_INDEX: usize = 63;
 
 /// True when `segment` is a canonical decimal index spelling (no leading
 /// zero, e.g. `"0"`, `"12"`, but not `"01"`, `"-1"`, or `"1.0"`) at or below
 /// [`MAX_POSITIONAL_ARITY_INDEX`].
-fn index_spelling(segment: &str) -> Option<usize> {
+///
+/// Shared by both index-parsing call sites in the crate: `positional_object_arity`
+/// and `positional_field_types` below (declared-type arity), and
+/// `orchestrator::resolve_field_path` / `orchestrator::numeric_keyed_object_as_array`
+/// (overlay path segments and JSON object keys) via the `pub(crate)` re-export.
+/// Parsing alone does NOT make a segment positional in the overlay path —
+/// only the caller, which has the declared `TypeInfo`, decides that.
+pub(crate) fn index_spelling(segment: &str) -> Option<usize> {
     if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -999,10 +1013,11 @@ mod tests {
     /// A positional object whose field names exceed
     /// [`MAX_POSITIONAL_ARITY_INDEX`] is not recognized as a tuple, matching
     /// the cap `orchestrator::array_index_segment` applies when parsing an
-    /// overlay path segment (`MAX_OVERLAY_ARRAY_INDEX`, which MUST stay equal
-    /// to this constant). Without this cap a malformed/synthetic type with a
-    /// huge run of index-spelled field names would be treated as positional
-    /// and could force unbounded array allocation downstream.
+    /// overlay path segment (both now delegate to this same shared constant
+    /// via [`index_spelling`], see str-na9db). Without this cap a
+    /// malformed/synthetic type with a huge run of index-spelled field names
+    /// would be treated as positional and could force unbounded array
+    /// allocation downstream.
     #[test]
     fn positional_object_arity_rejects_indices_above_the_cap() {
         let within_cap: Vec<(String, TypeInfo)> = (0..=MAX_POSITIONAL_ARITY_INDEX)
