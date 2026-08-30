@@ -414,6 +414,9 @@ tasks:
       - scripts/test_setup_hooks.sh
       - scripts/affected-gates.py
       - scripts/test_affected_gates.py
+      - scripts/gate-receipt.py
+      - scripts/test_gate_receipt.py
+      - docs/perf/gate-receipt-v1.md
       - scripts/test_precompletion_bootstrap.py
       - demo/walkthrough.sh
       - demo/gauntlet.sh
@@ -442,6 +445,7 @@ tasks:
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
       - bash scripts/test_setup_hooks.sh
       - python3 -m unittest scripts.test_affected_gates
+      - python3 -m unittest scripts.test_gate_receipt
       - python3 -m unittest scripts.test_precompletion_bootstrap
       - bash scripts/test_demo_cache_modes.sh
       - python3 -m unittest scripts.test_root_cargo_phases
