@@ -563,14 +563,34 @@ def requirements_shape(requirements: object) -> list[dict[str, object]] | None:
 
 
 def read_document(path: Path, label: str) -> bytes:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
-        return path.read_bytes()
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise DiscoveryIOError(f"cannot open {label} {path}: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise DiscoveryIOError(f"{label} is not a regular file: {path}")
+            return stream.read()
+    except DiscoveryIOError:
+        raise
     except OSError as exc:
         raise DiscoveryIOError(f"cannot read {label} {path}: {exc}") from exc
 
 
 def read_receipt(path: Path) -> tuple[bytes | None, bool]:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:

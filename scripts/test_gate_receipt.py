@@ -244,6 +244,7 @@ class ReceiptRepo:
         requirements: Path | None = None,
         path: Path | None = None,
         env: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         args = [
             sys.executable,
@@ -267,6 +268,7 @@ class ReceiptRepo:
             text=True,
             capture_output=True,
             check=False,
+            timeout=timeout,
         )
 
     def mutate_receipt(self, mutate, *, recompute_digest: bool = True) -> None:
@@ -667,6 +669,13 @@ class ValidatorReasonTests(ReceiptTestCase):
         self.assertEqual(result.returncode, EXIT_NOT_VALID, result.stderr)
         self.assertEqual(json.loads(result.stdout), {"status": "invalid", "reasons": ["permissions"]})
 
+    def test_fifo_receipt_is_permissions_reason_without_blocking(self) -> None:
+        fifo = self.fixture.root / "receipt.fifo"
+        os.mkfifo(fifo, mode=0o600)
+        result = self.fixture.validate(path=fifo, timeout=2)
+        self.assertEqual(result.returncode, EXIT_NOT_VALID, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"status": "invalid", "reasons": ["permissions"]})
+
     def test_invalid_validator_tree_is_malformed_policy(self) -> None:
         result = self.fixture.validate(candidate="bad")
         self.assertEqual(result.returncode, EXIT_NOT_VALID, result.stderr)
@@ -692,6 +701,15 @@ class ValidatorDiscoveryTests(ReceiptTestCase):
         self.assertEqual(result.stdout, "")
 
         result = self.fixture.validate(path=self.fixture.root / "missing-receipt.json")
+        self.assertEqual(result.returncode, EXIT_IOERR, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_fifo_requirements_is_io_error_without_blocking(self) -> None:
+        written = self.fixture.run()
+        self.assertEqual(written.returncode, EXIT_OK, written.stderr)
+        fifo = self.fixture.root / "requirements.fifo"
+        os.mkfifo(fifo, mode=0o600)
+        result = self.fixture.validate(requirements=fifo, timeout=2)
         self.assertEqual(result.returncode, EXIT_IOERR, result.stderr)
         self.assertEqual(result.stdout, "")
 
