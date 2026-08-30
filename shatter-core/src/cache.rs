@@ -288,6 +288,16 @@ impl BehaviorMapCache {
         project_root.join(".shatter-cache").join("behavior-maps")
     }
 
+    /// Directory this cache is backed by.
+    ///
+    /// Exposed so callers can colocate a sidecar cache (see
+    /// [`CompletedFunctionCache`]) with the behavior maps it complements,
+    /// instead of threading a second directory through their configuration.
+    #[must_use]
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
     fn path_for(&self, function_id: &str) -> PathBuf {
         let mut p = cache_base_path(&self.cache_dir, function_id);
         p.set_extension("json");
@@ -895,6 +905,200 @@ impl StoredInputsCache {
     fn path_for(&self, function_id: &str) -> PathBuf {
         let base = cache_base_path(&self.cache_dir, function_id);
         base.with_extension("inputs.json")
+    }
+}
+
+/// Schema version for the completed-function sidecar file.
+///
+/// Bumped independently of `PROTOCOL_VERSION` when the
+/// [`CompletedFunctionRecord`] field layout changes in a way existing readers
+/// cannot tolerate. A mismatch invalidates the entry silently on read, so a
+/// resumed scan degrades to the pre-str-8q1b4 behavior (the function is
+/// reported as an expected skip) rather than failing.
+pub const COMPLETED_FUNCTION_SCHEMA_VERSION: u32 = 1;
+
+/// The report-bearing half of a completed
+/// [`FunctionResult`](crate::scan_orchestrator::FunctionResult), persisted so a
+/// resumed scan can restore the function as *completed* instead of dropping it
+/// into `skipped_functions` (str-8q1b4).
+///
+/// Deliberately omits `behavior_map`: that half already lives in
+/// [`BehaviorMapCache`] under the same function key, and
+/// [`Self::restore`] re-attaches it on load. Keeping exactly one on-disk copy
+/// means the map used to build the report can never drift from the map used to
+/// mock the function's callers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompletedFunctionRecord {
+    /// Qualified ID of the explored function.
+    pub function_name: String,
+    /// Exploration output (paths, coverage, raw execution results).
+    pub exploration: crate::explorer::ObservationOutput,
+    /// Coverage of callee behaviors exercised by this function.
+    pub behavior_coverage: Vec<crate::behavior::BehaviorCoverage>,
+    /// Mocks used during exploration, with source attribution.
+    pub mocks_used: Vec<crate::scan_orchestrator::MockUsage>,
+    /// Mock misses detected during exploration.
+    pub mock_misses: Vec<crate::scan_orchestrator::MockMiss>,
+    /// Branch coverage metrics from the analyze stage.
+    pub coverage_metrics: crate::coverage_metrics::CoverageMetrics,
+    /// Refactoring recommendations for hard-to-mock dependencies.
+    pub refactoring_recommendations: Vec<crate::mock_analysis::RefactoringRecommendation>,
+}
+
+impl CompletedFunctionRecord {
+    /// Rebuild a full `FunctionResult` by re-attaching `behavior_map`, which
+    /// callers load from [`BehaviorMapCache`] under the same function key.
+    #[must_use]
+    pub fn restore(self, behavior_map: BehaviorMap) -> crate::scan_orchestrator::FunctionResult {
+        crate::scan_orchestrator::FunctionResult {
+            function_name: self.function_name,
+            exploration: self.exploration,
+            behavior_map,
+            behavior_coverage: self.behavior_coverage,
+            mocks_used: self.mocks_used,
+            mock_misses: self.mock_misses,
+            coverage_metrics: self.coverage_metrics,
+            refactoring_recommendations: self.refactoring_recommendations,
+        }
+    }
+}
+
+/// Versioned envelope for cached [`CompletedFunctionRecord`] entries.
+///
+/// Carries the deep fingerprint the record was written under so a load can
+/// reject a record whose function has changed since — the same staleness gate
+/// [`crate::checkpoint::ScanCheckpoint::is_completed`] applies to the
+/// behavior map.
+#[derive(Debug, Serialize, Deserialize)]
+struct CompletedFunctionCacheEntry {
+    protocol_version: String,
+    schema_version: u32,
+    deep_fingerprint: String,
+    record: CompletedFunctionRecord,
+}
+
+/// Borrowed write-side mirror of [`CompletedFunctionCacheEntry`].
+///
+/// A completed function's `ObservationOutput` holds every raw execution result,
+/// so the write path serializes straight out of the live `FunctionResult`
+/// rather than deep-cloning it into an owned record first.
+///
+/// Its field names must stay identical to the owned entry's. They are covered
+/// by the store-then-load round-trip tests, which fail on any drift because a
+/// renamed or dropped field no longer deserializes.
+#[derive(Debug, Serialize)]
+struct CompletedFunctionCacheEntryRef<'a> {
+    protocol_version: &'a str,
+    schema_version: u32,
+    deep_fingerprint: &'a str,
+    record: CompletedFunctionRecordRef<'a>,
+}
+
+/// Borrowed write-side mirror of [`CompletedFunctionRecord`]. See
+/// [`CompletedFunctionCacheEntryRef`] for why it exists.
+#[derive(Debug, Serialize)]
+struct CompletedFunctionRecordRef<'a> {
+    function_name: &'a str,
+    exploration: &'a crate::explorer::ObservationOutput,
+    behavior_coverage: &'a [crate::behavior::BehaviorCoverage],
+    mocks_used: &'a [crate::scan_orchestrator::MockUsage],
+    mock_misses: &'a [crate::scan_orchestrator::MockMiss],
+    coverage_metrics: &'a crate::coverage_metrics::CoverageMetrics,
+    refactoring_recommendations: &'a [crate::mock_analysis::RefactoringRecommendation],
+}
+
+/// Disk-backed cache of completed-function records, written as each function
+/// finishes so a later resume can reconstitute its report row (str-8q1b4).
+///
+/// **Advisory and reconstructible**: every load failure — missing file, corrupt
+/// JSON, version mismatch, fingerprint drift — degrades to `None`, and the
+/// caller falls back to re-exploring or skipping the function. Nothing here is
+/// a source of truth; the record only ever mirrors a `FunctionResult` the scan
+/// already produced.
+///
+/// Sidecar layout: colocated with the behavior map under the same hierarchical
+/// path, with extension `result.json`.
+#[derive(Debug)]
+pub struct CompletedFunctionCache {
+    cache_dir: PathBuf,
+}
+
+impl CompletedFunctionCache {
+    /// Create a new completed-function cache backed by the given directory.
+    ///
+    /// Creates the directory (and parents) if it doesn't exist.
+    pub fn new(cache_dir: PathBuf) -> Result<Self, CacheError> {
+        fs::create_dir_all(&cache_dir)?;
+        Ok(Self { cache_dir })
+    }
+
+    /// Default completed-function cache directory: colocated with behavior maps
+    /// under `<project_root>/.shatter-cache/behavior-maps/`.
+    pub fn default_dir(project_root: &Path) -> PathBuf {
+        project_root.join(".shatter-cache").join("behavior-maps")
+    }
+
+    /// Load the record for `function_id` when one was written under
+    /// `deep_fingerprint`.
+    ///
+    /// Returns `None` for every miss, including a stale entry whose stored
+    /// fingerprint differs from `deep_fingerprint`. Unlike
+    /// [`BehaviorMapCache::is_fresh`], a stale entry is left on disk: the
+    /// function is about to be re-explored and will overwrite it.
+    #[must_use]
+    pub fn load(&self, function_id: &str, deep_fingerprint: &str) -> Option<CompletedFunctionRecord> {
+        let path = self.path_for(function_id);
+        let contents = fs::read_to_string(&path).ok()?;
+        let entry: CompletedFunctionCacheEntry = serde_json::from_str(&contents).ok()?;
+        if entry.protocol_version != PROTOCOL_VERSION
+            || entry.schema_version != COMPLETED_FUNCTION_SCHEMA_VERSION
+            || entry.deep_fingerprint != deep_fingerprint
+        {
+            return None;
+        }
+        Some(entry.record)
+    }
+
+    /// Store the persistable half of `result` under `deep_fingerprint`, using
+    /// an atomic temp-file + rename write.
+    ///
+    /// The function's behavior map is not written here — it belongs to
+    /// [`BehaviorMapCache`], and [`CompletedFunctionRecord::restore`] pairs the
+    /// two back up on load.
+    pub fn store(
+        &self,
+        deep_fingerprint: &str,
+        result: &crate::scan_orchestrator::FunctionResult,
+    ) -> Result<(), CacheError> {
+        let function_id = result.function_name.as_str();
+        let entry = CompletedFunctionCacheEntryRef {
+            protocol_version: PROTOCOL_VERSION,
+            schema_version: COMPLETED_FUNCTION_SCHEMA_VERSION,
+            deep_fingerprint,
+            record: CompletedFunctionRecordRef {
+                function_name: function_id,
+                exploration: &result.exploration,
+                behavior_coverage: &result.behavior_coverage,
+                mocks_used: &result.mocks_used,
+                mock_misses: &result.mock_misses,
+                coverage_metrics: &result.coverage_metrics,
+                refactoring_recommendations: &result.refactoring_recommendations,
+            },
+        };
+        let json = serde_json::to_string(&entry)?;
+        let path = self.path_for(function_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp_path = path.with_extension("result.json.tmp");
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    fn path_for(&self, function_id: &str) -> PathBuf {
+        let base = cache_base_path(&self.cache_dir, function_id);
+        base.with_extension("result.json")
     }
 }
 
