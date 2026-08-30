@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import errno
 import fnmatch
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,6 +21,7 @@ from typing import NoReturn
 
 EXIT_OK = 0
 EXIT_INVALID = 64
+EXIT_NOT_VALID = 65
 EXIT_IOERR = 74
 
 TREE_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -48,6 +51,33 @@ GIT_ENV_KEYS = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 )
+REASON_ORDER = (
+    "malformed",
+    "permissions",
+    "digest",
+    "tree",
+    "base",
+    "code",
+    "lock",
+    "tool",
+    "tier",
+    "duplicate_gate",
+    "missing_gate",
+    "failed_gate",
+    "argv",
+)
+RECEIPT_KEYS = {
+    "schema",
+    "candidate_tree",
+    "base_tree",
+    "tier",
+    "gate_results",
+    "bindings",
+    "tools",
+    "started_at",
+    "ended_at",
+    "digest",
+}
 
 
 class InvalidInput(Exception):
@@ -199,6 +229,23 @@ def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def reject_constant(value: str) -> NoReturn:
+    raise InvalidInput(f"invalid JSON constant: {value}")
+
+
+def parse_json_document(raw: bytes) -> object:
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except InvalidInput:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise InvalidInput("document is not valid UTF-8 JSON") from exc
+
+
 def parse_timestamp(value: object, field: str) -> datetime:
     if not isinstance(value, str) or not TIMESTAMP_RE.fullmatch(value):
         raise InvalidInput(f"{field} must be an RFC3339 UTC whole-second timestamp")
@@ -305,12 +352,20 @@ def ensure_private_directory(path: Path) -> None:
 
 
 def receipt_path(common_dir: Path, candidate: str) -> Path:
+    path, owned_directories = default_receipt_location(common_dir, candidate)
+    for directory in owned_directories:
+        ensure_private_directory(directory)
+    return path
+
+
+def default_receipt_location(common_dir: Path, candidate: str) -> tuple[Path, tuple[Path, ...]]:
     runtime_value = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     current = Path(runtime_value)
+    owned = []
     for component in ("shatter-gate-receipts", "v1", digest_bytes(os.fsencode(common_dir))):
         current /= component
-        ensure_private_directory(current)
-    return current / f"{candidate}.json"
+        owned.append(current)
+    return current / f"{candidate}.json", tuple(owned)
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -348,6 +403,12 @@ def parser() -> ReceiptArgumentParser:
     write.add_argument("--base", required=True)
     write.add_argument("--tier", choices=("local", "ci"), required=True)
     write.add_argument("--gate-result", action="append", required=True, type=Path)
+    validate = commands.add_parser("validate")
+    validate.add_argument("--candidate", required=True)
+    validate.add_argument("--base", required=True)
+    validate.add_argument("--tier", choices=("local", "ci"), required=True)
+    validate.add_argument("--requirements", required=True, type=Path)
+    validate.add_argument("--path", type=Path)
     return root
 
 
@@ -362,18 +423,328 @@ def write_receipt(args: argparse.Namespace) -> dict[str, str]:
     return {"status": "written", "path": str(path), "digest": digest}
 
 
-def main(argv: list[str] | None = None) -> int:
+def is_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_sha256(value: object, *, prefix: bool = False) -> bool:
+    pattern = r"sha256:[0-9a-f]{64}" if prefix else r"[0-9a-f]{64}"
+    return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+def valid_timestamp(value: object) -> bool:
     try:
-        args = parser().parse_args(argv)
-        result = write_receipt(args)
+        parse_timestamp(value, "timestamp")
+    except InvalidInput:
+        return False
+    return True
+
+
+def receipt_shape_is_valid(receipt: object, raw: bytes) -> bool:
+    if not isinstance(receipt, dict) or set(receipt) != RECEIPT_KEYS:
+        return False
+    if receipt["schema"] != 1 or isinstance(receipt["schema"], bool):
+        return False
+    if not all(
+        isinstance(receipt[field], str) and TREE_RE.fullmatch(receipt[field])
+        for field in ("candidate_tree", "base_tree")
+    ):
+        return False
+    if receipt["tier"] not in ("local", "ci") or not is_sha256(receipt["digest"], prefix=True):
+        return False
+
+    gate_results = receipt["gate_results"]
+    if not isinstance(gate_results, list) or not gate_results:
+        return False
+    for result in gate_results:
+        if not isinstance(result, dict) or set(result) != RESULT_KEYS:
+            return False
+        if not isinstance(result["gate"], str) or not result["gate"]:
+            return False
+        if not isinstance(result["argv"], list) or not result["argv"] or not all(
+            isinstance(argument, str) for argument in result["argv"]
+        ):
+            return False
+        if not is_integer(result["exit_code"]):
+            return False
+        if not valid_timestamp(result["started_at"]) or not valid_timestamp(result["ended_at"]):
+            return False
+        if str(result["ended_at"]) < str(result["started_at"]):
+            return False
+    if [result["gate"] for result in gate_results] != sorted(
+        result["gate"] for result in gate_results
+    ):
+        return False
+
+    bindings = receipt["bindings"]
+    if not isinstance(bindings, dict) or set(bindings) != {"code", "locks"}:
+        return False
+    code = bindings["code"]
+    locks = bindings["locks"]
+    if not isinstance(code, list) or not isinstance(locks, list):
+        return False
+    if any(
+        not isinstance(item, dict)
+        or set(item) != {"path", "sha256"}
+        or not isinstance(item["path"], str)
+        or not item["path"]
+        or not is_sha256(item["sha256"])
+        for item in code
+    ):
+        return False
+    if any(
+        not isinstance(item, dict)
+        or set(item) != {"path", "present", "sha256"}
+        or not isinstance(item["path"], str)
+        or not item["path"]
+        or not isinstance(item["present"], bool)
+        or (not is_sha256(item["sha256"]) if item["present"] else item["sha256"] is not None)
+        for item in locks
+    ):
+        return False
+    if [item["path"] for item in code] != sorted(item["path"] for item in code):
+        return False
+    if [item["path"] for item in locks] != sorted(item["path"] for item in locks):
+        return False
+
+    tools = receipt["tools"]
+    if not isinstance(tools, list) or any(
+        not isinstance(item, dict)
+        or set(item) != {"name", "version"}
+        or not isinstance(item["name"], str)
+        or not item["name"]
+        or not isinstance(item["version"], str)
+        or not item["version"]
+        for item in tools
+    ):
+        return False
+    if [item["name"] for item in tools] != sorted(item["name"] for item in tools):
+        return False
+
+    if not valid_timestamp(receipt["started_at"]) or not valid_timestamp(receipt["ended_at"]):
+        return False
+    if receipt["started_at"] != min(result["started_at"] for result in gate_results):
+        return False
+    if receipt["ended_at"] != max(result["ended_at"] for result in gate_results):
+        return False
+    try:
+        return raw == canonical_json(receipt) + b"\n"
+    except (TypeError, ValueError):
+        return False
+
+
+def requirements_shape(requirements: object) -> list[dict[str, object]] | None:
+    if (
+        not isinstance(requirements, dict)
+        or set(requirements) != {"schema", "requirements"}
+        or requirements["schema"] != 1
+        or isinstance(requirements["schema"], bool)
+        or not isinstance(requirements["requirements"], list)
+        or not requirements["requirements"]
+    ):
+        return None
+    entries = requirements["requirements"]
+    names = []
+    for item in entries:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"gate", "argv"}
+            or not isinstance(item["gate"], str)
+            or not item["gate"]
+            or not isinstance(item["argv"], list)
+            or not item["argv"]
+            or not all(isinstance(argument, str) for argument in item["argv"])
+        ):
+            return None
+        names.append(item["gate"])
+    if len(names) != len(set(names)):
+        return None
+    return entries
+
+
+def read_document(path: Path, label: str) -> bytes:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise DiscoveryIOError(f"cannot open {label} {path}: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise DiscoveryIOError(f"{label} is not a regular file: {path}")
+            return stream.read()
+    except DiscoveryIOError:
+        raise
+    except OSError as exc:
+        raise DiscoveryIOError(f"cannot read {label} {path}: {exc}") from exc
+
+
+def read_receipt(path: Path) -> tuple[bytes | None, bool]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None, False
+        raise DiscoveryIOError(f"cannot open receipt {path}: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            permissions_ok = (
+                stat.S_ISREG(metadata.st_mode)
+                and metadata.st_uid == os.geteuid()
+                and stat.S_IMODE(metadata.st_mode) == 0o600
+            )
+            if not stat.S_ISREG(metadata.st_mode):
+                return None, False
+            return stream.read(), permissions_ok
+    except OSError as exc:
+        raise DiscoveryIOError(f"cannot read receipt {path}: {exc}") from exc
+
+
+def owned_directories_are_private(directories: tuple[Path, ...]) -> bool:
+    for directory in directories:
+        try:
+            metadata = directory.lstat()
+        except OSError:
+            return False
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            return False
+    return True
+
+
+def validate_receipt(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    common_dir = discover_common_dir()
+    validate_tree(args.candidate, "candidate")
+    validate_tree(args.base, "base")
+    default_path, owned_directories = default_receipt_location(common_dir, args.candidate)
+    path = args.path if args.path is not None else default_path
+    raw, permissions_ok = read_receipt(path)
+    if args.path is None:
+        permissions_ok = permissions_ok and owned_directories_are_private(owned_directories)
+
+    reasons: set[str] = set()
+    if not permissions_ok:
+        reasons.add("permissions")
+    if raw is None:
+        ordered = [reason for reason in REASON_ORDER if reason in reasons]
+        return {"status": "invalid", "reasons": ordered}, EXIT_NOT_VALID
+
+    try:
+        receipt = parse_json_document(raw)
+    except InvalidInput:
+        receipt = None
+    structurally_valid = receipt_shape_is_valid(receipt, raw)
+    if not structurally_valid:
+        reasons.add("malformed")
+
+    requirements_raw = read_document(args.requirements, "requirements")
+    try:
+        requirements_value = parse_json_document(requirements_raw)
+    except InvalidInput:
+        requirements_value = None
+    requirements = requirements_shape(requirements_value)
+    if requirements is None:
+        reasons.add("malformed")
+
+    expected_bindings = collect_bindings(args.candidate)
+    expected_tools = collect_tools()
+    if isinstance(receipt, dict):
+        if "digest" in receipt:
+            unsigned = dict(receipt)
+            supplied_digest = unsigned.pop("digest")
+            try:
+                expected_digest = f"sha256:{digest_bytes(canonical_json(unsigned))}"
+            except (TypeError, ValueError):
+                expected_digest = None
+            if supplied_digest != expected_digest:
+                reasons.add("digest")
+        if "candidate_tree" in receipt and receipt["candidate_tree"] != args.candidate:
+            reasons.add("tree")
+        if "base_tree" in receipt and receipt["base_tree"] != args.base:
+            reasons.add("base")
+        bindings = receipt.get("bindings")
+        if isinstance(bindings, dict):
+            if "code" in bindings and bindings["code"] != expected_bindings["code"]:
+                reasons.add("code")
+            if "locks" in bindings and bindings["locks"] != expected_bindings["locks"]:
+                reasons.add("lock")
+        if "tools" in receipt and receipt["tools"] != expected_tools:
+            reasons.add("tool")
+        if "tier" in receipt and receipt["tier"] != args.tier:
+            reasons.add("tier")
+
+        gate_results = receipt.get("gate_results")
+        if isinstance(gate_results, list):
+            by_name: dict[str, list[dict[str, object]]] = {}
+            failed = False
+            for result in gate_results:
+                if not isinstance(result, dict):
+                    continue
+                gate = result.get("gate")
+                if isinstance(gate, str) and gate:
+                    by_name.setdefault(gate, []).append(result)
+                exit_code = result.get("exit_code")
+                if is_integer(exit_code) and exit_code != 0:
+                    failed = True
+            if any(len(results) > 1 for results in by_name.values()):
+                reasons.add("duplicate_gate")
+            if failed:
+                reasons.add("failed_gate")
+            if requirements is not None:
+                for requirement in requirements:
+                    matches = by_name.get(str(requirement["gate"]), [])
+                    if not matches:
+                        reasons.add("missing_gate")
+                    elif any(
+                        isinstance(match.get("argv"), list)
+                        and all(isinstance(argument, str) for argument in match["argv"])
+                        and match["argv"] != requirement["argv"]
+                        for match in matches
+                    ):
+                        reasons.add("argv")
+
+    ordered = [reason for reason in REASON_ORDER if reason in reasons]
+    status = "valid" if not ordered else "invalid"
+    return {"status": status, "reasons": ordered}, EXIT_OK if not ordered else EXIT_NOT_VALID
+
+
+def main(argv: list[str] | None = None) -> int:
+    supplied_argv = sys.argv[1:] if argv is None else argv
+    validating = bool(supplied_argv and supplied_argv[0] == "validate")
+    try:
+        args = parser().parse_args(supplied_argv)
+        if args.command == "write":
+            result = write_receipt(args)
+            exit_code = EXIT_OK
+        else:
+            result, exit_code = validate_receipt(args)
     except InvalidInput as exc:
+        if validating:
+            print(canonical_json({"status": "invalid", "reasons": ["malformed"]}).decode("utf-8"))
+            return EXIT_NOT_VALID
         print(f"gate-receipt: invalid input: {exc}", file=sys.stderr)
         return EXIT_INVALID
     except DiscoveryIOError as exc:
         print(f"gate-receipt: discovery/I/O error: {exc}", file=sys.stderr)
         return EXIT_IOERR
     print(canonical_json(result).decode("utf-8"))
-    return EXIT_OK
+    return exit_code
 
 
 if __name__ == "__main__":

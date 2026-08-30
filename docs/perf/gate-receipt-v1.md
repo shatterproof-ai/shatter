@@ -119,3 +119,58 @@ create a complete temporary file in the destination directory, flush it, and
 atomically replace the candidate receipt. Concurrent writers for the same
 candidate may replace one another, but readers observe only a complete old or
 new receipt.
+
+## Validation
+
+```text
+python3 scripts/gate-receipt.py validate \
+  --candidate TREE --base TREE --tier local|ci \
+  --requirements REQUIREMENTS.json [--path RECEIPT.json]
+```
+
+The supplied candidate and base are authoritative expected local tree objects
+and obey the same direct-tree validation as `write`. Without `--path`, the
+validator reads the default repository/candidate path above without creating
+or changing any file or directory. With `--path`, it reads that exact caller-
+owned path and checks only the receipt file's mode, not its parent directories.
+
+Requirements v1 is exactly:
+
+```json
+{"schema":1,"requirements":[{"gate":"task check","argv":["task","check"]}]}
+```
+
+`requirements` is an ordered array of unique, nonempty gate names paired with
+nonempty string argument arrays. Its order does not change validation: each
+named gate must occur exactly once in the receipt, have `exit_code` equal to
+the integer 0, and have exactly the required `argv`. Extra receipt gates are
+allowed.
+
+The validator independently recomputes the receipt digest, candidate-tree code
+and lock bindings, and current tool versions. It compares the receipt's tree,
+base, tier, and required gates to the supplied policy. It never invokes a gate
+and never writes. A valid receipt prints
+`{"reasons":[],"status":"valid"}` and exits 0. A readable but invalid receipt
+or requirements file prints `{"reasons":[...],"status":"invalid"}` and exits
+65. Repository, tool-discovery, missing-file, and other I/O failures print no
+JSON and exit 74. Invalid validator arguments or trees are malformed policy
+input and also produce the exit-65 JSON result.
+
+Invalid reasons are unique and always returned in this fixed order:
+
+```text
+malformed, permissions, digest, tree, base, code, lock, tool, tier,
+duplicate_gate, missing_gate, failed_gate, argv
+```
+
+`malformed` covers non-UTF-8/invalid JSON, duplicate JSON keys, wrong or extra
+schema fields, invalid field types or timestamps, inconsistent top-level
+timestamps, noncanonical array ordering, and invalid requirements. A
+structurally valid receipt may still contain duplicate gate names or nonzero
+integer exit codes so those conditions can receive their specific reasons.
+For every safely usable parsed field, checksum and semantic checks continue
+even when another structural defect also produces `malformed`, and report every
+applicable reason. The default receipt file must be a regular file owned by the
+current user with mode 0600. Each writer-owned directory beneath the runtime
+root must be a real directory owned by the current user with mode 0700; any
+mismatch produces `permissions` without changing it.
