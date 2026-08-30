@@ -613,6 +613,25 @@ class ValidatorReasonTests(ReceiptTestCase):
         requirements.write_text('{"schema":1,"requirements":[]} trailing')
         self.assert_reasons(["malformed"], requirements=requirements)
 
+    def test_malformed_gate_preserves_reasons_from_usable_entries(self) -> None:
+        def mutate(receipt: dict[str, object]) -> None:
+            receipt["gate_results"][0]["exit_code"] = 1
+            receipt["gate_results"].append({"gate": "broken"})
+
+        self.fixture.mutate_receipt(mutate)
+        self.assert_reasons(["malformed", "failed_gate"])
+
+    def test_oversized_integer_is_malformed_not_a_traceback(self) -> None:
+        huge = "1" * 5000
+        self.fixture.receipt_path.write_text('{"schema":' + huge + '}\n')
+        self.fixture.receipt_path.chmod(0o600)
+        self.assert_reasons(["malformed"])
+
+        self.reset_receipt()
+        requirements = self.fixture.root / "huge-requirements.json"
+        requirements.write_text('{"schema":' + huge + ',"requirements":[]}')
+        self.assert_reasons(["malformed"], requirements=requirements)
+
     def test_multi_reason_output_uses_fixed_order(self) -> None:
         def mutate(receipt: dict[str, object]) -> None:
             receipt["extra"] = True

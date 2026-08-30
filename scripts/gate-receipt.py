@@ -242,7 +242,7 @@ def parse_json_document(raw: bytes) -> object:
         )
     except InvalidInput:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise InvalidInput("document is not valid UTF-8 JSON") from exc
 
 
@@ -690,32 +690,33 @@ def validate_receipt(args: argparse.Namespace) -> tuple[dict[str, object], int]:
             reasons.add("tier")
 
         gate_results = receipt.get("gate_results")
-        usable_gate_results = (
-            isinstance(gate_results, list)
-            and all(
-                isinstance(result, dict)
-                and isinstance(result.get("gate"), str)
-                and isinstance(result.get("argv"), list)
-                and is_integer(result.get("exit_code"))
-                for result in gate_results
-            )
-        )
-        if usable_gate_results:
-            assert isinstance(gate_results, list)
+        if isinstance(gate_results, list):
             by_name: dict[str, list[dict[str, object]]] = {}
+            failed = False
             for result in gate_results:
-                assert isinstance(result, dict)
-                by_name.setdefault(str(result["gate"]), []).append(result)
+                if not isinstance(result, dict):
+                    continue
+                gate = result.get("gate")
+                if isinstance(gate, str) and gate:
+                    by_name.setdefault(gate, []).append(result)
+                exit_code = result.get("exit_code")
+                if is_integer(exit_code) and exit_code != 0:
+                    failed = True
             if any(len(results) > 1 for results in by_name.values()):
                 reasons.add("duplicate_gate")
-            if any(result["exit_code"] != 0 for result in gate_results):
+            if failed:
                 reasons.add("failed_gate")
             if requirements is not None:
                 for requirement in requirements:
                     matches = by_name.get(str(requirement["gate"]), [])
                     if not matches:
                         reasons.add("missing_gate")
-                    elif any(match["argv"] != requirement["argv"] for match in matches):
+                    elif any(
+                        isinstance(match.get("argv"), list)
+                        and all(isinstance(argument, str) for argument in match["argv"])
+                        and match["argv"] != requirement["argv"]
+                        for match in matches
+                    ):
                         reasons.add("argv")
 
     ordered = [reason for reason in REASON_ORDER if reason in reasons]
