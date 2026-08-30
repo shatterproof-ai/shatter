@@ -11302,6 +11302,332 @@ defaults:
         );
     }
 
+    // ── str-8q1b4: resumed-scan report parity ───────────────────────
+    //
+    // A checkpoint hit used to push the function into `skipped_functions` as
+    // `SkipCategory::Expected`, which report.rs counts inside
+    // `attempted_functions` but outside `completed_functions`. A resumed run
+    // therefore read as a large regression against an uninterrupted one. Both
+    // orchestrator paths implement the checkpoint hit separately, so both are
+    // covered here.
+
+    /// Fake frontend that reports non-empty `lines_executed`, so a resumed
+    /// report's `lines_covered` is a meaningful (non-zero) comparison rather
+    /// than 0 == 0. Line count varies with the input so exploration records
+    /// several distinct paths.
+    fn resume_frontend_config() -> (tempfile::TempDir, crate::frontend::FrontendConfig) {
+        let tempdir = tempfile::tempdir().expect("create temp dir");
+        let script_path = tempdir.path().join("resume_frontend.py");
+        std::fs::write(
+            &script_path,
+            r#"
+import json
+import sys
+
+for line in sys.stdin:
+    req = json.loads(line)
+    command = req.get("command")
+    base = {
+        "protocol_version": req.get("protocol_version", "0.1.0"),
+        "id": req.get("id"),
+    }
+    if command == "handshake":
+        resp = {
+            **base,
+            "status": "handshake",
+            "frontend_version": req.get("protocol_version", "0.1.0"),
+            "language": "fake-resume",
+            "capabilities": ["analyze", "instrument", "prepare"],
+        }
+    elif command == "analyze":
+        resp = {**base, "status": "analysis", "functions": []}
+    elif command == "instrument":
+        resp = {**base, "status": "instrument", "instrumented": True, "output_file": None}
+    elif command == "prepare":
+        resp = {**base, "status": "prepare", "prepare_id": "prepared"}
+    elif command == "execute":
+        inputs = req.get("inputs") or []
+        n = 0
+        for v in inputs:
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)):
+                n = int(abs(v)) % 4
+                break
+        resp = {
+            **base,
+            "status": "execute",
+            "return_value": n,
+            "thrown_error": None,
+            "branch_path": [],
+            "lines_executed": list(range(1, 3 + n)),
+            "calls_to_external": [],
+            "path_constraints": [],
+            "scope_events": [],
+            "loop_body_states": [],
+            "side_effects": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 1000,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0,
+            },
+            "capture_truncation": None,
+            "discovered_dependencies": [],
+            "connection_failures": [],
+            "runtime_crypto_boundaries": [],
+            "outcome": {
+                "status": "completed",
+                "short_reason": "ok",
+                "thrown_error": None,
+            },
+        }
+    elif command == "shutdown":
+        resp = {**base, "status": "shutdown_ack"}
+    else:
+        resp = {
+            **base,
+            "status": "error",
+            "code": "invalid_request",
+            "message": f"unexpected command {command}",
+        }
+    print(json.dumps(resp), flush=True)
+"#,
+        )
+        .expect("write resume fake frontend");
+
+        let mut frontend_config =
+            crate::frontend::FrontendConfig::new(std::path::PathBuf::from("python3"));
+        frontend_config.args = vec![script_path.display().to_string()];
+        frontend_config.request_timeout = TEST_REQUEST_TIMEOUT;
+        (tempdir, frontend_config)
+    }
+
+    fn resume_analysis(name: &str) -> FunctionAnalysis {
+        use crate::types::{ParamInfo, TypeInfo};
+        FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo {
+                name: "x".into(),
+                typ: TypeInfo::Int {
+                    int_width: None,
+                    int_signed: None,
+                },
+                type_name: None,
+            }],
+            branches: vec![],
+            dependencies: vec![],
+            return_type: TypeInfo::Unknown,
+            start_line: 1,
+            end_line: 3,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: vec![],
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: crate::protocol::InvocationModel::Direct,
+        }
+    }
+
+    /// Write a real source file per function (fingerprinting reads it) and
+    /// return a config whose cache and checkpoint both live under `work_dir`,
+    /// so a second scan over the same config resumes from the first.
+    fn resume_scan_config(
+        work_dir: &std::path::Path,
+        names: &[&str],
+    ) -> (ScanConfig, HashMap<String, String>) {
+        let mut file_map = HashMap::new();
+        for name in names {
+            let source = work_dir.join(format!("{name}.ts"));
+            std::fs::write(
+                &source,
+                format!("function {name}(x: number) {{\n  return x;\n}}\n"),
+            )
+            .expect("write source file");
+            file_map.insert(
+                (*name).to_string(),
+                source.to_string_lossy().into_owned(),
+            );
+        }
+
+        let cache = Arc::new(
+            crate::cache::BehaviorMapCache::new(work_dir.join("cache")).expect("create cache"),
+        );
+        let config = ScanConfig {
+            max_iterations_per_function: 4,
+            seed: Some(42),
+            cache: Some(cache),
+            resume_path: Some(work_dir.join("checkpoint.json")),
+            project_root: Some(work_dir.to_string_lossy().into_owned()),
+            write_artifacts: true,
+            ..minimal_scan_config(file_map.clone())
+        };
+        (config, file_map)
+    }
+
+    #[tokio::test]
+    async fn sequential_resume_report_matches_uninterrupted_scan() {
+        let (_fe_dir, fe_config) = resume_frontend_config();
+        let work = tempfile::tempdir().expect("create temp dir");
+        let (config, file_map) = resume_scan_config(work.path(), &["resume_fn"]);
+        let analyses = vec![resume_analysis("resume_fn")];
+
+        let mut frontend = crate::frontend::Frontend::spawn(&fe_config)
+            .await
+            .expect("spawn frontend");
+        let first = scan(&mut frontend, &analyses, &config)
+            .await
+            .expect("first scan should succeed");
+        frontend.shutdown().await.expect("shutdown frontend");
+
+        assert_eq!(
+            first.function_results.len(),
+            1,
+            "uninterrupted scan should complete the function"
+        );
+        let baseline = crate::report::generate_report_from_scan(&first, &file_map);
+        assert_eq!(baseline.codebase.completed_functions, 1);
+        assert!(
+            baseline.functions[0].lines_covered > 0,
+            "fixture must cover lines for the parity check to mean anything"
+        );
+
+        // Second scan over the same cache + checkpoint: every function is
+        // satisfied by the checkpoint, standing in for a resume after an
+        // interruption.
+        let mut frontend = crate::frontend::Frontend::spawn(&fe_config)
+            .await
+            .expect("spawn frontend");
+        let resumed = scan(&mut frontend, &analyses, &config)
+            .await
+            .expect("resumed scan should succeed");
+        frontend.shutdown().await.expect("shutdown frontend");
+
+        assert_eq!(
+            resumed.function_results.len(),
+            1,
+            "checkpoint-satisfied function must be restored as completed"
+        );
+        assert!(
+            resumed.skipped_functions.is_empty(),
+            "restored function must not also be reported as a skip: {:?}",
+            resumed.skipped_functions
+        );
+
+        let report = crate::report::generate_report_from_scan(&resumed, &file_map);
+        assert_eq!(
+            report.codebase.completed_functions, baseline.codebase.completed_functions,
+            "resumed report must not under-report completed functions"
+        );
+        assert_eq!(
+            report.codebase.attempted_functions,
+            baseline.codebase.attempted_functions
+        );
+        assert_eq!(
+            report.codebase.total_discovered_functions,
+            baseline.codebase.total_discovered_functions
+        );
+        assert_eq!(
+            report.functions, baseline.functions,
+            "restored function rows must be identical to the uninterrupted ones"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_resume_report_matches_uninterrupted_scan() {
+        let (_fe_dir, fe_config) = resume_frontend_config();
+        let work = tempfile::tempdir().expect("create temp dir");
+        let (config, file_map) = resume_scan_config(work.path(), &["resume_a", "resume_b"]);
+        let analyses = vec![resume_analysis("resume_a"), resume_analysis("resume_b")];
+
+        let first = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("first parallel scan should succeed");
+        assert_eq!(
+            first.function_results.len(),
+            2,
+            "uninterrupted scan should complete both functions"
+        );
+        let baseline = crate::report::generate_report(&first, &file_map, None);
+        assert_eq!(baseline.codebase.completed_functions, 2);
+        assert!(baseline.functions.iter().all(|f| f.lines_covered > 0));
+
+        let resumed = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("resumed parallel scan should succeed");
+
+        assert_eq!(
+            resumed.function_results.len(),
+            2,
+            "checkpoint-satisfied functions must be restored as completed"
+        );
+        assert!(
+            resumed.skipped.is_empty(),
+            "restored functions must not also be reported as skips: {:?}",
+            resumed.skipped
+        );
+        assert_eq!(
+            resumed.workers_used, 0,
+            "a fully checkpointed resume must not spawn workers"
+        );
+
+        let report = crate::report::generate_report(&resumed, &file_map, None);
+        assert_eq!(
+            report.codebase.completed_functions, baseline.codebase.completed_functions,
+            "resumed report must not under-report completed functions"
+        );
+        assert_eq!(
+            report.codebase.attempted_functions,
+            baseline.codebase.attempted_functions
+        );
+        assert_eq!(
+            report.codebase.total_discovered_functions,
+            baseline.codebase.total_discovered_functions
+        );
+
+        let mut restored = report.functions.clone();
+        let mut expected = baseline.functions.clone();
+        restored.sort_by(|a, b| a.qualified_id.cmp(&b.qualified_id));
+        expected.sort_by(|a, b| a.qualified_id.cmp(&b.qualified_id));
+        assert_eq!(
+            restored, expected,
+            "restored function rows must be identical to the uninterrupted ones"
+        );
+    }
+
+    /// A checkpoint written before the completed-function sidecar existed has
+    /// no record to restore. Both paths must fall back to the historical
+    /// expected-skip rather than dropping the function or failing the scan.
+    #[tokio::test]
+    async fn resume_without_sidecar_record_falls_back_to_expected_skip() {
+        let (_fe_dir, fe_config) = resume_frontend_config();
+        let work = tempfile::tempdir().expect("create temp dir");
+        let (config, _file_map) = resume_scan_config(work.path(), &["resume_fn"]);
+        let analyses = vec![resume_analysis("resume_fn")];
+
+        parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("first parallel scan should succeed");
+
+        // Delete only the sidecar, leaving the behavior map and checkpoint —
+        // exactly the on-disk shape a pre-str-8q1b4 run leaves behind.
+        let sidecar = work
+            .path()
+            .join("cache")
+            .join("resume_fn.result.json");
+        assert!(sidecar.exists(), "first scan should have written a sidecar");
+        std::fs::remove_file(&sidecar).expect("remove sidecar");
+
+        let resumed = parallel_scan(&fe_config, &analyses, &config)
+            .await
+            .expect("resumed parallel scan should succeed");
+        assert!(resumed.function_results.is_empty());
+        assert_eq!(resumed.skipped.len(), 1);
+        assert_eq!(resumed.skipped[0].category, SkipCategory::Expected);
+        assert_eq!(resumed.skipped[0].reason, "resumed from checkpoint");
+    }
+
     /// A scan with one cached and one stale function must explore only the stale
     /// one, spawning workers only for that layer.
     #[tokio::test]
