@@ -147,17 +147,34 @@ class ReceiptRepo:
         for name, output in TOOL_OUTPUTS.items():
             tool = self.fake_bin / name
             expected_arg = "version" if name == "go" else "--version"
+            invalid_invocation = (
+                'if ! { [ "$#" -eq 1 ] && [ "$1" = "'
+                + expected_arg
+                + '" ]; }; then\n'
+            )
+            if name == "task":
+                invalid_invocation += (
+                    '  [ -z "$SHATTER_TEST_GATE_MARKER" ] '
+                    '|| : > "$SHATTER_TEST_GATE_MARKER"\n'
+                )
+            invalid_invocation += "  exit 3\nfi\n"
             tool.write_text(
                 "#!/bin/sh\n"
-                f'[ "$#" -eq 1 ] && [ "$1" = "{expected_arg}" ] || exit 3\n'
-                f"printf '  %s  \\n' '{output}'\n"
+                + invalid_invocation
+                + f"printf '  %s  \\n' '{output}'\n"
             )
             tool.chmod(0o755)
 
     @property
     def env(self) -> dict[str, str]:
         env = dict(os.environ)
-        env.update({"PATH": str(self.fake_bin), "XDG_RUNTIME_DIR": str(self.runtime)})
+        env.update(
+            {
+                "PATH": str(self.fake_bin),
+                "XDG_RUNTIME_DIR": str(self.runtime),
+                "SHATTER_TEST_GATE_MARKER": str(self.root / "gate-invoked"),
+            }
+        )
         for key in (
             "GIT_DIR",
             "GIT_COMMON_DIR",
@@ -469,20 +486,51 @@ class ValidatorRoundTripTests(ReceiptTestCase):
 
     def test_exact_roundtrip_is_valid_and_read_only(self) -> None:
         requirements = self.fixture.requirements()
-        receipt_before = self.fixture.receipt_path.read_bytes()
-        requirements_before = requirements.read_bytes()
-        receipt_mtime = self.fixture.receipt_path.stat().st_mtime_ns
-        requirements_mtime = requirements.stat().st_mtime_ns
+        paths = (self.fixture.receipt_path, requirements)
+        file_state = {
+            path: (path.read_bytes(), path.stat().st_ino, stat.S_IMODE(path.stat().st_mode),
+                   path.stat().st_size, path.stat().st_mtime_ns)
+            for path in paths
+        }
+        owned_directories = (
+            self.fixture.receipt_path.parent,
+            self.fixture.receipt_path.parent.parent,
+            self.fixture.receipt_path.parent.parent.parent,
+        )
+        directory_state = {
+            path: (stat.S_IMODE(path.stat().st_mode), tuple(sorted(item.name for item in path.iterdir())))
+            for path in owned_directories
+        }
 
         result = self.fixture.validate(requirements=requirements)
 
         self.assertEqual(result.returncode, EXIT_OK, result.stderr)
         self.assertEqual(result.stdout, '{"reasons":[],"status":"valid"}\n')
         self.assertEqual(result.stderr, "")
-        self.assertEqual(self.fixture.receipt_path.read_bytes(), receipt_before)
-        self.assertEqual(requirements.read_bytes(), requirements_before)
-        self.assertEqual(self.fixture.receipt_path.stat().st_mtime_ns, receipt_mtime)
-        self.assertEqual(requirements.stat().st_mtime_ns, requirements_mtime)
+        for path in paths:
+            self.assertEqual(
+                (path.read_bytes(), path.stat().st_ino, stat.S_IMODE(path.stat().st_mode),
+                 path.stat().st_size, path.stat().st_mtime_ns),
+                file_state[path],
+            )
+        self.assertEqual(
+            {
+                path: (stat.S_IMODE(path.stat().st_mode), tuple(sorted(item.name for item in path.iterdir())))
+                for path in owned_directories
+            },
+            directory_state,
+        )
+        self.assertFalse((self.fixture.root / "gate-invoked").exists())
+
+    def test_empty_string_argv_roundtrips_exactly(self) -> None:
+        def mutate(receipt: dict[str, object]) -> None:
+            receipt["gate_results"][0]["argv"] = ["task", ""]
+
+        self.fixture.mutate_receipt(mutate)
+        requirements = self.fixture.requirements([{"gate": "alpha", "argv": ["task", ""]}])
+        result = self.fixture.validate(requirements=requirements)
+        self.assertEqual(result.returncode, EXIT_OK, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"status": "valid", "reasons": []})
 
     def test_explicit_path_is_valid_without_requiring_private_parent(self) -> None:
         custom_parent = self.fixture.root / "caller-owned"
@@ -565,9 +613,12 @@ class ValidatorReasonTests(ReceiptTestCase):
 
     def test_multi_reason_output_uses_fixed_order(self) -> None:
         def mutate(receipt: dict[str, object]) -> None:
+            receipt["extra"] = True
             receipt["candidate_tree"] = self.fixture.base
             receipt["base_tree"] = self.fixture.candidate
             receipt["bindings"]["code"][0]["sha256"] = "0" * 64
+            receipt["bindings"]["locks"][0]["sha256"] = "0" * 64
+            receipt["tools"][0]["version"] = "other"
             receipt["tier"] = "ci"
             duplicate = dict(receipt["gate_results"][0])
             duplicate["exit_code"] = 1
@@ -588,11 +639,14 @@ class ValidatorReasonTests(ReceiptTestCase):
         )
         self.assert_reasons(
             [
+                "malformed",
                 "permissions",
                 "digest",
                 "tree",
                 "base",
                 "code",
+                "lock",
+                "tool",
                 "tier",
                 "duplicate_gate",
                 "missing_gate",
@@ -605,6 +659,19 @@ class ValidatorReasonTests(ReceiptTestCase):
     def test_loose_default_directory_mode_is_permissions_reason(self) -> None:
         self.fixture.receipt_path.parent.chmod(0o755)
         self.assert_reasons(["permissions"])
+
+    def test_symlink_receipt_is_permissions_reason_without_following(self) -> None:
+        link = self.fixture.root / "receipt-link.json"
+        link.symlink_to(self.fixture.receipt_path)
+        result = self.fixture.validate(path=link)
+        self.assertEqual(result.returncode, EXIT_NOT_VALID, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"status": "invalid", "reasons": ["permissions"]})
+
+    def test_invalid_validator_tree_is_malformed_policy(self) -> None:
+        result = self.fixture.validate(candidate="bad")
+        self.assertEqual(result.returncode, EXIT_NOT_VALID, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(json.loads(result.stdout), {"status": "invalid", "reasons": ["malformed"]})
 
 
 class ValidatorDiscoveryTests(ReceiptTestCase):

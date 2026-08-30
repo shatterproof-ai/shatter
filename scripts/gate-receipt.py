@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import errno
 import fnmatch
 import hashlib
 import json
@@ -241,7 +242,7 @@ def parse_json_document(raw: bytes) -> object:
         )
     except InvalidInput:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise InvalidInput("document is not valid UTF-8 JSON") from exc
 
 
@@ -552,7 +553,7 @@ def requirements_shape(requirements: object) -> list[dict[str, object]] | None:
             or not item["gate"]
             or not isinstance(item["argv"], list)
             or not item["argv"]
-            or not all(isinstance(argument, str) and argument for argument in item["argv"])
+            or not all(isinstance(argument, str) for argument in item["argv"])
         ):
             return None
         names.append(item["gate"])
@@ -569,21 +570,23 @@ def read_document(path: Path, label: str) -> bytes:
 
 
 def read_receipt(path: Path) -> tuple[bytes | None, bool]:
-    try:
-        metadata = path.lstat()
-    except OSError as exc:
-        raise DiscoveryIOError(f"cannot inspect receipt {path}: {exc}") from exc
-    permissions_ok = (
-        stat.S_ISREG(metadata.st_mode)
-        and metadata.st_uid == os.geteuid()
-        and stat.S_IMODE(metadata.st_mode) == 0o600
-    )
-    if not stat.S_ISREG(metadata.st_mode):
-        return None, False
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None, False
+        raise DiscoveryIOError(f"cannot open receipt {path}: {exc}") from exc
+    try:
         with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            permissions_ok = (
+                stat.S_ISREG(metadata.st_mode)
+                and metadata.st_uid == os.geteuid()
+                and stat.S_IMODE(metadata.st_mode) == 0o600
+            )
+            if not stat.S_ISREG(metadata.st_mode):
+                return None, False
             return stream.read(), permissions_ok
     except OSError as exc:
         raise DiscoveryIOError(f"cannot read receipt {path}: {exc}") from exc
@@ -639,47 +642,61 @@ def validate_receipt(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     if requirements is None:
         reasons.add("malformed")
 
+    expected_bindings = collect_bindings(args.candidate)
     expected_tools = collect_tools()
-    if structurally_valid:
-        assert isinstance(receipt, dict)
-        unsigned = dict(receipt)
-        supplied_digest = unsigned.pop("digest")
-        expected_digest = f"sha256:{digest_bytes(canonical_json(unsigned))}"
-        if supplied_digest != expected_digest:
-            reasons.add("digest")
-        if receipt["candidate_tree"] != args.candidate:
+    if isinstance(receipt, dict):
+        if "digest" in receipt:
+            unsigned = dict(receipt)
+            supplied_digest = unsigned.pop("digest")
+            try:
+                expected_digest = f"sha256:{digest_bytes(canonical_json(unsigned))}"
+            except (TypeError, ValueError):
+                expected_digest = None
+            if supplied_digest != expected_digest:
+                reasons.add("digest")
+        if "candidate_tree" in receipt and receipt["candidate_tree"] != args.candidate:
             reasons.add("tree")
-        if receipt["base_tree"] != args.base:
+        if "base_tree" in receipt and receipt["base_tree"] != args.base:
             reasons.add("base")
-        expected_bindings = collect_bindings(args.candidate)
-        bindings = receipt["bindings"]
-        assert isinstance(bindings, dict)
-        if bindings["code"] != expected_bindings["code"]:
-            reasons.add("code")
-        if bindings["locks"] != expected_bindings["locks"]:
-            reasons.add("lock")
-        if receipt["tools"] != expected_tools:
+        bindings = receipt.get("bindings")
+        if isinstance(bindings, dict):
+            if "code" in bindings and bindings["code"] != expected_bindings["code"]:
+                reasons.add("code")
+            if "locks" in bindings and bindings["locks"] != expected_bindings["locks"]:
+                reasons.add("lock")
+        if "tools" in receipt and receipt["tools"] != expected_tools:
             reasons.add("tool")
-        if receipt["tier"] != args.tier:
+        if "tier" in receipt and receipt["tier"] != args.tier:
             reasons.add("tier")
 
-        gate_results = receipt["gate_results"]
-        assert isinstance(gate_results, list)
-        by_name: dict[str, list[dict[str, object]]] = {}
-        for result in gate_results:
-            assert isinstance(result, dict)
-            by_name.setdefault(str(result["gate"]), []).append(result)
-        if any(len(results) > 1 for results in by_name.values()):
-            reasons.add("duplicate_gate")
-        if any(result["exit_code"] != 0 for result in gate_results):
-            reasons.add("failed_gate")
-        if requirements is not None:
-            for requirement in requirements:
-                matches = by_name.get(str(requirement["gate"]), [])
-                if not matches:
-                    reasons.add("missing_gate")
-                elif not any(match["argv"] == requirement["argv"] for match in matches):
-                    reasons.add("argv")
+        gate_results = receipt.get("gate_results")
+        usable_gate_results = (
+            isinstance(gate_results, list)
+            and all(
+                isinstance(result, dict)
+                and isinstance(result.get("gate"), str)
+                and isinstance(result.get("argv"), list)
+                and is_integer(result.get("exit_code"))
+                for result in gate_results
+            )
+        )
+        if usable_gate_results:
+            assert isinstance(gate_results, list)
+            by_name: dict[str, list[dict[str, object]]] = {}
+            for result in gate_results:
+                assert isinstance(result, dict)
+                by_name.setdefault(str(result["gate"]), []).append(result)
+            if any(len(results) > 1 for results in by_name.values()):
+                reasons.add("duplicate_gate")
+            if any(result["exit_code"] != 0 for result in gate_results):
+                reasons.add("failed_gate")
+            if requirements is not None:
+                for requirement in requirements:
+                    matches = by_name.get(str(requirement["gate"]), [])
+                    if not matches:
+                        reasons.add("missing_gate")
+                    elif any(match["argv"] != requirement["argv"] for match in matches):
+                        reasons.add("argv")
 
     ordered = [reason for reason in REASON_ORDER if reason in reasons]
     status = "valid" if not ordered else "invalid"
@@ -687,14 +704,19 @@ def validate_receipt(args: argparse.Namespace) -> tuple[dict[str, object], int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    supplied_argv = sys.argv[1:] if argv is None else argv
+    validating = bool(supplied_argv and supplied_argv[0] == "validate")
     try:
-        args = parser().parse_args(argv)
+        args = parser().parse_args(supplied_argv)
         if args.command == "write":
             result = write_receipt(args)
             exit_code = EXIT_OK
         else:
             result, exit_code = validate_receipt(args)
     except InvalidInput as exc:
+        if validating:
+            print(canonical_json({"status": "invalid", "reasons": ["malformed"]}).decode("utf-8"))
+            return EXIT_NOT_VALID
         print(f"gate-receipt: invalid input: {exc}", file=sys.stderr)
         return EXIT_INVALID
     except DiscoveryIOError as exc:

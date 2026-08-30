@@ -153,7 +153,8 @@ and never writes. A valid receipt prints
 `{"reasons":[],"status":"valid"}` and exits 0. A readable but invalid receipt
 or requirements file prints `{"reasons":[...],"status":"invalid"}` and exits
 65. Repository, tool-discovery, missing-file, and other I/O failures print no
-JSON and exit 74. CLI usage errors retain exit 64.
+JSON and exit 74. Invalid validator arguments or trees are malformed policy
+input and also produce the exit-65 JSON result.
 
 Invalid reasons are unique and always returned in this fixed order:
 
@@ -167,7 +168,9 @@ schema fields, invalid field types or timestamps, inconsistent top-level
 timestamps, noncanonical array ordering, and invalid requirements. A
 structurally valid receipt may still contain duplicate gate names or nonzero
 integer exit codes so those conditions can receive their specific reasons.
-After structural parsing succeeds, checksum and semantic checks continue and
-report every applicable reason. The default receipt file must be mode 0600 and
-each writer-owned directory beneath the runtime root must be mode 0700; mode
-mismatches produce `permissions` without changing them.
+For every safely usable parsed field, checksum and semantic checks continue
+even when another structural defect also produces `malformed`, and report every
+applicable reason. The default receipt file must be a regular file owned by the
+current user with mode 0600. Each writer-owned directory beneath the runtime
+root must be a real directory owned by the current user with mode 0700; any
+mismatch produces `permissions` without changing it.
