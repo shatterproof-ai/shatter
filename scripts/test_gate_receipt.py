@@ -529,7 +529,10 @@ class ValidatorReasonTests(ReceiptTestCase):
             ("lock", lambda receipt: receipt["bindings"]["locks"][0].__setitem__("sha256", "0" * 64)),
             ("tool", lambda receipt: receipt["tools"][0].__setitem__("version", "other")),
             ("tier", lambda receipt: receipt.__setitem__("tier", "ci")),
-            ("duplicate_gate", lambda receipt: receipt["gate_results"].append(dict(receipt["gate_results"][0]))),
+            ("duplicate_gate", lambda receipt: (
+                receipt["gate_results"].append(dict(receipt["gate_results"][0])),
+                receipt["gate_results"].sort(key=lambda result: result["gate"]),
+            )),
             ("failed_gate", lambda receipt: receipt["gate_results"][0].__setitem__("exit_code", 1)),
         )
         for reason, mutate in cases:
@@ -570,6 +573,7 @@ class ValidatorReasonTests(ReceiptTestCase):
             duplicate["exit_code"] = 1
             duplicate["argv"] = ["task", "wrong"]
             receipt["gate_results"].append(duplicate)
+            receipt["gate_results"].sort(key=lambda result: result["gate"])
 
         self.fixture.mutate_receipt(mutate)
         receipt = json.loads(self.fixture.receipt_path.read_text())
