@@ -137,6 +137,17 @@ Keep npm. New `scripts/seed-worktree.sh`: if canonical checkout's `package-lock.
 - **`/pre-completion` skill:** Phases 1–2 → run `affected-gates.py --base origin/main`, print list, execute via task through the wrapper; delete unconditional `task e2e`; add a **"Gates selected"** row to the output table (lets the lead audit under-selection); add "in a swarm, full check runs at batch landing".
 - Audit `/check-all` and `/bugfix` skills for contradicting "run task check" language; align.
 
+Old gate coverage moves rather than disappears:
+
+| Former pre-completion gate | Diff-scoped location | Landing backstop |
+|---|---|---|
+| unconditional `smoke` | added whenever a code gate is selected | `task check` plus explicit pipeline gates |
+| unconditional all-frontend `e2e` | pipeline path patterns and the touched frontend row | ignored E2E suites in the full landing gate |
+| manual language test/lint commands | crate rows (`*:test`, `*:clippy`/`vet`, `ts:typecheck`) | `task check` |
+| protocol sync/parity | `protocol/**` and frontend rows | `task check` integration stage |
+| walkthrough and gauntlet | their demo/example path rows | unioned conditional landing gates |
+| full `check` on every branch | unmatched-path fail-safe | batch/solo landing and CI |
+
 ## WS-F: Batch-landing protocol (lead agent)
 
 Files: AGENTS.md (new "Batch Landing (lead agent)" section), `.claude/swarm-config.md` (rewrite Quality Gates — this is what `bento:swarm` reads), new `.claude/skills/batch-land/SKILL.md`.
@@ -193,7 +204,7 @@ Plan deltas:
 - **New WS-M (test mechanics, same coverage less CPU)**: wire nextest into core/cli/rust-fe/rust-rt test tasks (thread budgets in existing .config/nextest.toml; doctest check); add `#[ignore]` to `e2e_concolic.rs` tests (landing's `--include-ignored` + `e2e` task still run them); `go:test-short` fast path for inner loops (full `go test` stays at landing); PBT case tiering via PROPTEST_CASES=32 / fast-check numRuns / rapid checks in fast tiers, full counts exported at `check` + CI; verify with test-inventory diffs.
 - **New WS-CS (concurrency safety)**: gauntlet fixed /tmp paths → its mktemp dir; flock + freshness window for examples_checkout.py; BEADS_HOOK_TIMEOUT=30 (hooks degrade gracefully); investigate moving backup.git-push off the hook path (verify bd semantics first); sweep demo/scripts for remaining fixed paths.
 - **WS-C**: slot count becomes `SHATTER_HEAVY_SLOTS` (default max(1, nproc/8) = 4 on this box); per-agent budgets via overridable env (SHATTER_BUILD_JOBS=4, SHATTER_TEST_THREADS=4, SHATTER_GO_PROCS=4).
-- **WS-E**: within shatter-core/cli, e2e triggers on pipeline path patterns (solver/instrumentor `buildSymExpr*`/explorer/orchestrator/execute-response protocol/CLI wiring — the CLAUDE.md e2e-gate list) instead of whole-crate, justified because the landing gate always runs e2e (superset); reuse the precommit-rust.sh pattern; pre-push hook on branch pushes becomes change-scoped `check-fast` (landing gate backstops).
+- **WS-E**: within shatter-core/cli, e2e triggers on pipeline path patterns (solver/instrumentor `buildSymExpr*`/explorer/orchestrator/execute-response protocol/CLI wiring — the CLAUDE.md e2e-gate list) instead of whole-crate, justified because the landing gate always runs e2e (superset); reuse the precommit-rust.sh pattern; pre-push hook on branch pushes becomes change-scoped `affected` (landing gate backstops).
 - **WS-F**: batch landing composes with the existing pre-push hook: the lead runs the batch `check` explicitly, then pushes `--no-verify` (documented; matches the existing hook-corrupts-worktree workaround); the hook remains for solo/non-batch pushes.
 - **WS-G**: folded into WS-M (config exists; no longer conditional).
 - **Later phase**: TIA revival (docs/plans/str-zwgc-test-impact-analysis.md, tracker str-cl53) after these land and re-baseline.

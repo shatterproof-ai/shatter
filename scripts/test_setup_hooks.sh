@@ -26,6 +26,25 @@ done
 (cd "$TEST_REPO" && scripts/setup-hooks.sh)
 (cd "$TEST_REPO" && scripts/setup-hooks.sh --check)
 
+QUALITY_VERSION_MARKER="# SHATTER QUALITY TEMPLATE VERSION: 2"
+PRE_PUSH_HOOK="$TEST_REPO/.git/hooks/pre-push"
+grep -qF "$QUALITY_VERSION_MARKER" "$PRE_PUSH_HOOK"
+sed -i "s/$QUALITY_VERSION_MARKER/# SHATTER QUALITY TEMPLATE VERSION: 1/" "$PRE_PUSH_HOOK"
+set +e
+(cd "$TEST_REPO" && scripts/setup-hooks.sh --check) >/dev/null 2>&1
+STALE_CHECK_RC=$?
+set -e
+if [[ "$STALE_CHECK_RC" -eq 0 ]]; then
+    echo "[FAIL] --check accepted a stale pre-push quality template" >&2
+    exit 1
+fi
+(cd "$TEST_REPO" && scripts/setup-hooks.sh)
+grep -qF "$QUALITY_VERSION_MARKER" "$PRE_PUSH_HOOK"
+if [[ "$(grep -cF '# --- BEGIN SHATTER QUALITY ---' "$PRE_PUSH_HOOK")" -ne 1 ]]; then
+    echo "[FAIL] stale quality template refresh left duplicate sections" >&2
+    exit 1
+fi
+
 BEFORE="$SCRATCH/before.sha256"
 AFTER="$SCRATCH/after.sha256"
 sha256sum "${HOOKS[@]/#/$TEST_REPO/.git/hooks/}" > "$BEFORE"
@@ -66,27 +85,29 @@ echo "[ok] setup-hooks installs an ordered, idempotent 30s Beads timeout for eve
 TASK_BIN_DIR="$SCRATCH/bin"
 mkdir -p "$TASK_BIN_DIR"
 TASK_LOG="$SCRATCH/task.log"
+HEADS_LOG="$SCRATCH/heads.log"
 cat > "$TASK_BIN_DIR/task" <<'EOF'
 #!/usr/bin/env sh
 printf '%s\n' "$1" >> "$TASK_LOG"
+printf '%s\n' "${AFFECTED_HEADS:-}" >> "$HEADS_LOG"
 exit 0
 EOF
 chmod +x "$TASK_BIN_DIR/task"
-
-PRE_PUSH_HOOK="$TEST_REPO/.git/hooks/pre-push"
 
 SHA_A=$(printf 'a%.0s' {1..40})
 SHA_B=$(printf 'b%.0s' {1..40})
 ZERO40=$(printf '0%.0s' {1..40})
 SHA256_A=$(printf 'a%.0s' {1..64})
 NONHEX40=$(printf 'g%.0s' {1..40})
+SHA_C=$(printf 'c%.0s' {1..40})
 
 RC=0
 run_prepush() {
     # $1 = stdin content, $2 = extra env assignment (e.g. SHATTER_FULL_PUSH=1)
     : > "$TASK_LOG"
+    : > "$HEADS_LOG"
     set +e
-    printf '%s' "$1" | env PATH="$TASK_BIN_DIR:$PATH" TASK_LOG="$TASK_LOG" ${2:-} \
+    printf '%s' "$1" | env PATH="$TASK_BIN_DIR:$PATH" TASK_LOG="$TASK_LOG" HEADS_LOG="$HEADS_LOG" ${2:-} \
         bash -c 'cd "$0" && exec "$1"' "$TEST_REPO" "$PRE_PUSH_HOOK" \
         > "$SCRATCH/prepush.out" 2>&1
     RC=$?
@@ -110,6 +131,14 @@ assert_task_log() {
     fi
 }
 
+assert_heads_log() {
+    # $1 = expected AFFECTED_HEADS value, $2 = test name
+    if [[ "$(cat "$HEADS_LOG")" != "$1" ]]; then
+        echo "[FAIL] $2: expected heads.log '$1', got '$(cat "$HEADS_LOG")'" >&2
+        exit 1
+    fi
+}
+
 # 1. local feature -> remote main: full check
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/main ${SHA_B}
 "
@@ -122,11 +151,20 @@ run_prepush "refs/heads/feature ${SHA_A} refs/heads/master ${SHA_B}
 assert_rc 0 "feature->master"
 assert_task_log "check" "feature->master"
 
-# 3. local feature -> other remote head: check-fast
+# 3. local feature -> other remote head: affected gates
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/some-feature ${SHA_B}
 "
 assert_rc 0 "feature->feature"
-assert_task_log "check-fast" "feature->feature"
+assert_task_log "affected" "feature->feature"
+assert_heads_log "$SHA_A" "feature->feature"
+
+# 3b. multiple feature heads union their exact pushed revisions
+run_prepush "refs/heads/feature ${SHA_A} refs/heads/one ${SHA_B}
+refs/heads/feature2 ${SHA_C} refs/heads/two ${SHA_B}
+"
+assert_rc 0 "multiple feature heads"
+assert_task_log "affected" "multiple feature heads"
+assert_heads_log "$SHA_A $SHA_C" "multiple feature heads"
 
 # 4. tag push: no product gate
 run_prepush "refs/heads/feature ${SHA_A} refs/tags/v1.0 ${SHA_B}
@@ -140,31 +178,31 @@ run_prepush "(delete) ${ZERO40} refs/heads/main ${SHA_B}
 assert_rc 0 "deletion to main"
 assert_task_log "" "deletion to main"
 
-# 6. mixed: feature->feature (check-fast) and feature->main (check) => check, once
+# 6. mixed: feature->feature (affected) and feature->main (check) => check, once
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/other ${SHA_B}
 refs/heads/feature2 ${SHA_A} refs/heads/main ${SHA_B}
 "
 assert_rc 0 "mixed strongest wins"
 assert_task_log "check" "mixed strongest wins"
 
-# 7. mixed: deletion to main + push to feature => check-fast (deletion contributes nothing)
+# 7. mixed: deletion to main + push to feature => affected (deletion contributes nothing)
 run_prepush "(delete) ${ZERO40} refs/heads/main ${SHA_B}
 refs/heads/feature ${SHA_A} refs/heads/other ${SHA_B}
 "
 assert_rc 0 "mixed deletion + feature push"
-assert_task_log "check-fast" "mixed deletion + feature push"
+assert_task_log "affected" "mixed deletion + feature push"
 
-# 8. empty stdin: conservative check-fast fallback
+# 8. empty stdin: conservative affected fallback
 run_prepush ""
 assert_rc 0 "empty stdin"
-assert_task_log "check-fast" "empty stdin"
+assert_task_log "affected" "empty stdin"
 
-# 9. blank stdin (only blank lines): conservative check-fast fallback
+# 9. blank stdin (only blank lines): conservative affected fallback
 run_prepush "
 
 "
 assert_rc 0 "blank stdin"
-assert_task_log "check-fast" "blank stdin"
+assert_task_log "affected" "blank stdin"
 
 # 10. malformed: wrong field count
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/main
@@ -206,8 +244,9 @@ echo "[ok] setup-hooks pre-push template classifies ref updates and picks the st
 run_prepush_env() {
     # $1 = stdin content, $2 = PATH to use for the hook invocation
     : > "$TASK_LOG"
+    : > "$HEADS_LOG"
     set +e
-    printf '%s' "$1" | env PATH="$2" TASK_LOG="$TASK_LOG" \
+    printf '%s' "$1" | env PATH="$2" TASK_LOG="$TASK_LOG" HEADS_LOG="$HEADS_LOG" \
         bash -c 'cd "$0" && exec "$1"' "$TEST_REPO" "$PRE_PUSH_HOOK" \
         > "$SCRATCH/prepush.out" 2>&1
     RC=$?

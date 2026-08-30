@@ -25,6 +25,16 @@ tasks:
     cmds:
       - npm run build
 
+  typecheck:
+    desc: Type-check the TypeScript frontend without emitting build output
+    deps: [install]
+    sources:
+      - src/**/*.ts
+      - tsconfig.json
+      - package.json
+    cmds:
+      - npx tsc --noEmit
+
   test:
     desc: Run TypeScript tests
     deps: [build]

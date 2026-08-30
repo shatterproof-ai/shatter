@@ -33,6 +33,7 @@ done
 
 BEGIN_MARKER="# --- BEGIN SHATTER QUALITY ---"
 END_MARKER="# --- END SHATTER QUALITY ---"
+QUALITY_VERSION_MARKER="# SHATTER QUALITY TEMPLATE VERSION: 2"
 ENV_BEGIN_MARKER="# --- BEGIN SHATTER HOOK ENV ---"
 ENV_END_MARKER="# --- END SHATTER HOOK ENV ---"
 # The single-quoted value is emitted literally into each installed hook.
@@ -41,6 +42,12 @@ BEADS_HOOK_TIMEOUT_LINE='export BEADS_HOOK_TIMEOUT="${BEADS_HOOK_TIMEOUT:-30}"'
 BEADS_HOOKS=(pre-commit post-merge pre-push post-checkout prepare-commit-msg)
 
 has_shatter_section() {
+  grep -qF "${BEGIN_MARKER}" "$1" 2>/dev/null &&
+    grep -qF "${QUALITY_VERSION_MARKER}" "$1" 2>/dev/null &&
+    grep -qF "${END_MARKER}" "$1" 2>/dev/null
+}
+
+has_any_shatter_section() {
   grep -qF "${BEGIN_MARKER}" "$1" 2>/dev/null
 }
 
@@ -98,8 +105,8 @@ install_hook() {
   local hook_body="$2"
   local hook_file="${HOOKS_DIR}/${hook_name}"
 
-  # --force: strip existing section before re-adding
-  if [[ "${FORCE}" == "true" ]] && has_shatter_section "${hook_file}"; then
+  # --force and stale templates both replace the managed section in place.
+  if [[ "${FORCE}" == "true" ]] && has_any_shatter_section "${hook_file}"; then
     sed -i "/${BEGIN_MARKER}/,/${END_MARKER}/d" "${hook_file}"
   fi
 
@@ -109,8 +116,12 @@ install_hook() {
   fi
 
   if "${CHECK_ONLY}"; then
-    echo "[miss] ${hook_name}: Shatter quality section missing"
+    echo "[miss] ${hook_name}: Shatter quality section missing or stale"
     return 1
+  fi
+
+  if has_any_shatter_section "${hook_file}"; then
+    sed -i "/${BEGIN_MARKER}/,/${END_MARKER}/d" "${hook_file}"
   fi
 
   # Create the hook file with a shebang if it doesn't exist
@@ -123,6 +134,7 @@ install_hook() {
   # Append the quality section
   cat >> "${hook_file}" <<HOOK
 ${BEGIN_MARKER}
+${QUALITY_VERSION_MARKER}
 # Managed by scripts/setup-hooks.sh — do not edit between markers.
 ${hook_body}
 ${END_MARKER}
@@ -140,9 +152,9 @@ fi'
 # "<local ref> <local sha1> <remote ref> <remote sha1>") and run the
 # strongest gate required across all of them.
 #   refs/heads/main|refs/heads/master (non-deletion) -> check
-#   other refs/heads/*                (non-deletion) -> check-fast
+#   other refs/heads/*                (non-deletion) -> affected
 #   tags / other non-head refs, and any deletion (all-zero local sha) -> no gate
-#   empty/blank stdin -> check-fast (conservative fallback)
+#   empty/blank stdin -> affected (conservative fallback)
 #   malformed input (wrong field count, non-hex/wrong-length sha) -> exit 64
 # Input validation and gate classification always run, independent of
 # whether Taskfile.yml/task are available — only the actual gate
@@ -162,6 +174,7 @@ PRE_PUSH_BODY='shatter_is_sha1() {
 SHATTER_ZERO_SHA="0000000000000000000000000000000000000000"
 SHATTER_GATE_RANK=0
 SHATTER_LINE_COUNT=0
+SHATTER_AFFECTED_HEADS=""
 
 while IFS= read -r shatter_line || [ -n "${shatter_line}" ]; do
   [ -z "${shatter_line}" ] && continue
@@ -194,6 +207,10 @@ while IFS= read -r shatter_line || [ -n "${shatter_line}" ]; do
       ;;
     refs/heads/*)
       [ "${SHATTER_GATE_RANK}" -lt 1 ] && SHATTER_GATE_RANK=1
+      case " ${SHATTER_AFFECTED_HEADS} " in
+        *" ${shatter_local_sha} "*) : ;;
+        *) SHATTER_AFFECTED_HEADS="${SHATTER_AFFECTED_HEADS:+${SHATTER_AFFECTED_HEADS} }${shatter_local_sha}" ;;
+      esac
       ;;
     *) : ;; # tags / other non-head refs: no gate
   esac
@@ -202,11 +219,11 @@ done
 if [ "${SHATTER_FULL_PUSH:-0}" = "1" ]; then
   PUSH_TASK="check"
 elif [ "${SHATTER_LINE_COUNT}" -eq 0 ]; then
-  PUSH_TASK="check-fast"
+  PUSH_TASK="affected"
 else
   case "${SHATTER_GATE_RANK}" in
     2) PUSH_TASK="check" ;;
-    1) PUSH_TASK="check-fast" ;;
+    1) PUSH_TASK="affected" ;;
     *) PUSH_TASK="" ;;
   esac
 fi
@@ -215,7 +232,11 @@ if [ -z "${PUSH_TASK}" ]; then
   echo "[shatter] No product gate required for this push."
 elif [ -f "Taskfile.yml" ] && command -v task >/dev/null 2>&1; then
   echo "[shatter] Running task ${PUSH_TASK}..."
-  task "${PUSH_TASK}" 2>&1 || exit 1
+  if [ "${PUSH_TASK}" = "affected" ]; then
+    AFFECTED_HEADS="${SHATTER_AFFECTED_HEADS}" task "${PUSH_TASK}" 2>&1 || exit 1
+  else
+    task "${PUSH_TASK}" 2>&1 || exit 1
+  fi
 else
   echo "[shatter] Taskfile.yml or task command unavailable; skipping ${PUSH_TASK} gate."
 fi'

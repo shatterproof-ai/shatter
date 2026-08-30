@@ -10,7 +10,7 @@ See `PLAN.md` for architecture and `AGENTS.md` for beads tracking, git workflow,
 - **Parallel parity** in this project means `buildSymExpr` / `buildSymExprWithFlow`, random explorer / concolic orchestrator, CLI wiring for `--concolic` vs default. When adding a new AST node type, CLI flag, or config field, grep for the parallel code path before declaring done.
 - Integration tests use known-answer functions with expected branches and triggering inputs (model: `examples/go/05-conditional-merge.go`, exercised by `shatter-core/tests/e2e_concolic_go.rs`)
 - Frontend protocol handlers have round-trip tests (serialize → deserialize → verify)
-- Regression snapshots are checked into the repo and verified in CI by `.github/workflows/ci.yml` (runs `task test-standard` + `parity` + `conformance` on push/PR to main)
+- Regression snapshots are checked into the repo and verified in CI by `.github/workflows/ci.yml` (runs the full `task check` landing gate on push/PR to main)
 
 Per-language standards: `/rust-conventions`, `/ts-conventions`, `/go-conventions` skills. Formal methods / PBT / contracts policy: `/formal-methods-policy` skill and `shatter-core/CLAUDE.md`. Cross-frontend parity rules: `/frontend-parity` skill and `protocol/parity-matrix.yaml`.
 
@@ -20,7 +20,8 @@ Per-language standards: `/rust-conventions`, `/ts-conventions`, `/go-conventions
 |---|---|---|
 | Quick | `task test-quick` | During development |
 | Standard | `task test-standard` | Before committing |
-| Full | `task check` | Before merge |
+| Affected | `task affected` | Before completing a feature branch; selects gates from its diff |
+| Full | `task check` | Landing, CI, and unknown-path fail-safe |
 | E2E | `task e2e` | After pipeline changes |
 | Smoke | `task smoke` | Before closing any issue |
 | Walkthrough | `task walkthrough` | After changes to the compact demo path, walkthrough output, or walkthrough example set |
@@ -43,7 +44,7 @@ These are the only suites that exercise the full pipeline end-to-end — a modul
 
 Before declaring work done:
 
-1. Unit tests + linter pass
+1. `task affected` passes and its `Gates selected` output is recorded
 2. **Property tests adequate** — new/modified public functions have proptest/fast-check/rapid coverage of core invariants, not just serialization roundtrips
 3. **Cross-language tests pass** if touching protocol types (Full tier)
 4. **E2E pipeline works** if touching any analyze → instrument → execute → solve component (`cargo test --test e2e_concolic` for TS, `cargo test --test e2e_concolic_rust` for Rust, `cargo test --test e2e_concolic_go` for Go)
@@ -52,6 +53,9 @@ Before declaring work done:
 7. **Parity contract updated** if making a protocol-visible frontend change — update the affected frontend's `CLAUDE.md` and `protocol/parity-matrix.yaml`, then run `task parity` + `task conformance`. Internal refactors that leave JSON output identical do not require parity contract updates.
 
 See the `/pre-completion` skill for the verification runner.
+
+The lead runs one full `task check` at batch landing. Solo agents that merge
+their own branch into `main` run the full check before pushing `main`.
 
 ## What NOT to Do
 

@@ -20,6 +20,7 @@ TASKFILE = ROOT / "Taskfile.yml"
 # Public task -> (timing label, callable implementation task).  golden-test's
 # historical timing label is "golden" and remains stable for CSV consumers.
 GOVERNED_TASKS = {
+    "affected": ("affected", "affected-governed"),
     "check": ("check", "check-governed"),
     "check-fast": ("check-fast", "check-fast-governed"),
     "conformance": ("conformance", "conformance-governed"),
