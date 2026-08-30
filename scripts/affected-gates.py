@@ -126,6 +126,8 @@ def _classify(path: str) -> set[str] | None:
         return set()
     if path.endswith(".md") or path.startswith("docs/"):
         return {"docs"}
+    if PurePosixPath(path).name in {"Taskfile.yml", "Cargo.toml", "Cargo.lock"}:
+        return None
     if (
         path.startswith((".github/workflows/", ".semgrep/", "shatter-go-tool/"))
         or path == "install.sh"
@@ -171,7 +173,10 @@ def _classify(path: str) -> set[str] | None:
         return {"rust-fe:test", "rust-fe:clippy", "e2e-rust", "parity", "conformance"}
     if path.startswith("demo/walkthrough"):
         return {"walkthrough"}
-    if path.startswith("demo/gauntlet") or path == "demo/test_gauntlet_check_output.py":
+    if (
+        path.startswith(("demo/gauntlet", "demo/fixtures/"))
+        or path == "demo/test_gauntlet_check_output.py"
+    ):
         return {"gauntlet"}
     if path == "benchmarks/sample-manifest.json":
         return {"walkthrough", "gauntlet"}

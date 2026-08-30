@@ -53,6 +53,15 @@ class AffectedGateMappingTests(unittest.TestCase):
             {"meta"},
         )
 
+    def test_nested_build_graph_files_use_full_check_fail_safe(self) -> None:
+        for path in (
+            "shatter-core/Taskfile.yml",
+            "shatter-rust/Cargo.toml",
+            "shatter-rust-runtime/Cargo.lock",
+        ):
+            with self.subTest(path=path):
+                self.assert_gates([path], {"smoke", "check"})
+
     def test_core_and_cli_paths(self) -> None:
         self.assert_gates(
             ["shatter-core/src/cache.rs"],
@@ -124,6 +133,7 @@ class AffectedGateMappingTests(unittest.TestCase):
         )
         self.assert_gates(["demo/walkthrough.sh"], {"walkthrough"})
         self.assert_gates(["demo/gauntlet-scan-allowlist.yaml"], {"gauntlet"})
+        self.assert_gates(["demo/fixtures/arithmetic-v1.ts"], {"gauntlet"})
         self.assert_gates(
             ["benchmarks/sample-manifest.json"],
             {"walkthrough", "gauntlet"},
