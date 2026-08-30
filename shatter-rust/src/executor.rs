@@ -11893,13 +11893,13 @@ fn enabled(config: Config) -> bool {
         unsafe { std::env::remove_var("SHATTER_SKIP_CHECK") };
     }
 
-    #[test]
-    fn default_build_timeout_allows_cold_axum_harness_builds() {
-        assert!(
-            DEFAULT_BUILD_TIMEOUT_SECS >= 120,
-            "cold Axum harness builds in the full duplicated test target can exceed 30s"
-        );
-    }
+    // Compile-time check (not a runtime #[test]): clippy flags a runtime
+    // `assert!` on a constant expression as `assertions_on_constants`, so the
+    // check is expressed as a `const` block per clippy's own suggestion.
+    const _: () = assert!(
+        DEFAULT_BUILD_TIMEOUT_SECS >= 120,
+        "cold Axum harness builds in the full duplicated test target can exceed 30s"
+    );
 
     // ─── crate_bridge helper tests ────────────────────────────────────────────
 
