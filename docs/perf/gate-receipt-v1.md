@@ -60,8 +60,11 @@ Arrays sort as follows: gate results by `gate`, code and lock bindings by
 start and maximum gate end.
 
 Canonical JSON is UTF-8, keys sorted recursively, with no insignificant
-whitespace. To compute `digest`, omit the `digest` member entirely, encode the
-remaining object canonically without a final newline, and SHA-256 those bytes.
+whitespace. Its reference Python settings are
+`sort_keys=True,separators=(",", ":"),ensure_ascii=False,allow_nan=False`;
+non-ASCII characters are therefore emitted as UTF-8 rather than `\\u` escapes.
+To compute `digest`, omit the `digest` member entirely, encode the remaining
+object canonically without a final newline, and SHA-256 those bytes.
 Store the result as `sha256:<64-lowercase-hex>`. The final receipt contains the
 digest and exactly one trailing newline.
 
@@ -69,8 +72,8 @@ digest and exactly one trailing newline.
 
 All bound bytes come from candidate-tree blobs, never the working tree.
 
-Code bindings contain every tracked path whose basename matches
-`*Taskfile*.yml`, plus these required paths:
+Code bindings contain every tracked path whose repository-relative POSIX path
+matches `*Taskfile*.yml`, plus these required paths:
 
 - `scripts/gate-wrapper.sh`
 - `scripts/gate-receipt.py`
@@ -87,24 +90,32 @@ Lock bindings always contain these entries, including absent files:
 - `shatter-go/go.sum`
 
 A present lock has `present:true` and the raw candidate-blob hash. An absent
-lock has `present:false` and `sha256:null`. Dirty and untracked working-tree
-files do not affect any binding.
+lock has `present:false` and `sha256:null`. A non-blob at a required code or
+lock path is invalid. Git symlinks are blobs and hash their link-target bytes.
+Dirty and untracked working-tree files do not affect any binding.
 
 Tool bindings contain exactly `cargo`, `go`, `node`, `npm`, `rustc`, and
-`task`. Their version is the complete successful version-command stdout with
-leading and trailing whitespace removed.
+`task`. The commands are `cargo --version`, `go version`, `node --version`,
+`npm --version`, `rustc --version`, and `task --version`. Their version is the
+complete successful UTF-8 stdout with leading and trailing whitespace removed.
+Missing tools, failed commands, undecodable output, and empty trimmed output
+are discovery failures.
 
 ## Storage and atomicity
 
 Let `common_dir` be `realpath(git rev-parse --git-common-dir)` and let
-`repo_key` be the lowercase SHA-256 of that path's UTF-8 bytes. The receipt
+`repo_key` be the lowercase SHA-256 of that path's filesystem-encoded bytes,
+without a trailing newline. The receipt
 path is:
 
 ```text
 ${XDG_RUNTIME_DIR:-/tmp}/shatter-gate-receipts/v1/<repo_key>/<candidate-tree>.json
 ```
 
-New directories use mode 0700 and receipt files mode 0600. Writers create a
-complete temporary file in the destination directory, flush it, and atomically
-replace the candidate receipt. Concurrent writers for the same candidate may
-replace one another, but readers observe only a complete old or new receipt.
+The writer owns the `shatter-gate-receipts`, `v1`, and repository-key
+directories beneath the runtime root; it creates or tightens each to mode 0700
+without changing the runtime root itself. Receipt files use mode 0600. Writers
+create a complete temporary file in the destination directory, flush it, and
+atomically replace the candidate receipt. Concurrent writers for the same
+candidate may replace one another, but readers observe only a complete old or
+new receipt.
