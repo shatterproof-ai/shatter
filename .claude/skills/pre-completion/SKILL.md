@@ -119,6 +119,7 @@ completion announcements that do not include this table.
 | Protocol sync                | PASS / FAIL / N/A | ...              |
 | E2E concolic                 | PASS / FAIL / N/A | selected frontend gates or N/A |
 | Walkthrough                  | PASS / FAIL / N/A | ...              |
+| Gauntlet                     | PASS / FAIL / N/A | ...              |
 | Parallel path parity         | PASS / N/A  | ...                     |
 | Bug repro test exists        | PASS / N/A  | ...                     |
 | All changes committed        | PASS / FAIL | ...                     |

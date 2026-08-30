@@ -178,7 +178,7 @@ run_prepush "(delete) ${ZERO40} refs/heads/main ${SHA_B}
 assert_rc 0 "deletion to main"
 assert_task_log "" "deletion to main"
 
-# 6. mixed: feature->feature (check-fast) and feature->main (check) => check, once
+# 6. mixed: feature->feature (affected) and feature->main (check) => check, once
 run_prepush "refs/heads/feature ${SHA_A} refs/heads/other ${SHA_B}
 refs/heads/feature2 ${SHA_A} refs/heads/main ${SHA_B}
 "

@@ -112,11 +112,12 @@ CLI_GAUNTLET_FILES = {
 def _is_core_pipeline(path: str) -> bool:
     relative = PurePosixPath(path).relative_to("shatter-core/src")
     name = relative.name
+    relative_text = relative.as_posix()
     return (
         name in CORE_PIPELINE_FILES
-        or "explorer" in name
-        or "orchestrator" in name
-        or name.startswith("instrument")
+        or "explorer" in relative_text
+        or "orchestrator" in relative_text
+        or any(part.startswith("instrument") for part in relative.parts)
     )
 
 

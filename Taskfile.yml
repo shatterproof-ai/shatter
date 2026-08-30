@@ -503,7 +503,10 @@ tasks:
         for head in ${AFFECTED_HEADS:-HEAD}; do
           set -- "$@" --head "$head"
         done
-        gates="$(python3 scripts/affected-gates.py "$@")"
+        if ! gates="$(python3 scripts/affected-gates.py "$@")"; then
+          echo "affected gate selection failed"
+          exit 1
+        fi
         printf 'Gates selected:\n%s\n' "$gates"
         while IFS= read -r gate; do
           if [ "$gate" = "(none)" ]; then

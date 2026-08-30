@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -73,6 +76,10 @@ class AffectedGateMappingTests(unittest.TestCase):
         self.assert_gates(
             ["shatter-cli/src/render.rs"],
             {"cli:test", "cli:clippy", "smoke", "gauntlet"},
+        )
+        self.assert_gates(
+            ["shatter-core/src/orchestrator/mod.rs"],
+            {"core:test", "core:clippy", "smoke", *all_e2e},
         )
 
     def test_e2e_test_files_run_their_own_frontend_gate(self) -> None:
@@ -162,6 +169,20 @@ class AffectedGateMappingTests(unittest.TestCase):
             },
             "acb3cee66137c4c60d8ab306048f02508bbbe19f": {"smoke", "check"},
         }
+        unavailable = [
+            merge_sha
+            for merge_sha in fixtures
+            if subprocess.run(
+                ["git", "cat-file", "-e", f"{merge_sha}^1"],
+                cwd=ROOT,
+                capture_output=True,
+            ).returncode
+        ]
+        if unavailable:
+            self.skipTest(
+                "historical merge objects unavailable (expected in a shallow clone): "
+                + ", ".join(unavailable)
+            )
         for merge_sha, expected in fixtures.items():
             with self.subTest(merge=merge_sha):
                 paths = self.module.changed_paths(f"{merge_sha}^1", merge_sha, ROOT)
@@ -189,8 +210,35 @@ class AffectedGateWiringTests(unittest.TestCase):
         implementation = "\n".join(tasks["affected-governed"]["cmds"])
         self.assertIn("python3 scripts/affected-gates.py", implementation)
         self.assertIn("AFFECTED_BASE:-origin/main", implementation)
+        self.assertIn('if ! gates="$(python3 scripts/affected-gates.py', implementation)
         self.assertIn('task "$gate"', implementation)
         self.assertNotIn("&", implementation)
+
+    def test_governed_executor_propagates_selector_git_failure(self) -> None:
+        tasks = yaml.safe_load(TASKFILE.read_text())["tasks"]
+        implementation = "\n".join(tasks["affected-governed"]["cmds"])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = Path(temp_dir)
+            scripts = fixture / "scripts"
+            scripts.mkdir()
+            shutil.copy2(SCRIPT, scripts / SCRIPT.name)
+            subprocess.run(["git", "init", "-q"], cwd=fixture, check=True)
+            marker = fixture / "task-invoked"
+            fake_bin = fixture / "bin"
+            fake_bin.mkdir()
+            fake_task = fake_bin / "task"
+            fake_task.write_text(f"#!/bin/sh\ntouch {marker}\n")
+            fake_task.chmod(0o755)
+            completed = subprocess.run(
+                ["bash", "-c", implementation],
+                cwd=fixture,
+                env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("affected gate selection failed", completed.stdout)
+            self.assertFalse(marker.exists())
 
     def test_meta_runs_affected_gate_regressions(self) -> None:
         tasks = yaml.safe_load(TASKFILE.read_text())["tasks"]
