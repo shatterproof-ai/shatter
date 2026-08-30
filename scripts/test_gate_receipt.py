@@ -381,8 +381,8 @@ class AtomicReplacementTests(ReceiptTestCase):
         self.assertEqual(initial.returncode, EXIT_OK, initial.stderr)
         old = self.fixture.receipt_path.read_bytes()
         expected_variants = {old}
-        for tier in ("ci", "local"):
-            generated = self.fixture.run(tier=tier, results=(self.fixture.result_b,))
+        for tier, result_path in (("ci", self.fixture.result_b), ("local", self.fixture.result_a)):
+            generated = self.fixture.run(tier=tier, results=(result_path,))
             self.assertEqual(generated.returncode, EXIT_OK, generated.stderr)
             expected_variants.add(self.fixture.receipt_path.read_bytes())
         self.fixture.receipt_path.write_bytes(old)
