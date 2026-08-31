@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::generated_paths::{
-    collect_generated_ignore_entries, sync_gitignore, GitignoreOutcome,
+    collect_generated_ignore_entries, sync_gitignore, unignored_generated_paths, GitignoreOutcome,
 };
 use crate::helpers::Colors;
 
@@ -102,9 +102,27 @@ fn run_init_impl(
     let gitignore_relative = Path::new(".gitignore");
     let skip_tracked_gitignore =
         implicit && shatter_core::scm::is_path_tracked(&resolved_dir, gitignore_relative);
+    // str-vr7vq: an implicit init must not create a brand-new, untracked
+    // `.gitignore` file when every generated path is already covered —
+    // whether by an ancestor `.gitignore` up to the enclosing git root (the
+    // common case for a nested fixture/example directory inside a monorepo
+    // whose root `.gitignore` already ignores `.shatter/`,
+    // `.shatter-cache/`, and `shatter-artifacts/` recursively), or by the
+    // local file's own non-managed patterns. `unignored_generated_paths` is
+    // the same ancestor-aware coverage check `doctor` already uses; reusing
+    // it here means a plain `scan`/`explore` against an already-covered
+    // nested project leaves no stray file behind at all, rather than
+    // writing a redundant local `.gitignore` whose entries were never
+    // actually uncovered.
+    let skip_already_covered_gitignore =
+        implicit && unignored_generated_paths(&resolved_dir).is_empty();
     if skip_tracked_gitignore {
         println!(
             "  Skipped  .gitignore  (tracked in git; run `shatter init` explicitly to refresh it)"
+        );
+    } else if skip_already_covered_gitignore {
+        println!(
+            "  Skipped  .gitignore  (generated paths already ignored by an ancestor .gitignore)"
         );
     } else {
         let ignore_entries = collect_generated_ignore_entries(&resolved_dir);
@@ -445,6 +463,59 @@ mod tests {
         assert!(
             gitignore.contains(GITIGNORE_BEGIN),
             "explicit `shatter init` must still refresh a tracked .gitignore"
+        );
+    }
+
+    #[test]
+    fn run_implicit_init_skips_gitignore_when_ancestor_already_covers_generated_paths() {
+        // str-vr7vq regression: a nested fixture/example directory inside a
+        // monorepo whose root .gitignore already recursively ignores every
+        // generated path via bare, unanchored patterns must not get a
+        // brand-new, untracked local .gitignore file from a plain
+        // `scan`/`explore` — there is nothing left to add. (This repo's own
+        // root .gitignore relies on a `**/.shatter/*` glob for the same
+        // recursive intent; real git honors that, but `unignored_generated_paths`'s
+        // deliberately non-glob-aware matcher cannot, so it still reports
+        // `examples/**/.shatter/{seeds,cache}/` as uncovered there — a
+        // pre-existing gap tracked separately, not fixed by this test.)
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping: git not available on PATH");
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo(repo.path());
+        // Bare, unanchored (no internal `/`) entries — matching this crate's
+        // own `unignored_finds_gitignore_at_enclosing_git_root` coverage
+        // test in `generated_paths.rs` — so each pattern matches its named
+        // path component at any depth. A *slash-containing* entry (e.g. the
+        // literal `.shatter/seeds/` this repo's own root-level managed block
+        // writes) is anchored to the `.gitignore`'s own directory and would
+        // NOT cover a nested directory's `.shatter/seeds/` — see
+        // `gitignore_file_covers`'s doc comment and
+        // `unignored_does_not_let_a_root_anchored_pattern_cover_a_nested_package`.
+        std::fs::write(
+            repo.path().join(".gitignore"),
+            ".shatter\n.shatter-cache\nshatter-artifacts\n",
+        )
+        .unwrap();
+        git(repo.path(), &["add", ".gitignore"]);
+        git(repo.path(), &["commit", "-q", "-m", "root gitignore"]);
+
+        let nested = repo.path().join("examples").join("go").join("fixture");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let colors = Colors::new(false);
+        run_implicit_init(Some(&nested), &colors).unwrap();
+
+        // .shatter/ is still created — first-run ergonomics preserved.
+        assert!(nested.join(".shatter").exists());
+
+        // But no local .gitignore is written: the root .gitignore already
+        // covers every generated path recursively.
+        assert!(
+            !nested.join(".gitignore").exists(),
+            "implicit init must not create a redundant local .gitignore when \
+             an ancestor .gitignore already covers all generated paths"
         );
     }
 }
