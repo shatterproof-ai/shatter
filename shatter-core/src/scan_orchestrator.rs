@@ -11615,10 +11615,7 @@ for line in sys.stdin:
 
         // Delete only the sidecar, leaving the behavior map and checkpoint —
         // exactly the on-disk shape a pre-str-8q1b4 run leaves behind.
-        let sidecar = work
-            .path()
-            .join("cache")
-            .join("resume_fn.result.json");
+        let sidecar = work.path().join("cache").join("resume_fn.result.json");
         assert!(sidecar.exists(), "first scan should have written a sidecar");
         std::fs::remove_file(&sidecar).expect("remove sidecar");
 
