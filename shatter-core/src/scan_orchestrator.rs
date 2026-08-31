@@ -1435,10 +1435,13 @@ fn compute_scan_id(config: &ScanConfig) -> String {
 /// Open the completed-function sidecar cache colocated with this scan's
 /// behavior map cache (str-8q1b4).
 ///
-/// Returns `None` when behavior-map caching is off. A checkpoint hit requires a
-/// cached behavior map, so without one a stored completed-function record could
-/// never be read back and writing it would be pure cost.
+/// Returns `None` unless the run both caches behavior maps and checkpoints its
+/// progress. A checkpoint hit needs a cached behavior map, and a checkpoint
+/// only ever carries entries when it was loaded from `resume_path`, so with
+/// either knob off no record could be read back and writing one — the sidecar
+/// carries every raw execution result — would be pure cost.
 fn completed_function_cache(config: &ScanConfig) -> Option<CompletedFunctionCache> {
+    config.resume_path.as_ref()?;
     let cache = config.cache.as_ref()?;
     match CompletedFunctionCache::new(cache.cache_dir().to_path_buf()) {
         Ok(c) => Some(c),
