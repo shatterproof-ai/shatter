@@ -1046,7 +1046,11 @@ impl CompletedFunctionCache {
     /// [`BehaviorMapCache::is_fresh`], a stale entry is left on disk: the
     /// function is about to be re-explored and will overwrite it.
     #[must_use]
-    pub fn load(&self, function_id: &str, deep_fingerprint: &str) -> Option<CompletedFunctionRecord> {
+    pub fn load(
+        &self,
+        function_id: &str,
+        deep_fingerprint: &str,
+    ) -> Option<CompletedFunctionRecord> {
         let path = self.path_for(function_id);
         let contents = fs::read_to_string(&path).ok()?;
         let entry: CompletedFunctionCacheEntry = serde_json::from_str(&contents).ok()?;
@@ -2548,8 +2552,7 @@ mod tests {
     fn completed_function_cache_colocates_with_behavior_map() {
         let dir = tempfile::tempdir().unwrap();
         let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
-        let completed =
-            CompletedFunctionCache::new(bm_cache.cache_dir().to_path_buf()).unwrap();
+        let completed = CompletedFunctionCache::new(bm_cache.cache_dir().to_path_buf()).unwrap();
         completed
             .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
             .unwrap();
