@@ -173,6 +173,14 @@ fn until_temp_anchor(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_scan(
     directory: &str,
+    // str-6vl7p: the caller (main.rs) already canonicalizes `directory` to
+    // locate `shatter.config.json` via `find_project_config`. When that
+    // succeeded, it's passed here so we don't re-stat the filesystem for a
+    // path we already resolved. `None` means the caller's canonicalize
+    // failed (or was never attempted); we fall back to canonicalizing
+    // ourselves below so `root.is_dir()` + the resulting error message stay
+    // unchanged.
+    canonical_directory: Option<&Path>,
     language_filter: Option<&str>,
     include_patterns: &[String],
     exclude_patterns: &[String],
@@ -282,9 +290,12 @@ pub(crate) async fn run_scan(
     if !root.is_dir() {
         return Err(format!("'{}' is not a directory", root.display()).into());
     }
-    let root = root
-        .canonicalize()
-        .map_err(|e| format!("failed to resolve path '{}': {e}", directory))?;
+    let root = match canonical_directory {
+        Some(p) => p.to_path_buf(),
+        None => root
+            .canonicalize()
+            .map_err(|e| format!("failed to resolve path '{}': {e}", directory))?,
+    };
 
     let project_root_str = resolve_project_root(project_dir, &root);
     let project_shatter_dir = project_root_str

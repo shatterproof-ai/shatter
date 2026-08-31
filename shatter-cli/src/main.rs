@@ -587,9 +587,17 @@ async fn main() -> ExitCode {
             // during discovery. The walk only strips components via
             // `Path::parent()`, so the returned anchor is already canonical and
             // needs no second canonicalize (str-qxmlz).
-            let config_search_start = std::path::Path::new(&directory)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from(&directory));
+            //
+            // `canonical_directory` (the `Ok` case) is threaded through to
+            // `run_scan` (str-6vl7p) so it can reuse this canonicalization
+            // instead of re-deriving the same canonical path from `directory`
+            // with a second `canonicalize()` syscall. `run_scan` falls back
+            // to canonicalizing itself when this is `None`, preserving its
+            // own directory-validation error message.
+            let canonical_directory = std::path::Path::new(&directory).canonicalize().ok();
+            let config_search_start = canonical_directory
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(&directory));
             let (project_cfg, project_config_dir) =
                 match shatter_core::config::find_project_config(&config_search_start) {
                     Ok(Some((cfg, dir))) => (Some(cfg), Some(dir)),
@@ -712,6 +720,7 @@ async fn main() -> ExitCode {
 
             commands::scan::run_scan(
                 &directory,
+                canonical_directory.as_deref(),
                 language.as_deref(),
                 &effective_include,
                 &effective_exclude,
