@@ -424,12 +424,36 @@ const arbSideEffect: fc.Arbitrary<SideEffect> = fc.oneof(
   }),
 );
 
+// JSON itself cannot round-trip signed zero: JSON.stringify(-0) === "0", so
+// JSON.parse(JSON.stringify(x)) always turns -0 into 0. Normalize -0 to 0
+// recursively so generated fixtures never contain a value JSON is inherently
+// unable to preserve (mirrors the NaN-filtering convention for float
+// arbitraries: strip values a round-trip cannot faithfully represent).
+function normalizeNegativeZero(
+  value: fc.JsonValue | undefined,
+): fc.JsonValue | undefined {
+  if (typeof value === "number") {
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(normalizeNegativeZero) as fc.JsonValue;
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, normalizeNegativeZero(v)]),
+    );
+  }
+  return value;
+}
+
 const arbInvocationOutcome: fc.Arbitrary<InvocationOutcome> = fc.record({
   status: arbOutcomeStatus,
   short_reason: fc.option(fc.string({ minLength: 1, maxLength: 80 }), {
     nil: undefined,
   }),
-  return_value: fc.option(fc.jsonValue(), { nil: undefined }),
+  return_value: fc.option(fc.jsonValue().map(normalizeNegativeZero), {
+    nil: undefined,
+  }),
   thrown_error: fc.option(arbErrorInfo, { nil: undefined }),
   side_effects: fc.option(fc.array(arbSideEffect, { maxLength: 3 }), {
     nil: undefined,
