@@ -34,18 +34,28 @@ fn clap_error_kind_label(kind: clap::error::ErrorKind) -> &'static str {
     }
 }
 
-/// If `.shatter/` does not exist under `project_dir` (or the current directory),
-/// run `init` implicitly so first-time users get the config structure
-/// automatically. Uses `run_implicit_init` rather than `run_init` so this
-/// never appends to a `.gitignore` that's already tracked in git (str-w5jt9)
-/// — a plain `scan`/`explore`/`analyze` must not dirty a tracked file the
-/// user didn't ask to change.
-fn maybe_implicit_init(project_dir: Option<&std::path::Path>, colors: &crate::helpers::Colors) {
-    let base = project_dir.unwrap_or_else(|| std::path::Path::new("."));
+/// If `.shatter/` does not exist under `resolved_dir` (or the current
+/// directory, when detection fails), run `init` implicitly so first-time
+/// users get the config structure automatically. Uses `run_implicit_init`
+/// rather than `run_init` so this never appends to a `.gitignore` that's
+/// already tracked in git (str-w5jt9) — a plain `scan`/`explore` must not
+/// dirty a tracked file the user didn't ask to change.
+///
+/// `resolved_dir` must be computed the same way the command itself resolves
+/// its project root — via `helpers::resolve_project_root(cli.project_dir,
+/// <the command's actual target>)` — not derived from `cli.project_dir`
+/// alone (str-vr7vq). `--project-dir` is rarely passed, and falling back to
+/// the bare current working directory instead of the target being operated
+/// on meant implicit init could disagree with, and run against a completely
+/// different directory than, the project the command was actually about to
+/// touch (e.g. a `cargo test` integration test whose default working
+/// directory is the crate root, scanning an unrelated fixture in a tempdir).
+fn maybe_implicit_init(resolved_dir: Option<&std::path::Path>, colors: &crate::helpers::Colors) {
+    let base = resolved_dir.unwrap_or_else(|| std::path::Path::new("."));
     let shatter_dir = base.join(".shatter");
     if !shatter_dir.exists() {
         eprintln!("No .shatter/ found — initializing project");
-        if let Err(e) = commands::init::run_implicit_init(project_dir, colors) {
+        if let Err(e) = commands::init::run_implicit_init(resolved_dir, colors) {
             eprintln!("Warning: implicit init failed: {e}");
         }
     }
@@ -259,7 +269,22 @@ async fn main() -> ExitCode {
             let explore_external_audit_mode =
                 !report_outputs.is_empty() && no_cache && no_seeds;
             if from_artifacts.is_none() && !explore_external_audit_mode {
-                maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+                // str-vr7vq: resolve from the first target spec (a
+                // "file[:function]" string), exactly like `run_explore`
+                // resolves `storage_project_root` from `parsed[0].file` --
+                // `Path::parent()` on the raw "file:function" string still
+                // yields the right containing directory since `:` is not a
+                // path separator, so no extra parsing is needed here.
+                let implicit_init_dir = targets
+                    .first()
+                    .and_then(|t| {
+                        crate::helpers::resolve_project_root(
+                            cli.project_dir.as_deref(),
+                            std::path::Path::new(t),
+                        )
+                    })
+                    .map(std::path::PathBuf::from);
+                maybe_implicit_init(implicit_init_dir.as_deref(), &colors);
             }
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
             let parallelism_bounds = match crate::helpers::ParallelismBounds::from_overrides(
@@ -419,7 +444,17 @@ async fn main() -> ExitCode {
             spec_json,
             invariants,
         } => {
-            maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+            // str-vr7vq: `analyze` performs pure offline computation on an
+            // already-produced Stage 1 observation JSON file (`input`) --
+            // "No frontend or solver required" (see the `Analyze` doc
+            // comment in args.rs). It never reads project config, a cache,
+            // or a seed pool, so implicit init has nothing to prepare here.
+            // Running it anyway resolved the project root from the current
+            // working directory (implicit init never consulted `input`),
+            // so a plain `analyze <observation.json>` run with no
+            // `--project-dir` from an arbitrary cwd wrote a stray
+            // `.shatter/` + managed `.gitignore` block into wherever the
+            // process happened to be launched from.
             commands::analyze::run_analyze(
                 &input,
                 output.as_deref(),
@@ -548,7 +583,22 @@ async fn main() -> ExitCode {
             // initialized.
             let scan_external_audit_mode = !outputs.is_empty() && no_cache && no_seeds;
             if !scan_external_audit_mode {
-                maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+                // str-vr7vq: resolve from `directory` (the scan target),
+                // exactly like `run_scan` resolves its own `project_root_str`
+                // a few lines into the command body. Falling back to
+                // `cli.project_dir` alone (rarely passed) meant implicit
+                // init resolved the project root from the current working
+                // directory instead of the directory actually being
+                // scanned — e.g. a `--dry-run` invocation with no
+                // `--project-dir`, run from an unrelated cwd, wrote
+                // `.shatter/` + a managed `.gitignore` block there instead
+                // of into the scanned directory.
+                let implicit_init_dir = crate::helpers::resolve_project_root(
+                    cli.project_dir.as_deref(),
+                    std::path::Path::new(&directory),
+                )
+                .map(std::path::PathBuf::from);
+                maybe_implicit_init(implicit_init_dir.as_deref(), &colors);
             }
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
                 match scheduler_policy.parse() {
