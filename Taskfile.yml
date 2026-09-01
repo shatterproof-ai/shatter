@@ -410,8 +410,6 @@ tasks:
       - scripts/test_cleanup_merged_remote_branches.sh
       - scripts/examples_checkout.py
       - scripts/test_walkthrough_examples_checkout.py
-      - scripts/setup-hooks.sh
-      - scripts/test_setup_hooks.sh
       - scripts/affected-gates.py
       - scripts/test_affected_gates.py
       - scripts/gate-receipt.py
@@ -443,7 +441,6 @@ tasks:
       - python3 -m unittest scripts.test_retention_continuous_releases
       - bash scripts/test_cleanup_merged_remote_branches.sh
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
-      - bash scripts/test_setup_hooks.sh
       - python3 -m unittest scripts.test_affected_gates
       - python3 -m unittest scripts.test_gate_receipt
       - python3 -m unittest scripts.test_precompletion_bootstrap
