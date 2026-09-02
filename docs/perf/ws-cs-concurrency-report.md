@@ -65,41 +65,29 @@ and `spec-diff` accepts them.
 - The concurrency-headline output directory now uses `mktemp -d`, so two
   invocations in the same second cannot share logs.
 
-## Beads hook latency and backup semantics
+## Beads hook latency and backup semantics (deferred, str-mpgg1)
 
-`scripts/setup-hooks.sh` now installs a Shatter-owned environment block before
-the Beads-managed body in all five git hooks. The block defaults
-`BEADS_HOOK_TIMEOUT` to 30 seconds while preserving an explicit caller value.
-The regression executes generated hooks, checks ordering and idempotence, and
-verifies both the default and override behavior.
+An earlier version of this branch installed a `BEADS_HOOK_TIMEOUT=30`
+environment block into all five git hooks via `scripts/setup-hooks.sh`,
+including `post-merge` and `post-checkout`. That change has been reverted
+(str-mpgg1): `AGENTS.md`'s "Leave the managed git hooks alone" rule
+explicitly designates `.git/hooks/post-merge` and `post-checkout` as
+beads-managed and off-limits to hand-editing, since they are shared across
+every worktree via the common git dir. Installing a timeout block into them
+— even from a repo-tracked installer script rather than a direct edit to the
+live hook files — has the same shared-blast-radius effect that rule guards
+against, and doing so here was not a deliberate, reviewed policy exception.
 
-The repository keeps `backup.git-push: true`. Beads sets `BD_GIT_HOOK=1` while
-running managed hooks, which suppresses automatic backup from those hook
-processes; the setting therefore does not add a network push to checkout or
-merge hooks. The persistent `core.hooksPath=/dev/null` bypass found during the
-audit was removed.
-
-Checkout latency was measured against the same detached commit with a fresh
-target directory each time. The disabled baseline used a command-local hook
-bypass; the bounded measurement used the installed shared hooks:
-
-```bash
-disabled="$(mktemp -d)"; rmdir "$disabled"
-/usr/bin/time -f '%e' git -c core.hooksPath=/dev/null \
-  worktree add --detach "$disabled" HEAD
-git worktree remove "$disabled"
-
-enabled="$(mktemp -d)"; rmdir "$enabled"
-/usr/bin/time -f '%e' git worktree add --detach "$enabled" HEAD
-git worktree remove "$enabled"
-```
-
-The hook-disabled checkout completed in **0.23 seconds**. With the installed
-hook path restored, the same operation completed in approximately **30.2
-seconds** when the local Beads post-checkout operation did not return promptly.
-That demonstrates the new 30-second bound in place of the Beads shim's
-300-second default ceiling. A subsequent pushed feature commit also ran and
-passed the restored `check-fast` pre-push gate.
+Item 3 of the original issue (beads hook timeout, `backup.git-push`
+semantics) is deferred pending an explicit AGENTS.md amendment proposed and
+reviewed on its own, rather than landed silently alongside unrelated
+concurrency fixes. Investigation notes for that future work:
+`backup.git-push: true`'s network I/O risk is really about how often `bd
+sync` gets invoked inside hooks (not the state-transition commands like `bd
+create`/`update`/`close`), and repo convention already says "sync once at
+landing" — so the actual leverage is in hook invocation frequency, not the
+backup flag itself. Beads also sets `BD_GIT_HOOK=1` while running managed
+hooks, which already suppresses automatic backup from those hook processes.
 
 ## Fixed-resource sweep
 

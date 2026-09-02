@@ -86,7 +86,6 @@ META_SCRIPTS = {
     "scripts/cleanup-merged-remote-branches.sh",
     "scripts/test_cleanup_merged_remote_branches.sh",
     "scripts/setup-hooks.sh",
-    "scripts/test_setup_hooks.sh",
 }
 CORE_PIPELINE_FILES = {
     "pipeline.rs",
