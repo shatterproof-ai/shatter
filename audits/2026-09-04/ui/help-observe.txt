@@ -1,0 +1,109 @@
+Run the observation stage: execute a function with generated inputs and write ObserveStageOutput JSON to a file or stdout. Use `shatter analyze` to process the output offline, or `shatter specify` to build a behavioral spec
+
+Usage: shatter observe [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>
+          Target: <file>:<function>. The function name is required. Must be a concrete file path — wildcards are rejected; use `explore` or `properties` for glob targets, or `scan --include` for repository discovery
+
+Options:
+      --concolic
+          Use concolic (Z3-backed) exploration instead of random
+
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace
+          
+          [default: info]
+
+      --max-iterations <MAX_ITERATIONS>
+          Maximum number of iterations
+          
+          [default: 100]
+
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+
+      --timeout <TIMEOUT>
+          Total timeout in seconds
+          
+          [default: 60]
+
+      --request-timeout <REQUEST_TIMEOUT>
+          Per-request timeout in seconds
+          
+          [default: 30]
+
+      --timing <TIMING>
+          Timing output mode
+          
+          [default: off]
+          [possible values: off, summary, detailed]
+
+      --exec-timeout <EXEC_TIMEOUT>
+          Per-execution timeout in seconds
+          
+          [default: 30]
+
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts
+          
+          [default: text]
+          [possible values: text, json, both]
+
+      --build-timeout <BUILD_TIMEOUT>
+          Build timeout in seconds
+          
+          [default: 60]
+
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+
+      --release
+          Compile harnesses in release mode (optimized but slower compilation). Default is debug mode for faster compilation
+          
+          [env: SHATTER_HARNESS_RELEASE=]
+
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+
+  -o, --output <FILE>
+          Write ObserveStageOutput JSON to this file. If omitted, writes to stdout
+
+      --project-dir <DIR>
+          Override auto-detected project root directory
+
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox.
+          
+          By default (str-gg9v) Shatter refuses to execute target functions when no sandbox backend is configured, because a target can create, modify, or delete files by relative path in the invoking repository. Pass this flag (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in, targets still run in a throwaway working directory so relative-path writes do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap` is the safer alternative and does not require this flag.
+
+      --memory-limit <MEMORY_LIMIT>
+          Memory limit in MB for the frontend process
+
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable).
+          
+          Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`
+          
+          Keys follow the `.shatter/config.yaml` YAML structure. Values are parsed as YAML scalars (integers, floats, booleans, strings). Precedence: above any `.shatter/config.yaml` file but below dedicated flags like `--max-iterations`.
+
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never)
+          
+          [default: auto]
+          [possible values: always, auto, never]
+
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI)
+
+          Possible values:
+          - md:    Markdown rendered via termimad (default). Use `--color never` for raw Markdown
+          - plain: Legacy plain ANSI text output (deprecated)
+          
+          [default: md]
+
+  -h, --help
+          Print help (see a summary with '-h')

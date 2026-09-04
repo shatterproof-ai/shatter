@@ -1,0 +1,111 @@
+Run benchmarks against a manifest of canonical scenarios.
+
+Reads a benchmark manifest (default: benchmarks/sample-manifest.json), selects a tier (smoke/standard/full), and explores each function multiple times to produce a structured JSON timing bundle.
+
+Usage: shatter bench [OPTIONS]
+
+Options:
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace
+          
+          [default: info]
+
+      --manifest <MANIFEST>
+          Path to the benchmark manifest JSON file
+          
+          [default: benchmarks/sample-manifest.json]
+
+      --tier <TIER>
+          Benchmark tier to run: smoke, standard, or full
+          
+          [default: smoke]
+
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+
+      --repeats <REPEATS>
+          Number of measured repetitions per function
+          
+          [default: 5]
+
+      --timing <TIMING>
+          Timing output mode
+          
+          [default: off]
+          [possible values: off, summary, detailed]
+
+      --warmups <WARMUPS>
+          Number of warmup runs to discard before measuring
+          
+          [default: 1]
+
+      --max-iterations <MAX_ITERATIONS>
+          Maximum iterations for each explore run (fixed for reproducibility)
+          
+          [default: 20]
+
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts
+          
+          [default: text]
+          [possible values: text, json, both]
+
+  -o, --output <OUTPUT>
+          Write the benchmark bundle JSON to this file path. Without this flag, output goes to stdout only
+
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+
+      --request-timeout <REQUEST_TIMEOUT>
+          Per-request timeout in seconds
+          
+          [default: 30]
+
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+
+      --exec-timeout <EXEC_TIMEOUT>
+          Execution timeout in seconds for each function invocation
+          
+          [default: 10]
+
+      --project-dir <DIR>
+          Override auto-detected project root directory
+
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox.
+          
+          By default (str-gg9v) Shatter refuses to execute target functions when no sandbox backend is configured, because a target can create, modify, or delete files by relative path in the invoking repository. Pass this flag (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in, targets still run in a throwaway working directory so relative-path writes do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap` is the safer alternative and does not require this flag.
+
+      --build-timeout <BUILD_TIMEOUT>
+          Build timeout in seconds
+          
+          [default: 30]
+
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable).
+          
+          Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`
+          
+          Keys follow the `.shatter/config.yaml` YAML structure. Values are parsed as YAML scalars (integers, floats, booleans, strings). Precedence: above any `.shatter/config.yaml` file but below dedicated flags like `--max-iterations`.
+
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never)
+          
+          [default: auto]
+          [possible values: always, auto, never]
+
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI)
+
+          Possible values:
+          - md:    Markdown rendered via termimad (default). Use `--color never` for raw Markdown
+          - plain: Legacy plain ANSI text output (deprecated)
+          
+          [default: md]
+
+  -h, --help
+          Print help (see a summary with '-h')

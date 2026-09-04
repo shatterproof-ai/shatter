@@ -1,0 +1,12 @@
+Error: refusing to execute target functions without a sandbox.
+
+Shatter runs your target functions with mined and generated inputs. A target that opens, creates, renames, or deletes a file by relative path will mutate this repository (stray files named after generated inputs, overwritten or deleted files, etc.).
+
+Choose one:
+  • Configure an OS sandbox (recommended):
+      export SHATTER_SANDBOX_BACKEND=docker    # or: bwrap
+  • Opt into unsandboxed execution (targets still run in a throwaway working directory):
+      shatter … --allow-host-writes
+      # or, once per shell/CI job:
+      export SHATTER_ALLOW_HOST_WRITES=1
+

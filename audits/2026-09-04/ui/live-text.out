@@ -1,0 +1,17 @@
+# Shatter Explore
+
+## `classifyNumber` *(arithmetic-v1.ts:11-22)*
+
+**4 path(s)** M-BM-7 **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(1)` | returns `"positive-odd"` |
+| 4 | `classifyNumber(2)` | returns `"positive-even"` |
+
+
+---
+
+**Summary:** 4 path(s) across 1 function(s) M-BM-7 **100%** coverage (7/7 lines)

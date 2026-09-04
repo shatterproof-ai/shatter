@@ -1,0 +1,18 @@
+# Shatter Explore
+
+## `classifyNumber` *(arithmetic-v2.ts:14-31)*
+
+**5 path(s)** · **91%** coverage (10/11 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(1)` | returns `"positive-odd"` |
+| 4 | `classifyNumber(1000)` | returns `"positive-even"` |
+| 5 | `classifyNumber(1001)` | returns `"large-odd"` |
+
+
+---
+
+**Summary:** 5 path(s) across 1 function(s) · **91%** coverage (10/11 lines)

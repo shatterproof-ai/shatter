@@ -1,0 +1,122 @@
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/05-conditional-merge.go::Categorize` | 2 | 58% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v1.ts::classifyNumber` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v2.ts::classifyNumber` | 5 | 91% |
+
+---
+
+Scan complete: **3 completed**, **0 failed**, **0 unsupported**, **0 interrupted**, **0 expected skipped** (2 worker(s))
+# Shatter Scan Report
+
+- **Functions discovered:** 3
+- **Functions attempted:** 3
+- **Functions completed:** 3
+  - **with observed behavior:** 3
+  - **error-only (all discovered inputs threw):** 0
+
+## Source Set Summary
+
+| Bucket | Files | Lines |
+|--------|-------|-------|
+| `production_ish` | 6 | 160 |
+| `test_spec` | 0 | 0 |
+| `generated` | 0 | 0 |
+| `declaration_only` | 0 | 0 |
+| `fixture_sample` | 0 | 0 |
+| `policy_excluded` | 0 | 0 |
+| `unsupported` | 0 | 0 |
+
+- **Production-ish source lines:** 160 (whole-source denominator; see Coverage section below)
+
+## Coverage
+
+- **Attempted-function span:** 3 of 3 discovered functions attempted
+- **Total branches:** 10 (across completed functions)
+- **Branches covered:** 10
+- **Overall coverage (completed-functions subset):** 100.0%
+
+## Function Summary
+
+| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |
+|--------|---------|----------|------|----------|----------|-------|------------|
+| WARN | behavioral | `Categorize` | /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/05-conditional-merge.go | 58.3% | 2/2 | 7/12 | 10 |
+| PASS | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v1.ts | 100.0% | 3/3 | 7/7 | 10 |
+| WARN | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v2.ts | 90.9% | 5/5 | 10/11 | 10 |
+
+## Function Details
+
+### `Categorize`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/05-conditional-merge.go
+- **Coverage:** 58.3%
+- **Branches:** 2/2
+- **Lines:** 7/12
+- **Iterations:** 10
+- **Constraints collected:** 20
+
+**Behaviors:**
+
+- Cluster 0: returns 0 (inputs: 0)
+- Cluster 1: returns 2 (inputs: 1)
+- Cluster 2: returns 0 (inputs: -1)
+- Cluster 3: returns 2 (inputs: 2)
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v1.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 7/7
+- **Iterations:** 10
+- **Constraints collected:** 20
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 2)
+- Cluster 3: returns "positive-odd" (inputs: 1)
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v2.ts
+- **Coverage:** 90.9%
+- **Branches:** 5/5
+- **Lines:** 10/11
+- **Iterations:** 10
+- **Constraints collected:** 28
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 1000)
+- Cluster 3: returns "positive-even" (inputs: 2)
+- Cluster 4: returns "positive-odd" (inputs: 1)
+- ... and 1 more clusters
+
+## Uncovered Branches
+
+- `Categorize`: 0 uncovered branch(es) (58.3% coverage)
+- `classifyNumber`: 0 uncovered branch(es) (90.9% coverage)
+
+## Interesting Inputs
+
+### `Categorize`
+
+- 0 -> 0
+- -1 -> 0
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+

@@ -1,0 +1,105 @@
+Re-execute cached behaviors to detect regressions or drift.
+
+Loads behavior maps from the cache for the given source file, spawns a frontend to replay each recorded input, and compares the observed behavior against the cached expectation. Exit code 0 = no regressions, 1 = issues found.
+
+Usage: shatter revalidate [OPTIONS] <SOURCE>
+
+Arguments:
+  <SOURCE>
+          Source file whose cached behaviors to revalidate. Must be a concrete file path — wildcards are rejected; use `explore`/ `properties` for glob targets, or `scan --include` for repository discovery
+
+Options:
+      --cache-dir <CACHE_DIR>
+          Cache directory for loading behavior maps. Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/`
+          
+          [env: SHATTER_CACHE_DIR=]
+
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace
+          
+          [default: info]
+
+      --request-timeout <REQUEST_TIMEOUT>
+          Per-request timeout in seconds for frontend communication
+          
+          [default: 30]
+
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+
+      --exec-timeout <EXEC_TIMEOUT>
+          Execution timeout in seconds for each function invocation
+          
+          [default: 10]
+
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+
+      --build-timeout <BUILD_TIMEOUT>
+          Build timeout in seconds for compiling instrumented code
+          
+          [default: 30]
+
+      --timing <TIMING>
+          Timing output mode
+          
+          [default: off]
+          [possible values: off, summary, detailed]
+
+      --release
+          Compile harnesses in release mode (optimized but slower compilation). Default is debug mode for faster compilation
+          
+          [env: SHATTER_HARNESS_RELEASE=]
+
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts
+          
+          [default: text]
+          [possible values: text, json, both]
+
+      --memory-limit <MEMORY_LIMIT>
+          Memory limit in MB for the frontend process
+
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+
+      --output-format <OUTPUT_FORMAT>
+          Output format: "text" (default) or "json"
+          
+          [default: text]
+
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+
+      --project-dir <DIR>
+          Override auto-detected project root directory
+
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox.
+          
+          By default (str-gg9v) Shatter refuses to execute target functions when no sandbox backend is configured, because a target can create, modify, or delete files by relative path in the invoking repository. Pass this flag (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in, targets still run in a throwaway working directory so relative-path writes do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap` is the safer alternative and does not require this flag.
+
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable).
+          
+          Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`
+          
+          Keys follow the `.shatter/config.yaml` YAML structure. Values are parsed as YAML scalars (integers, floats, booleans, strings). Precedence: above any `.shatter/config.yaml` file but below dedicated flags like `--max-iterations`.
+
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never)
+          
+          [default: auto]
+          [possible values: always, auto, never]
+
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI)
+
+          Possible values:
+          - md:    Markdown rendered via termimad (default). Use `--color never` for raw Markdown
+          - plain: Legacy plain ANSI text output (deprecated)
+          
+          [default: md]
+
+  -h, --help
+          Print help (see a summary with '-h')

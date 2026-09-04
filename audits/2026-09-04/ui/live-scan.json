@@ -1,0 +1,411 @@
+{
+  "version": 8,
+  "functions": [
+    {
+      "function_name": "Categorize",
+      "display_name": "Categorize",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/05-conditional-merge.go::Categorize",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/05-conditional-merge.go",
+      "source_bucket": "production_ish",
+      "branch_count": 2,
+      "branches_covered": 2,
+      "coverage_pct": 58.333333333333336,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            0
+          ],
+          "return_value": 0,
+          "thrown_error": null,
+          "lines_executed": [
+            0,
+            0,
+            17,
+            18,
+            21,
+            23,
+            26
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1
+          ],
+          "return_value": 2,
+          "thrown_error": null,
+          "lines_executed": [
+            0,
+            0,
+            17,
+            18,
+            19,
+            23,
+            24
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -1
+          ],
+          "return_value": 0,
+          "thrown_error": null,
+          "lines_executed": [
+            0,
+            0,
+            17,
+            18,
+            21,
+            23,
+            26
+          ],
+          "outcome_status": "completed"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            0
+          ],
+          "return_value": 0,
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            1
+          ],
+          "return_value": 2,
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            -1
+          ],
+          "return_value": 0,
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 10,
+        "solver_guided_inputs": 2
+      },
+      "iterations": 5,
+      "lines_covered": 7,
+      "total_lines": 12,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "classifyNumber",
+      "display_name": "classifyNumber",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v1.ts::classifyNumber",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v1.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 3,
+      "branches_covered": 3,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null,
+          "lines_executed": [
+            12,
+            15,
+            16
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null,
+          "lines_executed": [
+            12,
+            13
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null,
+          "lines_executed": [
+            12,
+            15,
+            18,
+            19
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null,
+          "lines_executed": [
+            12,
+            15,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 11,
+        "solver_guided_inputs": 3
+      },
+      "iterations": 5,
+      "lines_covered": 7,
+      "total_lines": 7,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "classifyNumber",
+      "display_name": "classifyNumber",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v2.ts::classifyNumber",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v2.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 5,
+      "branches_covered": 4,
+      "coverage_pct": 72.72727272727273,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null,
+          "lines_executed": [
+            15,
+            18,
+            19
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null,
+          "lines_executed": [
+            15,
+            16
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1000
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null,
+          "lines_executed": [
+            15,
+            18,
+            21,
+            27,
+            28
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null,
+          "lines_executed": [
+            15,
+            18,
+            21,
+            27,
+            30
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null,
+          "lines_executed": [
+            15,
+            18,
+            21,
+            27,
+            28
+          ],
+          "outcome_status": "completed"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            1000
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null
+        },
+        {
+          "id": 4,
+          "representative_inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 15,
+        "solver_guided_inputs": 2
+      },
+      "iterations": 5,
+      "lines_covered": 8,
+      "total_lines": 11,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    }
+  ],
+  "codebase": {
+    "attempted_functions": 3,
+    "completed_functions": 3,
+    "completed_with_behavior": 3,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "completed_skipped_by_policy": 0,
+    "failed_functions": 0,
+    "skipped_functions_count": 0,
+    "unsupported_functions": 0,
+    "total_discovered_functions": 3,
+    "total_branches": 10,
+    "overall_coverage": 90.0,
+    "productionish_source_lines": 160,
+    "source_set": {
+      "production_ish": {
+        "file_count": 6,
+        "line_count": 160
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "low_coverage": {
+      "low_coverage_threshold_pct": 10.0,
+      "failed": 0,
+      "unsupported": 0,
+      "zero_coverage_with_branches": 0,
+      "zero_coverage_no_branches": 0,
+      "positive_low_coverage": 0,
+      "top_branch_heavy": [],
+      "by_area": []
+    },
+    "skipped_functions": [],
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/05-conditional-merge.go::Categorize",
+    "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v1.ts::classifyNumber",
+    "/tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/arithmetic-v2.ts::classifyNumber"
+  ],
+  "test_order_display_names": [
+    "Categorize",
+    "classifyNumber",
+    "classifyNumber"
+  ]
+}

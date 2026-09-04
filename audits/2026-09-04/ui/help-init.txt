@@ -1,0 +1,71 @@
+Initialize a repository for persistent Shatter project state.
+
+Creates `.shatter/config.yaml` with sensible defaults and establishes the repo-local configuration root. Other commands may also create `.shatter-cache/` and `shatter-artifacts/` when using the initialized project path. Safe to run on an already-initialized project (idempotent).
+
+Usage: shatter init [OPTIONS]
+
+Options:
+  -d, --directory <DIRECTORY>
+          Directory to initialize (default: auto-detected project root)
+
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace
+          
+          [default: info]
+
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+
+      --timing <TIMING>
+          Timing output mode
+          
+          [default: off]
+          [possible values: off, summary, detailed]
+
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts
+          
+          [default: text]
+          [possible values: text, json, both]
+
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+
+      --project-dir <DIR>
+          Override auto-detected project root directory
+
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox.
+          
+          By default (str-gg9v) Shatter refuses to execute target functions when no sandbox backend is configured, because a target can create, modify, or delete files by relative path in the invoking repository. Pass this flag (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in, targets still run in a throwaway working directory so relative-path writes do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap` is the safer alternative and does not require this flag.
+
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable).
+          
+          Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`
+          
+          Keys follow the `.shatter/config.yaml` YAML structure. Values are parsed as YAML scalars (integers, floats, booleans, strings). Precedence: above any `.shatter/config.yaml` file but below dedicated flags like `--max-iterations`.
+
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never)
+          
+          [default: auto]
+          [possible values: always, auto, never]
+
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI)
+
+          Possible values:
+          - md:    Markdown rendered via termimad (default). Use `--color never` for raw Markdown
+          - plain: Legacy plain ANSI text output (deprecated)
+          
+          [default: md]
+
+  -h, --help
+          Print help (see a summary with '-h')
