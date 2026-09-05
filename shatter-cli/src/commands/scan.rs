@@ -978,7 +978,7 @@ pub(crate) async fn run_scan(
         let scan_config = ScanConfig {
             max_iterations_per_function: max_iterations,
             concolic,
-            seed: None,
+            seed: core_sample_seed,
             file_map: file_map.clone(),
             parallelism: effective_parallelism,
             timeout_per_fn: Duration::from_secs(timeout_per_fn),
@@ -1171,7 +1171,7 @@ pub(crate) async fn run_scan(
     let scan_config = ScanConfig {
         max_iterations_per_function: max_iterations,
         concolic,
-        seed: None,
+        seed: core_sample_seed,
         file_map,
         parallelism: effective_parallelism,
         timeout_per_fn: Duration::from_secs(timeout_per_fn),

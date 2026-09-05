@@ -804,9 +804,14 @@ pub(crate) struct ScanArgs {
     #[arg(long)]
     pub(crate) core_sample: Option<String>,
 
-    /// Seed for deterministic core sample selection.
+    /// Seed for reproducible exploration and core-sample selection.
     /// Must be a non-negative integer (u64), e.g. `--seed 42`.
-    /// Default: hash of (directory + git HEAD).
+    ///
+    /// When set, the same seed over unchanged source yields the same
+    /// exploration, which is what makes two scans comparable. When omitted,
+    /// exploration draws from entropy as before and only core-sample
+    /// selection falls back to a hash of (directory + git HEAD), so existing
+    /// invocations keep their current behaviour (str-0m0vn).
     #[arg(long, value_parser = parse_seed_flag)]
     pub(crate) seed: Option<u64>,
 
