@@ -126,6 +126,12 @@ fn scan_into(target: &Path, out: &Path, seed: Option<&str>) {
     }
     let output = command.output().expect("run shatter scan");
     assert!(
+        output.status.success(),
+        "scan exited {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
         out.exists(),
         "scan wrote no report (status {:?})\nstderr:\n{}",
         output.status.code(),
@@ -142,6 +148,17 @@ fn same_seed_reproduces_the_same_coverage() {
 
     scan_into(&target, &first, Some("4242"));
     scan_into(&target, &second, Some("4242"));
+
+    let baseline = coverage_fingerprint(&first);
+    assert!(
+        baseline.iter().any(|(id, _, _)| id.contains("Classify")),
+        "fixture function absent from report; two empty reports would otherwise \
+         satisfy the equality assertion below without exploring anything: {baseline:?}"
+    );
+    assert!(
+        baseline.iter().any(|(_, lines, _)| *lines > 0),
+        "no function reported covered lines; equality would be vacuous: {baseline:?}"
+    );
 
     assert_eq!(
         coverage_fingerprint(&first),
