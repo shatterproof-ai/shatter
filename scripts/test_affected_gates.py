@@ -47,7 +47,7 @@ class AffectedGateMappingTests(unittest.TestCase):
                 ".semgrep/shatter.yml",
                 "install.sh",
                 "scripts/drift-patrol.py",
-                "scripts/test_setup_hooks.sh",
+                "scripts/setup-hooks.sh",
                 "shatter-go-tool/cmd/shatter/main.go",
             ],
             {"meta"},
