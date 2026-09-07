@@ -647,6 +647,7 @@ pub fn git_head_commit(root: &Path) -> Result<String, TiaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scm::git_test_util::{git_ok, init_repo};
 
     #[test]
     fn test_tier_display() {
@@ -746,32 +747,6 @@ mod tests {
     }
 
     // --- str-yyl9a: git_head_commit must ignore a foreign hook environment ---
-
-    fn git_ok(cwd: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            // Clear git hook-injected env vars so commands operate on `cwd`'s
-            // repo, not the ambient repo running the hook.
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_COMMON_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_OBJECT_DIRECTORY")
-            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-            .status()
-            .expect("git command should run");
-        assert!(status.success(), "git {:?} failed", args);
-    }
-
-    fn init_repo() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let repo = dir.path();
-        git_ok(repo, &["init", "-q"]);
-        git_ok(repo, &["config", "user.email", "t@example.com"]);
-        git_ok(repo, &["config", "user.name", "t"]);
-        dir
-    }
 
     /// Regression for str-yyl9a: run `git_head_commit` in a child process with
     /// GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY (and friends) pointed at a

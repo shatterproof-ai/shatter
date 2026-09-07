@@ -669,17 +669,15 @@ fn finalize_file_list(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
     files
 }
 
+/// Shared child-process git helpers for tests that need a real, isolated git
+/// repo. scm.rs and test_runner.rs each hand-rolled near-identical copies of
+/// these before str-noghq unified them here.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::batch_analyze::{FunctionEntry, FunctionRegistry};
-    use crate::types::TypeInfo;
-    use proptest::prelude::*;
-    use std::collections::HashMap;
-    use std::fs;
+pub(crate) mod git_test_util {
+    use std::path::Path;
     use std::process::Command;
 
-    fn git_ok(cwd: &Path, args: &[&str]) {
+    pub(crate) fn git_ok(cwd: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
             .current_dir(cwd)
@@ -704,7 +702,7 @@ mod tests {
     /// tests exercise the C-quoting hazard regardless of ambient global config:
     /// on a machine with `core.quotepath=false` set globally the fix would
     /// otherwise pass trivially even if it regressed (str-k6e61).
-    fn init_repo() -> tempfile::TempDir {
+    pub(crate) fn init_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("create temp dir");
         let repo = dir.path();
         git_ok(repo, &["init", "-q"]);
@@ -713,6 +711,18 @@ mod tests {
         git_ok(repo, &["config", "core.quotepath", "true"]);
         dir
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git_test_util::{git_ok, init_repo};
+    use super::*;
+    use crate::batch_analyze::{FunctionEntry, FunctionRegistry};
+    use crate::types::TypeInfo;
+    use proptest::prelude::*;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::process::Command;
 
     /// Assert that `files` contains `want` after canonicalizing both sides.
     /// Canonicalizing tolerates symlinked temp dirs and, because it resolves
