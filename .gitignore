@@ -153,9 +153,6 @@ dist
 # Shatter preserved artifacts (gitignored by default)
 shatter-artifacts/
 
-# Shatter generated reports
-shatter-report/
-
 # Taskfile checksum cache
 .task/
 
