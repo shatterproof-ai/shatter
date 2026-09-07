@@ -21,14 +21,14 @@ const (
 // the process exit code.
 func runWorkspaceSubcommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "workspace: missing subcommand (expected: gc)")
+		_, _ = fmt.Fprintln(os.Stderr, "workspace: missing subcommand (expected: gc)")
 		return 2
 	}
 	switch args[0] {
 	case "gc":
 		return runWorkspaceGC(args[1:], os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "workspace: unknown subcommand %q\n", args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "workspace: unknown subcommand %q\n", args[0])
 		return 2
 	}
 }
@@ -49,7 +49,7 @@ func runWorkspaceGC(args []string, stdout, stderr io.Writer) int {
 
 	artifactWorkspace, err := workspace.Initialize(workspace.ResolveOptions{})
 	if err != nil {
-		fmt.Fprintf(stderr, "workspace gc: initialize workspace: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "workspace gc: initialize workspace: %v\n", err)
 		return 1
 	}
 
@@ -64,7 +64,7 @@ func runWorkspaceGC(args []string, stdout, stderr io.Writer) int {
 	}
 	report, err := artifactWorkspace.RunGC(opts)
 	if err != nil {
-		fmt.Fprintf(stderr, "workspace gc: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "workspace gc: %v\n", err)
 		return 1
 	}
 
@@ -77,14 +77,14 @@ func printGCReport(out io.Writer, report *workspace.GCReport, dryRun bool, root 
 	if dryRun {
 		prefix = "workspace gc (dry-run)"
 	}
-	fmt.Fprintln(out, prefix)
-	fmt.Fprintf(out, "  root: %s\n", root)
-	fmt.Fprintf(out, "  runs/ scanned: %d\n", report.Scanned)
+	_, _ = fmt.Fprintln(out, prefix)
+	_, _ = fmt.Fprintf(out, "  root: %s\n", root)
+	_, _ = fmt.Fprintf(out, "  runs/ scanned: %d\n", report.Scanned)
 
 	if len(report.Candidates) == 0 {
-		fmt.Fprintln(out, "  candidates: (none)")
+		_, _ = fmt.Fprintln(out, "  candidates: (none)")
 	} else {
-		fmt.Fprintln(out, "  candidates:")
+		_, _ = fmt.Fprintln(out, "  candidates:")
 		sorted := make([]workspace.GCCandidate, len(report.Candidates))
 		copy(sorted, report.Candidates)
 		sort.Slice(sorted, func(i, j int) bool {
@@ -98,15 +98,15 @@ func printGCReport(out io.Writer, report *workspace.GCReport, dryRun bool, root 
 			if identity == "" {
 				identity = candidate.Path
 			}
-			fmt.Fprintf(out, "    %-40s  %-10s  %s\n", identity, candidate.Reason, humanBytes(candidate.Size))
+			_, _ = fmt.Fprintf(out, "    %-40s  %-10s  %s\n", identity, candidate.Reason, humanBytes(candidate.Size))
 		}
 	}
 
-	fmt.Fprintf(out, "  runs/ size: %s -> %s\n",
+	_, _ = fmt.Fprintf(out, "  runs/ size: %s -> %s\n",
 		humanBytes(report.RunsSizeBefore), humanBytes(report.RunsSizeAfter))
-	fmt.Fprintf(out, "  generated/ size: %s -> %s\n",
+	_, _ = fmt.Fprintf(out, "  generated/ size: %s -> %s\n",
 		humanBytes(report.GeneratedSizeBefore), humanBytes(report.GeneratedSizeAfter))
-	fmt.Fprintf(out, "  binaries/ size: %s -> %s\n",
+	_, _ = fmt.Fprintf(out, "  binaries/ size: %s -> %s\n",
 		humanBytes(report.BinariesSizeBefore), humanBytes(report.BinariesSizeAfter))
 	cacheNames := make([]string, 0, len(report.CacheSizes))
 	for name := range report.CacheSizes {
@@ -115,12 +115,12 @@ func printGCReport(out io.Writer, report *workspace.GCReport, dryRun bool, root 
 	sort.Strings(cacheNames)
 	for _, name := range cacheNames {
 		sizes := report.CacheSizes[name]
-		fmt.Fprintf(out, "  %s size: %s -> %s\n", name, humanBytes(sizes.Before), humanBytes(sizes.After))
+		_, _ = fmt.Fprintf(out, "  %s size: %s -> %s\n", name, humanBytes(sizes.Before), humanBytes(sizes.After))
 	}
 	if dryRun {
-		fmt.Fprintf(out, "  planned bytes: %s (not deleted)\n", humanBytes(report.BytesPlanned))
+		_, _ = fmt.Fprintf(out, "  planned bytes: %s (not deleted)\n", humanBytes(report.BytesPlanned))
 	} else {
-		fmt.Fprintf(out, "  deleted: %d paths, %s\n", len(report.Deleted), humanBytes(report.BytesRemoved))
+		_, _ = fmt.Fprintf(out, "  deleted: %d paths, %s\n", len(report.Deleted), humanBytes(report.BytesRemoved))
 	}
 }
 

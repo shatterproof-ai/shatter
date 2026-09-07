@@ -109,7 +109,7 @@ func prepareAdapterLauncher(file, function, adapterID string) (*preparedLauncher
 
 func adapterDiscoveryHash(adapterID, file, function string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%s\x00", adapterID, file, function)
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00", adapterID, file, function)
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 

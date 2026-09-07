@@ -721,16 +721,16 @@ func (h *Handler) handleInstrument(resp Response, req Request) Response {
 // different IDs so plan-aware callers can pre-build the right wrapper case.
 func computePrepareID(file, function string, mocks []instrument.MockConfig, receiverKind string, genericTypeArgs ...string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00", file, function)
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00", file, function)
 	// Key on the full mock fingerprint (symbol + expression + behavior +
 	// return values). Shared with build.cacheKey via instrument.MockFingerprint
 	// so the prepare fast path — which fires before Build — cannot reuse a
 	// stale harness when return_values or a substitution expression changes
 	// (str-c8djq review fix 3).
-	fmt.Fprintf(h, "%s\x00", instrument.MockFingerprint(mocks))
-	fmt.Fprintf(h, "%s\x00", receiverKind)
+	_, _ = fmt.Fprintf(h, "%s\x00", instrument.MockFingerprint(mocks))
+	_, _ = fmt.Fprintf(h, "%s\x00", receiverKind)
 	for _, arg := range genericTypeArgs {
-		fmt.Fprintf(h, "%s\x00", arg)
+		_, _ = fmt.Fprintf(h, "%s\x00", arg)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
