@@ -389,9 +389,10 @@ pub fn default_seed(scan_dir: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     scan_dir.hash(&mut hasher);
     // Try to incorporate git HEAD for reproducibility across unchanged commits.
-    if let Ok(output) = std::process::Command::new("git")
+    // Routed through the scrubbed `scm::git_command` boundary so a managed
+    // Git hook's repository-selection env can't redirect this off scan_dir.
+    if let Ok(output) = crate::scm::git_command(Path::new(scan_dir))
         .args(["rev-parse", "HEAD"])
-        .current_dir(scan_dir)
         .output()
         && output.status.success()
     {
