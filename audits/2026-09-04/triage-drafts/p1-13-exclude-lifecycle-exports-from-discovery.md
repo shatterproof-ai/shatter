@@ -6,6 +6,8 @@ labels: discovery, scan, typescript, setup
 existing: none
 ---
 # Exclude setup/teardown lifecycle exports from target discovery
+## Decision (2026-09-06)
+Discovery name rule. Skip exported functions named setup/teardown/beforeAll/afterAll/beforeEach/afterEach when the file also exports a setup-shaped API; unit test in discovery.rs; documented in SPEC/README. No rename of the external example required.
 
 ## Problem
 Scans treat exported `setup`/`teardown` lifecycle helpers as ordinary targets and fuzz them; `teardown` throws on mismatched scope, producing 390 `Teardown scope mismatch` clusters across three gauntlet steps (87+ garbage clusters per run) and burying real results. Either discovery must exclude lifecycle exports, or the `*.shatter.setup.ts` convention must be enforced/documented so example files like `setup-file-level.ts` are never discovered as targets.

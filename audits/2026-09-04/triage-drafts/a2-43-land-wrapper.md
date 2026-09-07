@@ -1,13 +1,13 @@
 ---
 repo: shatter
-type: feature
+type: task
 priority: 2
 labels: agents, landing, git
 existing: none
 ---
-# Triage: build a repo-local `land` wrapper now, or wait for the bento land-work fixes (bento-rdtn children)?
-
-Triage: build a repo-local `land` wrapper now, or wait for the bento land-work fixes (bento-rdtn children)? Proposed default: **wait; re-evaluate after bento-rdtn closes.** This issue holds the evidence and the design so the re-evaluation is quick.
+# Repo-owned landing fixes now (verifier honesty, timeout); orchestration driver comes from bento
+## Decision (2026-09-06)
+Wait for bento. The failure modes are covered by bento-rdtn and str-qwua7.1/.2; the missing single orchestrating command is filed in bento (see bento draft 64) rather than as a shatter-local wrapper. This issue only fixes the repo-owned pieces now: `land_work_verifier.sh` runs `task check` (or states exactly what it runs) and `verifier.json` gains a timeout.
 
 ## Problem
 Landing is the most repeated manual procedure in 252 sessions: agents type the same ~10-step sequence of bento scripts by hand, get one step wrong, and thrash. `land-work-prepare.py` fails 32% of the time and `verify-lease.py` 17%, mostly from ordering/state mistakes (dirty tree, lease moved, run from the primary checkout on `main`); create-preview was called 195 times against 90 cleanups, matching the five orphaned `/tmp/land-work-preview-*` worktrees. The same failure modes are filed against bento (preview cleanup, killed verifier, diverged primary, executed-vs-cached), and the repo already suffers from having three documented landing procedures — a fourth, repo-local one must become the *only* one or it adds to the problem.

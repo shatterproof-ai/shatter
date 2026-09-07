@@ -1,13 +1,13 @@
 ---
 repo: shatter
-type: task
+type: feature
 priority: 2
 labels: agents
 existing: none
 ---
-# Triage: wire bugshot for CLI/HTML output once its CLI capture feature exists, or skip it
-
-Triage: maintainer decision required. This issue records the decision; the chosen branch becomes the work.
+# Wire bugshot for walkthrough output once bugshot supports CLI capture (bgs-3tq)
+## Decision (2026-09-06)
+Wire bugshot once it ships a CLI/TUI capture template (bugshot bgs-3tq). Until then set `agent_env_doctor_skip_plugin=bugshot` in .agent-mode.local so the nudge stops; when bgs-3tq lands, run `wire-bugshot --kind cli` with a capture command that snapshots `demo/walkthrough.sh --auto --delay 0` output (text and rendered HTML) so vizline/vizdiff give /walkthrough-review a baseline.
 
 ## Problem
 bugshot is installed and dormant because `.agent-plugins/bento/bugshot/viz/capture-command` is missing; `agent-env-doctor` prints a nudge every session. bugshot's `vizline`/`vizdiff` skills were designed for web screenshots and nobody has decided whether Shatter's rendered outputs (walkthrough transcripts, HTML/markdown reports) count. The audit filed a bugshot-side item (audit item 20 / draft 53) to add a documented CLI capture template; wiring today means hand-writing the capture-command against an undocumented contract.

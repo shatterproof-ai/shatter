@@ -1,13 +1,13 @@
 ---
 repo: shatter
-type: task
+type: chore
 priority: 2
 labels: rust, core, docs
 existing: none
 ---
-# Triage: Rust test emitter in export.rs, or downgrade Rust to "Partial" in SPEC §1.3
-
-Triage: maintainer decision required. Proposed default: **downgrade SPEC now (add a "Test export" column), emitter later as a separate feature issue.**
+# Delete the dead test emitters (export.rs) and the README "or tests" claim
+## Decision (2026-09-06)
+Delete the dead test emitters. The CLI export surface was removed in str-tlnt and nothing outside `shatter-core/src/export.rs` calls `generate_jest_tests`/`generate_vitest_tests`/`generate_go_tests`. Remove export.rs (1,743 lines) and its tests, the `export.rs — Test generation from behavior maps` line in shatter-core/CLAUDE.md, and README step 4's "or tests". No SPEC test-export column is needed because the feature no longer exists.
 
 ## Problem
 SPEC §1.3 lists TypeScript, Go and Rust all as "Supported" and says other docs treat it as canonical. `export.rs` generates Jest, Vitest and Go tests but has no Rust generator, and no test compiles or runs any emitted file. Either the emitter exists for every supported language or the status table should say what is missing.

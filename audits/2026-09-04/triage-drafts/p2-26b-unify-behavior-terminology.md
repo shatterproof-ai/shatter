@@ -5,9 +5,9 @@ priority: 2
 labels: cli, docs
 existing: none
 ---
-# Triage: unify "path / class / cluster / behavior" terminology across explore, scan, spec, JSON and help
-
-Triage: maintainer decision required — pick the canonical term and the JSON-key policy.
+# Unify terminology on "behavior class" across explore, scan, spec, JSON and help (no compat period)
+## Decision (2026-09-06)
+"behavior class" everywhere, with no backward compatibility: prose, --help, SPEC, GLOSSARY, walkthrough expectations, and JSON keys all change in one release (`classes`/`equivalence_classes`/`behaviors` collapse to `behavior_classes`; `Class N`/`Cluster N`/`path(s)` become `behavior class`). No synonym period; goldens and consumers are updated in the same change.
 
 ## Problem
 One concept — a group of executions sharing a branch path — has four user-visible names in one session: explore prints "path(s)", the spec prints "Class N" / "Behavioral classes", scan prints "Cluster N", JSON uses `classes`, `equivalence_classes`, and `behaviors`, and help text says "equivalence classes, behavior map". Users and agents cannot tell whether these are different things.

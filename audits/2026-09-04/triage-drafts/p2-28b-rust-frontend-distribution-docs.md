@@ -1,13 +1,13 @@
 ---
 repo: shatter
-type: task
+type: feature
 priority: 2
 labels: shatter-rust, docs, build
 existing: none
 ---
-# Triage: embed the Rust frontend like TS/Go, or document the sibling-binary model
-
-Triage: maintainer decision required. Proposed default: **document the sibling-binary model now** (QUICKSTART + SPEC), leave embedding as a later feature.
+# Embed the Rust frontend in the shatter binary like TS/Go
+## Decision (2026-09-06)
+Embed the Rust frontend in the shatter binary the way TS and Go are embedded (option 2). Until it lands, `doctor` reports Rust resolution (str-qwua7.40). SPEC §1.3 gains a Distribution column reading embedded for all three once done.
 
 ## Problem
 TS and Go frontends are embedded in the `shatter` binary; Rust ships as a separate `shatter-rust` executable that must be on PATH or next to a source checkout. QUICKSTART's build-from-source path (`cargo build --release`) therefore yields a binary that silently skips `.rs` targets; the captured audit environment had `STATUS skipped_by_unavailable_frontend` for every Rust target. SPEC §1.3 says "Supported" with no mention of the distribution difference.

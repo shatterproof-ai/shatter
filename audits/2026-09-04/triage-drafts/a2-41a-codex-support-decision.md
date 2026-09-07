@@ -5,9 +5,9 @@ priority: 2
 labels: agents, cleanup
 existing: none
 ---
-# Triage: does anyone run Codex on this repo? Populate .codex/ and .agents/ accordingly, or delete them
-
-Triage: does anyone run Codex on this repo? The evidence below suggests no; the answer decides which branch is the work.
+# Keep Codex support: write .codex/AGENTS.md with the tool mapping; remove empty .agents/
+## Decision (2026-09-06)
+Keep Codex support. Write `.codex/AGENTS.md` with the Claude-to-Codex tool mapping (Grep/Read/Glob/Edit → shell equivalents, TeamCreate/Monitor → none), a note that Codex has no require-worktree hook so the worktree rule is policy-only there, and remove the empty `.agents/` directory. Mark Claude-only sections of AGENTS.md during its rewrite (str-qwua7.23).
 
 ## Problem
 Codex sessions would get AGENTS.md written in Claude tool vocabulary (`Grep`, `Read`, `TeamCreate`, `Monitor`) and no require-worktree equivalent ("enforced by policy only" per `~/dotfiles/codex/AGENTS.md`), while the Codex-facing directories are symlinks or empty. Keeping half-wired Codex surfaces suggests support that does not exist.

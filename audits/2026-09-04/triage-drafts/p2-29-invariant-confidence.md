@@ -1,13 +1,13 @@
 ---
 repo: shatter
-type: bug
+type: chore
 priority: 2
 labels: core, docs
 existing: none
 ---
-# Triage: invariant confidence — implement satisfied/total with a minimum-sample threshold, or remove the claim from SPEC §3.4
-
-Triage: maintainer decision required. Proposed default: **implement `satisfied/total` with a minimum of 3 samples** (option 1).
+# Remove the invariant confidence score from code, spec output and SPEC §3.4
+## Decision (2026-09-06)
+Remove the confidence score entirely. Today `detect_classified_invariants` stamps a constant 1.0 and nothing reads it. Drop `confidence`/`satisfied_count`/`total_count` from `ClassifiedInvariant` and `SpecInvariant`, the `[1] (n/n)` rendering in spec.rs, the YAML `confidence:` field and `ConfidenceLevel`, and the SPEC §3.4 sentence; keep only the observed-sample count if it is cheap to keep as `observed_samples`.
 
 ## Problem
 SPEC §3.4 says invariants "are classified with confidence scores (satisfied_count / total_count)". The detector only returns invariants that hold for every specimen, so `confidence` is a hard-coded `1.0` and `satisfied_count == total_count` always. There is no minimum-sample guard, so with two executions `x > 0` is reported as an invariant with confidence 1.0. The spec overstates what the number means.

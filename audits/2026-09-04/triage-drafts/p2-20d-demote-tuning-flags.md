@@ -5,9 +5,9 @@ priority: 2
 labels: cli, config
 existing: none
 ---
-# Triage: demote rarely-used tuning flags from the CLI to config-file/--set only
-
-Triage: maintainer decision required — which flags are demoted and under what deprecation policy. Child of the p2-20 epic.
+# Demote rarely-used tuning flags to config/--set with hidden one-release aliases
+## Decision (2026-09-06)
+Option 1: demote with hidden aliases for one release. Each demoted flag stays as a hidden clap arg printing a one-line deprecation warning pointing at `--set defaults.exploration.<key>`; removed from --help, SPEC and the gauntlet now; a removal follow-up is filed when this lands.
 
 ## Problem
 `explore` exposes 79 flags and `scan` 69; a large share are strategy-tuning knobs with config-file equivalents that a user sets once per project, not per invocation. They inflate `--help`, the stack-budgeted `Cli` enum, and the SPEC tables, and every one must be kept in parity across explore/scan.

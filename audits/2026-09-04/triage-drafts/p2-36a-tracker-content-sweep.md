@@ -5,9 +5,9 @@ priority: 2
 labels: governance, beads
 existing: none
 ---
-# Triage: tracker content sweep — dedupe, merge, fill empty bodies, resolve placeholder references, file or retract promised children
-
-Triage: maintainer decision required for the merge directions, priorities, and the `str-j49xg` children; the mechanical parts can run as soon as those are decided.
+# Tracker content sweep: dedupe, merge, fill bodies, fix placeholder refs, priorities
+## Decision (2026-09-06)
+All proposed defaults approved: close str-hrg2 as duplicate of str-0wxw; merge str-wfd2 into str-1fik (P1) and close str-wfd2; str-2zsy author fills the body or it closes as insufficient detail; defer str-cl53; replace the str-35vtk.* `issue<N>` placeholders with real ids from docs/perf/efficiency-plan.md; str-j49xg body becomes "not split; work tracked here"; promote str-u394l.4 to P1 (str-u394l.3 is now being adopted, see storystore decision); str-rmcrl to P2 and land it.
 
 ## Problem
 A handful of open issues are unstartable or misleading for a fresh agent: two are byte-for-byte duplicates, two describe one feature at two priorities (one with an empty body), the `str-35vtk.*` batch cross-references plan-local ids that resolve to nothing, and an epic promises children that were never filed. Together they are why `bd ready` hands out the wrong work.
@@ -20,7 +20,7 @@ A handful of open issues are unstartable or misleading for a fresh agent: two ar
 - `str-j49xg` (P1 epic) body says "Child issues (filed alongside)" — no dotted children exist.
 - Priority hygiene: `str-u394l` P1 epic with only P2 children; `str-rmcrl` P3 for a red `clippy -D warnings` on main; 23 of 96 open are P1.
 
-## Decisions needed (proposed defaults)
+## Options considered
 - Duplicate: close `str-hrg2` as duplicate of `str-0wxw` (keeps the notes) — mechanical.
 - Merge: keep `str-1fik` (older id, P1) with `str-wfd2`'s body pasted in; close `str-wfd2` as duplicate; priority P1 if pickpackit coverage is still a goal, else P2.
 - `str-2zsy`: author (str-5lfr follow-up) fills the body or it is closed "insufficient detail"; `str-cl53`: defer (plan doc exists, no activity in 178 d).

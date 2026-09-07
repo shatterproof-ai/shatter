@@ -1,13 +1,13 @@
 ---
 repo: shatter
-type: task
+type: feature
 priority: 2
 labels: agents, stories
 existing: none
 ---
-# Triage: adopt storystore for shatter (land str-u394l.3) or mark it not-adopted
-
-Triage: maintainer decision required. This issue records the decision; the chosen branch becomes the work.
+# Adopt storystore: initialise docs/stories, seed CLI stories, land str-u394l.3
+## Decision (2026-09-06)
+Adopt storystore. Run `storystore:stories-init`, seed observed-mode stories for the CLI surfaces (explore, scan, run, diff/spec-diff, init/doctor), link docs/stories/INDEX.md from docs/INDEX.md, and land str-u394l.3 so the drift-patrol `docs-stories` slot becomes a real check.
 
 ## Problem
 storystore is installed and dormant: `docs/stories/` does not exist, `str-u394l.3` (stories coverage gate) has been open since 2026-06-17, `agent-env-doctor` prints "storystore is installed but dormant — docs/stories is missing" every session, and `scripts/drift-patrol.py` reports a `docs-stories` PENDING slot on every run. There is no intent/story documentation anywhere; the closest artefacts are `demo/walkthrough.yaml` and SPEC §2. Not deciding costs every session.

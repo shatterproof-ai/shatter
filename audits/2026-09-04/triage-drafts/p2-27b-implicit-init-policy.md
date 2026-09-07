@@ -5,9 +5,9 @@ priority: 2
 labels: cli, explore, config
 existing: none
 ---
-# Triage: should a bare `shatter explore` implicitly initialize the project?
-
-Triage: maintainer decision required.
+# Keep implicit init; document it and add --no-init / SHATTER_NO_INIT=1
+## Decision (2026-09-06)
+Option 1: keep implicit init and make it explicit in docs. SPEC §2.1/§2.8 state that execution commands create `.shatter/config.yaml` (and the gitignore block unless tracked) when absent; add `--no-init` (and honour `SHATTER_NO_INIT=1`) for read-only use, with a test that a fresh directory is untouched when opted out. Setup lines to stderr is tracked separately (str-qwua7.39).
 
 ## Problem
 A first `shatter explore file.ts:fn` in a directory with no `.shatter/` silently writes `.shatter/config.yaml` and a managed `.gitignore` block into the cwd. README says installing and initializing "are separate steps" and SPEC §2.8 presents `init` as the explicit opt-in; SPEC §2.1 does not mention that explore initializes. Users running Shatter against a checkout they do not own get unexpected files.
