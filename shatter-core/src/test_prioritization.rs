@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -197,10 +196,12 @@ pub fn compute_recency_weights(
 
 /// Get the age in days of a file's most recent git commit.
 /// Returns a large value if the file has no git history.
+///
+/// Routed through the scrubbed `scm::git_command` boundary so a managed Git
+/// hook's repository-selection env can't redirect this off `project_root`.
 fn git_file_age_days(project_root: &Path, file: &str, now_epoch: f64) -> f64 {
-    let output = Command::new("git")
+    let output = crate::scm::git_command(project_root)
         .args(["log", "-1", "--format=%ct", "--", file])
-        .current_dir(project_root)
         .output();
 
     match output {

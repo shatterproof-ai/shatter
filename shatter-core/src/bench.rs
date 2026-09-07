@@ -225,8 +225,13 @@ pub fn compute_statistics(values: &[f64]) -> StatSummary {
 }
 
 /// Attempt to detect the current git commit hash.
+///
+/// Reports the full HEAD of the process's own current working directory —
+/// routed through `scm::git_command_cwd` so a managed Git hook's
+/// repository-selection env can't redirect this to a different repository
+/// while still leaving `current_dir` on the process default.
 pub fn detect_git_commit() -> Option<String> {
-    std::process::Command::new("git")
+    crate::scm::git_command_cwd()
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()
