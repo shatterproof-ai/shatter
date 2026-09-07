@@ -21,7 +21,6 @@ linters:
         - os.Setenv
         - os.Unsetenv
         - (io.Closer).Close
-        - encoding/json.Unmarshal
         # printer.Fprint writing to a bytes.Buffer cannot fail.
         - go/printer.Fprint
         # Extism plugin Close is best-effort cleanup.
