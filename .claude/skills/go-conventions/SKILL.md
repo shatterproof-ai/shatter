@@ -9,6 +9,7 @@ user-invocable: true
 - `golangci-lint run` must pass
 - Prefer extending `golangci-lint` with existing OSS linters such as `revive`, `goconst`, `forbidigo`, and `depguard` over adding custom scripts
 - Treat linter-backed documentation checks as the enforcement path for exported API docs; comments should describe behavior and contracts, not syntax
+- Follow standard Go conventions (Effective Go, Go proverbs); format with `gofmt`/`goimports`
 
 ## Error Handling
 - Wrap errors with context using `fmt.Errorf("context: %w", err)` when returning them upward
@@ -21,6 +22,7 @@ user-invocable: true
 - Favor table-driven tests and `t.Run` when they improve coverage and readability, but do not force that shape on every test
 - `testify` is acceptable if already in use; otherwise prefer the standard library
 - Testdata fixtures should document what the analyzer is expected to detect, not merely the language construct being exercised
+- Test files live alongside source as `foo_test.go` for `foo.go`; test names describe behavior (e.g. `TestHandler_RejectsUnknownMessageType`)
 
 ## Protocol Handlers
 - JSON over stdio (newline-delimited)
@@ -33,3 +35,5 @@ user-invocable: true
 - Keep interfaces small and driven by actual call sites
 - Use pointer receivers for stateful or mutating methods
 - Unexport what you can
+- Accept interfaces, return structs
+- Keep packages focused — one clear responsibility per package
