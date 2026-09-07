@@ -722,10 +722,10 @@ pub struct CodebaseReport {
     /// Total functions surfaced by analysis before any filtering. Equals
     /// `attempted_functions + unsupported_functions + interrupted`, where
     /// `interrupted` is the count of targets never attempted because the
-    /// run-level scan budget expired — pinning a total budget lowers this
-    /// count's contribution to `attempted_functions` while still counting
-    /// those functions here, so a tighter budget can lower a
-    /// coverage-style score even though nothing about the code changed.
+    /// run-level scan budget expired — a tighter budget shifts functions
+    /// out of `attempted_functions` and into this total's `interrupted`
+    /// term without touching `overall_coverage`, which is computed only
+    /// from completed functions.
     pub total_discovered_functions: usize,
     /// Total branch points across all functions.
     pub total_branches: usize,
