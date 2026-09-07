@@ -2755,6 +2755,107 @@ describe("executeInstrumented MC/DC mode", () => {
 // No-capture fast path
 // ---------------------------------------------------------------------------
 
+// Timing helpers for the no-capture-is-faster performance guards below.
+//
+// The guards used to time one long sequential pair of loops (run N capture
+// iterations, then run N no-capture iterations, compare totals). Because the
+// two phases run back-to-back rather than interleaved, host contention from
+// concurrent gate runs on a shared machine can land unevenly across the two
+// phases and skew the ratio enough to trip the bound even though no-capture
+// is not actually slower on average (observed: str-gk7zl,
+// noCaptureMs=2431 vs. captureMs*1.5=1846.5 under concurrent load, with the
+// same suite passing 976/976 moments later).
+//
+// The fix has two parts:
+//   1. Interleave: split the N iterations into several rounds and alternate
+//      which phase runs first each round, so a scheduling hiccup around the
+//      start of the test can't always fall on the same phase.
+//   2. Aggregate with a median across rounds instead of one big sequential
+//      total, so a single contention-skewed round can't flip the verdict by
+//      itself, while a real regression -- which slows every round, not just
+//      one -- still fails the check.
+interface PhaseRoundTiming {
+  captureMs: number;
+  noCaptureMs: number;
+}
+
+/**
+ * Median of the per-round no-capture/capture time ratios. Using the median
+ * (rather than summing all rounds into one ratio) is what makes the
+ * performance guard resistant to a single contention-skewed round: an
+ * outlier round is out-voted by the rounds on either side of it.
+ */
+function medianRatio(timings: readonly PhaseRoundTiming[]): number {
+  const ratios = timings
+    .map((t) => t.noCaptureMs / Math.max(t.captureMs, 1))
+    .sort((a, b) => a - b);
+  return ratios[Math.floor(ratios.length / 2)]!;
+}
+
+/**
+ * Runs `rounds` alternating bursts of `itersPerRound` capture and no-capture
+ * iterations each, flipping which phase goes first every other round.
+ */
+async function measureInterleavedTimings(
+  captureIter: () => Promise<void>,
+  noCaptureIter: () => Promise<void>,
+  itersPerRound: number,
+  rounds: number,
+): Promise<PhaseRoundTiming[]> {
+  const timings: PhaseRoundTiming[] = [];
+  for (let round = 0; round < rounds; round++) {
+    let captureMs: number;
+    let noCaptureMs: number;
+    if (round % 2 === 0) {
+      const t0 = Date.now();
+      for (let i = 0; i < itersPerRound; i++) await captureIter();
+      captureMs = Date.now() - t0;
+      const t1 = Date.now();
+      for (let i = 0; i < itersPerRound; i++) await noCaptureIter();
+      noCaptureMs = Date.now() - t1;
+    } else {
+      const t1 = Date.now();
+      for (let i = 0; i < itersPerRound; i++) await noCaptureIter();
+      noCaptureMs = Date.now() - t1;
+      const t0 = Date.now();
+      for (let i = 0; i < itersPerRound; i++) await captureIter();
+      captureMs = Date.now() - t0;
+    }
+    timings.push({ captureMs, noCaptureMs });
+  }
+  return timings;
+}
+
+describe("timing ratio measurement (host-contention robustness)", () => {
+  // Deterministic seam: exercises medianRatio() directly against synthetic
+  // round timings, without depending on real wall-clock scheduling. This
+  // reproduces the exact failure mode from str-gk7zl -- one round skewed
+  // past the naive 1.5x bound by host contention -- and proves the
+  // median-based aggregation is robust to it, while still catching a
+  // regression that is slow on every round.
+  it("tolerates a single contention-skewed round", () => {
+    const timings: PhaseRoundTiming[] = [
+      { captureMs: 100, noCaptureMs: 50 },
+      { captureMs: 100, noCaptureMs: 55 },
+      // Contention-skewed outlier: a naive single-round check would flake
+      // here since 160 > 100 * 1.5.
+      { captureMs: 100, noCaptureMs: 160 },
+      { captureMs: 100, noCaptureMs: 48 },
+      { captureMs: 100, noCaptureMs: 52 },
+    ];
+    expect(timings[2]!.noCaptureMs).toBeGreaterThan(timings[2]!.captureMs * 1.5);
+    expect(medianRatio(timings)).toBeLessThan(1.5);
+  });
+
+  it("still fails on a consistent no-capture regression", () => {
+    const timings: PhaseRoundTiming[] = Array.from({ length: 5 }, () => ({
+      captureMs: 100,
+      noCaptureMs: 170,
+    }));
+    expect(medianRatio(timings)).toBeGreaterThan(1.5);
+  });
+});
+
 describe("executeFunction no-capture fast path", () => {
   it("returns empty side_effects when capture=false", async () => {
     const result = await executeFunction(
@@ -2793,36 +2894,39 @@ describe("executeFunction no-capture fast path", () => {
   });
 
   it("is faster than capture=true over many iterations", async () => {
-    const N = 200;
-    const t0 = Date.now();
-    for (let i = 0; i < N; i++) {
-      clearModuleCache();
-      await executeFunction(
-        SIDE_EFFECTS_FIXTURE,
-        "logsAndReturns",
-        [i],
-        undefined,
-        true,
-      );
-    }
-    const captureMs = Date.now() - t0;
+    const ITERS_PER_ROUND = 40;
+    const ROUNDS = 5;
+    let i = 0;
+    const timings = await measureInterleavedTimings(
+      async () => {
+        clearModuleCache();
+        await executeFunction(
+          SIDE_EFFECTS_FIXTURE,
+          "logsAndReturns",
+          [i++],
+          undefined,
+          true,
+        );
+      },
+      async () => {
+        clearModuleCache();
+        await executeFunction(
+          SIDE_EFFECTS_FIXTURE,
+          "logsAndReturns",
+          [i++],
+          undefined,
+          false,
+        );
+      },
+      ITERS_PER_ROUND,
+      ROUNDS,
+    );
 
-    const t1 = Date.now();
-    for (let i = 0; i < N; i++) {
-      clearModuleCache();
-      await executeFunction(
-        SIDE_EFFECTS_FIXTURE,
-        "logsAndReturns",
-        [i],
-        undefined,
-        false,
-      );
-    }
-    const noCaptureMs = Date.now() - t1;
-
-    // No-capture should be at least as fast as capture (not significantly slower).
-    // We use a generous bound to avoid flakiness, but expect meaningful improvement.
-    expect(noCaptureMs).toBeLessThan(captureMs * 1.5);
+    // No-capture should be at least as fast as capture (not significantly
+    // slower). We compare the median ratio across interleaved,
+    // alternating-order rounds rather than one long sequential pair of
+    // loops -- see the timing-helper comment above for why.
+    expect(medianRatio(timings)).toBeLessThan(1.5);
   });
 });
 
@@ -2900,38 +3004,40 @@ describe("executeInstrumented no-capture fast path", () => {
   it("is faster than capture=true over many iterations", async () => {
     const instrumentedSource =
       getInstrumentedSourceForNoCapture("logsAndReturns");
-    const N = 100;
+    const ITERS_PER_ROUND = 20;
+    const ROUNDS = 5;
+    let i = 0;
+    const timings = await measureInterleavedTimings(
+      async () => {
+        await executeInstrumented(
+          instrumentedSource,
+          "logsAndReturns",
+          [i++],
+          [],
+          undefined,
+          undefined,
+          true,
+        );
+      },
+      async () => {
+        await executeInstrumented(
+          instrumentedSource,
+          "logsAndReturns",
+          [i++],
+          [],
+          undefined,
+          undefined,
+          false,
+        );
+      },
+      ITERS_PER_ROUND,
+      ROUNDS,
+    );
 
-    const t0 = Date.now();
-    for (let i = 0; i < N; i++) {
-      await executeInstrumented(
-        instrumentedSource,
-        "logsAndReturns",
-        [i],
-        [],
-        undefined,
-        undefined,
-        true,
-      );
-    }
-    const captureMs = Date.now() - t0;
-
-    const t1 = Date.now();
-    for (let i = 0; i < N; i++) {
-      await executeInstrumented(
-        instrumentedSource,
-        "logsAndReturns",
-        [i],
-        [],
-        undefined,
-        undefined,
-        false,
-      );
-    }
-    const noCaptureMs = Date.now() - t1;
-
-    // No-capture should not be significantly slower than capture.
-    expect(noCaptureMs).toBeLessThan(captureMs * 1.5);
+    // No-capture should not be significantly slower than capture. See the
+    // timing-helper comment above for why we compare the median ratio
+    // across interleaved rounds instead of one long sequential pair.
+    expect(medianRatio(timings)).toBeLessThan(1.5);
   });
 });
 
