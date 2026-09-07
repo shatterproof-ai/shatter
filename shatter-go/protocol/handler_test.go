@@ -821,6 +821,30 @@ func TestMalformedJSONReturnsInvalidRequest(t *testing.T) {
 	}
 }
 
+// TestExecuteWithMalformedInputsFieldReturnsInvalidRequest is a regression
+// test for str-qwua7.32: encoding/json.Unmarshal errors on the top-level
+// Request decode (handler.go Run) must surface as an invalid_request error
+// response, never silently fall through to a zero-value Request whose empty
+// Inputs would make execute "succeed" against no arguments. `inputs` is typed
+// []json.RawMessage on the wire (protocol/types.go); sending it as a bare
+// JSON string is a type mismatch that json.Unmarshal rejects outright.
+func TestExecuteWithMalformedInputsFieldReturnsInvalidRequest(t *testing.T) {
+	req := fmt.Sprintf(
+		`{"protocol_version":%q,"id":1,"command":"execute","file":"foo.go","function":"Foo","inputs":"not-an-array"}`,
+		ProtocolVersion,
+	)
+	resp := sendRecv(t, req)
+	if resp.Status != "error" {
+		t.Fatalf("status = %q, want error (must not silently execute with zero-value inputs)", resp.Status)
+	}
+	if resp.Code != ErrInvalidRequest {
+		t.Errorf("code = %q, want invalid_request", resp.Code)
+	}
+	if resp.Outcome != nil {
+		t.Errorf("outcome = %+v, want nil (a malformed request must never reach execution)", resp.Outcome)
+	}
+}
+
 func TestUnknownCommandReturnsError(t *testing.T) {
 	resp := sendRecv(t, reqJSON(1, "foobar"))
 	if resp.Status != "error" {

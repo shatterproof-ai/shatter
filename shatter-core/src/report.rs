@@ -646,8 +646,11 @@ pub struct LowCoverageBuckets {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CodebaseReport {
     /// Number of functions the scan actually attempted to explore. Equals
-    /// `completed + failed + skipped` (does not include unsupported
-    /// targets, which were filtered out before attempt).
+    /// `completed + failed + expected_skipped` (benign skips such as
+    /// cache hits, checkpoint resumes, and config `skip: true`). Excludes
+    /// `unsupported_functions` (filtered out before any attempt) and
+    /// `interrupted` (never attempted because the run-level scan budget
+    /// expired).
     pub attempted_functions: usize,
     /// Number of functions that completed exploration successfully.
     /// Equivalent to `function_results.len()`.
@@ -717,7 +720,12 @@ pub struct CodebaseReport {
     /// in [`Self::skipped_functions`] with `category == "unsupported"`.
     pub unsupported_functions: usize,
     /// Total functions surfaced by analysis before any filtering. Equals
-    /// `attempted + unsupported`.
+    /// `attempted_functions + unsupported_functions + interrupted`, where
+    /// `interrupted` is the count of targets never attempted because the
+    /// run-level scan budget expired — a tighter budget shifts functions
+    /// out of `attempted_functions` and into this total's `interrupted`
+    /// term without touching `overall_coverage`, which is computed only
+    /// from completed functions.
     pub total_discovered_functions: usize,
     /// Total branch points across all functions.
     pub total_branches: usize,

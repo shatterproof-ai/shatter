@@ -9,12 +9,20 @@ user-invocable: true
 - `noUncheckedIndexedAccess: true` in `tsconfig`
 - Prefer `ESLint` with `typescript-eslint` for enforceable policy: `no-explicit-any`, `ban-ts-comment`, `consistent-type-imports`, `consistent-type-exports`, and no default exports
 - Use lint-backed documentation rules for exported APIs if the repo adds them; JSDoc should explain contracts and non-obvious behavior, not repeat types
+- No `@ts-ignore` or `@ts-expect-error` without a linked issue
+
+## Code Style
+- Keep functions short and focused
+- Name things precisely — if a name needs a comment, choose a better name
 
 ## Testing
 - Jest is the test runner in `shatter-ts/`
 - Follow the repo-level testing policy in the root `CLAUDE.md`
 - `fast-check` is a primary testing tool here. Add property tests for protocol round-trips, invariants, and malformed input where they matter
 - When touching protocol-visible behavior, capabilities, or handler outputs, run the repo's parity and conformance gates instead of relying on local examples alone
+- Test files live next to source (`foo.test.ts` alongside `foo.ts`); test names describe behavior (e.g. `it('rejects malformed protocol messages')`)
+- Protocol handlers have round-trip tests: serialize → deserialize → verify
+- Every public function has tests
 
 ## Module System
 - Node16 module resolution

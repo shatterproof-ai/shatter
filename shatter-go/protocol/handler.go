@@ -1659,11 +1659,17 @@ func convertExternalCalls(calls []instrument.ExternalCall) []ExternalCall {
 	for i, c := range calls {
 		args := make([]any, 0)
 		if c.Args != nil {
-			json.Unmarshal(c.Args, &args) //nolint:errcheck
+			// c.Args/c.ReturnValue are captured from an already-executed
+			// instrumented run purely for the diagnostic ExternalCall report
+			// (str-qwua7.32); they do not gate any decision. A decode failure
+			// here just leaves the reported value at its zero value (empty
+			// args / nil retVal) rather than corrupting execution outcome, so
+			// ignoring the error is provably safe.
+			json.Unmarshal(c.Args, &args) //nolint:errcheck // best-effort diagnostic decode; zero-value on failure is safe (str-qwua7.32)
 		}
 		var retVal any
 		if c.ReturnValue != nil {
-			json.Unmarshal(c.ReturnValue, &retVal) //nolint:errcheck
+			json.Unmarshal(c.ReturnValue, &retVal) //nolint:errcheck // best-effort diagnostic decode; zero-value on failure is safe (str-qwua7.32)
 		}
 		result[i] = ExternalCall{
 			Symbol:      c.Symbol,

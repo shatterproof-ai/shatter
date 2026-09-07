@@ -627,10 +627,12 @@ fn run_tier_e2e(root: &Path) -> Result<bool, TiaError> {
 // ---------------------------------------------------------------------------
 
 /// Get the current HEAD commit hash (short form).
+///
+/// Routed through the scrubbed `scm::git_command` boundary so a managed Git
+/// hook's repository-selection env can't redirect this off `root`.
 pub fn git_head_commit(root: &Path) -> Result<String, TiaError> {
-    let output = Command::new("git")
+    let output = crate::scm::git_command(root)
         .args(["rev-parse", "--short", "HEAD"])
-        .current_dir(root)
         .output()
         .map_err(|e| TiaError::Runner {
             message: format!("git rev-parse failed: {e}"),
@@ -741,5 +743,104 @@ mod tests {
         let commit = git_head_commit(root);
         assert!(commit.is_ok());
         assert!(!commit.unwrap().is_empty());
+    }
+
+    // --- str-yyl9a: git_head_commit must ignore a foreign hook environment ---
+
+    fn git_ok(cwd: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            // Clear git hook-injected env vars so commands operate on `cwd`'s
+            // repo, not the ambient repo running the hook.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .status()
+            .expect("git command should run");
+        assert!(status.success(), "git {:?} failed", args);
+    }
+
+    fn init_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        git_ok(repo, &["init", "-q"]);
+        git_ok(repo, &["config", "user.email", "t@example.com"]);
+        git_ok(repo, &["config", "user.name", "t"]);
+        dir
+    }
+
+    /// Regression for str-yyl9a: run `git_head_commit` in a child process with
+    /// GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY (and friends) pointed at a
+    /// *foreign* repository's absolute paths, simulating what a managed Git
+    /// hook injects into the ambient environment. The test only passes if
+    /// `git_head_commit(target)` still resolves against `target`'s own HEAD
+    /// rather than the foreign repository's.
+    #[test]
+    fn test_git_head_commit_ignores_foreign_repository_environment() {
+        const CHILD_TEST: &str = "test_runner::tests::git_head_commit_isolation_child";
+        const TARGET_REPO: &str = "SHATTER_TEST_RUNNER_TARGET_REPO";
+        const EXPECTED_COMMIT: &str = "SHATTER_TEST_RUNNER_EXPECTED_COMMIT";
+
+        let foreign_dir = init_repo();
+        let foreign = foreign_dir.path();
+        std::fs::write(foreign.join("tracked.txt"), "foreign\n").expect("write foreign file");
+        git_ok(foreign, &["add", "."]);
+        git_ok(foreign, &["commit", "-q", "-m", "foreign"]);
+
+        let target_dir = init_repo();
+        let target = target_dir.path();
+        std::fs::write(target.join("tracked.txt"), "target\n").expect("write target file");
+        git_ok(target, &["add", "."]);
+        git_ok(target, &["commit", "-q", "-m", "target"]);
+        let expected_commit = git_head_commit(target).expect("target HEAD should resolve");
+        assert!(!expected_commit.is_empty());
+
+        let git_dir = foreign
+            .join(".git")
+            .canonicalize()
+            .expect("canonicalize foreign git dir");
+        let index = git_dir.join("index");
+        let objects = git_dir.join("objects");
+
+        let output = Command::new(std::env::current_exe().expect("resolve test executable"))
+            .args(["--exact", CHILD_TEST, "--nocapture"])
+            .env(TARGET_REPO, target)
+            .env(EXPECTED_COMMIT, &expected_commit)
+            .env("GIT_DIR", &git_dir)
+            .env("GIT_COMMON_DIR", &git_dir)
+            .env("GIT_WORK_TREE", foreign)
+            .env("GIT_INDEX_FILE", index)
+            .env("GIT_OBJECT_DIRECTORY", &objects)
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects)
+            .output()
+            .expect("run isolated child test");
+
+        assert!(
+            output.status.success(),
+            "isolated child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn git_head_commit_isolation_child() {
+        let (Some(target), Some(expected)) = (
+            std::env::var_os("SHATTER_TEST_RUNNER_TARGET_REPO"),
+            std::env::var("SHATTER_TEST_RUNNER_EXPECTED_COMMIT").ok(),
+        ) else {
+            return;
+        };
+        let target = PathBuf::from(target);
+
+        let commit = git_head_commit(&target).expect("target HEAD should resolve in child");
+        assert_eq!(
+            commit, expected,
+            "git_head_commit resolved against the wrong repository"
+        );
     }
 }

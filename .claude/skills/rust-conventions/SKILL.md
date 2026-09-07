@@ -14,12 +14,21 @@ user-invocable: true
 - Use `thiserror` for error types in `shatter-core/` (library code)
 - Use `anyhow` in `shatter-cli/` entrypoints and command wiring, not shared library surfaces
 - Propagate with `?`; let callers decide handling where possible
+- `unwrap()` is acceptable only in test code and `shatter-cli` binary code, never on shared library surfaces
+
+## Code Style
+- Keep functions short and focused; extract helpers rather than adding section comments
+- Internal code should be self-documenting via naming, not narrated with comments
+- Prefer `impl Trait` over `dyn Trait` where possible
 
 ## Testing
 - Follow the repo-level testing policy in the root `CLAUDE.md`
 - `proptest` is a primary testing tool here, not an optional extra. Add property tests for core invariants, round-trips, and malformed input where they matter
 - Reuse shared generators such as `shatter-core/src/test_arbitraries.rs` instead of rebuilding them per file
 - When touching protocol-visible behavior or parallel execution paths, run the repo's parity, conformance, and E2E gates called out in `CLAUDE.md`
+- Unit tests live in `#[cfg(test)] mod tests` at the bottom of each file; integration tests go in `tests/`
+- Test names describe behavior (e.g. `fn rejects_negative_offset()`), not mechanics (`fn test_offset()`)
+- Every public function has tests covering its documented behavior
 
 ## Protocol / Data Types
 - Protocol-visible Rust types must stay aligned with the shared protocol contract; rely on the repo's parity and conformance tooling to verify behavior
@@ -29,5 +38,6 @@ user-invocable: true
 ## Design Guidance
 - Minimal `lib.rs` re-exports
 - Dependencies flow `cli -> core`, never reverse
+- One module = one clear responsibility; keep `mod.rs` files minimal — just `pub mod` declarations
 - Define named constants for defaults, timeouts, and shared configuration values; tests should reference the constants instead of duplicating important literals
 - Use `#[must_use]` where ignored return values would hide mistakes

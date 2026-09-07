@@ -593,21 +593,44 @@ pub(crate) fn run_git(root: &Path, args: &[&str]) -> Result<String, ScmError> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Build a Git subprocess that discovers repository state from `root`.
-///
-/// Git hooks and parent Git processes export repository-local variables that
-/// override `current_dir`. Clear every variable that can redirect repository
-/// metadata, the index, or object lookup before invoking Git.
-fn git_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+/// Remove every repository-selection variable a Git hook or parent Git
+/// process can export, so a scrubbed subprocess can't have its target
+/// repository redirected out from under `current_dir`.
+fn scrub_repo_env(command: &mut Command) {
     command
-        .current_dir(root)
         .env_remove("GIT_DIR")
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_OBJECT_DIRECTORY")
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+}
+
+/// Build a Git subprocess that discovers repository state from `root`.
+///
+/// Git hooks and parent Git processes export repository-local variables that
+/// override `current_dir`. Clear every variable that can redirect repository
+/// metadata, the index, or object lookup before invoking Git. Shared by every
+/// Git subprocess caller in `shatter-core` — see [`git_command_cwd`] for the
+/// rare caller that intentionally wants the process's own working directory
+/// to select the repository instead of an explicit `root`.
+pub(crate) fn git_command(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(root);
+    scrub_repo_env(&mut command);
+    command
+}
+
+/// Build a scrubbed Git subprocess without pinning a working directory.
+///
+/// Applies the same repository-selection-variable scrubbing as
+/// [`git_command`], but leaves `current_dir` on the process default so the
+/// caller's own working directory selects the repository (e.g.
+/// `bench::detect_git_commit`, whose contract is "the repo the process is
+/// running in").
+pub(crate) fn git_command_cwd() -> Command {
+    let mut command = Command::new("git");
+    scrub_repo_env(&mut command);
     command
 }
 
@@ -667,6 +690,7 @@ mod tests {
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
             .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .status()
             .expect("git command should run");
         assert!(status.success(), "git {:?} failed", args);
