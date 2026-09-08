@@ -2789,6 +2789,9 @@ function medianRatio(timings: readonly PhaseRoundTiming[]): number {
   const ratios = timings
     .map((t) => t.noCaptureMs / Math.max(t.captureMs, 1))
     .sort((a, b) => a - b);
+  // ratios[floor(len/2)] is the true median only for an odd length; ROUNDS is
+  // hardcoded to 5 everywhere this is called, so this holds today but would
+  // need averaging the two middle values if an even round count is added.
   return ratios[Math.floor(ratios.length / 2)]!;
 }
 
@@ -2896,6 +2899,10 @@ describe("executeFunction no-capture fast path", () => {
   it("is faster than capture=true over many iterations", async () => {
     const ITERS_PER_ROUND = 40;
     const ROUNDS = 5;
+    // Shared across both closures below: capture and no-capture calls
+    // interleave, so each phase gets a different (but deterministic, since
+    // measureInterleavedTimings awaits every call sequentially) subset of
+    // indices. Fine here -- the fixture only logs the index.
     let i = 0;
     const timings = await measureInterleavedTimings(
       async () => {
@@ -3006,6 +3013,10 @@ describe("executeInstrumented no-capture fast path", () => {
       getInstrumentedSourceForNoCapture("logsAndReturns");
     const ITERS_PER_ROUND = 20;
     const ROUNDS = 5;
+    // Shared across both closures below: capture and no-capture calls
+    // interleave, so each phase gets a different (but deterministic, since
+    // measureInterleavedTimings awaits every call sequentially) subset of
+    // indices. Fine here -- the fixture only logs the index.
     let i = 0;
     const timings = await measureInterleavedTimings(
       async () => {
