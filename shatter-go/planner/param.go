@@ -238,6 +238,26 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		return true
 	}
 
+	// str-qwua7.4: track string values already planned (hint, seeds, mined
+	// literals) so the schema-agnostic body seeds and the generic string
+	// family below cannot re-emit a duplicate — a mined literal (or an
+	// operator hint/seed) that happens to equal a generic candidate (e.g.
+	// stringFamily's "a"/"hello" probes) must keep only its higher-ranked
+	// occurrence, mirroring planEnumStringParam's seen-map dedupe.
+	var seenStrings map[string]bool
+	if family.typeHint == paramTypeHintString {
+		seenStrings = make(map[string]bool)
+	}
+	noteStringLiteral := func(raw json.RawMessage) {
+		if seenStrings == nil {
+			return
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			seenStrings[s] = true
+		}
+	}
+
 	if hint, found := opts.HintsByName[p.Name]; found {
 		typeHint := hint.TypeHint
 		if typeHint == "" {
@@ -247,11 +267,13 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 		// structured YAML hint (defaults: r: {model: ...}) as a JSON string
 		// for symbolic body params (and base64-wraps []byte params) — no
 		// separate inline pass needed here.
+		literal := normalizeHintLiteral(p, family.typeHint, hint.Literal)
 		add(protocol.ValuePlan{
 			Kind:     protocol.ValuePlanKindLiteral,
-			Literal:  normalizeHintLiteral(p, family.typeHint, hint.Literal),
+			Literal:  literal,
 			TypeHint: typeHint,
 		})
+		noteStringLiteral(literal)
 	}
 
 	// str-b27zm: a configured seed pool ranks just below the single Defaults
@@ -265,29 +287,45 @@ func PlanParam(targetID string, paramIndex int, p protocol.ParamInfo, opts Param
 			if typeHint == "" {
 				typeHint = family.typeHint
 			}
+			literal := normalizeHintLiteral(p, family.typeHint, seed.Literal)
 			if !add(protocol.ValuePlan{
 				Kind:     protocol.ValuePlanKindLiteral,
-				Literal:  normalizeHintLiteral(p, family.typeHint, seed.Literal),
+				Literal:  literal,
 				TypeHint: typeHint,
 			}) {
 				break
 			}
+			noteStringLiteral(literal)
 		}
 	}
 
 	if family.typeHint == paramTypeHintString {
-		addStringLiteralPlans(add, opts.StringLiteralsByParam[p.Name], family.typeHint)
+		addStringLiteralPlans(add, opts.StringLiteralsByParam[p.Name], family.typeHint, seenStrings)
 	}
 
 	// str-e41w: schema-agnostic request-body seeds rank BELOW config hints and
 	// below source-mined string literals (StringLiteralsByParam) — mined
 	// comparison literals are exact known-answer payloads and must not be
-	// evicted by generic seeds under MaxPlansPerParam.
+	// evicted by generic seeds under MaxPlansPerParam. str-qwua7.4: a mined
+	// literal (or hint/seed) identical to a seed is deduped here so it is
+	// never re-emitted at a lower rank.
 	if family.typeHint == paramTypeHintString && isSymbolicBodyParam(p) {
-		addStringLiteralPlans(add, httpRequestBodySeeds, family.typeHint)
+		addStringLiteralPlans(add, httpRequestBodySeeds, family.typeHint, seenStrings)
 	}
 
 	for _, cand := range family.candidates {
+		if seenStrings != nil {
+			if cand.kind == protocol.ValuePlanKindZero {
+				if seenStrings[""] {
+					continue
+				}
+			} else if cand.kind == protocol.ValuePlanKindLiteral {
+				var s string
+				if err := json.Unmarshal(cand.literal, &s); err == nil && seenStrings[s] {
+					continue
+				}
+			}
+		}
 		if !add(protocol.ValuePlan{
 			Kind:     cand.kind,
 			Literal:  cand.literal,
@@ -491,9 +529,17 @@ var httpRequestBodySeeds = []string{
 }
 
 // addStringLiteralPlans JSON-encodes each string and appends it as a literal
-// ValuePlan via add, stopping when the plan cap is reached.
-func addStringLiteralPlans(add func(protocol.ValuePlan) bool, literals []string, typeHint string) {
+// ValuePlan via add, stopping when the plan cap is reached. When seen is
+// non-nil, a literal already present in seen is skipped rather than
+// re-emitted (str-qwua7.4); each newly emitted literal is recorded into seen.
+func addStringLiteralPlans(add func(protocol.ValuePlan) bool, literals []string, typeHint string, seen map[string]bool) {
 	for _, literal := range literals {
+		if seen != nil {
+			if seen[literal] {
+				continue
+			}
+			seen[literal] = true
+		}
 		encoded, err := json.Marshal(literal)
 		if err != nil {
 			continue
