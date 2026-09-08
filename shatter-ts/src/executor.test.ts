@@ -2900,8 +2900,9 @@ describe("executeFunction no-capture fast path", () => {
     const ITERS_PER_ROUND = 40;
     const ROUNDS = 5;
     // Shared across both closures below: capture and no-capture calls
-    // interleave, so each phase gets a different, non-reproducible subset of
-    // indices per run. Fine here -- the fixture only logs the index.
+    // interleave, so each phase gets a different (but deterministic, since
+    // measureInterleavedTimings awaits every call sequentially) subset of
+    // indices. Fine here -- the fixture only logs the index.
     let i = 0;
     const timings = await measureInterleavedTimings(
       async () => {
@@ -3013,8 +3014,9 @@ describe("executeInstrumented no-capture fast path", () => {
     const ITERS_PER_ROUND = 20;
     const ROUNDS = 5;
     // Shared across both closures below: capture and no-capture calls
-    // interleave, so each phase gets a different, non-reproducible subset of
-    // indices per run. Fine here -- the fixture only logs the index.
+    // interleave, so each phase gets a different (but deterministic, since
+    // measureInterleavedTimings awaits every call sequentially) subset of
+    // indices. Fine here -- the fixture only logs the index.
     let i = 0;
     const timings = await measureInterleavedTimings(
       async () => {
