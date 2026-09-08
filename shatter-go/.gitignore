@@ -1,0 +1,3 @@
+# rapid property-test failure artifacts (regenerated locally on failure;
+# not meant to be committed — see str-qwua7.4)
+planner/testdata/rapid/**/*.fail
