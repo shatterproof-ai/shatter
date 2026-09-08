@@ -10,12 +10,28 @@ Two layers of validation:
    counterparts under `enums:`. The legacy flat `fields:` list must equal
    the keys of `field_model.request_fields`.
 
-2. **Source-name layer** (legacy). Cross-checks command, response-status,
-   and error-code names against:
-     - shatter-core/src/protocol.rs  (Rust core)
-     - shatter-ts/src/protocol.ts    (TypeScript frontend)
-     - shatter-go/protocol/          (Go frontend)
-     - shatter-rust/src/protocol.rs  (Rust frontend)
+2. **Source-name layer** (legacy). Two independent checks per frontend:
+     - **Vocabulary**: the frontend's codegen-generated enum module (the
+       only place command/status/error-code vocabulary is defined) must
+       match the registry exactly. Any mismatch means codegen is stale —
+       hard error.
+     - **Implemented commands**: the commands each frontend's dispatch
+       site (`match`/`switch` on the command string) actually handles.
+       A dispatched command absent from the registry is a hard error
+       (undeclared protocol surface); a registry command with no dispatch
+       arm is only a warning (may be legitimately unimplemented by that
+       frontend).
+   Checked against:
+     - shatter-core/src/protocol.rs                    (Rust core, authoritative enum)
+     - shatter-ts/src/generated/protocol-enums.ts       (TS vocabulary)
+     - shatter-ts/src/handlers.ts                       (TS implemented commands)
+     - shatter-go/protocol/protocol_enums_gen.go        (Go vocabulary)
+     - shatter-go/protocol/handler.go                   (Go implemented commands)
+     - shatter-rust/src/generated/protocol_enums.rs     (Rust frontend vocabulary)
+     - shatter-rust/src/handler.rs                      (Rust frontend implemented commands)
+
+An extractor that finds nothing (a stale regex/pattern) fails loudly rather
+than silently skipping validation.
 
 Exit 0 if everything matches, 1 on any mismatch.
 """
@@ -35,10 +51,12 @@ REPO_ROOT = SCRIPT_DIR.parent
 
 REGISTRY_PATH = REPO_ROOT / "protocol" / "registry.yaml"
 CORE_PROTOCOL = REPO_ROOT / "shatter-core" / "src" / "protocol.rs"
-TS_PROTOCOL = REPO_ROOT / "shatter-ts" / "src" / "protocol.ts"
-GO_CONSTANTS = REPO_ROOT / "shatter-go" / "protocol" / "constants.go"
+TS_GENERATED_ENUMS = REPO_ROOT / "shatter-ts" / "src" / "generated" / "protocol-enums.ts"
+TS_HANDLERS = REPO_ROOT / "shatter-ts" / "src" / "handlers.ts"
+GO_GENERATED_ENUMS = REPO_ROOT / "shatter-go" / "protocol" / "protocol_enums_gen.go"
 GO_HANDLER = REPO_ROOT / "shatter-go" / "protocol" / "handler.go"
-RUST_FE_PROTOCOL = REPO_ROOT / "shatter-rust" / "src" / "protocol.rs"
+RUST_FE_GENERATED_ENUMS = REPO_ROOT / "shatter-rust" / "src" / "generated" / "protocol_enums.rs"
+RUST_FE_HANDLER = REPO_ROOT / "shatter-rust" / "src" / "handler.rs"
 
 
 # ---------------------------------------------------------------------------
@@ -541,76 +559,108 @@ def extract_rust_core(path: Path) -> dict:
     return {"commands": commands, "statuses": statuses, "error_codes": error_codes}
 
 
-def extract_ts(path: Path) -> dict:
-    """Extract commands, statuses, error codes from shatter-ts protocol.ts."""
+def _extract_braced_block(text: str, header_pattern: str) -> str:
+    """Return the text of the brace-delimited block introduced by `header_pattern`.
+
+    Finds the header, then balance-counts braces from the header's opening
+    `{` to its matching `}`. Used to scope dispatch extraction to a single
+    switch/match block so unrelated `case`/`=>` arms elsewhere in the file
+    are not picked up.
+    """
+    m = re.search(header_pattern, text)
+    if not m:
+        return ""
+    brace_start = text.index("{", m.end() - 1)
+    depth = 0
+    for i in range(brace_start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start : i + 1]
+    return text[brace_start:]
+
+
+def extract_ts_vocab(path: Path) -> dict:
+    """Extract commands, statuses, error codes from the TS generated enum module.
+
+    This module is codegen output (str-1hlk.7) — the only place TS command/
+    status/error-code vocabulary is defined. shatter-ts/src/protocol.ts just
+    re-exports it, so reading it directly (rather than protocol.ts) is what
+    keeps this check from silently validating nothing.
+    """
     text = path.read_text()
+    return {
+        "commands": _extract_ts_const_list(text, "ALL_COMMANDS"),
+        "statuses": _extract_ts_const_list(text, "ALL_RESPONSE_STATUSES"),
+        "error_codes": _extract_ts_const_list(text, "ALL_ERROR_CODES"),
+    }
 
-    commands = extract_ts_union(text, "Command")
-    statuses = extract_ts_union(text, "ResponseStatus")
-    error_codes = extract_ts_union(text, "ErrorCode")
 
-    return {"commands": commands, "statuses": statuses, "error_codes": error_codes}
-
-
-def extract_ts_union(text: str, type_name: str) -> set[str]:
-    """Extract string literal members from a TypeScript union type."""
-    pattern = rf"type\s+{type_name}\s*=\s*([^;]+);"
+def _extract_ts_const_list(text: str, const_name: str) -> set[str]:
+    pattern = rf"{const_name}\s*=\s*\[(.*?)\]\s*as const;"
     m = re.search(pattern, text, re.DOTALL)
     if not m:
         return set()
     return set(re.findall(r'"([^"]+)"', m.group(1)))
 
 
-def extract_go(constants_path: Path, handler_path: Path) -> dict:
-    """Extract commands, statuses, error codes from Go frontend."""
-    const_text = constants_path.read_text()
-    handler_text = handler_path.read_text()
-
-    # Error codes from constants.go
-    error_codes: set[str] = set()
-    for m in re.finditer(r'Err\w+\s*=\s*"([^"]+)"', const_text):
-        error_codes.add(m.group(1))
-    # Inline error codes in handler.go
-    for m in re.finditer(r'Code:\s*"([^"]+)"', handler_text):
-        error_codes.add(m.group(1))
-
-    # Commands from CommandCapabilities in constants.go
-    commands: set[str] = set()
-    cap_match = re.search(r"CommandCapabilities\s*=.*?\{([^}]+)\}", const_text, re.DOTALL)
-    if cap_match:
-        commands = set(re.findall(r'"([^"]+)"', cap_match.group(1)))
-    # Also add handshake and shutdown (always handled, not in capabilities)
-    commands.add("handshake")
-    commands.add("shutdown")
-
-    # Statuses from handler.go: resp.Status = "..."
-    statuses: set[str] = set()
-    for m in re.finditer(r'\.Status\s*=\s*"([^"]+)"', handler_text):
-        statuses.add(m.group(1))
-
-    return {"commands": commands, "statuses": statuses, "error_codes": error_codes}
-
-
-def extract_rust_fe(path: Path) -> dict:
-    """Extract commands and error codes from shatter-rust protocol.rs."""
+def extract_ts_implemented_commands(path: Path) -> set[str]:
+    """Extract commands actually dispatched by shatter-ts's top-level command switch."""
     text = path.read_text()
+    block = _extract_braced_block(text, r"switch\s*\(request\.command\)\s*\{")
+    return set(re.findall(r'^\s*case "([a-z_]+)":', block, re.MULTILINE))
 
-    # Commands: look for command string matches in dispatch
-    commands: set[str] = set()
-    for m in re.finditer(r'"(handshake|analyze|instrument|execute|setup|teardown|generate|shutdown)"', text):
-        commands.add(m.group(1))
 
-    # Error codes: extract from ERR_* constants (e.g. pub const ERR_FOO: &str = "foo";)
-    error_codes: set[str] = set()
-    for m in re.finditer(r'pub const ERR_\w+:\s*&str\s*=\s*"([^"]+)"', text):
-        error_codes.add(m.group(1))
+def extract_go_vocab(path: Path) -> dict:
+    """Extract commands, statuses, error codes from the Go generated enum module."""
+    text = path.read_text()
+    return {
+        "commands": _extract_go_const_list(text, "AllCommands"),
+        "statuses": _extract_go_const_list(text, "AllResponseStatuses"),
+        "error_codes": _extract_go_const_list(text, "AllErrorCodes"),
+    }
 
-    # Statuses
-    statuses: set[str] = set()
-    for m in re.finditer(r'status.*?"([a-z_]+)"', text):
-        statuses.add(m.group(1))
 
-    return {"commands": commands, "statuses": statuses, "error_codes": error_codes}
+def _extract_go_const_list(text: str, const_name: str) -> set[str]:
+    pattern = rf"{const_name}\s*=\s*\[\]string\{{(.*?)\}}"
+    m = re.search(pattern, text, re.DOTALL)
+    if not m:
+        return set()
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+def extract_go_implemented_commands(path: Path) -> set[str]:
+    """Extract commands actually dispatched by shatter-go's top-level command switch."""
+    text = path.read_text()
+    block = _extract_braced_block(text, r"switch\s+req\.Command\s*\{")
+    return set(re.findall(r'^\s*case "([a-z_]+)":', block, re.MULTILINE))
+
+
+def extract_rust_fe_vocab(path: Path) -> dict:
+    """Extract commands, statuses, error codes from the Rust frontend's generated enum module."""
+    text = path.read_text()
+    return {
+        "commands": _extract_rust_const_list(text, "ALL_COMMANDS"),
+        "statuses": _extract_rust_const_list(text, "ALL_RESPONSE_STATUSES"),
+        "error_codes": _extract_rust_const_list(text, "ALL_ERROR_CODES"),
+    }
+
+
+def _extract_rust_const_list(text: str, const_name: str) -> set[str]:
+    pattern = rf"{const_name}:\s*&\[&str\]\s*=\s*&\[(.*?)\];"
+    m = re.search(pattern, text, re.DOTALL)
+    if not m:
+        return set()
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+def extract_rust_fe_implemented_commands(path: Path) -> set[str]:
+    """Extract commands actually dispatched by shatter-rust's command match."""
+    text = path.read_text()
+    block = _extract_braced_block(text, r"match\s+req\.command\.as_str\(\)\s*\{")
+    return set(re.findall(r'^\s*"([a-z_]+)" =>', block, re.MULTILINE))
 
 
 # ---------------------------------------------------------------------------
@@ -628,13 +678,16 @@ def pascal_to_snake(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def validate(registry: dict, source_name: str, source: dict) -> list[str]:
-    """Compare registry entries against a source; return list of issues."""
+    """Compare registry entries against a source; return list of issues.
+
+    Used for the Rust core (authoritative) and for frontend vocabulary
+    (codegen-generated, so it should exactly mirror the registry). Every
+    mismatch here is a hard error — see `is_error` in `main`.
+    """
     issues: list[str] = []
     for category in ("commands", "statuses", "error_codes"):
         reg_set = registry[category]
         src_set = source.get(category, set())
-        if not src_set:
-            continue
 
         missing_from_registry = src_set - reg_set
         missing_from_source = reg_set - src_set
@@ -644,16 +697,60 @@ def validate(registry: dict, source_name: str, source: dict) -> list[str]:
                 f"  {category}: '{item}' found in {source_name} but missing from registry"
             )
         for item in sorted(missing_from_source):
-            if category == "error_codes":
-                # Error codes must be defined in every frontend.
-                issues.append(
-                    f"  {category}: '{item}' in registry but missing from {source_name}"
-                )
-            elif category == "commands":
-                issues.append(
-                    f"  {category}: '{item}' in registry but not found in {source_name} (may be unimplemented)"
-                )
+            issues.append(
+                f"  {category}: '{item}' in registry but missing from {source_name}"
+            )
     return issues
+
+
+def validate_implemented_commands(
+    registry: dict, source_name: str, implemented: set[str]
+) -> list[str]:
+    """Compare a frontend's dispatched commands against the registry.
+
+    A command the frontend dispatches but the registry doesn't declare is a
+    hard error (undeclared protocol surface). A registry command with no
+    dispatch arm is only informational — the frontend may legitimately not
+    implement every command (see `is_error` in `main`).
+    """
+    issues: list[str] = []
+    reg_set = registry["commands"]
+
+    for item in sorted(implemented - reg_set):
+        issues.append(
+            f"  commands: '{item}' found in {source_name} but missing from registry"
+        )
+    for item in sorted(reg_set - implemented):
+        issues.append(
+            f"  commands: '{item}' in registry but not found in {source_name} (may be unimplemented)"
+        )
+    return issues
+
+
+def _require_nonempty(extracted: dict | set, file_path: Path, extractor_name: str) -> str | None:
+    """Return an error message if extraction found nothing (a broken pattern), else None.
+
+    A dict is treated as empty if any of its category sets is empty; a bare
+    set is treated as empty if it has no members. Silently continuing past
+    an empty extraction is exactly the TS-vocabulary bug this validator
+    exists to catch (str-qwua7.7) — fail loud instead.
+    """
+    if isinstance(extracted, dict):
+        empty_categories = [cat for cat, values in extracted.items() if not values]
+        if empty_categories:
+            return (
+                f"ERROR: {extractor_name} found nothing for {', '.join(empty_categories)} "
+                f"in {file_path} — the extraction pattern no longer matches this file's "
+                f"structure and needs to be updated"
+            )
+        return None
+    if not extracted:
+        return (
+            f"ERROR: {extractor_name} found no entries in {file_path} — the "
+            f"extraction pattern no longer matches this file's structure and "
+            f"needs to be updated"
+        )
+    return None
 
 
 def main() -> int:
@@ -681,6 +778,10 @@ def main() -> int:
     # --- Rust core (authoritative) ---
     if CORE_PROTOCOL.exists():
         core = extract_rust_core(CORE_PROTOCOL)
+        empty_err = _require_nonempty(core, CORE_PROTOCOL, "extract_rust_core")
+        if empty_err:
+            print(empty_err)
+            return 1
         issues = validate(registry, "shatter-core", core)
         if issues:
             all_issues.append("shatter-core/src/protocol.rs:")
@@ -688,45 +789,65 @@ def main() -> int:
     else:
         all_issues.append(f"WARNING: {CORE_PROTOCOL} not found")
 
-    # --- TypeScript frontend ---
-    if TS_PROTOCOL.exists():
-        ts = extract_ts(TS_PROTOCOL)
-        issues = validate(registry, "shatter-ts", ts)
-        if issues:
-            all_issues.append("shatter-ts/src/protocol.ts:")
-            all_issues.extend(issues)
-    else:
-        all_issues.append(f"WARNING: {TS_PROTOCOL} not found")
+    # --- Frontend vocabulary + implemented-commands checks ---
+    frontends = [
+        (
+            "shatter-ts",
+            TS_GENERATED_ENUMS,
+            extract_ts_vocab,
+            TS_HANDLERS,
+            extract_ts_implemented_commands,
+        ),
+        (
+            "shatter-go",
+            GO_GENERATED_ENUMS,
+            extract_go_vocab,
+            GO_HANDLER,
+            extract_go_implemented_commands,
+        ),
+        (
+            "shatter-rust",
+            RUST_FE_GENERATED_ENUMS,
+            extract_rust_fe_vocab,
+            RUST_FE_HANDLER,
+            extract_rust_fe_implemented_commands,
+        ),
+    ]
 
-    # --- Go frontend ---
-    if GO_CONSTANTS.exists() and GO_HANDLER.exists():
-        go = extract_go(GO_CONSTANTS, GO_HANDLER)
-        issues = validate(registry, "shatter-go", go)
-        if issues:
-            all_issues.append("shatter-go/protocol/:")
-            all_issues.extend(issues)
-    else:
-        all_issues.append(f"WARNING: Go protocol files not found")
+    for name, vocab_path, vocab_extractor, handler_path, impl_extractor in frontends:
+        if not vocab_path.exists():
+            all_issues.append(f"WARNING: {vocab_path} not found")
+        else:
+            vocab = vocab_extractor(vocab_path)
+            empty_err = _require_nonempty(vocab, vocab_path, vocab_extractor.__name__)
+            if empty_err:
+                print(empty_err)
+                return 1
+            issues = validate(registry, f"{name} generated vocabulary", vocab)
+            if issues:
+                all_issues.append(f"{vocab_path.relative_to(REPO_ROOT)}:")
+                all_issues.extend(issues)
 
-    # --- Rust frontend ---
-    if RUST_FE_PROTOCOL.exists():
-        rust_fe = extract_rust_fe(RUST_FE_PROTOCOL)
-        issues = validate(registry, "shatter-rust", rust_fe)
-        if issues:
-            all_issues.append("shatter-rust/src/protocol.rs:")
-            all_issues.extend(issues)
-    else:
-        all_issues.append(f"WARNING: {RUST_FE_PROTOCOL} not found")
+        if not handler_path.exists():
+            all_issues.append(f"WARNING: {handler_path} not found")
+        else:
+            implemented = impl_extractor(handler_path)
+            empty_err = _require_nonempty(implemented, handler_path, impl_extractor.__name__)
+            if empty_err:
+                print(empty_err)
+                return 1
+            issues = validate_implemented_commands(registry, name, implemented)
+            if issues:
+                all_issues.append(f"{handler_path.relative_to(REPO_ROOT)} (implemented commands):")
+                all_issues.extend(issues)
 
     # --- Report ---
     if all_issues:
         # Separate hard errors from informational warnings.
-        # Hard errors: codes in source but not in registry, or error codes
-        # in registry but missing from a frontend.
         def is_error(line: str) -> bool:
             if "missing from registry" in line:
                 return True
-            if "error_codes:" in line and "missing from" in line and "unimplemented" not in line:
+            if "missing from" in line and "unimplemented" not in line:
                 return True
             return False
         errors = [i for i in all_issues if is_error(i)]

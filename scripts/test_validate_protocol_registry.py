@@ -218,5 +218,99 @@ commands:
             self.assertEqual(errors, [], msg=errors)
 
 
+class SourceNameLayerTest(unittest.TestCase):
+    """Tests for the source-name layer: frontend vocabulary + implemented-commands checks."""
+
+    def test_ts_vocab_extraction_nonempty_on_live_repo(self) -> None:
+        # Regression guard for str-qwua7.7: extract_ts previously read
+        # protocol.ts for a `type Command = ...` union that no longer
+        # exists there (it moved to the generated module in str-1hlk.7),
+        # so extraction silently returned empty sets and the check no-op'd.
+        vocab = validate_protocol_registry.extract_ts_vocab(
+            validate_protocol_registry.TS_GENERATED_ENUMS
+        )
+        self.assertIn("analyze", vocab["commands"])
+        self.assertIn("execute", vocab["statuses"])
+        self.assertTrue(vocab["error_codes"])
+
+    def test_ts_implemented_commands_nonempty_on_live_repo(self) -> None:
+        implemented = validate_protocol_registry.extract_ts_implemented_commands(
+            validate_protocol_registry.TS_HANDLERS
+        )
+        self.assertIn("analyze", implemented)
+        self.assertIn("shutdown", implemented)
+
+    def test_go_vocab_and_implemented_commands_nonempty_on_live_repo(self) -> None:
+        vocab = validate_protocol_registry.extract_go_vocab(
+            validate_protocol_registry.GO_GENERATED_ENUMS
+        )
+        self.assertIn("analyze", vocab["commands"])
+        implemented = validate_protocol_registry.extract_go_implemented_commands(
+            validate_protocol_registry.GO_HANDLER
+        )
+        self.assertIn("analyze", implemented)
+
+    def test_rust_fe_vocab_and_implemented_commands_nonempty_on_live_repo(self) -> None:
+        # Regression guard for str-qwua7.7: the old extract_rust_fe used a
+        # hard-coded command alternation that omitted "prepare" and
+        # "get_invocation_plan", so implemented commands like "prepare"
+        # were falsely reported as missing.
+        vocab = validate_protocol_registry.extract_rust_fe_vocab(
+            validate_protocol_registry.RUST_FE_GENERATED_ENUMS
+        )
+        self.assertIn("prepare", vocab["commands"])
+        implemented = validate_protocol_registry.extract_rust_fe_implemented_commands(
+            validate_protocol_registry.RUST_FE_HANDLER
+        )
+        self.assertIn("prepare", implemented)
+        self.assertIn("instrument", implemented)
+        self.assertIn("shutdown", implemented)
+
+    def test_removed_command_in_rust_handler_is_detected(self) -> None:
+        """Deliberately drop a dispatched command from a temp copy of handler.rs
+        and confirm validate_implemented_commands reports it."""
+        text = validate_protocol_registry.RUST_FE_HANDLER.read_text()
+        mutated = text.replace(
+            '"teardown" => (self.handle_teardown(resp, req), false),\n', ""
+        )
+        self.assertNotEqual(mutated, text, "fixture line not found in handler.rs")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mutated_path = Path(tmp) / "handler.rs"
+            mutated_path.write_text(mutated)
+            implemented = validate_protocol_registry.extract_rust_fe_implemented_commands(
+                mutated_path
+            )
+        self.assertNotIn("teardown", implemented)
+
+        registry = validate_protocol_registry.parse_registry(LIVE_REGISTRY)
+        issues = validate_protocol_registry.validate_implemented_commands(
+            registry, "shatter-rust", implemented
+        )
+        self.assertTrue(
+            any("'teardown'" in issue for issue in issues),
+            msg=issues,
+        )
+
+    def test_empty_extraction_is_reported_as_error(self) -> None:
+        """An extractor that finds nothing must fail loud, not silently pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            broken_path = Path(tmp) / "protocol-enums.ts"
+            broken_path.write_text("// no ALL_COMMANDS here\n")
+            vocab = validate_protocol_registry.extract_ts_vocab(broken_path)
+            error = validate_protocol_registry._require_nonempty(
+                vocab, broken_path, "extract_ts_vocab"
+            )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn(str(broken_path), error)
+        self.assertIn("extract_ts_vocab", error)
+
+    def test_live_repo_passes_full_validation(self) -> None:
+        """End-to-end: running the script against the checked-in repo must exit 0."""
+        result = validate_protocol_registry.main()
+        self.assertEqual(result, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

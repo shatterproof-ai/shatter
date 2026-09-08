@@ -110,8 +110,18 @@ Verifies the registry in two layers:
    `generator_kinds`, `branch_types`) must agree with their
    `mirror_of`-tagged entries under `enums:`.
 
-2. **Source-name parity layer.** Cross-checks command, response status, and
-   error code names against source files in core and every frontend.
+2. **Source-name parity layer.** Two checks per frontend:
+   - **Vocabulary**: command, response status, and error code names in each
+     frontend's codegen-generated enum module (`protocol-enums.ts`,
+     `protocol_enums_gen.go`, `protocol_enums.rs`) must exactly match the
+     registry — any mismatch means codegen is stale.
+   - **Implemented commands**: the commands each frontend's dispatch site
+     actually handles. A command a frontend dispatches but the registry
+     doesn't declare is a hard error; a registry command with no dispatch
+     arm in a given frontend is only a warning (may be legitimately
+     unimplemented there).
+   Also cross-checks command, status, and error code names against
+   `shatter-core/src/protocol.rs` (the authoritative Rust core enum).
 
 ```bash
 python3 scripts/validate-protocol-registry.py
