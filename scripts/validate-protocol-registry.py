@@ -559,25 +559,60 @@ def extract_rust_core(path: Path) -> dict:
     return {"commands": commands, "statuses": statuses, "error_codes": error_codes}
 
 
+def _mask_comments_and_strings(text: str) -> str:
+    """Blank out comment and double-quoted/backtick string spans, preserving length and newlines.
+
+    Used only to find accurate brace boundaries — a `{`/`}` inside a comment
+    or string literal must not affect balance counting (str-qwua7.7 review:
+    `_extract_braced_block` originally counted every literal brace char,
+    so a comment like `// only match one { at a time` inside a dispatch
+    block would desync the depth counter and swallow unrelated code past
+    the block's real closing brace). Because every substitution below maps
+    each matched character to a same-position character (space, or the
+    original newline), offsets computed against the masked text line up
+    exactly with the original text.
+
+    Single-quoted spans are deliberately left unmasked: Rust lifetimes
+    (`'a`) use the same leading apostrophe as char literals with no
+    reliable way to tell them apart via regex, so masking single quotes
+    risks eating far more of the file than it protects. Double-quoted
+    strings, backtick strings, and both comment styles are unambiguous in
+    all three target languages (Rust, Go, TypeScript) and cover the cases
+    this validator has actually hit.
+    """
+
+    def _blank(m: re.Match) -> str:
+        return "".join(ch if ch == "\n" else " " for ch in m.group())
+
+    masked = re.sub(r'"(?:\\.|[^"\\\n])*"', _blank, text)
+    masked = re.sub(r"`(?:\\.|[^`\\])*`", _blank, masked, flags=re.DOTALL)
+    masked = re.sub(r"/\*.*?\*/", _blank, masked, flags=re.DOTALL)
+    masked = re.sub(r"//[^\n]*", _blank, masked)
+    return masked
+
+
 def _extract_braced_block(text: str, header_pattern: str) -> str:
     """Return the text of the brace-delimited block introduced by `header_pattern`.
 
     Finds the header, then balance-counts braces from the header's opening
-    `{` to its matching `}`. Used to scope dispatch extraction to a single
-    switch/match block so unrelated `case`/`=>` arms elsewhere in the file
-    are not picked up.
+    `{` to its matching `}`, ignoring braces inside comments or strings.
+    Used to scope dispatch extraction to a single switch/match block so
+    unrelated `case`/`=>` arms elsewhere in the file are not picked up.
     """
-    m = re.search(header_pattern, text)
+    masked = _mask_comments_and_strings(text)
+    m = re.search(header_pattern, masked)
     if not m:
         return ""
-    brace_start = text.index("{", m.end() - 1)
+    brace_start = masked.index("{", m.end() - 1)
     depth = 0
-    for i in range(brace_start, len(text)):
-        if text[i] == "{":
+    for i in range(brace_start, len(masked)):
+        if masked[i] == "{":
             depth += 1
-        elif text[i] == "}":
+        elif masked[i] == "}":
             depth -= 1
             if depth == 0:
+                # Slice the ORIGINAL (unmasked) text: the case/match arm
+                # string literals we still need to extract live here.
                 return text[brace_start : i + 1]
     return text[brace_start:]
 

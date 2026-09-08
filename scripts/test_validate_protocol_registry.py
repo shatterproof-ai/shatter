@@ -312,5 +312,118 @@ class SourceNameLayerTest(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
+class BracedBlockCommentAndStringBraceTest(unittest.TestCase):
+    """A `{`/`}` inside a comment or string literal must not desync brace
+    balance counting and swallow code past the real end of the dispatch
+    block (str-qwua7.7 review finding on `_extract_braced_block`)."""
+
+    RUST_FIXTURE = """
+fn dispatch(&mut self, req: &Request) {
+    match req.command.as_str() {
+        // only match one { at a time
+        "handshake" => (self.handle_handshake(resp, req), false),
+        "shutdown" => (self.handle_shutdown(resp), true),
+        _ => unreachable(),
+    }
+}
+
+fn unrelated(&self) {
+    match other.as_str() {
+        "bogus_outside" => 1,
+        _ => 0,
+    }
+}
+"""
+
+    TS_FIXTURE = """
+function dispatch(request) {
+  switch (request.command) {
+    // only match one { at a time
+    case "handshake":
+      return handleHandshake();
+    case "shutdown":
+      return handleShutdown();
+  }
+}
+
+function unrelated(other) {
+  switch (other) {
+    case "bogus_outside":
+      return 1;
+  }
+}
+"""
+
+    GO_FIXTURE = """
+func dispatch(req Request) {
+	switch req.Command {
+	// only match one { at a time
+	case "handshake":
+		return handleHandshake()
+	case "shutdown":
+		return handleShutdown()
+	}
+}
+
+func unrelated(other string) {
+	switch other {
+	case "bogus_outside":
+		return
+	}
+}
+"""
+
+    def _write(self, tmp_dir: str, name: str, body: str) -> Path:
+        path = Path(tmp_dir) / name
+        path.write_text(body)
+        return path
+
+    def test_rust_comment_brace_does_not_leak_across_match_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "handler.rs", self.RUST_FIXTURE)
+            implemented = validate_protocol_registry.extract_rust_fe_implemented_commands(path)
+        self.assertEqual(implemented, {"handshake", "shutdown"})
+        self.assertNotIn("bogus_outside", implemented)
+
+    def test_ts_comment_brace_does_not_leak_across_switch_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "handlers.ts", self.TS_FIXTURE)
+            implemented = validate_protocol_registry.extract_ts_implemented_commands(path)
+        self.assertEqual(implemented, {"handshake", "shutdown"})
+        self.assertNotIn("bogus_outside", implemented)
+
+    def test_go_comment_brace_does_not_leak_across_switch_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "handler.go", self.GO_FIXTURE)
+            implemented = validate_protocol_registry.extract_go_implemented_commands(path)
+        self.assertEqual(implemented, {"handshake", "shutdown"})
+        self.assertNotIn("bogus_outside", implemented)
+
+    def test_string_literal_brace_does_not_desync_block_boundary(self) -> None:
+        # A `{` inside a string literal (e.g. an error message) must not be
+        # counted either.
+        fixture = """
+fn dispatch(&mut self, req: &Request) {
+    match req.command.as_str() {
+        "handshake" => log("unexpected { in payload"),
+        "shutdown" => (self.handle_shutdown(resp), true),
+        _ => unreachable(),
+    }
+}
+
+fn unrelated(&self) {
+    match other.as_str() {
+        "bogus_outside" => 1,
+        _ => 0,
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "handler.rs", fixture)
+            implemented = validate_protocol_registry.extract_rust_fe_implemented_commands(path)
+        self.assertEqual(implemented, {"handshake", "shutdown"})
+        self.assertNotIn("bogus_outside", implemented)
+
+
 if __name__ == "__main__":
     unittest.main()
