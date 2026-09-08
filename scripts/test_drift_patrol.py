@@ -195,6 +195,54 @@ class DocsStoriesTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# dolt sql-server orphan detection
+# ---------------------------------------------------------------------------
+
+
+class TrackerServerTest(unittest.TestCase):
+    def test_no_dolt_process_skips(self) -> None:
+        result = drift_patrol.check_tracker_server(processes=[])
+        self.assertEqual(result.status, drift_patrol.SKIP)
+        self.assertFalse(result.failed)
+
+    def test_process_with_reachable_port_passes(self) -> None:
+        result = drift_patrol.check_tracker_server(
+            processes=["28938 /usr/local/bin/dolt sql-server -H 127.0.0.1 --data-dir .beads/dolt"],
+            port_file_text="43105",
+            port_reachable=True,
+        )
+        self.assertEqual(result.status, drift_patrol.PASS)
+        self.assertFalse(result.failed)
+
+    def test_process_with_missing_port_file_fails(self) -> None:
+        result = drift_patrol.check_tracker_server(
+            processes=["28938 /usr/local/bin/dolt sql-server -H 127.0.0.1 --data-dir .beads/dolt"],
+            port_file_text=None,
+        )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertEqual(result.tracking_issue, "str-qwua7.16")
+        self.assertIn("bd dolt stop", result.remediation or "")
+
+    def test_process_with_stale_port_file_fails(self) -> None:
+        # Port file exists but nothing is listening on the port it names --
+        # the server that wrote it died without cleaning up.
+        result = drift_patrol.check_tracker_server(
+            processes=["28938 /usr/local/bin/dolt sql-server -H 127.0.0.1 --data-dir .beads/dolt"],
+            port_file_text="43105",
+            port_reachable=False,
+        )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertIn("port file: '43105'", "\n".join(result.details))
+
+    def test_process_with_unparseable_port_file_fails(self) -> None:
+        result = drift_patrol.check_tracker_server(
+            processes=["28938 /usr/local/bin/dolt sql-server -H 127.0.0.1 --data-dir .beads/dolt"],
+            port_file_text="not-a-port",
+        )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+
+
+# ---------------------------------------------------------------------------
 # Subprocess helper
 # ---------------------------------------------------------------------------
 
@@ -462,7 +510,7 @@ class CliTest(unittest.TestCase):
         }
         # Only the pure checks are exercised here; the subprocess-backed ones
         # are covered by the patrol's own end-to-end run in CI.
-        for check_id in ("cli-surface-drift", "docs-stories", "tracker-hygiene"):
+        for check_id in ("cli-surface-drift", "docs-stories", "tracker-hygiene", "tracker-server"):
             fn = dict(drift_patrol.CHECKS)[check_id]
             result = fn(**context)
             self.assertEqual(result.check_id, check_id)
