@@ -563,32 +563,76 @@ def _mask_comments_and_strings(text: str) -> str:
     """Blank out comment and double-quoted/backtick string spans, preserving length and newlines.
 
     Used only to find accurate brace boundaries — a `{`/`}` inside a comment
-    or string literal must not affect balance counting (str-qwua7.7 review:
-    `_extract_braced_block` originally counted every literal brace char,
-    so a comment like `// only match one { at a time` inside a dispatch
-    block would desync the depth counter and swallow unrelated code past
-    the block's real closing brace). Because every substitution below maps
-    each matched character to a same-position character (space, or the
-    original newline), offsets computed against the masked text line up
-    exactly with the original text.
+    or string literal must not affect balance counting (str-qwua7.7 review
+    round 1: `_extract_braced_block` originally counted every literal brace
+    char, so a comment like `// only match one { at a time` inside a
+    dispatch block would desync the depth counter and swallow unrelated
+    code past the block's real closing brace). Every masked character maps
+    to a same-position character (space, or the original newline), so
+    offsets computed against the masked text line up exactly with the
+    original text.
+
+    This is a single left-to-right scan, not a sequence of global regex
+    passes over the whole text. A fixed pass order (e.g. "mask all
+    comments, then mask all strings") gets the wrong answer whichever way
+    it's ordered: strings-first lets a stray quote *inside* a comment pair
+    with a later real quote and eat the comment's own terminator; comments
+    first lets a `//` *inside* a string (e.g. a URL) get masked as if it
+    started a line comment. A real lexer resolves this by deciding what a
+    delimiter means based on what's currently open when it's reached, not
+    by which regex runs first — this loop does the same thing (str-qwua7.7
+    review round 2, reproduced with `/* say "hi */ "handshake" => ...`).
 
     Single-quoted spans are deliberately left unmasked: Rust lifetimes
     (`'a`) use the same leading apostrophe as char literals with no
-    reliable way to tell them apart via regex, so masking single quotes
-    risks eating far more of the file than it protects. Double-quoted
-    strings, backtick strings, and both comment styles are unambiguous in
-    all three target languages (Rust, Go, TypeScript) and cover the cases
-    this validator has actually hit.
+    reliable way to tell them apart without a real parser, so masking
+    single quotes risks eating far more of the file than it protects.
+    Double-quoted strings, backtick strings, and both comment styles are
+    unambiguous in all three target languages (Rust, Go, TypeScript) and
+    cover the cases this validator has actually hit.
     """
-
-    def _blank(m: re.Match) -> str:
-        return "".join(ch if ch == "\n" else " " for ch in m.group())
-
-    masked = re.sub(r'"(?:\\.|[^"\\\n])*"', _blank, text)
-    masked = re.sub(r"`(?:\\.|[^`\\])*`", _blank, masked, flags=re.DOTALL)
-    masked = re.sub(r"/\*.*?\*/", _blank, masked, flags=re.DOTALL)
-    masked = re.sub(r"//[^\n]*", _blank, masked)
-    return masked
+    out: list[str] = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        two = text[i : i + 2]
+        if two == "//":
+            while i < n and text[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if two == "/*":
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i < n and text[i : i + 2] != "*/":
+                out[i] = text[i] if text[i] == "\n" else " "
+                i += 1
+            if i < n:
+                out[i] = out[i + 1] = " "
+                i += 2
+            continue
+        if text[i] in ('"', "`"):
+            quote = text[i]
+            # Double-quoted strings don't span an unescaped newline in any
+            # of the three target languages; backtick template/raw strings
+            # legitimately do, so only the former stops masking at "\n".
+            single_line = quote == '"'
+            out[i] = " "
+            i += 1
+            while i < n and text[i] != quote and not (single_line and text[i] == "\n"):
+                if text[i] == "\\" and i + 1 < n:
+                    out[i] = " "
+                    out[i + 1] = text[i + 1] if text[i + 1] == "\n" else " "
+                    i += 2
+                    continue
+                out[i] = text[i] if text[i] == "\n" else " "
+                i += 1
+            if i < n and text[i] == quote:
+                out[i] = " "
+                i += 1
+            continue
+        i += 1
+    return "".join(out)
 
 
 def _extract_braced_block(text: str, header_pattern: str) -> str:

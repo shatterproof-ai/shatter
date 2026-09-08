@@ -399,6 +399,35 @@ func unrelated(other string) {
         self.assertEqual(implemented, {"handshake", "shutdown"})
         self.assertNotIn("bogus_outside", implemented)
 
+    def test_block_comment_with_stray_quote_does_not_corrupt_string_masking(self) -> None:
+        # str-qwua7.7 review round 2: masking strings before comments (or
+        # comments before strings, via two separate global passes) lets a
+        # quote inside a `/* */` comment pair with a later real quote and
+        # eat the comment's own "*/" terminator, corrupting everything
+        # after it on that line and silently dropping the real command.
+        fixture = """
+fn dispatch(&mut self, req: &Request) {
+    match req.command.as_str() {
+        /* say "hi */
+        "handshake" => (self.handle_handshake(resp, req), false),
+        "shutdown" => (self.handle_shutdown(resp), true),
+        _ => unreachable(),
+    }
+}
+
+fn unrelated(&self) {
+    match other.as_str() {
+        "bogus_outside" => 1,
+        _ => 0,
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "handler.rs", fixture)
+            implemented = validate_protocol_registry.extract_rust_fe_implemented_commands(path)
+        self.assertEqual(implemented, {"handshake", "shutdown"})
+        self.assertNotIn("bogus_outside", implemented)
+
     def test_string_literal_brace_does_not_desync_block_boundary(self) -> None:
         # A `{` inside a string literal (e.g. an error message) must not be
         # counted either.
