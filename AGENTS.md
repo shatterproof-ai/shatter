@@ -19,6 +19,7 @@ Notes:
 - `bd update <id> --claim` is the **only** correct way to claim. `bd claim`, `bd assign --self`, and `bd start` do not exist.
 - Pass `--json` to any read command for programmatic use.
 - bd writes can be slow; run them in the background when batching.
+- If every `bd` call times out with "locked by another dolt process", an orphaned `dolt sql-server` is likely holding the lock — diagnose and get the recovery recipe with `python3 scripts/drift-patrol.py --only tracker-server`.
 
 ## Searching and Reading Files
 

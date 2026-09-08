@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -609,6 +610,150 @@ def check_tracker_hygiene(
     )
 
 
+def _dolt_data_dir() -> Path:
+    """The `.beads/dolt` directory bd's shared dolt server actually runs from.
+
+    bd runs a single dolt server shared by every worktree of this repo, not
+    one per worktree — its cwd is `<primary checkout>/.beads/dolt` regardless
+    of which worktree `bd` (or this script) was invoked from. `git`'s common
+    dir is identical across every linked worktree, so its parent reliably
+    names that primary checkout even when REPO_ROOT (this script's own
+    location) is a linked worktree instead.
+    """
+    code, output = run_command(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        timeout=10,
+    )
+    root = Path(output.strip()).parent if code == 0 and output.strip() else REPO_ROOT
+    return root / ".beads" / "dolt"
+
+
+def _list_dolt_processes() -> list[str]:
+    """`dolt sql-server` processes whose cwd is this repo's `.beads/dolt`.
+
+    bd does not pass a `--data-dir` flag — dolt's cwd *is* its data
+    directory — so process identity has to come from `/proc/<pid>/cwd`, not
+    argv matching. pgrep exit 1 means "no match" (not an error); anything
+    else that isn't 0 is degraded to "couldn't tell", which the check treats
+    the same as no process found rather than failing the patrol on an
+    environment quirk.
+    """
+    code, output = run_command(["pgrep", "-af", "dolt sql-server"], timeout=10)
+    if code != 0:
+        return []
+
+    try:
+        data_dir = _dolt_data_dir().resolve()
+    except OSError:
+        return []
+
+    matched = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid = line.split(None, 1)[0]
+        try:
+            cwd = Path(f"/proc/{pid}/cwd").resolve()
+        except OSError:
+            continue
+        if cwd == data_dir:
+            matched.append(line)
+    return matched
+
+
+def _read_dolt_server_port() -> str | None:
+    path = _dolt_data_dir().parent / "dolt-server.port"
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(errors="replace").strip()
+    except OSError:
+        return None
+
+
+def _is_port_listening(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+_UNSET = object()
+
+
+def check_tracker_server(
+    *,
+    processes: list[str] | object = _UNSET,
+    port_file_text: str | None | object = _UNSET,
+    port_reachable: bool | object = _UNSET,
+    **_: object,
+) -> Result:
+    """Detects the str-qwua7.16 failure mode: an orphaned dolt sql-server.
+
+    `dolt`'s exclusive database lock means a second `bd`-spawned server can
+    never come up while an earlier one is still holding it. bd normally
+    tracks the running server via `.beads/dolt-server.port`; if that server
+    dies without cleaning up (or a session is killed mid-command), the port
+    file goes missing or stale while the dolt process itself lingers,
+    holding the lock. `dolt:auto-start: true` in .beads/config.yaml then
+    makes every subsequent `bd` call spawn a doomed second server and time
+    out after 10s, with no indication of why. This check surfaces that gap
+    directly instead of relying on someone reading a confusing timeout.
+    """
+    title = "dolt sql-server orphan detection"
+    if processes is _UNSET:
+        processes = _list_dolt_processes()
+
+    if not processes:
+        return Result(
+            "tracker-server",
+            title,
+            SKIP,
+            "no dolt sql-server process found for this repo",
+        )
+
+    if port_file_text is _UNSET:
+        port_file_text = _read_dolt_server_port()
+
+    port: int | None = None
+    if port_file_text:
+        try:
+            port = int(port_file_text.strip())
+        except ValueError:
+            port = None
+
+    if port is not None:
+        if port_reachable is _UNSET:
+            port_reachable = _is_port_listening(port)
+        if port_reachable:
+            return Result(
+                "tracker-server",
+                title,
+                PASS,
+                f"dolt sql-server is running and reachable on port {port}",
+            )
+
+    remediation = (
+        "Detect: `pgrep -af 'dolt sql-server'` vs `.beads/dolt-server.port`. "
+        "Stop the orphan: `bd dolt stop`, or if that fails, `kill <pid>` from "
+        "the pgrep output. Restart cleanly: `bd dolt start`. Verify: `bd stats`."
+    )
+    return Result(
+        "tracker-server",
+        title,
+        FAIL,
+        "dolt sql-server process found but .beads/dolt-server.port is missing "
+        "or names a port nobody is listening on — bd cannot discover this "
+        "server and dolt:auto-start will spawn a doomed second one that "
+        "times out on the exclusive database lock",
+        details=[*processes, f"port file: {port_file_text!r}"],
+        tracking_issue="str-qwua7.16",
+        remediation=remediation,
+    )
+
+
 CHECKS = [
     ("protocol-registry", check_protocol_registry),
     ("protocol-codegen", check_protocol_codegen),
@@ -617,6 +762,7 @@ CHECKS = [
     ("cli-surface-drift", check_cli_surface),
     ("docs-stories", check_docs_stories),
     ("tracker-hygiene", check_tracker_hygiene),
+    ("tracker-server", check_tracker_server),
 ]
 
 CHECK_IDS = [check_id for check_id, _ in CHECKS]
