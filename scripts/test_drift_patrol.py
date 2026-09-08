@@ -509,8 +509,11 @@ class CliTest(unittest.TestCase):
             "now": NOW,
         }
         # Only the pure checks are exercised here; the subprocess-backed ones
-        # are covered by the patrol's own end-to-end run in CI.
-        for check_id in ("cli-surface-drift", "docs-stories", "tracker-hygiene", "tracker-server"):
+        # (including tracker-server, whose default path shells out to pgrep
+        # and reads /proc — see TrackerServerTest for its deterministic
+        # coverage via explicit `processes=` overrides) are covered by the
+        # patrol's own end-to-end run in CI.
+        for check_id in ("cli-surface-drift", "docs-stories", "tracker-hygiene"):
             fn = dict(drift_patrol.CHECKS)[check_id]
             result = fn(**context)
             self.assertEqual(result.check_id, check_id)

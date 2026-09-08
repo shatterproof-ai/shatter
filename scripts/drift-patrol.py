@@ -610,22 +610,60 @@ def check_tracker_hygiene(
     )
 
 
-def _list_dolt_processes() -> list[str]:
-    """`dolt sql-server` processes whose args reference this repo's `.beads/dolt`.
+def _dolt_data_dir() -> Path:
+    """The `.beads/dolt` directory bd's shared dolt server actually runs from.
 
-    pgrep exit 1 means "no match" (not an error); anything else that isn't 0
-    is degraded to "couldn't tell", which the check treats the same as no
-    process found rather than failing the patrol on an environment quirk.
+    bd runs a single dolt server shared by every worktree of this repo, not
+    one per worktree — its cwd is `<primary checkout>/.beads/dolt` regardless
+    of which worktree `bd` (or this script) was invoked from. `git`'s common
+    dir is identical across every linked worktree, so its parent reliably
+    names that primary checkout even when REPO_ROOT (this script's own
+    location) is a linked worktree instead.
+    """
+    code, output = run_command(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        timeout=10,
+    )
+    root = Path(output.strip()).parent if code == 0 and output.strip() else REPO_ROOT
+    return root / ".beads" / "dolt"
+
+
+def _list_dolt_processes() -> list[str]:
+    """`dolt sql-server` processes whose cwd is this repo's `.beads/dolt`.
+
+    bd does not pass a `--data-dir` flag — dolt's cwd *is* its data
+    directory — so process identity has to come from `/proc/<pid>/cwd`, not
+    argv matching. pgrep exit 1 means "no match" (not an error); anything
+    else that isn't 0 is degraded to "couldn't tell", which the check treats
+    the same as no process found rather than failing the patrol on an
+    environment quirk.
     """
     code, output = run_command(["pgrep", "-af", "dolt sql-server"], timeout=10)
     if code != 0:
         return []
-    marker = str(REPO_ROOT / ".beads" / "dolt")
-    return [ln for ln in output.splitlines() if ln.strip() and marker in ln]
+
+    try:
+        data_dir = _dolt_data_dir().resolve()
+    except OSError:
+        return []
+
+    matched = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid = line.split(None, 1)[0]
+        try:
+            cwd = Path(f"/proc/{pid}/cwd").resolve()
+        except OSError:
+            continue
+        if cwd == data_dir:
+            matched.append(line)
+    return matched
 
 
 def _read_dolt_server_port() -> str | None:
-    path = REPO_ROOT / ".beads" / "dolt-server.port"
+    path = _dolt_data_dir().parent / "dolt-server.port"
     if not path.is_file():
         return None
     try:
