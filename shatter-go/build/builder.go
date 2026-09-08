@@ -306,7 +306,7 @@ func cacheKey(req BuildRequest) string {
 	// binary bakes in which sites were rewritten, and a type-load failure
 	// flips resolution to the syntactic fallback — that binary must not be
 	// served under the clean-resolution key.
-	fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00",
+	_, _ = fmt.Fprint(h, base, "\x00", req.InstrumentedSourceFile, "\x00",
 		packageSourceDigest(req.TargetPackageDir, req.InstrumentedSourceFile), "\x00",
 		instrument.MockFingerprint(req.Mocks), "\x00",
 		instrument.SubstitutionsFingerprint(req.MockSubstitutions))
@@ -324,11 +324,11 @@ func packageSourceDigest(pkgDir, instrumentedSourceFile string) string {
 	hashFile := func(path string) {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			fmt.Fprint(h, filepath.Base(path), "\x00", "unreadable", "\x00")
+			_, _ = fmt.Fprint(h, filepath.Base(path), "\x00", "unreadable", "\x00")
 			return
 		}
 		sum := sha256.Sum256(data)
-		fmt.Fprint(h, filepath.Base(path), "\x00", hex.EncodeToString(sum[:]), "\x00")
+		_, _ = fmt.Fprint(h, filepath.Base(path), "\x00", hex.EncodeToString(sum[:]), "\x00")
 	}
 
 	entries, err := os.ReadDir(pkgDir)
