@@ -617,21 +617,23 @@ pub fn is_lifecycle_export_name(name: &str) -> bool {
     LIFECYCLE_EXPORT_NAMES.contains(&name)
 }
 
+/// Minimum number of recognized lifecycle hook names a file must export
+/// together to be considered "setup-shaped". A single incidentally-named
+/// export (e.g. a legitimate business function that happens to be named
+/// `setup`) is not enough — only a file whose exports look like they
+/// implement the setup/teardown lifecycle convention (str-qwua7.56).
+const SETUP_SHAPED_MIN_LIFECYCLE_EXPORTS: usize = 2;
+
 /// Returns `true` if a file's exported names constitute a "setup-shaped
-/// API": two or more of the recognized lifecycle hook names exported
-/// together.
-///
-/// A single incidentally-named export (e.g. a legitimate business function
-/// that happens to be named `setup`) is not enough to trigger exclusion —
-/// only a file whose exports look like they implement the
-/// setup/teardown lifecycle convention (str-qwua7.56).
+/// API": at least [`SETUP_SHAPED_MIN_LIFECYCLE_EXPORTS`] of the recognized
+/// lifecycle hook names exported together.
 #[must_use]
 pub fn file_exports_setup_shaped_api<S: AsRef<str>>(exported_names: &[S]) -> bool {
     exported_names
         .iter()
         .filter(|name| is_lifecycle_export_name(name.as_ref()))
         .count()
-        >= 2
+        >= SETUP_SHAPED_MIN_LIFECYCLE_EXPORTS
 }
 
 /// Decide whether an exported function should be excluded from target
@@ -1437,7 +1439,10 @@ mod tests {
                 .iter()
                 .filter(|n| is_lifecycle_export_name(n))
                 .count();
-            prop_assert_eq!(file_exports_setup_shaped_api(&exports), lifecycle_count >= 2);
+            prop_assert_eq!(
+                file_exports_setup_shaped_api(&exports),
+                lifecycle_count >= SETUP_SHAPED_MIN_LIFECYCLE_EXPORTS
+            );
         }
 
         /// Exclusion of a lifecycle-named function tracks exactly the
