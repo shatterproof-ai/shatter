@@ -129,6 +129,23 @@ Examples:
 
 These are user-authored files.
 
+### Lifecycle exports are excluded from target discovery
+
+Independently of the filename conventions above, target discovery skips
+exported functions named `setup`, `teardown`, `beforeAll`, `afterAll`,
+`beforeEach`, or `afterEach` when the same file also exports a
+**setup-shaped API** — two or more of those lifecycle names together (e.g. a
+file exporting both `setup` and `teardown`). This is a name-based rule, not
+filename-convention enforcement: it applies even when the file does not
+match the `shatter.setup.<ext>` / `<stem>.shatter.setup.<ext>` patterns.
+
+A single, incidentally-named export (e.g. a legitimate business function
+that happens to be called `setup`) is not enough to trigger exclusion — the
+file must export at least two recognized lifecycle names before any of them
+are excluded. This prevents lifecycle helpers from being fuzzed directly as
+ordinary targets, which previously produced large numbers of garbage
+"Teardown scope mismatch" clusters (str-qwua7.56).
+
 ## `.shatter/seeds/pool.json`
 
 This file stores the cross-function seed pool.
