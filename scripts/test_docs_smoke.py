@@ -202,31 +202,51 @@ class StructuredValidationTest(unittest.TestCase):
 
 class DirectiveTest(unittest.TestCase):
     def test_no_directive(self) -> None:
-        self.assertEqual(docs_smoke.extract_directive("some prose"), (False, None, None))
-        self.assertEqual(docs_smoke.extract_directive(None), (False, None, None))
+        self.assertEqual(docs_smoke.extract_directive("some prose"), (False, None, None, None))
+        self.assertEqual(docs_smoke.extract_directive(None), (False, None, None, None))
 
     def test_skip_with_reason(self) -> None:
-        skip, reason, err = docs_smoke.extract_directive(
+        skip, reason, err, kind = docs_smoke.extract_directive(
             '<!-- docs-smoke: skip reason="NDJSON stream" -->')
         self.assertTrue(skip)
         self.assertEqual(reason, "NDJSON stream")
         self.assertIsNone(err)
+        self.assertIsNone(kind)
 
     def test_skip_without_reason_is_error(self) -> None:
-        skip, reason, err = docs_smoke.extract_directive("<!-- docs-smoke: skip -->")
+        skip, reason, err, kind = docs_smoke.extract_directive("<!-- docs-smoke: skip -->")
         self.assertTrue(skip)
         self.assertIsNone(reason)
         self.assertIsNotNone(err)
         self.assertIn("requires a non-empty reason", err)
+        self.assertIsNone(kind)
 
     def test_skip_with_empty_reason_is_error(self) -> None:
-        _, _, err = docs_smoke.extract_directive('<!-- docs-smoke: skip reason="" -->')
+        _, _, err, _ = docs_smoke.extract_directive('<!-- docs-smoke: skip reason="" -->')
         self.assertIsNotNone(err)
 
     def test_unknown_directive_is_error(self) -> None:
-        _, _, err = docs_smoke.extract_directive("<!-- docs-smoke: yolo -->")
+        _, _, err, _ = docs_smoke.extract_directive("<!-- docs-smoke: yolo -->")
         self.assertIsNotNone(err)
         self.assertIn("unknown docs-smoke directive", err)
+
+    def test_kind_config_directive(self) -> None:
+        skip, reason, err, kind = docs_smoke.extract_directive(
+            '<!-- docs-smoke: kind="config" -->')
+        self.assertFalse(skip)
+        self.assertIsNone(reason)
+        self.assertIsNone(err)
+        self.assertEqual(kind, "config")
+
+    def test_kind_snapshot_directive(self) -> None:
+        _, _, err, kind = docs_smoke.extract_directive('<!-- docs-smoke: kind="snapshot" -->')
+        self.assertIsNone(err)
+        self.assertEqual(kind, "snapshot")
+
+    def test_kind_directive_bad_value_is_error(self) -> None:
+        _, _, err, kind = docs_smoke.extract_directive('<!-- docs-smoke: kind="bogus" -->')
+        self.assertIsNotNone(err)
+        self.assertIsNone(kind)
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +345,160 @@ class ValidateDocTest(unittest.TestCase):
         result = self._validate(text)
         self.assertFalse(result.ok())
         self.assertTrue(any("requires a non-empty reason" in e for e in result.errors))
+
+
+# ---------------------------------------------------------------------------
+# Struct-shape classification (pure — no binary needed)
+# ---------------------------------------------------------------------------
+
+
+class ClassifyStructuredBlockTest(unittest.TestCase):
+    def test_config_shape_functions_mapping(self) -> None:
+        parsed = {"functions": {"src/auth.ts:validateToken": {"max_iterations": 200}}}
+        self.assertEqual(docs_smoke.classify_structured_block(None, parsed), "config")
+
+    def test_config_shape_defaults_key(self) -> None:
+        parsed = {"defaults": {"max_iterations": 50}}
+        self.assertEqual(docs_smoke.classify_structured_block(None, parsed), "config")
+
+    def test_config_shape_opaque_types_key(self) -> None:
+        parsed = {"opaque_types": ["DatabaseConnection"]}
+        self.assertEqual(docs_smoke.classify_structured_block(None, parsed), "config")
+
+    def test_snapshot_shape_version_plus_functions_list(self) -> None:
+        parsed = {"version": 1, "functions": [{"function_id": "f", "behaviors": []}]}
+        self.assertEqual(docs_smoke.classify_structured_block(None, parsed), "snapshot")
+
+    def test_snapshot_shape_with_wrong_version_type_still_detected(self) -> None:
+        # The exact SPEC.md §5.5 bug: "version" is a string, not the struct's
+        # u32 — but shape detection only looks at *key presence and the
+        # functions container type*, so misclassification isn't possible here;
+        # the type mismatch itself is what the struct validator below catches.
+        parsed = {"version": "0.1.0", "functions": [{"function_id": "f", "behaviors": []}]}
+        self.assertEqual(docs_smoke.classify_structured_block(None, parsed), "snapshot")
+
+    def test_unrelated_shape_is_none(self) -> None:
+        self.assertIsNone(docs_smoke.classify_structured_block(None, {"include": ["src"]}))
+        self.assertIsNone(docs_smoke.classify_structured_block(None, ["a", "b"]))
+        self.assertIsNone(docs_smoke.classify_structured_block(None, None))
+
+    def test_explicit_kind_override_wins(self) -> None:
+        self.assertEqual(docs_smoke.classify_structured_block("config", {"anything": 1}), "config")
+        self.assertEqual(
+            docs_smoke.classify_structured_block("snapshot", {"anything": 1}), "snapshot")
+
+
+# ---------------------------------------------------------------------------
+# Struct validation against the real Rust structs (str-qwua7.9)
+#
+# These require a built `shatter` binary and are skipped otherwise — mirrors
+# how the shell-invocation tests above use a synthetic CliSpec to stay
+# binary-free, except struct validation has no meaningful synthetic
+# equivalent: the whole point is deserializing against the actual
+# `ShatterConfig` / `snapshot::Snapshot` structs, not a Python re-model of
+# them.
+# ---------------------------------------------------------------------------
+
+
+def _find_real_bin() -> str | None:
+    return docs_smoke.find_shatter_bin(None)
+
+
+@unittest.skipIf(_find_real_bin() is None,
+                  "no built shatter binary found (cargo build -p shatter-cli)")
+class StructValidationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.bin_path = _find_real_bin()
+        assert self.bin_path is not None
+
+    def test_valid_config_passes(self) -> None:
+        content = (
+            "functions:\n"
+            '  "src/auth.ts:validateToken":\n'
+            "    max_iterations: 200\n"
+            '    inputs: "candidates.json"\n'
+        )
+        self.assertIsNone(docs_smoke.validate_config_against_struct(content, self.bin_path))
+
+    def test_spec_3_6_config_example_fails(self) -> None:
+        # Literal reproduction of SPEC.md §3.6 (pre-str-qwua7.8 fix):
+        # `inputs` is a list, but FunctionConfig.inputs is `Option<String>`.
+        content = (
+            "defaults:\n"
+            "  max_iterations: 50\n"
+            '  setup: "./setup.ts"\n'
+            "  setup_level: function  # or execution\n"
+            "\n"
+            "functions:\n"
+            '  "src/auth.ts:validateToken":\n'
+            "    max_iterations: 200\n"
+            '    inputs: ["valid-token", "expired-token", "malformed"]\n'
+            "\n"
+            "opaque_types:\n"
+            "  - DatabaseConnection\n"
+            "  - HttpClient\n"
+        )
+        err = docs_smoke.validate_config_against_struct(content, self.bin_path)
+        self.assertIsNotNone(err)
+        self.assertIn("ShatterConfig", err)
+        self.assertIn("inputs", err)
+
+    def test_valid_snapshot_passes(self) -> None:
+        content = (
+            '{"version": 1, "created_at": "2026-02-26T10:00:00Z", '
+            '"functions": [{"function_id": "f", "behaviors": []}]}'
+        )
+        self.assertIsNone(docs_smoke.validate_snapshot_against_struct(content, self.bin_path))
+
+    def test_spec_5_5_snapshot_example_fails(self) -> None:
+        # Literal reproduction of SPEC.md §5.5 (pre-fix): "version" is a
+        # string (struct wants u32) and "created_at" (required) is absent.
+        content = (
+            "{\n"
+            '  "version": "0.1.0",\n'
+            '  "functions": [\n'
+            "    {\n"
+            '      "function_id": "classifyNumber",\n'
+            '      "behaviors": [\n'
+            "        {\n"
+            '          "id": "b0",\n'
+            '          "exemplar_input": [-5],\n'
+            '          "expected_output": "negative"\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+        )
+        err = docs_smoke.validate_snapshot_against_struct(content, self.bin_path)
+        self.assertIsNotNone(err)
+        self.assertIn("Snapshot", err)
+
+    def test_validate_doc_flags_both_pre_fix_examples(self) -> None:
+        # Acceptance check (str-qwua7.9): the gate must fail on the pre-fix
+        # §3.6 and §5.5 examples when both are present in a doc, via the
+        # same validate_doc() entrypoint main() uses (spec + bin_path).
+        text = (
+            "# Doc\n\n"
+            "```yaml\n"
+            "functions:\n"
+            '  "src/auth.ts:validateToken":\n'
+            '    inputs: ["a", "b"]\n'
+            "```\n\n"
+            "```json\n"
+            '{"version": "0.1.0", "functions": '
+            '[{"function_id": "f", "behaviors": []}]}\n'
+            "```\n"
+        )
+        result = docs_smoke.Result()
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "DOC.md"
+            p.write_text(text)
+            docs_smoke.validate_doc(p, "DOC.md", make_spec(), result, verbose=False,
+                                     bin_path=self.bin_path)
+        self.assertFalse(result.ok())
+        self.assertTrue(any("ShatterConfig" in e for e in result.errors), result.errors)
+        self.assertTrue(any("Snapshot" in e for e in result.errors), result.errors)
 
 
 # ---------------------------------------------------------------------------
