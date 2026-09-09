@@ -1877,9 +1877,33 @@ pub(crate) fn rebuild_analyses_from_registry(
     let mut all_analyses = Vec::new();
     let mut file_map: HashMap<String, String> = HashMap::new();
 
+    // str-qwua7.56: build a per-file map of exported names so lifecycle
+    // hooks (`setup`/`teardown`/`beforeAll`/`afterAll`/`beforeEach`/
+    // `afterEach`) can be excluded from target discovery when the file
+    // also exports a setup-shaped API. See
+    // `shatter_core::discovery::should_exclude_lifecycle_export`.
+    let mut exported_names_by_file: HashMap<&Path, Vec<String>> = HashMap::new();
+    for entry in registry.entries() {
+        if entry.exported {
+            exported_names_by_file
+                .entry(entry.file_path.as_path())
+                .or_default()
+                .push(entry.name.clone());
+        }
+    }
+
     for entry in registry.entries() {
         if !all_functions && !entry.exported {
             continue;
+        }
+        if entry.exported {
+            let file_exports = exported_names_by_file
+                .get(entry.file_path.as_path())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if discovery::should_exclude_lifecycle_export(&entry.name, file_exports) {
+                continue;
+            }
         }
 
         let file_path_string = entry.file_path.to_string_lossy().into_owned();
@@ -2539,6 +2563,96 @@ mod tests {
             opt_in_names,
             vec!["Exported", "hidden"],
             "--all scan must include unexported functions",
+        );
+    }
+
+    /// str-qwua7.56: a file that exports both `setup` and `teardown` (a
+    /// "setup-shaped API" per `shatter_core::discovery`) must have those
+    /// lifecycle exports excluded from scan targets, even though they are
+    /// `exported: true`. This mirrors the real-world regression fixture,
+    /// `setup-file-level.ts`, which does not match the `*.shatter.setup.ts`
+    /// filename convention but still shouldn't be fuzzed directly — fuzzing
+    /// `teardown` in isolation throws on mismatched scope, producing
+    /// "Teardown scope mismatch" garbage clusters.
+    #[test]
+    fn rebuild_analyses_excludes_lifecycle_exports_from_setup_shaped_file() {
+        fn make_entry(file: &str, name: &str) -> FunctionEntry {
+            FunctionEntry {
+                file_path: PathBuf::from(file),
+                name: name.into(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
+                dependencies: vec![],
+                crypto_boundaries: vec![],
+                branch_count: 0,
+                start_line: 1,
+                end_line: 2,
+            }
+        }
+        const FILE: &str = "/src/setup-file-level.ts";
+        let entries = vec![
+            make_entry(FILE, "setup"),
+            make_entry(FILE, "teardown"),
+            make_entry(FILE, "runQuery"),
+        ];
+        let mut index = HashMap::new();
+        index.insert(format!("{FILE}::setup"), 0);
+        index.insert(format!("{FILE}::teardown"), 1);
+        index.insert(format!("{FILE}::runQuery"), 2);
+        let registry = FunctionRegistry::from_raw(entries, index);
+
+        let (default_run, _) = rebuild_analyses_from_registry(&registry, false);
+        let default_names: Vec<&str> = default_run.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            default_names,
+            vec!["runQuery"],
+            "setup/teardown lifecycle exports must be excluded even though exported",
+        );
+
+        // --all does not resurrect lifecycle exports either: they are not
+        // ordinary targets under any visibility flag.
+        let (opt_in_run, _) = rebuild_analyses_from_registry(&registry, true);
+        let opt_in_names: Vec<&str> = opt_in_run.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            opt_in_names,
+            vec!["runQuery"],
+            "--all must not include lifecycle exports from a setup-shaped file",
+        );
+    }
+
+    /// A lone `setup` export (no sibling lifecycle export) is not
+    /// setup-shaped and must still be scanned as an ordinary target.
+    #[test]
+    fn rebuild_analyses_keeps_lone_lifecycle_named_export() {
+        fn make_entry(file: &str, name: &str) -> FunctionEntry {
+            FunctionEntry {
+                file_path: PathBuf::from(file),
+                name: name.into(),
+                exported: true,
+                params: vec![],
+                return_type: TypeInfo::Int { int_width: None, int_signed: None },
+                dependencies: vec![],
+                crypto_boundaries: vec![],
+                branch_count: 0,
+                start_line: 1,
+                end_line: 2,
+            }
+        }
+        const FILE: &str = "/src/business.ts";
+        let entries = vec![make_entry(FILE, "setup"), make_entry(FILE, "processOrder")];
+        let mut index = HashMap::new();
+        index.insert(format!("{FILE}::setup"), 0);
+        index.insert(format!("{FILE}::processOrder"), 1);
+        let registry = FunctionRegistry::from_raw(entries, index);
+
+        let (default_run, _) = rebuild_analyses_from_registry(&registry, false);
+        let mut default_names: Vec<&str> = default_run.iter().map(|a| a.name.as_str()).collect();
+        default_names.sort_unstable();
+        assert_eq!(
+            default_names,
+            vec!["processOrder", "setup"],
+            "a lone `setup` export without a sibling lifecycle export is not setup-shaped",
         );
     }
 
