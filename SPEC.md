@@ -1,6 +1,6 @@
 # Shatter Behavioral Specification
 
-> **Living document.** Updated as functionality changes. Last updated: 2026-07-03.
+> **Living document.** Updated as functionality changes. Last updated: 2026-09-09.
 >
 > This spec describes what Shatter does — its observable behavior from a user's perspective. It is the authoritative reference for how each command, feature, and output format should behave. The audit process (`/audit`) compares the actual codebase against this document.
 >
@@ -574,9 +574,48 @@ Accepted by every command (clap `global = true`):
 | `--set KEY=VALUE` | — | Override config values by dotted path (repeatable), e.g. `--set defaults.max_iterations=200`. Precedence: above `.shatter/config.yaml`, below dedicated flags. |
 | `--color WHEN` | `auto` | Terminal colors: `always`, `auto`, `never` (respects `NO_COLOR`). |
 | `--render MODE` | `md` | Terminal rendering: `md` (termimad) or `plain` (legacy ANSI). |
+| `--allow-host-writes` | false | Opt into executing target functions without an OS sandbox (each run is still confined to a throwaway working directory). Only relevant to commands that execute targets; see [Sandbox and host-write policy](#sandbox-and-host-write-policy). |
 
 `shatter --version` prints the package version plus build-time embedded frontend
 hashes (Go source/binary, TS bundle) so a stale binary is self-describing.
+
+### Sandbox and host-write policy
+
+Since str-gg9v, commands that *execute* target functions — `explore`, `scan`,
+`run`, `observe`, `properties`, `revalidate`, `bench` — refuse to run unless a
+sandbox is active. Analysis-only commands (`analyze`, `solve`, `specify`,
+`stale`, `diff`, `spec-diff`, `compare`, `list-targets`, `doctor`, …) never
+execute a target and are exempt.
+
+Shatter explores a function by *calling it* with mined and generated inputs. A
+target that opens, creates, renames, or deletes a file by a relative path
+mutates the directory the command runs in. Two independent controls guard
+against this:
+
+1. **Default-deny.** With no OS sandbox configured, execution commands print
+   an instructive refusal and exit instead of running (see
+   [§2.11 Exit Codes](#211-exit-codes)). Satisfy the gate with any one of:
+   - `SHATTER_SANDBOX_BACKEND=none|bwrap|docker` set to `bwrap` or `docker` —
+     the Go frontend's OS sandbox already contains target writes, so this is
+     the recommended remedy when a backend is available.
+   - the global `--allow-host-writes` flag, once per invocation.
+   - `SHATTER_ALLOW_HOST_WRITES=1` (or `true`/`yes`/`on`, case-insensitive) —
+     an env opt-in equivalent to `--allow-host-writes`, useful once per
+     shell/CI job.
+2. **Throwaway working directory.** Whenever execution proceeds without a
+   configured OS sandbox (i.e. via one of the two opt-ins above), each
+   frontend is pointed at a fresh temporary directory
+   (`SHATTER_HOST_WRITE_DIR`) for the run's duration, so relative-path writes
+   land there instead of the invoking repository, and the directory is removed
+   when the command finishes. **Go and Rust targets only** — the TypeScript
+   frontend does not yet redirect relative-path writes into the throwaway
+   directory (str-02i70); an unsandboxed, opted-in TS target can still write
+   into the invoking repository. Configure an OS sandbox for TS targets until
+   str-02i70 lands.
+
+A configured `SHATTER_SANDBOX_BACKEND` satisfies both controls at once (the
+sandbox already isolates writes), so the throwaway-directory guard is skipped
+in that case.
 
 ### 2.11 Exit Codes
 
@@ -587,13 +626,19 @@ gate fired" from "the tool couldn't run" without parsing stderr (str-9fn2):
 |------|---------|
 | `0` | Success — no differences, no failures, no gate fired. |
 | `1` | An opt-in gate or comparison fired as designed: `diff`/`spec-diff`/`compare` found regressions or divergence, `stale` found drift (or, with `--strict`, untracked functions), `scan --fail-on-failures`/`--failure-threshold` tripped, or a `run` coverage budget gate (`--fail-on-stale-source-set`, `--fail-on-missing-artifacts`, `--fail-on-low-report-validity`, or a percent threshold) failed. |
-| `2` | A usage or tool error: invalid arguments/config, a malformed input file (e.g. an unparseable spec passed to `spec-diff`), a frontend crash or timeout, or any other failure that means the requested comparison or gate never ran to a verdict. |
+| `2` | A usage or tool error: invalid arguments/config, a malformed input file (e.g. an unparseable spec passed to `spec-diff`), a frontend crash or timeout, a [host-write refusal](#sandbox-and-host-write-policy) (execution denied without a sandbox), or any other failure that means the requested comparison or gate never ran to a verdict. |
 
 Code `1` only ever comes from a command's own designed pass/fail result (its
 `Ok` path). Any `Err` — the command raised an error instead of producing a
 verdict — always exits `2`, except for the specific opt-in gate checks listed
 above, which are errors by construction (they must abort the run) but still
 report as `1` since they represent a fired gate, not a broken tool.
+
+The host-write refusal is one of the `Err` paths above and exits `2` today.
+This table describes the *intended* convention project-wide; not every
+command's error path is fully reconciled with it yet — str-qwua7.12 tracks
+bringing the remaining commands into line. Do not wait for that issue to land
+before relying on this table as the target behavior.
 
 ---
 
@@ -680,7 +725,7 @@ defaults:
 functions:
   "src/auth.ts:validateToken":
     max_iterations: 200
-    inputs: ["valid-token", "expired-token", "malformed"]
+    inputs: ./inputs/validateToken/candidates.json
 
 opaque_types:
   - DatabaseConnection
@@ -1122,6 +1167,12 @@ $ shatter scan --resume auto src/
 
 | Date | Change | Section |
 |------|--------|---------|
+| 2026-08-26 | Documented the three-way exit code convention (0 success, 1 fired gate, 2 tool/usage error) (str-9fn2) | 2.11 |
+| 2026-08-10 | `shatter init`/`shatter doctor` gitignore every generated path they configure, not just a subset (str-1fwt) | 2.8, 2.9 |
+| 2026-07-31 | Wired `--concolic` and `--solver-timeout` through `shatter run` (str-yhsp) | 2.4 |
+| 2026-07-30 | Documented `explore`'s auto-detected invocation planner (str-79t9) | 2.1 |
+| 2026-07-18 | Documented the two-file config split (`shatter.config.json` for scan-global settings, `.shatter/config.yaml` for per-function settings) and `shatter doctor` reporting both files' presence and precedence (str-mktn) | 2.9, 3.6 |
+| 2026-07-10 | Default-deny host writes + throwaway-directory execution isolation: `--allow-host-writes` global flag, `SHATTER_SANDBOX_BACKEND`/`SHATTER_ALLOW_HOST_WRITES` env vars, and the host-write refusal's exit code (str-gg9v) | 2.10, 2.11 |
 | 2026-07-03 | SPEC overhaul: documented all 24 CLI commands (added observe/analyze/solve/specify/properties/compare/build-frontend/discover-deps/stale/revalidate/test/telemetry/cache/workspace/nondeterminism/bench/list-targets/doctor); corrected explore/scan/run/global flag tables against `args.rs` (removed nonexistent `--timeout`, `--output-dir`/`--report`/`--progress-json`, `--perf`; documented `--concolic`, staged pipeline, `-o`/`--stdout`/`--format`, progress-on-stderr); removed the deleted test-export output; refreshed the protocol summary and type system; rewrote stale limitations (random-only explorer, always-observed provenance, no-async). | 2, 3, 4, 5, 7 |
 | 2026-04-09 | Added live output, partial artifacts, and resume documentation | 6 |
 | 2026-02-28 | Initial specification created | All |
