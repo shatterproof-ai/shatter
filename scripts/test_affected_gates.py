@@ -11,6 +11,8 @@ import unittest
 
 import yaml
 
+from scripts.git_sandbox_test_lib import sanitized_git_env
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "affected-gates.py"
@@ -232,7 +234,9 @@ class AffectedGateWiringTests(unittest.TestCase):
             scripts = fixture / "scripts"
             scripts.mkdir()
             shutil.copy2(SCRIPT, scripts / SCRIPT.name)
-            subprocess.run(["git", "init", "-q"], cwd=fixture, check=True)
+            subprocess.run(
+                ["git", "init", "-q"], cwd=fixture, env=sanitized_git_env(), check=True
+            )
             marker = fixture / "task-invoked"
             fake_bin = fixture / "bin"
             fake_bin.mkdir()
@@ -242,7 +246,8 @@ class AffectedGateWiringTests(unittest.TestCase):
             completed = subprocess.run(
                 ["bash", "-c", implementation],
                 cwd=fixture,
-                env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                env=sanitized_git_env()
+                | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
                 text=True,
                 capture_output=True,
             )

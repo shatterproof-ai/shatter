@@ -10,6 +10,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/git-sandbox-test-lib.sh
+source "$REPO_ROOT/scripts/git-sandbox-test-lib.sh"
 SCRIPT="$REPO_ROOT/scripts/target-dir-report.sh"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT

@@ -15,6 +15,8 @@ import unittest
 
 import yaml
 
+from scripts.git_sandbox_test_lib import GIT_SANDBOX_ENV_VARS, sanitized_git_env
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "gate-receipt.py"
@@ -110,7 +112,12 @@ class ReceiptRepo:
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["git", *args], cwd=self.repo, text=True, capture_output=True, check=True
+            ["git", *args],
+            cwd=self.repo,
+            env=sanitized_git_env(),
+            text=True,
+            capture_output=True,
+            check=True,
         )
 
     def _write(self, relative: str, data: bytes, *, executable: bool = False) -> None:
@@ -175,14 +182,7 @@ class ReceiptRepo:
                 "SHATTER_TEST_GATE_MARKER": str(self.root / "gate-invoked"),
             }
         )
-        for key in (
-            "GIT_DIR",
-            "GIT_COMMON_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        ):
+        for key in GIT_SANDBOX_ENV_VARS:
             env.pop(key, None)
         return env
 

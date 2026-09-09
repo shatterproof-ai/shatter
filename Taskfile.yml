@@ -384,10 +384,13 @@ tasks:
       - scripts/target-dir-report.sh
       - scripts/test_target_dir_report.sh
       - scripts/test_target_dir_report_json.sh
+      - scripts/git-sandbox-test-lib.sh
+      - scripts/test_git_sandbox_test_lib.sh
     cmds:
       - bash scripts/test_seed_worktree.sh
       - bash scripts/test_target_dir_report.sh
       - bash scripts/test_target_dir_report_json.sh
+      - bash scripts/test_git_sandbox_test_lib.sh
 
   meta:
     desc: Run repository meta checks (workflow lint, Semgrep)
@@ -408,6 +411,9 @@ tasks:
       - scripts/test_drift_patrol.py
       - scripts/cleanup-merged-remote-branches.sh
       - scripts/test_cleanup_merged_remote_branches.sh
+      - scripts/git-sandbox-test-lib.sh
+      - scripts/git_sandbox_test_lib.py
+      - scripts/test_git_sandbox_test_lib.py
       - scripts/examples_checkout.py
       - scripts/test_walkthrough_examples_checkout.py
       - scripts/affected-gates.py
@@ -440,6 +446,7 @@ tasks:
       - python3 -m unittest scripts.test_package_npm_release
       - python3 -m unittest scripts.test_retention_continuous_releases
       - bash scripts/test_cleanup_merged_remote_branches.sh
+      - python3 -m unittest scripts.test_git_sandbox_test_lib
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
       - python3 -m unittest scripts.test_affected_gates
       - python3 -m unittest scripts.test_gate_receipt
