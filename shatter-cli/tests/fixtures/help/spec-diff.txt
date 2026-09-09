@@ -1,0 +1,48 @@
+Compare two function specifications and report behavioral changes.
+
+Accepts two spec JSON files (as produced by `explore --spec-json`). Exit code is 0 when specs are equivalent, nonzero when regressions are found.
+
+Usage: shatter spec-diff [OPTIONS] <OLD> <NEW>
+
+Arguments:
+  <OLD>
+          Path to the old (baseline) spec JSON file
+
+  <NEW>
+          Path to the new (current) spec JSON file
+
+Options:
+      --json
+          Output the diff result as JSON instead of human-readable text
+
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace
+          
+          [default: info]
+
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+
+      --project-dir <DIR>
+          Override auto-detected project root directory
+
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never)
+          
+          [default: auto]
+          [possible values: always, auto, never]
+
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI)
+
+          Possible values:
+          - md:    Markdown rendered via termimad (default). Use `--color never` for raw Markdown
+          - plain: Legacy plain ANSI text output (deprecated)
+          
+          [default: md]
+
+  -h, --help
+          Print help (see a summary with '-h')

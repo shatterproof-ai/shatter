@@ -51,8 +51,40 @@ fn maybe_implicit_init(project_dir: Option<&std::path::Path>, colors: &crate::he
     }
 }
 
+/// Intercept `-h`/`--help` for non-executing commands (str-qwua7.15) before
+/// clap's own parsing runs, and print help with execution-only global flags
+/// hidden. Returns `Some(exit_code)` when help was handled; the caller
+/// should exit immediately in that case. All other invocations (including
+/// `--help` on every other command) fall through unchanged to the normal
+/// `Cli::try_parse_from` flow below.
+fn maybe_print_non_executing_help(raw_args: &[String]) -> Option<ExitCode> {
+    if !raw_args.iter().any(|a| a == "-h" || a == "--help") {
+        return None;
+    }
+    let path = args::resolve_subcommand_path(raw_args);
+    if !args::is_non_executing_path(&path) {
+        return None;
+    }
+    let mut command = args::help_only_command();
+    let mut target = &mut command;
+    for name in &path {
+        target = target.find_subcommand_mut(name.as_str())?;
+    }
+    let wants_long = raw_args.iter().any(|a| a == "--help");
+    if wants_long {
+        print!("{}", target.render_long_help());
+    } else {
+        print!("{}", target.render_help());
+    }
+    Some(ExitCode::SUCCESS)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
+    let raw_args_for_help: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(exit_code) = maybe_print_non_executing_help(&raw_args_for_help) {
+        return exit_code;
+    }
     let cli = match Cli::try_parse_from(std::env::args_os()) {
         Ok(cli) => cli,
         Err(clap_err) => {

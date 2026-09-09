@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use shatter_core::explorer;
 use shatter_core::log_level::LogLevel;
@@ -278,6 +278,146 @@ impl Cli {
             output,
         })
     }
+}
+
+// --- str-qwua7.15: hide execution-only global flags on non-executing commands ---
+//
+// `--allow-host-writes`, `--set`, and the four `timing*` flags above are
+// `global = true` so they work no matter where on the command line they're
+// passed, but that also makes clap repeat them on every leaf subcommand's
+// `--help` — including commands that never execute a target function, spawn
+// a frontend, or spend a timing/host-write budget (`init`, `cache`,
+// `telemetry`, `spec-diff`, `doctor`). Display/global flags (`--color`,
+// `--render`, `--log-level`, `-v/-q`, `--project-dir`) are unaffected and may
+// still appear everywhere.
+//
+// The obvious fix — mutate the real parsing `Command` to `hide(true)` these
+// args just on the non-executing subcommands — does not work: clap 4.5.60
+// propagates `global = true` args onto subcommands lazily, during its own
+// internal build step, and mutating an arg's position on a subcommand
+// (`Command::mut_arg` removes and re-inserts) desyncs an internal flag index
+// that a later `get_matches()`/`build()` call relies on. Verified by hand:
+// after such a mutation, parsing `spec-diff --help` silently set
+// `allow_host_writes = true` instead of displaying help — `--help` matched
+// the arg that used to sit at that position. So a mutated `Command` is used
+// here **only** to render static help text, never to parse real arguments;
+// all actual argument parsing continues to go through the pristine,
+// untouched `Cli::command()` exactly as before this change.
+
+/// Global arg ids (clap field names, not flag spellings) that are noise on a
+/// non-executing command's `--help`.
+const EXECUTION_ONLY_GLOBAL_ARG_IDS: &[&str] = &[
+    "allow_host_writes",
+    "set_overrides",
+    "timing",
+    "timing_format",
+    "timing_output",
+    "timing_output_dir",
+];
+
+/// Subcommand paths (top-level name, optionally one nested action name) that
+/// never execute a target function, spawn a frontend, or spend a
+/// timing/host-write budget. Out of scope for this list: `help_heading`
+/// grouping/flag renames (str-9ee5) and the `ExploreOptions` flatten
+/// consolidation (audit item 20) — this only controls which existing global
+/// flags are visible in `--help`, nothing about flag names or grouping.
+const NON_EXECUTING_COMMAND_PATHS: &[&[&str]] = &[
+    &["spec-diff"],
+    &["init"],
+    &["doctor"],
+    &["cache"],
+    &["cache", "clear"],
+    &["telemetry"],
+    &["telemetry", "status"],
+    &["telemetry", "off"],
+    &["telemetry", "on"],
+    &["telemetry", "reset-id"],
+];
+
+/// Build a help-only clone of the CLI's clap `Command` with the
+/// execution-only globals hidden on non-executing subcommands.
+///
+/// **Never** call `get_matches`/`try_get_matches`/`from_arg_matches` against
+/// the command this returns — see the module-level comment above. Use it
+/// only to locate a subcommand and call `render_help`/`render_long_help` on
+/// it.
+pub(crate) fn help_only_command() -> clap::Command {
+    let mut command = Cli::command();
+    // Force clap to fully build (and propagate globals onto) every
+    // subcommand once, up front, before any mutation touches them.
+    command.build();
+    for path in NON_EXECUTING_COMMAND_PATHS {
+        command = hide_execution_only_globals_along_path(command, path);
+    }
+    command
+}
+
+fn hide_execution_only_globals_along_path(command: clap::Command, path: &[&str]) -> clap::Command {
+    match path.split_first() {
+        None => {
+            let mut command = command;
+            for id in EXECUTION_ONLY_GLOBAL_ARG_IDS {
+                command = command.mut_arg(*id, |a| a.hide(true));
+            }
+            command
+        }
+        Some((head, rest)) => {
+            command.mut_subcommand(*head, |sub| hide_execution_only_globals_along_path(sub, rest))
+        }
+    }
+}
+
+/// Returns `true` when `path` (as resolved by [`resolve_subcommand_path`])
+/// names a non-executing command whose `--help` should hide the
+/// execution-only globals.
+pub(crate) fn is_non_executing_path(path: &[String]) -> bool {
+    path.first()
+        .is_some_and(|top| NON_EXECUTING_COMMAND_PATHS.iter().any(|p| p[0] == top))
+}
+
+/// Best-effort resolution of the subcommand path (e.g. `["cache", "clear"]`)
+/// being invoked, from the raw CLI arguments (excluding argv[0]).
+///
+/// This is used **only** to decide which `--help` text to render — a wrong
+/// guess in some exotic case just shows the wrong (but still correct, still
+/// clap-rendered) help text; it never affects real argument parsing, which
+/// always goes through the untouched `Cli::command()`. It walks past known
+/// value-taking global flags (declared once, exhaustively, above) to find up
+/// to two leading bare tokens.
+pub(crate) fn resolve_subcommand_path(args: &[String]) -> Vec<String> {
+    const VALUE_FLAGS: &[&str] = &[
+        "--log-level",
+        "--timing",
+        "--timing-format",
+        "--timing-output",
+        "--timing-output-dir",
+        "--project-dir",
+        "--set",
+        "--color",
+        "--render",
+    ];
+    let mut path = Vec::new();
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "-h" || arg == "--help" {
+            continue;
+        }
+        if arg.starts_with('-') {
+            if VALUE_FLAGS.contains(&arg.as_str()) {
+                skip_next = true;
+            }
+            continue;
+        }
+        path.push(arg.clone());
+        if path.len() >= 2 {
+            break;
+        }
+    }
+    path
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
