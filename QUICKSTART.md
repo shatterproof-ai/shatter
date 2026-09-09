@@ -75,14 +75,24 @@ EOF
 
 Run Shatter:
 
+Commands that execute target functions (`explore`, `scan`, `run`, `observe`,
+`properties`, `revalidate`, `bench`) refuse to run unsandboxed unless you opt
+in — Shatter calls your code with generated inputs, and an unconfined target
+that writes a relative-path file can leave stray files in your working
+directory. Pass `--allow-host-writes` (each unsandboxed run then executes in a
+throwaway directory that's deleted afterward); or, if you have Docker or
+bubblewrap available, `export SHATTER_SANDBOX_BACKEND=docker` once per shell
+instead. See [Executing Target Functions Safely](README.md#executing-target-functions-safely)
+in README.md for the full policy.
+
 ```bash
-./target/release/shatter explore shipping.ts:calculateShipping
+./target/release/shatter explore shipping.ts:calculateShipping --allow-host-writes
 ```
 
 Or, if `shatter` is already on your `PATH`:
 
 ```bash
-shatter explore shipping.ts:calculateShipping
+shatter explore shipping.ts:calculateShipping --allow-host-writes
 ```
 
 What to expect:
@@ -115,13 +125,13 @@ other Shatter-managed state to live alongside the code.
 Generate a spec you can diff later:
 
 ```bash
-shatter explore --concolic --spec shipping.ts:calculateShipping
+shatter explore --concolic --spec shipping.ts:calculateShipping --allow-host-writes
 ```
 
 Write JSON instead:
 
 ```bash
-shatter explore --concolic --spec-json --spec-out shipping-spec.json shipping.ts:calculateShipping
+shatter explore --concolic --spec-json --spec-out shipping-spec.json shipping.ts:calculateShipping --allow-host-writes
 ```
 
 ## 5. Scan More Than One File
@@ -131,24 +141,27 @@ For a handful of specific files, pass a quoted glob to `explore` (or
 source extensions:
 
 ```bash
-shatter explore 'src/**/*.ts'
+shatter explore 'src/**/*.ts' --allow-host-writes
 ```
 
 For repository-wide discovery, point `shatter scan` at a directory and narrow
 the file set with `--include` / `--exclude` (repeatable glob patterns):
 
 ```bash
-shatter scan src/
-shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/
+shatter scan src/ --allow-host-writes
+shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/ --allow-host-writes
 ```
 
 Useful follow-ons:
 
 ```bash
-shatter scan --changed src/
-shatter scan --language rust crates/my-crate/src/
+shatter scan --changed src/ --allow-host-writes
+shatter scan --language rust crates/my-crate/src/ --allow-host-writes
 shatter diff snapshots/shipping.json current/shipping.json
 ```
+
+(`diff` is analysis-only and does not execute target functions, so it needs
+neither flag.)
 
 Single-target commands (`observe`, `revalidate`, `stale`) require a concrete
 `<file>` or `<file>:<function>` and reject wildcard inputs.

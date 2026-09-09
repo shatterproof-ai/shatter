@@ -259,22 +259,28 @@ export function calculateShipping(weight: number, country: string): number {
 ```
 
 ```bash
-shatter explore shipping.ts:calculateShipping
+shatter explore shipping.ts:calculateShipping --allow-host-writes
 ```
+
+`explore` and `scan` refuse to execute target functions without a sandbox
+unless you opt in with `--allow-host-writes` (or configure
+`SHATTER_SANDBOX_BACKEND`) — see
+[Executing Target Functions Safely](#executing-target-functions-safely) below
+for why and for the sandboxed alternative.
 
 `explore` and `properties` also accept quoted glob patterns over file paths,
 which are expanded against the filesystem and filtered to supported source
 extensions:
 
 ```bash
-shatter explore 'src/**/*.ts'
+shatter explore 'src/**/*.ts' --allow-host-writes
 ```
 
 For repository-wide discovery, point `shatter scan` at a directory and narrow
 the file set with `--include` / `--exclude`:
 
 ```bash
-shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/
+shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/ --allow-host-writes
 ```
 
 Single-target commands (`observe`, `revalidate`, `stale`) require a concrete
