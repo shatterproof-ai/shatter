@@ -17,9 +17,30 @@ This gate extracts fenced code blocks from a configured set of docs and:
   - **JSON examples** (```json): parsed with json.loads; invalid syntax fails.
   - **YAML examples** (```yaml / ```yml): parsed with yaml.safe_load; invalid
     syntax fails.
+  - **Typed config/snapshot examples**: a parsed JSON/YAML block whose shape
+    matches `.shatter/config.yaml` (a `defaults`/`opaque_types`/`nondeterminism`
+    key, or a `functions` *mapping*) or a behavior snapshot (a `version` key
+    with a `functions` *list*) is additionally deserialized against the real
+    Rust structs (`ShatterConfig` / `snapshot::Snapshot`) by shelling out to the
+    built CLI — `shatter build-frontend` for config (parses the file, then
+    fails fast on an unsupported placeholder language before doing any real
+    build work) and `shatter diff` for snapshots (reads the file twice via
+    `Snapshot::read_from_file`). This catches a config/snapshot example that
+    parses as JSON/YAML but cannot deserialize into the actual struct (wrong
+    field type, missing required field, etc.) — syntax validity alone does not
+    catch this. An inline directive one line above the fence, e.g.
+    `<!-- docs-smoke: kind="config" -->` / `kind="snapshot"`, overrides the
+    shape-based detection when needed.
   - **Runnable smoke commands** (from the config's `smoke_commands`): executed
     against the built CLI in a throwaway temp directory to prove the command
-    surface is actually live, not just statically consistent.
+    surface is actually live, not just statically consistent. `{repo_root}`
+    in a command is substituted with the repository root; `{fixtures}` is
+    substituted with a *copy* of `scripts/docs-smoke-fixtures/` made inside
+    the throwaway directory (so a command exercising a real target, which
+    writes artifacts next to the target file rather than under cwd, does not
+    leave stray output in the checkout). Every successful smoke command must
+    also produce non-empty output — a silently-empty report is as much a
+    regression as a nonzero exit.
 
 This is a *maintained allowlist*, not blind execution of every fenced block.
 Intentionally illustrative snippets (pseudo-JSON, NDJSON streams, output
@@ -62,6 +83,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -94,7 +116,11 @@ UNIVERSAL_SHORT = frozenset(("-h", "-V"))
 
 DIRECTIVE_RE = re.compile(r"<!--\s*docs-smoke:\s*(?P<body>.*?)\s*-->")
 REASON_RE = re.compile(r'reason\s*=\s*"(?P<reason>[^"]*)"')
+KIND_RE = re.compile(r'^kind\s*=\s*"(?P<kind>config|snapshot)"$')
 FENCE_RE = re.compile(r"^(?P<indent>\s*)(?P<ticks>`{3,})(?P<info>.*)$")
+
+# Struct-shape detection for untagged JSON/YAML blocks (see classify_structured_block).
+CONFIG_SHAPE_KEYS = frozenset(("defaults", "opaque_types", "nondeterminism"))
 
 
 # ---------------------------------------------------------------------------
@@ -130,28 +156,48 @@ class Block:
     skip: bool = False
     skip_reason: str | None = None
     directive_error: str | None = None
+    kind_override: str | None = None  # "config" | "snapshot" | None
 
 
-def extract_directive(prev_nonblank: str | None) -> tuple[bool, str | None, str | None]:
+def extract_directive(
+    prev_nonblank: str | None,
+) -> tuple[bool, str | None, str | None, str | None]:
     """Parse a docs-smoke directive from the line above a fence.
 
-    Returns (skip, reason, error). `error` is non-None when a directive is
-    malformed (e.g. skip with no reason), which the caller turns into a gate
-    failure so exemptions cannot be added without justification.
+    Returns (skip, reason, error, kind). `error` is non-None when a directive
+    is malformed (e.g. skip with no reason), which the caller turns into a
+    gate failure so exemptions cannot be added without justification. `kind`
+    is set for a `kind="config"` / `kind="snapshot"` directive, which forces
+    struct validation for a block whose shape the automatic detection in
+    `classify_structured_block` would not otherwise recognize.
     """
     if prev_nonblank is None:
-        return (False, None, None)
+        return (False, None, None, None)
     m = DIRECTIVE_RE.search(prev_nonblank)
     if not m:
-        return (False, None, None)
+        return (False, None, None, None)
     body = m.group("body").strip()
     verb = body.split()[0] if body else ""
-    if verb != "skip":
-        return (False, None, f"unknown docs-smoke directive '{verb}' (only 'skip' is supported)")
-    reason_m = REASON_RE.search(body)
-    if not reason_m or not reason_m.group("reason").strip():
-        return (True, None, "docs-smoke: skip directive requires a non-empty reason=\"...\"")
-    return (True, reason_m.group("reason").strip(), None)
+    if verb == "skip":
+        reason_m = REASON_RE.search(body)
+        if not reason_m or not reason_m.group("reason").strip():
+            return (
+                True,
+                None,
+                "docs-smoke: skip directive requires a non-empty reason=\"...\"",
+                None,
+            )
+        return (True, reason_m.group("reason").strip(), None, None)
+    km = KIND_RE.match(body)
+    if km:
+        return (False, None, None, km.group("kind"))
+    return (
+        False,
+        None,
+        f"unknown docs-smoke directive '{verb}' "
+        f"(only 'skip' and 'kind=\"config\"|kind=\"snapshot\"' are supported)",
+        None,
+    )
 
 
 def parse_fenced_blocks(text: str) -> list[Block]:
@@ -179,7 +225,7 @@ def parse_fenced_blocks(text: str) -> list[Block]:
                 prev_nonblank = lines[j]
                 break
             j -= 1
-        skip, reason, derr = extract_directive(prev_nonblank)
+        skip, reason, derr, kind_override = extract_directive(prev_nonblank)
 
         # Collect body until a closing fence of >= the same length.
         body_lines: list[str] = []
@@ -203,6 +249,7 @@ def parse_fenced_blocks(text: str) -> list[Block]:
                 skip=skip,
                 skip_reason=reason,
                 directive_error=derr,
+                kind_override=kind_override,
             )
         )
         if not closed:
@@ -459,6 +506,124 @@ def validate_yaml_block(content: str) -> str | None:
         return f"invalid YAML: {exc}"
 
 
+def _try_parse_structured(lang: str, content: str) -> object:
+    """Best-effort re-parse of an already-syntax-checked JSON/YAML block, for
+    struct-shape classification only. Returns None on any failure — the
+    syntax check above is what reports parse errors; this is purely a second
+    look at the parsed value."""
+    try:
+        if lang in JSON_LANGS:
+            return json.loads(content)
+        if lang in YAML_LANGS:
+            import yaml
+            return yaml.safe_load(content)
+    except Exception:
+        return None
+    return None
+
+
+def classify_structured_block(kind_override: str | None, parsed: object) -> str | None:
+    """Decide whether a parsed JSON/YAML block should be struct-validated as a
+    `.shatter/config.yaml` (`ShatterConfig`) or a behavior snapshot
+    (`snapshot::Snapshot`), or left alone.
+
+    An explicit `kind_override` (from a `kind="config"`/`kind="snapshot"`
+    directive) always wins. Otherwise the block's top-level shape is matched
+    against the two structs: a snapshot has a `version` key with `functions`
+    as a *list* (`Snapshot.functions: Vec<FunctionSnapshot>`); a config has
+    `functions` as a *mapping* (`ShatterConfig.functions: HashMap<...>`) or
+    any of the other top-level `ShatterConfig` keys.
+    """
+    if kind_override in ("config", "snapshot"):
+        return kind_override
+    if not isinstance(parsed, dict):
+        return None
+    functions = parsed.get("functions")
+    if "version" in parsed and isinstance(functions, list):
+        return "snapshot"
+    if isinstance(functions, dict) or any(k in parsed for k in CONFIG_SHAPE_KEYS):
+        return "config"
+    return None
+
+
+def validate_config_against_struct(content: str, bin_path: str) -> str | None:
+    """Deserialize `content` as a `.shatter/config.yaml` file against the real
+    `ShatterConfig` struct, by shelling out to the built CLI rather than
+    reimplementing the schema in Python.
+
+    `shatter build-frontend <language> --config <dir>` parses `<dir>/config.yaml`
+    into `ShatterConfig` as the very first thing it does (`build_frontend.rs`),
+    before any generator collection or actual compilation. Passing a
+    placeholder `<language>` that build-frontend does not support means: once
+    the config parses cleanly, the command fails immediately on "unsupported
+    language" rather than proceeding to a real (slow, toolchain-dependent)
+    frontend build. Returns an error string when the config does not
+    deserialize; None when it does (regardless of the unsupported-language
+    failure that follows).
+    """
+    with tempfile.TemporaryDirectory(prefix="docs-smoke-cfg-") as tmp:
+        (Path(tmp) / "config.yaml").write_text(content)
+        try:
+            proc = subprocess.run(
+                [bin_path, "build-frontend", "__docs-smoke-unsupported-language__",
+                 "--config", tmp],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"failed to run config struct validation: {exc}"
+        combined = (proc.stderr or "") + (proc.stdout or "")
+        if "failed to load config" in combined:
+            tail = combined.strip().splitlines()
+            detail = tail[-1] if tail else combined.strip()
+            return f"config example does not deserialize into ShatterConfig: {detail}"
+        return None
+
+
+def validate_snapshot_against_struct(content: str, bin_path: str) -> str | None:
+    """Deserialize `content` as a behavior snapshot against the real
+    `snapshot::Snapshot` struct, by shelling out to the built CLI.
+
+    `shatter diff <a> <b>` reads both files via `Snapshot::read_from_file`
+    before doing any diffing. Comparing the file against itself means a
+    structurally valid snapshot always succeeds (no regressions vs. itself);
+    a snapshot that does not deserialize into `Snapshot` (wrong field type,
+    missing required field) fails immediately with a read error.
+    """
+    with tempfile.TemporaryDirectory(prefix="docs-smoke-snap-") as tmp:
+        snap_path = Path(tmp) / "snapshot.json"
+        snap_path.write_text(content)
+        try:
+            proc = subprocess.run(
+                [bin_path, "diff", str(snap_path), str(snap_path)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"failed to run snapshot struct validation: {exc}"
+        combined = (proc.stderr or "") + (proc.stdout or "")
+        if "failed to read" in combined and "snapshot" in combined:
+            tail = combined.strip().splitlines()
+            detail = tail[-1] if tail else combined.strip()
+            return f"snapshot example does not deserialize into Snapshot: {detail}"
+        return None
+
+
+def validate_structured_kind(block: "Block", bin_path: str) -> str | None:
+    """Run struct validation for one JSON/YAML block, if its shape (or an
+    explicit `kind=` directive) calls for it. Returns an error string, or
+    None when the block is not struct-checked or checks out clean."""
+    parsed = _try_parse_structured(block.lang, block.content)
+    kind = classify_structured_block(block.kind_override, parsed)
+    if kind == "config":
+        return validate_config_against_struct(block.content, bin_path)
+    if kind == "snapshot":
+        return validate_snapshot_against_struct(block.content, bin_path)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Doc validation orchestration
 # ---------------------------------------------------------------------------
@@ -470,6 +635,7 @@ def validate_doc(
     spec: CliSpec,
     result: Result,
     verbose: bool,
+    bin_path: str | None = None,
 ) -> None:
     text = doc_path.read_text()
     blocks = parse_fenced_blocks(text)
@@ -497,11 +663,19 @@ def validate_doc(
             err = validate_json_block(block.content)
             if err:
                 result.error(f"{loc}: {err}")
+            elif bin_path is not None:
+                serr = validate_structured_kind(block, bin_path)
+                if serr:
+                    result.error(f"{loc}: {serr}")
             n_checked += 1
         elif block.lang in YAML_LANGS:
             err = validate_yaml_block(block.content)
             if err:
                 result.error(f"{loc}: {err}")
+            elif bin_path is not None:
+                serr = validate_structured_kind(block, bin_path)
+                if serr:
+                    result.error(f"{loc}: {serr}")
             n_checked += 1
         # Other langs (ts, markdown, plain/untagged) are not validated.
     if verbose:
@@ -520,8 +694,31 @@ def run_smoke_commands(
     with tempfile.TemporaryDirectory(prefix="docs-smoke-") as tmp:
         env = dict(os.environ)
         env.setdefault("NO_COLOR", "1")
+        # `{fixtures}` resolves to a *copy* of scripts/docs-smoke-fixtures/
+        # inside the throwaway directory, not the in-repo original. `shatter
+        # explore` writes its explore-results artifacts next to the target
+        # file rather than under cwd, so running directly against the in-repo
+        # fixture would leave stray `shatter-artifacts/`/`.shatter/` output in
+        # the checkout on every gate run — exactly the "no project mutation"
+        # smoke_commands must avoid (see the comment in docs-smoke.yaml).
+        fixtures_src = REPO_ROOT / "scripts" / "docs-smoke-fixtures"
+        fixtures_copy = Path(tmp) / "docs-smoke-fixtures"
+        if fixtures_src.is_dir():
+            shutil.copytree(fixtures_src, fixtures_copy)
+            # The TS frontend's node_modules preflight (shatter-ts/src/
+            # handlers.ts) only checks that `<project_root>/node_modules`
+            # exists, not its contents — the fixture has no external imports.
+            # Created here (rather than committed) because `node_modules/` is
+            # globally gitignored, so a checked-in copy would never survive a
+            # fresh checkout.
+            (fixtures_copy / "node_modules").mkdir(exist_ok=True)
         for cmd in commands:
-            tokens = shlex.split(cmd)
+            # `{repo_root}` lets a smoke command reference an in-repo path by
+            # absolute address even though the command itself runs with cwd
+            # set to the throwaway directory below rather than the repo root.
+            resolved_cmd = cmd.replace("{repo_root}", str(REPO_ROOT))
+            resolved_cmd = resolved_cmd.replace("{fixtures}", str(fixtures_copy))
+            tokens = shlex.split(resolved_cmd)
             if not tokens:
                 continue
             # Replace a leading `shatter` token with the resolved binary.
@@ -547,6 +744,12 @@ def run_smoke_commands(
                 result.error(
                     f"smoke_command '{cmd}': exited {proc.returncode} — {snippet}"
                 )
+            elif not (proc.stdout or "").strip():
+                # A real command surface that runs but silently produces
+                # nothing is as much a regression as a nonzero exit — this is
+                # what would have caught a "successful" explore that quietly
+                # emitted an empty report.
+                result.error(f"smoke_command '{cmd}': exited 0 but produced no output")
             elif verbose:
                 print(f"  smoke_command '{cmd}': ok")
 
@@ -648,7 +851,7 @@ def main() -> int:
         if not doc_path.exists():
             result.error(f"{rel}: configured doc not found")
             continue
-        validate_doc(doc_path, rel, spec, result, verbose)
+        validate_doc(doc_path, rel, spec, result, verbose, bin_path)
 
     if smoke_commands and not args.skip_run:
         print(f"\nRunning {len(smoke_commands)} smoke command(s)...")
