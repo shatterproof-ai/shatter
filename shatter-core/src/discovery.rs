@@ -590,9 +590,75 @@ fn discover_file_setup(language_ext: &str, source_files: &[PathBuf]) -> HashMap<
     result
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle export exclusion (str-qwua7.56)
+// ---------------------------------------------------------------------------
+
+/// Exported function names recognized as test/session lifecycle hooks.
+///
+/// These names come from the common `setup`/`teardown` and
+/// `before*`/`after*` conventions used by test frameworks (Jest, Mocha,
+/// etc.) and by Shatter's own multi-level setup lifecycle
+/// (`discover_setup_files()` above). A file that exports a *setup-shaped
+/// API* — i.e. two or more of these names together — is almost certainly a
+/// setup/teardown helper module, not a collection of ordinary fuzz targets.
+pub const LIFECYCLE_EXPORT_NAMES: &[&str] = &[
+    "setup",
+    "teardown",
+    "beforeAll",
+    "afterAll",
+    "beforeEach",
+    "afterEach",
+];
+
+/// Returns `true` if `name` is one of the recognized lifecycle hook names.
+#[must_use]
+pub fn is_lifecycle_export_name(name: &str) -> bool {
+    LIFECYCLE_EXPORT_NAMES.contains(&name)
+}
+
+/// Returns `true` if a file's exported names constitute a "setup-shaped
+/// API": two or more of the recognized lifecycle hook names exported
+/// together.
+///
+/// A single incidentally-named export (e.g. a legitimate business function
+/// that happens to be named `setup`) is not enough to trigger exclusion —
+/// only a file whose exports look like they implement the
+/// setup/teardown lifecycle convention (str-qwua7.56).
+#[must_use]
+pub fn file_exports_setup_shaped_api<S: AsRef<str>>(exported_names: &[S]) -> bool {
+    exported_names
+        .iter()
+        .filter(|name| is_lifecycle_export_name(name.as_ref()))
+        .count()
+        >= 2
+}
+
+/// Decide whether an exported function should be excluded from target
+/// discovery because it is a lifecycle hook (`setup`, `teardown`,
+/// `beforeAll`, `afterAll`, `beforeEach`, `afterEach`) exported from a file
+/// that also exports a setup-shaped API.
+///
+/// Background (str-qwua7.56): scans were treating exported `setup`/
+/// `teardown` helpers as ordinary fuzz targets. Fuzzing `teardown` in
+/// isolation throws on mismatched scope, producing hundreds of garbage
+/// "Teardown scope mismatch" clusters that bury real findings. The file
+/// need not match the convention-based setup filename patterns recognized
+/// by [`discover_setup_files`] (e.g. `shatter.setup.ts`) — this is a
+/// discovery-side name rule based on what the file exports, not a
+/// filename-convention enforcement.
+#[must_use]
+pub fn should_exclude_lifecycle_export<S: AsRef<str>>(
+    function_name: &str,
+    file_exported_names: &[S],
+) -> bool {
+    is_lifecycle_export_name(function_name) && file_exports_setup_shaped_api(file_exported_names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::fs;
 
     /// Create a file at the given path, creating parent directories as needed.
@@ -1286,5 +1352,105 @@ mod tests {
         let result = discover_setup_files(dir.path(), "ts", &[], &SetupConfigOverride::default());
         assert!(result.session.is_some());
         assert!(result.file_level.is_empty());
+    }
+
+    // ── Lifecycle export exclusion tests (str-qwua7.56) ──
+
+    #[test]
+    fn lifecycle_names_are_recognized() {
+        for name in LIFECYCLE_EXPORT_NAMES {
+            assert!(is_lifecycle_export_name(name));
+        }
+        assert!(!is_lifecycle_export_name("setupDatabase"));
+        assert!(!is_lifecycle_export_name("Setup"));
+        assert!(!is_lifecycle_export_name("processOrder"));
+    }
+
+    #[test]
+    fn single_lifecycle_export_is_not_setup_shaped() {
+        // A lone `setup` export alongside ordinary business functions does
+        // not make the file setup-shaped — it might be a legitimate target.
+        let exports = vec!["setup", "processOrder", "validateInput"];
+        assert!(!file_exports_setup_shaped_api(&exports));
+        assert!(!should_exclude_lifecycle_export("setup", &exports));
+    }
+
+    #[test]
+    fn setup_and_teardown_pair_is_setup_shaped() {
+        // This mirrors the real-world regression fixture, `setup-file-level.ts`,
+        // which exports both `setup` and `teardown` without matching the
+        // `*.shatter.setup.ts` filename convention.
+        let exports = vec!["setup", "teardown"];
+        assert!(file_exports_setup_shaped_api(&exports));
+        assert!(should_exclude_lifecycle_export("setup", &exports));
+        assert!(should_exclude_lifecycle_export("teardown", &exports));
+    }
+
+    #[test]
+    fn before_after_each_pair_is_setup_shaped() {
+        let exports = vec!["beforeEach", "afterEach", "runTest"];
+        assert!(file_exports_setup_shaped_api(&exports));
+        assert!(should_exclude_lifecycle_export("beforeEach", &exports));
+        assert!(should_exclude_lifecycle_export("afterEach", &exports));
+        // Non-lifecycle exports in the same file are never excluded.
+        assert!(!should_exclude_lifecycle_export("runTest", &exports));
+    }
+
+    #[test]
+    fn setup_shaped_file_excludes_only_lifecycle_names() {
+        let exports = vec!["setup", "teardown", "runQuery", "buildClient"];
+        assert!(should_exclude_lifecycle_export("setup", &exports));
+        assert!(should_exclude_lifecycle_export("teardown", &exports));
+        assert!(!should_exclude_lifecycle_export("runQuery", &exports));
+        assert!(!should_exclude_lifecycle_export("buildClient", &exports));
+    }
+
+    #[test]
+    fn empty_exports_are_not_setup_shaped() {
+        let exports: Vec<&str> = vec![];
+        assert!(!file_exports_setup_shaped_api(&exports));
+        assert!(!should_exclude_lifecycle_export("setup", &exports));
+    }
+
+    proptest! {
+        /// `should_exclude_lifecycle_export` never excludes a name that
+        /// isn't one of the recognized lifecycle names, regardless of what
+        /// else the file exports.
+        #[test]
+        fn non_lifecycle_names_are_never_excluded(
+            name in "[a-zA-Z][a-zA-Z0-9_]{0,20}",
+            exports in proptest::collection::vec("[a-zA-Z][a-zA-Z0-9_]{0,20}", 0..10),
+        ) {
+            prop_assume!(!is_lifecycle_export_name(&name));
+            prop_assert!(!should_exclude_lifecycle_export(&name, &exports));
+        }
+
+        /// `file_exports_setup_shaped_api` is a pure function of how many
+        /// recognized lifecycle names appear in the export list — the
+        /// "at least two" rule is order-independent and unaffected by
+        /// duplicate or unrelated entries.
+        #[test]
+        fn setup_shaped_matches_lifecycle_count_threshold(
+            exports in proptest::collection::vec("[a-zA-Z][a-zA-Z0-9_]{0,20}", 0..12),
+        ) {
+            let lifecycle_count = exports
+                .iter()
+                .filter(|n| is_lifecycle_export_name(n))
+                .count();
+            prop_assert_eq!(file_exports_setup_shaped_api(&exports), lifecycle_count >= 2);
+        }
+
+        /// Exclusion of a lifecycle-named function tracks exactly the
+        /// setup-shaped determination of its file's export list.
+        #[test]
+        fn exclusion_matches_shape_for_lifecycle_names(
+            idx in 0usize..6,
+            mut exports in proptest::collection::vec("[a-zA-Z][a-zA-Z0-9_]{0,20}", 0..10),
+        ) {
+            let name = LIFECYCLE_EXPORT_NAMES[idx];
+            exports.push(name.to_string());
+            let expected = file_exports_setup_shaped_api(&exports);
+            prop_assert_eq!(should_exclude_lifecycle_export(name, &exports), expected);
+        }
     }
 }
