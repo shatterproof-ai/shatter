@@ -48,13 +48,13 @@ GIT_LOCAL_ENV_VARS = (
 REFRESH_WINDOW_SECONDS = 600
 
 
-def _sanitized_git_env() -> dict[str, str]:
+def _sanitized_git_env(base: dict[str, str] | None = None) -> dict[str, str]:
     # actions/checkout injects the job's GITHUB_TOKEN as an http.extraheader
     # override via GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n env
     # vars so it's inherited by later steps. Since examples.git is a
     # different, public repo, that leaked auth header gets sent anyway and
     # is rejected, producing a bogus "could not read Username" failure.
-    env = os.environ.copy()
+    env = dict(os.environ if base is None else base)
     # Hooks export repository-local variables. Letting those leak into the
     # examples clone makes Git operate on the parent Shatter repository.
     for key in GIT_LOCAL_ENV_VARS:

@@ -13,6 +13,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$REPO_ROOT/scripts/git-sandbox-test-lib.sh"
+# Isolate bootstrap too: the enclosing hook may already point at a real repo.
+# shellcheck source=scripts/git-sandbox-test-lib.sh
+source "$LIB"
 
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT

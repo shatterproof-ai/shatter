@@ -12,7 +12,9 @@ mutate a real repo the leaked env points at.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,7 +26,7 @@ def _git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
     return subprocess.run(
         ["git", *args],
         cwd=cwd,
-        env=env,
+        env=sanitized_git_env() if env is None else env,
         text=True,
         capture_output=True,
         check=True,
@@ -32,11 +34,35 @@ def _git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
 
 
 class SanitizedGitEnvTests(unittest.TestCase):
+    def test_both_helpers_remove_gits_local_environment_and_numbered_config(self) -> None:
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        local_names = subprocess.run(
+            ["git", "rev-parse", "--local-env-vars"], env=clean,
+            text=True, capture_output=True, check=True,
+        ).stdout.splitlines()
+        removed = {*local_names, "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+                   "GIT_CONFIG_KEY_7", "GIT_CONFIG_VALUE_7"}
+        base = dict.fromkeys(removed, "leaked")
+        base.update(PATH=os.environ["PATH"], KEEP="caller setting", GIT_CONFIG_GLOBAL=os.devnull)
+        original = dict(base)
+        python_result = sanitized_git_env(base)
+        self.assertEqual(base, original, "sanitizing a child must not change its parent")
+        library = Path(__file__).with_name("git-sandbox-test-lib.sh")
+        shell_result = json.loads(subprocess.run(
+            ["bash", "-c", 'source "$1"; "$2" -c "import os,json; print(json.dumps(dict(os.environ)))"',
+             "isolation-test", str(library), sys.executable],
+            env=base, text=True, capture_output=True, check=True,
+        ).stdout)
+        for result in (python_result, shell_result):
+            self.assertFalse(removed.intersection(result))
+            self.assertEqual(result["KEEP"], base["KEEP"])
+            self.assertEqual(result["GIT_CONFIG_GLOBAL"], os.devnull)
+
     def test_strips_every_sandbox_env_var(self) -> None:
         base = {var: "/leaked/path" for var in GIT_SANDBOX_ENV_VARS}
         base["PATH"] = "/usr/bin"
         result = sanitized_git_env(base)
-        self.assertEqual(result, {"PATH": "/usr/bin"})
+        self.assertEqual(result, {"PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "0"})
 
     def test_defaults_to_os_environ(self) -> None:
         original = os.environ.get("GIT_DIR")
@@ -95,7 +121,7 @@ class LeakedGitDirIsolationTests(unittest.TestCase):
         # does resolve to the leaked real repo -- proves this test's
         # simulated hook environment reproduces the bug being guarded
         # against, rather than trivially passing.
-        toplevel = _git(["rev-parse", "--show-toplevel"], self.scratch)
+        toplevel = _git(["rev-parse", "--show-toplevel"], self.scratch, env=dict(os.environ))
         self.assertEqual(Path(toplevel).resolve(), self.real_repo.resolve())
 
     def test_sanitized_env_isolates_a_fixture_from_the_leaked_real_repo(self) -> None:

@@ -414,6 +414,10 @@ tasks:
       - scripts/git-sandbox-test-lib.sh
       - scripts/git_sandbox_test_lib.py
       - scripts/test_git_sandbox_test_lib.py
+      - scripts/test_git_fixture_isolation.py
+      - scripts/test_git_sandbox_test_lib.sh
+      - scripts/test_target_dir_report_json.sh
+      - scripts/target-dir-report.sh
       - scripts/examples_checkout.py
       - scripts/test_walkthrough_examples_checkout.py
       - scripts/affected-gates.py
@@ -440,6 +444,7 @@ tasks:
       - shatter-ts/src/**/*.ts
     cmds:
       - bash -n install.sh
+      - python3 -m unittest scripts.test_git_fixture_isolation
       - python3 -m unittest scripts.test_drift_patrol
       - python3 -m unittest scripts.test_release_workflow
       - python3 -m unittest scripts.test_install_manifest

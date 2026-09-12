@@ -398,7 +398,7 @@ class InputRejectionTests(ReceiptTestCase):
                 self.assert_invalid(self.fixture.run(candidate=candidate))
 
     def test_commit_oid_is_not_accepted_as_a_tree(self) -> None:
-        env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="f@example.test")
+        env = dict(sanitized_git_env(), GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="f@example.test")
         env.update(GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="f@example.test")
         commit = subprocess.run(
             ["git", "commit-tree", self.fixture.candidate, "-m", "fixture"],

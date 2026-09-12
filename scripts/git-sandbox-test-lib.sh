@@ -19,8 +19,16 @@
 # placed before the fixture's first `git init`/`git clone`/`git -C` call.
 
 git_sandbox_isolate_env() {
-    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
-        GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    # Match Git's --local-env-vars, including writable config redirection.
+    unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_CONFIG \
+        GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_GRAFT_FILE \
+        GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS \
+        GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_REPLACE_REF_BASE \
+        GIT_SHALLOW_FILE GIT_WORK_TREE
+    local git_config_key
+    for git_config_key in ${!GIT_CONFIG_KEY_@} ${!GIT_CONFIG_VALUE_@}; do
+        unset "$git_config_key"
+    done
 }
 
 git_sandbox_isolate_env
