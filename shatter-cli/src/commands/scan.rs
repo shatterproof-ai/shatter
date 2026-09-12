@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -178,6 +179,7 @@ pub(crate) async fn run_scan(
     exclude_patterns: &[String],
     include_anchor: Option<&Path>,
     exclude_anchor: Option<&Path>,
+    scope_path: Option<&Path>,
     changed: bool,
     since: Option<&str>,
     until: Option<&str>,
@@ -487,6 +489,13 @@ pub(crate) async fn run_scan(
     } else {
         files
     };
+
+    let files: Vec<(PathBuf, DiscoveryLanguage)> = if let Some(path) = scope_path {
+        let config = ScopeConfig::from_file(path).map_err(|e| format!("failed to load scope config: {e}"))?;
+        let matcher = ScopeMatcher::new(&config).map_err(|e| format!("invalid scope config: {e}"))?;
+        let scope_root = path.parent().unwrap_or(&effective_root);
+        files.into_iter().filter(|(file, _)| file.strip_prefix(scope_root).ok().and_then(|relative| relative.to_str()).is_some_and(|relative| matcher.is_included(relative))).collect()
+    } else { files };
 
     // Filter to languages we can actually analyze (TS, Go).
     let analyzable_files: Vec<(PathBuf, DiscoveryLanguage)> = files

@@ -845,6 +845,10 @@ pub(crate) struct ScanArgs {
     #[arg(required = true)]
     pub(crate) directory: String,
 
+    /// Path to a scope configuration YAML file (shatter.scope.yaml).
+    #[arg(long)]
+    pub(crate) scope: Option<PathBuf>,
+
     /// Language to scan: typescript, go, rust. Auto-detected from file extensions if omitted.
     #[arg(long)]
     pub(crate) language: Option<String>,
@@ -1775,6 +1779,10 @@ pub(crate) struct ListTargetsArgs {
     /// Directory to inspect (default: current directory).
     #[arg(default_value = ".")]
     pub(crate) directory: PathBuf,
+
+    /// Path to a scope configuration YAML file (shatter.scope.yaml).
+    #[arg(long)]
+    pub(crate) scope: Option<PathBuf>,
 
     /// Glob patterns for files to include (e.g. "src/**/*.ts"). May be repeated.
     #[arg(long)]
@@ -2805,6 +2813,15 @@ mod tests {
                 assert_eq!(request_timeout, 15);
                 assert_eq!(timeout_total, Some(200));
             }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_scan_with_scope_flag() {
+        let cli = Cli::parse_from(["shatter", "scan", "--scope", "shatter.scope.yaml", "src/"]);
+        match cli.command {
+            CliCommand::Scan(args) => assert_eq!(args.scope, Some(PathBuf::from("shatter.scope.yaml"))),
             _ => panic!("expected Scan command"),
         }
     }

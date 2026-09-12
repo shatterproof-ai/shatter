@@ -3,6 +3,7 @@
 use std::io::Write;
 
 use shatter_core::target_manifest::{TargetManifest, TargetManifestConfig};
+use shatter_core::scope::{find_scope_config, ScopeConfig};
 
 use crate::args::{ListTargetsArgs, ListTargetsFormat};
 
@@ -12,9 +13,13 @@ pub(crate) fn run(args: &ListTargetsArgs) -> Result<(), String> {
         .canonicalize()
         .map_err(|e| format!("cannot resolve directory '{}': {e}", args.directory.display()))?;
 
+    let scope = match args.scope.as_deref() {
+        Some(path) => Some(ScopeConfig::from_file(path).map_err(|e| format!("failed to load scope config: {e}"))?),
+        None => find_scope_config(&root).map_err(|e| format!("failed to load scope config: {e}"))?.map(|(config, _)| config),
+    };
     let config = TargetManifestConfig {
-        include: args.include.clone(),
-        exclude: args.exclude.clone(),
+        include: if args.include.is_empty() { scope.as_ref().map(|scope| scope.include.clone()).unwrap_or_default() } else { args.include.clone() },
+        exclude: [args.exclude.clone(), scope.as_ref().map(|scope| scope.exclude.clone()).unwrap_or_default()].concat(),
         language: args.language.clone(),
         max_depth: None,
     };
