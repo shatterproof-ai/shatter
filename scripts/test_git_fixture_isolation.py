@@ -14,6 +14,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Register new fixture creators here with a focused test that reaches their
+# Git setup; avoid rerunning their entire suites inside this safety check.
 ENTRYPOINTS = (
     ("bash", "scripts/test_target_dir_report_json.sh"),
     ("bash", "scripts/test_cleanup_merged_remote_branches.sh"),

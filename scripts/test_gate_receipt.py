@@ -15,7 +15,7 @@ import unittest
 
 import yaml
 
-from scripts.git_sandbox_test_lib import GIT_SANDBOX_ENV_VARS, sanitized_git_env
+from scripts.git_sandbox_test_lib import sanitized_git_env
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,7 +174,7 @@ class ReceiptRepo:
 
     @property
     def env(self) -> dict[str, str]:
-        env = dict(os.environ)
+        env = sanitized_git_env()
         env.update(
             {
                 "PATH": str(self.fake_bin),
@@ -182,8 +182,6 @@ class ReceiptRepo:
                 "SHATTER_TEST_GATE_MARKER": str(self.root / "gate-invoked"),
             }
         )
-        for key in GIT_SANDBOX_ENV_VARS:
-            env.pop(key, None)
         return env
 
     def run(

@@ -29,6 +29,7 @@ git_sandbox_isolate_env() {
     for git_config_key in ${!GIT_CONFIG_KEY_@} ${!GIT_CONFIG_VALUE_@}; do
         unset "$git_config_key"
     done
+    export GIT_TERMINAL_PROMPT=0
 }
 
 git_sandbox_isolate_env

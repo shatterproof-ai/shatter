@@ -57,6 +57,7 @@ class SanitizedGitEnvTests(unittest.TestCase):
             self.assertFalse(removed.intersection(result))
             self.assertEqual(result["KEEP"], base["KEEP"])
             self.assertEqual(result["GIT_CONFIG_GLOBAL"], os.devnull)
+            self.assertEqual(result["GIT_TERMINAL_PROMPT"], "0")
 
     def test_strips_every_sandbox_env_var(self) -> None:
         base = {var: "/leaked/path" for var in GIT_SANDBOX_ENV_VARS}
