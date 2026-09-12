@@ -23,6 +23,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/git-sandbox-test-lib.sh
+source "$REPO_ROOT/scripts/git-sandbox-test-lib.sh"
 SCRIPT_UNDER_TEST="$REPO_ROOT/scripts/cleanup-merged-remote-branches.sh"
 
 WORKDIR="$(mktemp -d)"

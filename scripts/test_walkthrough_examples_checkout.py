@@ -16,6 +16,8 @@ import time
 import unittest
 from pathlib import Path
 
+from scripts.git_sandbox_test_lib import sanitized_git_env
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WALKTHROUGH = REPO_ROOT / "demo" / "walkthrough.sh"
@@ -44,26 +46,31 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
 
     def _init_git_checkout(self, checkout_dir: Path, content: str = "version one\n") -> None:
         checkout_dir.mkdir(parents=True)
+        env = sanitized_git_env()
         subprocess.run(
             ["git", "init", "--quiet", "--initial-branch", examples_checkout.DEFAULT_BRANCH],
             cwd=checkout_dir,
+            env=env,
             check=True,
         )
         subprocess.run(
             ["git", "config", "user.email", "test@example.com"],
             cwd=checkout_dir,
+            env=env,
             check=True,
         )
         subprocess.run(
             ["git", "config", "user.name", "Test User"],
             cwd=checkout_dir,
+            env=env,
             check=True,
         )
         (checkout_dir / "example.txt").write_text(content, encoding="utf-8")
-        subprocess.run(["git", "add", "example.txt"], cwd=checkout_dir, check=True)
+        subprocess.run(["git", "add", "example.txt"], cwd=checkout_dir, env=env, check=True)
         subprocess.run(
             ["git", "commit", "--quiet", "-m", "fixture"],
             cwd=checkout_dir,
+            env=env,
             check=True,
         )
 
@@ -174,10 +181,13 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             executable = checkout_dir / "tool.sh"
             executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             executable.chmod(0o755)
-            subprocess.run(["git", "add", "tool.sh"], cwd=checkout_dir, check=True)
+            subprocess.run(
+                ["git", "add", "tool.sh"], cwd=checkout_dir, env=sanitized_git_env(), check=True
+            )
             subprocess.run(
                 ["git", "commit", "--quiet", "--amend", "-m", "fixture"],
                 cwd=checkout_dir,
+                env=sanitized_git_env(),
                 check=True,
             )
             examples_checkout._refresh_marker_path(checkout_dir).touch()
@@ -199,6 +209,7 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                 status = subprocess.run(
                     ["git", "status", "--porcelain"],
                     cwd=snapshot,
+                    env=sanitized_git_env(),
                     check=True,
                     text=True,
                     capture_output=True,
@@ -306,10 +317,16 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
                         (checkout_dir / "example.txt").write_text(
                             "version two\n", encoding="utf-8"
                         )
-                        subprocess.run(["git", "add", "example.txt"], cwd=cwd, check=True)
+                        subprocess.run(
+                            ["git", "add", "example.txt"],
+                            cwd=cwd,
+                            env=sanitized_git_env(),
+                            check=True,
+                        )
                         subprocess.run(
                             ["git", "commit", "--quiet", "--amend", "-m", "refreshed"],
                             cwd=cwd,
+                            env=sanitized_git_env(),
                             check=True,
                         )
                         return

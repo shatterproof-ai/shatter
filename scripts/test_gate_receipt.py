@@ -15,6 +15,8 @@ import unittest
 
 import yaml
 
+from scripts.git_sandbox_test_lib import sanitized_git_env
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "gate-receipt.py"
@@ -110,7 +112,12 @@ class ReceiptRepo:
 
     def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["git", *args], cwd=self.repo, text=True, capture_output=True, check=True
+            ["git", *args],
+            cwd=self.repo,
+            env=sanitized_git_env(),
+            text=True,
+            capture_output=True,
+            check=True,
         )
 
     def _write(self, relative: str, data: bytes, *, executable: bool = False) -> None:
@@ -167,7 +174,7 @@ class ReceiptRepo:
 
     @property
     def env(self) -> dict[str, str]:
-        env = dict(os.environ)
+        env = sanitized_git_env()
         env.update(
             {
                 "PATH": str(self.fake_bin),
@@ -175,15 +182,6 @@ class ReceiptRepo:
                 "SHATTER_TEST_GATE_MARKER": str(self.root / "gate-invoked"),
             }
         )
-        for key in (
-            "GIT_DIR",
-            "GIT_COMMON_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        ):
-            env.pop(key, None)
         return env
 
     def run(
@@ -398,7 +396,7 @@ class InputRejectionTests(ReceiptTestCase):
                 self.assert_invalid(self.fixture.run(candidate=candidate))
 
     def test_commit_oid_is_not_accepted_as_a_tree(self) -> None:
-        env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="f@example.test")
+        env = dict(sanitized_git_env(), GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="f@example.test")
         env.update(GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="f@example.test")
         commit = subprocess.run(
             ["git", "commit-tree", self.fixture.candidate, "-m", "fixture"],
