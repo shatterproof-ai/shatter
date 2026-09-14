@@ -560,6 +560,13 @@ def validate_config_against_struct(content: str, bin_path: str) -> str | None:
     frontend build. Returns an error string when the config does not
     deserialize; None when it does (regardless of the unsupported-language
     failure that follows).
+
+    `cwd=tmp` matters here: build-frontend's default output directory
+    (`.shatter-cache/bin`, `build_frontend.rs`) is a relative path resolved
+    against the process's cwd, not this function's temp dir. Without pinning
+    it, every valid config example would silently create `.shatter-cache/bin/`
+    in whatever directory invoked docs-smoke.py (the repo checkout under
+    `task docs-smoke`) on every gate run.
     """
     with tempfile.TemporaryDirectory(prefix="docs-smoke-cfg-") as tmp:
         (Path(tmp) / "config.yaml").write_text(content)
@@ -567,6 +574,7 @@ def validate_config_against_struct(content: str, bin_path: str) -> str | None:
             proc = subprocess.run(
                 [bin_path, "build-frontend", "__docs-smoke-unsupported-language__",
                  "--config", tmp],
+                cwd=tmp,
                 capture_output=True,
                 text=True,
                 timeout=60,

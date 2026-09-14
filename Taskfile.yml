@@ -342,6 +342,7 @@ tasks:
     sources:
       - scripts/docs-smoke.py
       - scripts/docs-smoke.yaml
+      - scripts/docs-smoke-fixtures/**/*
       - README.md
       - QUICKSTART.md
       - SPEC.md
