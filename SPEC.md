@@ -814,7 +814,8 @@ specs and for the `properties` command's output.
 
 ```json
 {
-  "version": "0.1.0",
+  "version": 1,
+  "created_at": "2026-09-14T00:00:00Z",
   "functions": [
     {
       "function_id": "classifyNumber",
