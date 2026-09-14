@@ -23,7 +23,7 @@ For repeatable CI, pin one exact build tag:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/shatterproof-ai/shatter/main/install.sh | BUILD=continuous-20260512-1735-abc123def456 bash
-shatter scan src/
+shatter scan src/ --allow-host-writes
 ```
 
 Use the unpinned latest build for local use or non-blocking scheduled jobs; use

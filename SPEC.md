@@ -607,11 +607,8 @@ against this:
    frontend is pointed at a fresh temporary directory
    (`SHATTER_HOST_WRITE_DIR`) for the run's duration, so relative-path writes
    land there instead of the invoking repository, and the directory is removed
-   when the command finishes. **Go and Rust targets only** — the TypeScript
-   frontend does not yet redirect relative-path writes into the throwaway
-   directory (str-02i70); an unsandboxed, opted-in TS target can still write
-   into the invoking repository. Configure an OS sandbox for TS targets until
-   str-02i70 lands.
+   when the command finishes. All three frontends (TS, Go, Rust) redirect
+   relative-path writes into this throwaway directory (str-02i70).
 
 A configured `SHATTER_SANDBOX_BACKEND` satisfies both controls at once (the
 sandbox already isolates writes), so the throwaway-directory guard is skipped

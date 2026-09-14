@@ -319,11 +319,9 @@ repository, unnoticed for weeks. Two independent controls now prevent that:
    unsandboxed run executes in a fresh temp directory that is deleted when the
    command finishes, so a target that writes `./foo` leaves nothing behind in
    your repository. (A configured `SHATTER_SANDBOX_BACKEND` supersedes this —
-   the sandbox already contains writes, so runs are unchanged.) **Go and Rust
-   targets only** — the TypeScript frontend does not yet redirect relative-path
-   writes into the throwaway directory (str-02i70 tracks this); an
-   unsandboxed, opted-in TS target can still write into the invoking
-   repository. Configure an OS sandbox for TS targets until str-02i70 lands.
+   the sandbox already contains writes, so runs are unchanged.) All three
+   frontends (TS, Go, Rust) redirect relative-path writes into this throwaway
+   directory (str-02i70).
 
 If you script Shatter in CI or a wrapper, prefer configuring
 `SHATTER_SANDBOX_BACKEND`; use `SHATTER_ALLOW_HOST_WRITES=1` only where an OS
@@ -380,11 +378,11 @@ already-completed functions and continue from where the scan left off.
 
 ```bash
 # First run — interrupted
-shatter scan --resume auto --progress src/
+shatter scan --resume auto --progress src/ --allow-host-writes
 ^C
 
 # Second run — picks up where it left off
-shatter scan --resume auto --progress src/
+shatter scan --resume auto --progress src/ --allow-host-writes
 ```
 
 See [SPEC.md, Section 6](SPEC.md#6-live-output-and-resume) for the full
