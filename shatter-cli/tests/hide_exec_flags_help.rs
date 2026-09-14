@@ -177,3 +177,37 @@ fn top_level_help_unaffected() {
         "shatter --help should still document --allow-host-writes at the top level:\n{output}"
     );
 }
+
+/// Review follow-up: `spec-diff`'s own positional arguments (OLD/NEW) must
+/// not be mistaken for a second path segment by `resolve_subcommand_path`.
+/// A wrong guess there makes `find_subcommand_mut` return `None`, and
+/// `maybe_print_non_executing_help` silently falls through to unmodified
+/// clap help with every execution-only flag visible — an ordinary,
+/// non-exotic invocation (`spec-diff old.json new.json --help`) previously
+/// hit this exact path.
+#[test]
+fn spec_diff_help_with_positionals_still_hides_execution_only_globals() {
+    let output = run_help(&["spec-diff", "old.json", "new.json", "--help"]);
+    for flag in EXECUTION_ONLY_FLAGS {
+        assert!(
+            !output.contains(flag),
+            "shatter spec-diff old.json new.json --help unexpectedly shows execution-only flag {flag:?}:\n{output}"
+        );
+    }
+}
+
+/// Review follow-up: `doctor`'s own local short flag `-d` (`--directory`)
+/// takes a value that `resolve_subcommand_path` has no way to recognize as
+/// belonging to `-d` rather than being a second path segment; the fix is to
+/// stop resolving a second segment at all for non-nesting commands like
+/// `doctor`.
+#[test]
+fn doctor_help_with_local_short_flag_value_still_hides_execution_only_globals() {
+    let output = run_help(&["doctor", "-d", "/tmp", "--help"]);
+    for flag in EXECUTION_ONLY_FLAGS {
+        assert!(
+            !output.contains(flag),
+            "shatter doctor -d /tmp --help unexpectedly shows execution-only flag {flag:?}:\n{output}"
+        );
+    }
+}

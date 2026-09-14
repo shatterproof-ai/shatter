@@ -375,6 +375,12 @@ pub(crate) fn is_non_executing_path(path: &[String]) -> bool {
         .is_some_and(|top| NON_EXECUTING_COMMAND_PATHS.iter().any(|p| p[0] == top))
 }
 
+/// Top-level non-executing commands that have real nested subcommands of
+/// their own (a second path segment is a subcommand name, not a positional
+/// or a local flag's value) — must match every two-element entry's first
+/// element in [`NON_EXECUTING_COMMAND_PATHS`].
+const NON_EXECUTING_COMMANDS_WITH_NESTED_SUBCOMMANDS: &[&str] = &["cache", "telemetry"];
+
 /// Best-effort resolution of the subcommand path (e.g. `["cache", "clear"]`)
 /// being invoked, from the raw CLI arguments (excluding argv[0]).
 ///
@@ -382,8 +388,17 @@ pub(crate) fn is_non_executing_path(path: &[String]) -> bool {
 /// guess in some exotic case just shows the wrong (but still correct, still
 /// clap-rendered) help text; it never affects real argument parsing, which
 /// always goes through the untouched `Cli::command()`. It walks past known
-/// value-taking global flags (declared once, exhaustively, above) to find up
-/// to two leading bare tokens.
+/// value-taking *global* flags (declared once, exhaustively, above) to find
+/// the leading bare token naming the top-level (non-executing) command, and
+/// only keeps looking for a second segment when that top-level command is
+/// known to have real nested subcommands (`cache`, `telemetry`). Any other
+/// non-executing command (`spec-diff`, `doctor`, `init`) stops after one
+/// segment: a trailing token there is the command's own positional argument
+/// or a local flag's value (e.g. `spec-diff old.json new.json`, `doctor -d
+/// /tmp`), not a subcommand name, and this function has no per-subcommand
+/// knowledge of those — treating it as a path segment would send
+/// `find_subcommand_mut` looking for a subcommand that does not exist,
+/// silently falling through to unmodified (unhidden) clap help.
 pub(crate) fn resolve_subcommand_path(args: &[String]) -> Vec<String> {
     const VALUE_FLAGS: &[&str] = &[
         "--log-level",
@@ -413,9 +428,13 @@ pub(crate) fn resolve_subcommand_path(args: &[String]) -> Vec<String> {
             continue;
         }
         path.push(arg.clone());
-        if path.len() >= 2 {
-            break;
+        if path.len() == 1 {
+            if !NON_EXECUTING_COMMANDS_WITH_NESTED_SUBCOMMANDS.contains(&arg.as_str()) {
+                break;
+            }
+            continue;
         }
+        break;
     }
     path
 }

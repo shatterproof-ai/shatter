@@ -89,8 +89,7 @@ async fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(clap_err) => {
             if telemetry::is_enabled() {
-                let raw_args: Vec<String> = std::env::args().skip(1).collect();
-                let sanitized_args = telemetry::sanitize_args(&raw_args);
+                let sanitized_args = telemetry::sanitize_args(&raw_args_for_help);
                 let error_kind = Some(clap_error_kind_label(clap_err.kind()).to_string());
 
                 if let Ok(event) = telemetry::new_event(
