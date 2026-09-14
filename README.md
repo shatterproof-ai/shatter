@@ -259,22 +259,28 @@ export function calculateShipping(weight: number, country: string): number {
 ```
 
 ```bash
-shatter explore shipping.ts:calculateShipping
+shatter explore shipping.ts:calculateShipping --allow-host-writes
 ```
+
+`explore` and `scan` refuse to execute target functions without a sandbox
+unless you opt in with `--allow-host-writes` (or configure
+`SHATTER_SANDBOX_BACKEND`) — see
+[Executing Target Functions Safely](#executing-target-functions-safely) below
+for why and for the sandboxed alternative.
 
 `explore` and `properties` also accept quoted glob patterns over file paths,
 which are expanded against the filesystem and filtered to supported source
 extensions:
 
 ```bash
-shatter explore 'src/**/*.ts'
+shatter explore 'src/**/*.ts' --allow-host-writes
 ```
 
 For repository-wide discovery, point `shatter scan` at a directory and narrow
 the file set with `--include` / `--exclude`:
 
 ```bash
-shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/
+shatter scan --include '**/*.ts' --exclude '**/vendor/**' src/ --allow-host-writes
 ```
 
 Single-target commands (`observe`, `revalidate`, `stale`) require a concrete
@@ -313,11 +319,9 @@ repository, unnoticed for weeks. Two independent controls now prevent that:
    unsandboxed run executes in a fresh temp directory that is deleted when the
    command finishes, so a target that writes `./foo` leaves nothing behind in
    your repository. (A configured `SHATTER_SANDBOX_BACKEND` supersedes this —
-   the sandbox already contains writes, so runs are unchanged.) **Go and Rust
-   targets only** — the TypeScript frontend does not yet redirect relative-path
-   writes into the throwaway directory (str-02i70 tracks this); an
-   unsandboxed, opted-in TS target can still write into the invoking
-   repository. Configure an OS sandbox for TS targets until str-02i70 lands.
+   the sandbox already contains writes, so runs are unchanged.) All three
+   frontends (TS, Go, Rust) redirect relative-path writes into this throwaway
+   directory (str-02i70).
 
 If you script Shatter in CI or a wrapper, prefer configuring
 `SHATTER_SANDBOX_BACKEND`; use `SHATTER_ALLOW_HOST_WRITES=1` only where an OS
@@ -374,11 +378,11 @@ already-completed functions and continue from where the scan left off.
 
 ```bash
 # First run — interrupted
-shatter scan --resume auto --progress src/
+shatter scan --resume auto --progress src/ --allow-host-writes
 ^C
 
 # Second run — picks up where it left off
-shatter scan --resume auto --progress src/
+shatter scan --resume auto --progress src/ --allow-host-writes
 ```
 
 See [SPEC.md, Section 6](SPEC.md#6-live-output-and-resume) for the full
