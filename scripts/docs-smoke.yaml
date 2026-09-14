@@ -11,6 +11,11 @@
 # `smoke_commands`: self-contained commands executed in a throwaway temp dir to
 # prove the command surface is live. Keep these fast and side-effect-free (no
 # network, no project mutation) — they should be safe to run anywhere.
+# `{repo_root}` is substituted with the repository root; `{fixtures}` is
+# substituted with a *copy* of scripts/docs-smoke-fixtures/ made inside the
+# throwaway directory for the duration of the run, so a command exercising a
+# real target (which writes artifacts next to the target file, not under cwd)
+# does not leave stray output in the checkout.
 
 docs:
   - README.md
@@ -24,3 +29,11 @@ smoke_commands:
   - shatter explore --help
   - shatter scan --help
   - shatter list-targets --help
+  # Real end-to-end execution (str-qwua7.9): proves the documented
+  # `shatter explore` invocation shape actually runs against a real target,
+  # not just that its flags exist. Uses --allow-host-writes because target
+  # execution is default-deny without an OS sandbox backend configured (see
+  # shatter-cli/src/host_writes.rs) — this is the same opt-in QUICKSTART's
+  # first example must document. The fixture mirrors QUICKSTART's own
+  # example function so this exercises the same shape a new user would run.
+  - shatter explore --allow-host-writes {fixtures}/shipping.ts:calculateShipping

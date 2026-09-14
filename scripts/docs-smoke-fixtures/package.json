@@ -1,0 +1,5 @@
+{
+  "name": "docs-smoke-fixtures",
+  "private": true,
+  "description": "Minimal npm project marker for the shipping.ts fixture (str-qwua7.9), so this directory (not the monorepo root) is detected as the TS frontend's project root. scripts/docs-smoke.py creates an empty node_modules/ alongside its runtime copy of this fixture to satisfy the TS frontend's node_modules preflight (shatter-ts/src/handlers.ts) — not committed here because node_modules/ is globally gitignored."
+}
