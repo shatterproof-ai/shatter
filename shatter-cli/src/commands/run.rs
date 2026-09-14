@@ -408,6 +408,26 @@ pub(crate) async fn run_run(
         return Ok(());
     }
 
+    // str-qwua7.56: build a per-file map of exported names so lifecycle
+    // hooks (`setup`/`teardown`/`beforeAll`/`afterAll`/`beforeEach`/
+    // `afterEach`) can be excluded from exploration when the file also
+    // exports a setup-shaped API — same rule `scan` applies via
+    // `rebuild_analyses_from_registry` in `scan.rs`. `run` otherwise
+    // explores every analyzed function regardless of visibility (str-z06h),
+    // so without this check a lifecycle helper reachable in the call graph
+    // would still be explored directly and reproduce the "Teardown scope
+    // mismatch" clusters this exclusion exists to eliminate (CLAUDE.md
+    // parallel-path rule).
+    let mut exported_names_by_file: HashMap<&Path, Vec<String>> = HashMap::new();
+    for entry in registry.entries() {
+        if entry.exported {
+            exported_names_by_file
+                .entry(entry.file_path.as_path())
+                .or_default()
+                .push(entry.name.clone());
+        }
+    }
+
     // Step 4: Build call graph
     log::debug!("Building call graph...");
     let call_graph = CallGraph::from_registry(&registry);
@@ -491,6 +511,16 @@ pub(crate) async fn run_run(
                 Some(e) => e,
                 None => continue,
             };
+
+            if entry.exported {
+                let file_exports = exported_names_by_file
+                    .get(entry.file_path.as_path())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                if discovery::should_exclude_lifecycle_export(&entry.name, file_exports) {
+                    continue;
+                }
+            }
 
             // Determine the language of this file
             let ext = entry
