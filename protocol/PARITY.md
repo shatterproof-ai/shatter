@@ -316,26 +316,6 @@ While a `resolved` entry sits inside its 30-day grace window the validator only 
 
 ---
 
-### `rust-protocol-enum-vocabulary-narrower`
-
-**Description:** Three Rust frontend protocol enums are narrower than their `shatter-core` counterparts, so the Rust analyzer can never emit the missing variants: `ConstValue` lacks `Undefined` and `Complex` (core `sym_expr.rs`); `BranchType` lacks `Select` (core `protocol.rs`); `TypeInfo::Opaque` carries only `label`, omitting the optional `static_opacity` (`StaticOpacityReason`) discriminator. Emit-only limitations — the Rust frontend produces these types in its analyze output and never deserializes them from the core, so the narrower vocabulary is a capability gap, not a wire-compat bug. The related `medium_opacity` Opaque field is tracked separately as `medium-opacity-analyze-partial`.
-
-**Affected frontends:** rust
-
-**Affected commands:** analyze
-
-**Status:** tracked
-
-**Owner:** Ketan Gangatirkar
-
-**Tracking issue:** str-dcelm
-
-**Resolution condition:** Rust `ConstValue`/`BranchType`/`TypeInfo::Opaque` are widened to match the core vocabularies and the Rust analyzer emits the variants where applicable (select branches, static-opacity reasons, undefined/complex constants), with round-trip coverage.
-
-**Resolution:** Widen the Rust enums and add emission in the Rust analyzer (str-dcelm). Remove this entry once the vocabularies match.
-
----
-
 ### `rust-error-details-not-emitted`
 
 **Description:** The core Error response variant (`ResponseResult::Error`) carries an optional `details` field for structured enrichment (stack trace, source location). The Rust frontend `Response` emits only `code` and `message` on error responses and never populates `details`. The field is optional on the core wire contract (`Option<serde_json::Value>`), so absence is tolerated; an accepted enrichment gap, not a wire bug. TS/Go likewise treat `details` as best-effort.
