@@ -1204,42 +1204,6 @@ allowed_divergences:
       interception. Remove this entry once the Rust frontend emits the fields it
       can support and this matrix names any that stay permanently unsupported.
 
-  - id: rust-protocol-enum-vocabulary-narrower
-    description: >
-      RESOLVED (str-dcelm). Three Rust frontend protocol enums
-      (shatter-rust/src/protocol.rs) were narrower than their shatter-core
-      counterparts, so the Rust analyzer could never emit the missing variants:
-      ConstValue lacked Undefined and Complex (core sym_expr.rs ConstValue);
-      BranchType lacked Select (core protocol.rs BranchType); TypeInfo::Opaque
-      carried only `label`, omitting the optional static_opacity
-      (StaticOpacityReason) discriminator. All three vocabularies now match the
-      core and the analyzer emits each variant where Rust source affords one:
-      Select for `select!`-family macro arms, Complex for char literals,
-      Undefined for literal kinds with no representable constant, and
-      static_opacity: abstract_type for trait objects. The related
-      medium_opacity Opaque field remains tracked separately as
-      `medium-opacity-analyze-partial`.
-    affected_frontends: [rust]
-    affected_commands: [analyze]
-    status: resolved
-    resolved_at: '2026-08-12'
-    owner: Ketan Gangatirkar
-    tracking_issue: str-dcelm
-    resolution_condition: >
-      Rust ConstValue/BranchType/TypeInfo::Opaque are widened to match the core
-      vocabularies and the Rust analyzer emits the variants where applicable
-      (select branches, static-opacity reasons, undefined/complex constants),
-      with round-trip coverage.
-    resolution: >
-      Widened the Rust enums and added analyzer emission (str-dcelm), with
-      round-trip and analyzer coverage in shatter-rust/src/protocol.rs and
-      shatter-rust/src/analyzer.rs. Of the four StaticOpacityReason variants only
-      abstract_type is provable from a single Rust file (no_constructor,
-      transitively_opaque, and no_implementors need whole-crate impl and
-      visibility resolution); the vocabulary is complete on the wire and that
-      emission limit is documented in shatter-rust/CLAUDE.md's Static Opacity
-      Parity Contract rather than tracked as a vocabulary gap.
-
   - id: rust-error-details-not-emitted
     description: >
       The core Error response variant (shatter-core/src/protocol.rs
