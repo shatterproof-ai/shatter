@@ -123,8 +123,22 @@ user-facing docs — `README.md`, `QUICKSTART.md`, `SPEC.md`, and `docs/INDEX.md
   reintroduced stale flag such as `shatter explore --timeout` (the real flag is
   `--timeout-explore`).
 - **`json` / `yaml` blocks**: parsed for syntax; invalid snippets fail.
+- **Typed config/snapshot blocks**: a parsed JSON/YAML block whose shape
+  matches `.shatter/config.yaml` (a `defaults`/`opaque_types`/`nondeterminism`
+  key, or a `functions` mapping) or a behavior snapshot (a `version` key with
+  a `functions` list) is additionally deserialized against the real Rust
+  structs (`ShatterConfig` / `snapshot::Snapshot`) by shelling out to the
+  built CLI. This catches an example that parses as JSON/YAML but cannot
+  deserialize into the actual struct (wrong field type, missing required
+  field) — syntax validity alone does not catch this. Override the
+  shape-based detection with a `kind="config"` or `kind="snapshot"` directive
+  (see below) when a block's shape is ambiguous or misdetected.
 - **`smoke_commands`** from the config are executed in a throwaway temp
-  directory to prove the surface is live.
+  directory to prove the surface is live. A command referencing `{fixtures}`
+  runs against a copy of `scripts/docs-smoke-fixtures/` made inside that
+  throwaway directory, so exercising a real target does not leave stray
+  output in the checkout. Every successful smoke command must also produce
+  non-empty output.
 
 This is a maintained allowlist, not blind execution of every block. Blocks in
 other languages (`ts`, `markdown`, untagged) are not validated.
@@ -144,6 +158,20 @@ opening fence. A reason is **required** — a bare `skip` fails the gate:
 
 Prefer fixing a stale example over exempting it. Reserve `skip` for blocks that
 genuinely cannot be validated, and keep the reason specific.
+
+**Overriding struct-shape detection.** When a config/snapshot block's shape
+isn't recognized automatically (or is misdetected), force it with a `kind=`
+directive instead of `skip`:
+
+```text
+<!-- docs-smoke: kind="config" -->
+​```yaml
+defaults:
+  max_iterations: 50
+​```
+```
+
+`kind="config"` and `kind="snapshot"` are the only supported values.
 
 ## Contributor Notes
 
