@@ -3,7 +3,7 @@
 //! Reads a `shatter.scope.yaml` file that defines include/exclude globs for files
 //! and mock/passthrough globs for dependencies.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,21 @@ impl ScopeConfig {
         let contents = std::fs::read_to_string(path)?;
         let file: ScopeFile = serde_yaml::from_str(&contents)?;
         Ok(file.scope)
+    }
+}
+
+/// Find `shatter.scope.yaml` by walking up from `start_dir`.
+pub fn find_scope_config(start_dir: &Path) -> Result<Option<(ScopeConfig, PathBuf)>, ScopeError> {
+    let mut dir = start_dir;
+    loop {
+        let candidate = dir.join("shatter.scope.yaml");
+        if candidate.is_file() {
+            return ScopeConfig::from_file(&candidate).map(|config| Some((config, dir.to_path_buf())));
+        }
+        match dir.parent() {
+            Some(parent) if parent != dir => dir = parent,
+            _ => return Ok(None),
+        }
     }
 }
 
@@ -193,6 +208,17 @@ scope:
         let result = ScopeConfig::from_file(file.path());
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ScopeError::Parse(_)));
+    }
+
+    #[test]
+    fn find_scope_config_walks_up_from_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("shatter.scope.yaml"), "scope:\n  exclude: [ignored/**]\n").unwrap();
+        let nested = tmp.path().join("src").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let (config, dir) = find_scope_config(&nested).unwrap().unwrap();
+        assert_eq!(config.exclude, vec!["ignored/**"]);
+        assert_eq!(dir, tmp.path());
     }
 
     #[test]

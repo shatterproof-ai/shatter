@@ -498,6 +498,7 @@ async fn main() -> ExitCode {
         CliCommand::Scan(__args) => {
             let ScanArgs {
             directory,
+            scope,
             language,
             include,
             exclude,
@@ -621,6 +622,17 @@ async fn main() -> ExitCode {
             let config_search_start = std::path::Path::new(&directory)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from(&directory));
+            let scope_path = match scope {
+                Some(path) => match path.canonicalize() {
+                    Ok(path) => Some(path),
+                    Err(e) => { eprintln!("Error: cannot resolve scope config '{}': {e}", path.display()); return exit_tool_error(); }
+                },
+                None => match shatter_core::scope::find_scope_config(&config_search_start) {
+                    Ok(Some((_config, dir))) => Some(dir.join("shatter.scope.yaml")),
+                    Ok(None) => None,
+                    Err(e) => { eprintln!("Error: failed to load scope config: {e}"); return exit_tool_error(); }
+                },
+            };
             let (project_cfg, project_config_dir) =
                 match shatter_core::config::find_project_config(&config_search_start) {
                     Ok(Some((cfg, dir))) => (Some(cfg), Some(dir)),
@@ -748,6 +760,7 @@ async fn main() -> ExitCode {
                 &effective_exclude,
                 include_anchor.as_deref(),
                 exclude_anchor.as_deref(),
+                scope_path.as_deref(),
                 changed,
                 since.as_deref(),
                 until.as_deref(),

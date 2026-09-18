@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use shatter_core::scope::{ScopeConfig, ScopeMatcher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -169,6 +170,40 @@ fn until_temp_anchor(
     Some(temp_anchor_base.join(rel))
 }
 
+fn filter_files_by_scope(
+    files: Vec<(PathBuf, DiscoveryLanguage)>,
+    matcher: &ScopeMatcher,
+    scope_root: &Path,
+    scan_root: &Path,
+    effective_root: &Path,
+) -> Result<Vec<(PathBuf, DiscoveryLanguage)>, String> {
+    let scan_prefix = scan_root.strip_prefix(scope_root).map_err(|_| {
+        format!(
+            "scope config root '{}' is not an ancestor of scan directory '{}'",
+            scope_root.display(),
+            scan_root.display()
+        )
+    })?;
+    let mut filtered = Vec::new();
+    for (file, language) in files {
+        let file_relative = file.strip_prefix(effective_root).map_err(|_| {
+            format!(
+                "discovered file '{}' is not under scan root '{}'",
+                file.display(),
+                effective_root.display()
+            )
+        })?;
+        let scope_relative = scan_prefix.join(file_relative);
+        let scope_relative = scope_relative.to_str().ok_or_else(|| {
+            format!("scope path '{}' is not valid UTF-8", scope_relative.display())
+        })?;
+        if matcher.is_included(scope_relative) {
+            filtered.push((file, language));
+        }
+    }
+    Ok(filtered)
+}
+
 /// Run the scan command: explore multiple functions in dependency order.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_scan(
@@ -178,6 +213,7 @@ pub(crate) async fn run_scan(
     exclude_patterns: &[String],
     include_anchor: Option<&Path>,
     exclude_anchor: Option<&Path>,
+    scope_path: Option<&Path>,
     changed: bool,
     since: Option<&str>,
     until: Option<&str>,
@@ -487,6 +523,15 @@ pub(crate) async fn run_scan(
     } else {
         files
     };
+
+    let files: Vec<(PathBuf, DiscoveryLanguage)> = if let Some(path) = scope_path {
+        let config = ScopeConfig::from_file(path).map_err(|e| format!("failed to load scope config: {e}"))?;
+        let matcher = ScopeMatcher::new(&config).map_err(|e| format!("invalid scope config: {e}"))?;
+        let scope_root = path
+            .parent()
+            .ok_or_else(|| format!("scope config '{}' has no parent directory", path.display()))?;
+        filter_files_by_scope(files, &matcher, scope_root, &root, &effective_root)?
+    } else { files };
 
     // Filter to languages we can actually analyze (TS, Go).
     let analyzable_files: Vec<(PathBuf, DiscoveryLanguage)> = files
@@ -2205,6 +2250,38 @@ mod tests {
         assert_eq!(
             until_temp_anchor(Some(Path::new("/project")), None, None, temp_base),
             None
+        );
+    }
+
+    #[test]
+    fn scope_filter_uses_original_scope_paths_for_until_files() {
+        let config = ScopeConfig {
+            include: vec![],
+            exclude: vec!["web/ignored.ts".to_string()],
+            mock: vec![],
+            passthrough: vec![],
+        };
+        let matcher = ScopeMatcher::new(&config).expect("compile scope matcher");
+        let files = vec![
+            (PathBuf::from("/tmp/historical/web/kept.ts"), DiscoveryLanguage::TypeScript),
+            (PathBuf::from("/tmp/historical/web/ignored.ts"), DiscoveryLanguage::TypeScript),
+        ];
+
+        let filtered = filter_files_by_scope(
+            files,
+            &matcher,
+            Path::new("/project"),
+            Path::new("/project/web"),
+            Path::new("/tmp/historical/web"),
+        )
+        .expect("filter historical files");
+
+        assert_eq!(
+            filtered,
+            vec![(
+                PathBuf::from("/tmp/historical/web/kept.ts"),
+                DiscoveryLanguage::TypeScript,
+            )]
         );
     }
 
