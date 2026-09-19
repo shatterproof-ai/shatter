@@ -106,12 +106,19 @@ fn spec_diff_note_only_json_exits_zero_with_comparison_note() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("spec-diff --json output must be valid JSON");
+    let diff = &parsed["diffs"][0];
     assert!(
-        stdout.contains("comparison_notes"),
-        "JSON output must carry the comparison note; stdout=\n{stdout}"
+        diff["comparison_notes"]
+            .as_array()
+            .is_some_and(|notes| !notes.is_empty()),
+        "JSON output must carry a non-empty comparison note; stdout=\n{stdout}"
     );
     assert!(
-        !stdout.contains("changed_postconditions\":[{"),
+        diff["changed_postconditions"]
+            .as_array()
+            .is_some_and(|changes| changes.is_empty()),
         "a mismatched-input pair must not be reported as a changed postcondition; \
          stdout=\n{stdout}"
     );
