@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::equivalence::Precondition;
 use crate::nondeterminism::NondeterministicField;
-use crate::spec::{FunctionSpec, Postcondition, SpecClass};
+use crate::spec::{ConcreteExample, FunctionSpec, Postcondition, SpecClass};
 
 /// The result of diffing two function specifications.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,6 +27,40 @@ pub struct SpecDiff {
     pub changed_preconditions: Vec<PreconditionChange>,
     /// Invariant properties that held in the old spec but not the new.
     pub lost_properties: Vec<String>,
+    /// Matched classes whose postconditions could not be compared because no
+    /// comparable canonical example was available on both sides (str-nfg4y).
+    ///
+    /// This is not a regression: it means the diff has no basis for a
+    /// verdict on that class, not that the class was checked and found
+    /// unchanged. A genuine regression that happens to also shift which
+    /// input the explorer sampled as canonical will be reported here rather
+    /// than in `changed_postconditions` — this guard cannot distinguish
+    /// "different canonical input, same behavior" from "different canonical
+    /// input, and behavior also changed". See str-mfmmr for the analogous
+    /// gap in `lost_properties`'s aggregate throw/return check, which this
+    /// guard does not cover.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comparison_notes: Vec<ComparisonNote>,
+}
+
+/// A note recorded when a matched class's postcondition could not be
+/// compared for lack of a comparable canonical example.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComparisonNote {
+    /// Label of the class the note applies to.
+    pub class_label: String,
+    /// Why the comparison could not be made.
+    pub reason: ComparisonNoteReason,
+}
+
+/// Typed reason a [`ComparisonNote`] was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonNoteReason {
+    /// One or both classes had no canonical example, or their canonical
+    /// examples' input vectors were not structurally equal, so comparing
+    /// their postconditions would compare unrelated inputs.
+    MissingComparableWitness,
 }
 
 /// A postcondition that changed between two versions of a spec class.
@@ -52,17 +86,22 @@ pub struct PreconditionChange {
 }
 
 impl SpecDiff {
-    /// Whether the diff is empty (specs are equivalent).
+    /// Whether the diff has nothing to report: no detected changes and no
+    /// comparison notes. This does not mean the two specs were proven
+    /// behaviorally equivalent — sampled examples are not exhaustive, and a
+    /// note-free result still only reflects what was comparable.
     pub fn is_empty(&self) -> bool {
         self.added_classes.is_empty()
             && self.removed_classes.is_empty()
             && self.changed_postconditions.is_empty()
             && self.changed_preconditions.is_empty()
             && self.lost_properties.is_empty()
+            && self.comparison_notes.is_empty()
     }
 
     /// Whether the diff contains regressions (removed classes, changed
-    /// postconditions, or lost properties).
+    /// postconditions, or lost properties). Comparison notes are excluded:
+    /// they report insufficient evidence, not a detected regression.
     pub fn has_regressions(&self) -> bool {
         !self.removed_classes.is_empty()
             || !self.changed_postconditions.is_empty()
@@ -81,6 +120,7 @@ pub fn diff_specs(old: &FunctionSpec, new: &FunctionSpec) -> SpecDiff {
     let mut changed_postconditions = Vec::new();
     let mut changed_preconditions = Vec::new();
     let mut lost_properties = Vec::new();
+    let mut comparison_notes = Vec::new();
 
     // Collect nondeterministic fields from both specs (union).
     let nondet_fields: Vec<&NondeterministicField> = old
@@ -100,17 +140,30 @@ pub fn diff_specs(old: &FunctionSpec, new: &FunctionSpec) -> SpecDiff {
     for new_class in &new.classes {
         match old_by_path.get(&new_class.branch_path) {
             Some(old_class) => {
-                // Matched by branch path — compare postconditions,
-                // excluding fields marked as nondeterministic.
-                if !postconditions_equal_ignoring_nondeterminism(
-                    &old_class.postcondition,
-                    &new_class.postcondition,
-                    &nondet_fields,
-                ) {
-                    changed_postconditions.push(PostconditionChange {
+                // Matched by branch path. A sampled return is an example,
+                // not the full return set for the path: only compare
+                // postconditions when both sides recorded a canonical
+                // example and their input vectors are structurally equal.
+                // Otherwise the two representative outcomes may simply come
+                // from different inputs — comparing them would compare
+                // unrelated evidence, not detect a behavioral change.
+                if canonical_examples_comparable(old_class.examples.first(), new_class.examples.first())
+                {
+                    if !postconditions_equal_ignoring_nondeterminism(
+                        &old_class.postcondition,
+                        &new_class.postcondition,
+                        &nondet_fields,
+                    ) {
+                        changed_postconditions.push(PostconditionChange {
+                            class_label: old_class.label.clone(),
+                            old: old_class.postcondition.clone(),
+                            new: new_class.postcondition.clone(),
+                        });
+                    }
+                } else {
+                    comparison_notes.push(ComparisonNote {
                         class_label: old_class.label.clone(),
-                        old: old_class.postcondition.clone(),
-                        new: new_class.postcondition.clone(),
+                        reason: ComparisonNoteReason::MissingComparableWitness,
                     });
                 }
 
@@ -206,6 +259,26 @@ pub fn diff_specs(old: &FunctionSpec, new: &FunctionSpec) -> SpecDiff {
         changed_postconditions,
         changed_preconditions,
         lost_properties,
+        comparison_notes,
+    }
+}
+
+/// Whether two classes' canonical examples provide a valid basis for
+/// comparing their postconditions.
+///
+/// Both sides must have at least one example, and their full input vectors
+/// must be structurally equal (`serde_json::Value` equality: object key
+/// order is irrelevant, argument/array order and missing-vs-null are
+/// significant). A later example matching across specs is never substituted
+/// for the canonical one — that would let an unrelated pair of postconditions
+/// borrow comparability from a different, unreported input.
+fn canonical_examples_comparable(
+    old_example: Option<&ConcreteExample>,
+    new_example: Option<&ConcreteExample>,
+) -> bool {
+    match (old_example, new_example) {
+        (Some(old_example), Some(new_example)) => old_example.inputs == new_example.inputs,
+        _ => false,
     }
 }
 
@@ -242,6 +315,12 @@ pub fn format_spec_diff_text(diff: &SpecDiff) -> String {
     }
     if !diff.lost_properties.is_empty() {
         parts.push(format!("{} property/ies lost", diff.lost_properties.len()));
+    }
+    if !diff.comparison_notes.is_empty() {
+        parts.push(format!(
+            "{} class(es) with insufficient comparison evidence",
+            diff.comparison_notes.len()
+        ));
     }
     out.push_str(&format!("  Summary: {}\n\n", parts.join(", ")));
 
@@ -290,7 +369,24 @@ pub fn format_spec_diff_text(diff: &SpecDiff) -> String {
         out.push_str(&format!("  [LOST]    {prop}\n"));
     }
 
+    // Comparison notes: insufficient evidence, not a confirmed change.
+    for note in &diff.comparison_notes {
+        out.push_str(&format!(
+            "  [INCONCLUSIVE] {}: insufficient comparison evidence ({})\n",
+            note.class_label,
+            format_comparison_note_reason(note.reason)
+        ));
+    }
+
     out
+}
+
+fn format_comparison_note_reason(reason: ComparisonNoteReason) -> &'static str {
+    match reason {
+        ComparisonNoteReason::MissingComparableWitness => {
+            "no comparable recorded example on both sides"
+        }
+    }
 }
 
 /// Format a spec diff as machine-readable JSON.
@@ -1152,5 +1248,609 @@ mod tests {
             1,
             "throws comparison should not be affected by return nondeterminism"
         );
+    }
+
+    // -- str-nfg4y: canonical-input comparability guard --
+
+    use crate::equivalence::group_into_classes;
+    use crate::execution_record::BranchDecision;
+    use crate::explorer::ObservationOutput;
+    use crate::protocol::{ExecuteResult, MockConfig};
+    use crate::spec::build_spec;
+    use crate::types::TypeInfo;
+
+    /// Build a `FunctionSpec` for a single-branch-path pure function from
+    /// `(input, output)` pairs, using the real `group_into_classes ->
+    /// build_spec` pipeline — the same reproduction recipe str-nfg4y used.
+    fn spec_from_observations(function_name: &str, pairs: &[(i64, i64)]) -> FunctionSpec {
+        let executions: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = pairs
+            .iter()
+            .map(|(input, output)| {
+                let result = ExecuteResult {
+                    return_value: Some(json!(output)),
+                    branch_path: vec![BranchDecision {
+                        branch_id: 1,
+                        line: 1,
+                        taken: true,
+                        constraint: Default::default(),
+                        conditions: None,
+                    }],
+                    lines_executed: vec![1],
+                    ..Default::default()
+                };
+                (vec![json!(input)], vec![], result)
+            })
+            .collect();
+
+        let classes = group_into_classes(&executions);
+        let observation = ObservationOutput {
+            function_name: function_name.to_string(),
+            iterations: pairs.len() as u32,
+            unique_paths: 1,
+            lines_covered: 1,
+            total_lines: 1,
+            ..Default::default()
+        };
+
+        build_spec(
+            &observation,
+            &classes,
+            None,
+            None,
+            &TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            },
+        )
+    }
+
+    fn round_trip(spec: &FunctionSpec) -> FunctionSpec {
+        let json = serde_json::to_string(spec).expect("serialize spec");
+        serde_json::from_str(&json).expect("deserialize spec")
+    }
+
+    #[test]
+    fn population_shift_identity_function_is_not_a_regression() {
+        // Baseline observes (1 -> 1), (2 -> 2); pick_simplest selects [1] as
+        // canonical. Candidate observes only (2 -> 2); canonical becomes
+        // [2]. The identity function's behavior did not change, but naive
+        // postcondition comparison would report 1 -> 2 as a changed return.
+        let old = round_trip(&spec_from_observations("identity", &[(1, 1), (2, 2)]));
+        let new = round_trip(&spec_from_observations("identity", &[(2, 2)]));
+
+        let diff = diff_specs(&old, &new);
+        assert!(
+            diff.changed_postconditions.is_empty(),
+            "unmatched canonical inputs must not produce a changed-postcondition \
+             regression, got: {:?}",
+            diff.changed_postconditions
+        );
+        assert!(!diff.has_regressions());
+        assert_eq!(diff.comparison_notes.len(), 1);
+        assert_eq!(
+            diff.comparison_notes[0].reason,
+            ComparisonNoteReason::MissingComparableWitness
+        );
+    }
+
+    #[test]
+    fn population_shift_identity_function_is_not_a_regression_reversed() {
+        let old = round_trip(&spec_from_observations("identity", &[(2, 2)]));
+        let new = round_trip(&spec_from_observations("identity", &[(1, 1), (2, 2)]));
+
+        let diff = diff_specs(&old, &new);
+        assert!(diff.changed_postconditions.is_empty());
+        assert!(!diff.has_regressions());
+        assert_eq!(diff.comparison_notes.len(), 1);
+    }
+
+    #[test]
+    fn same_canonical_input_changed_output_is_still_a_regression() {
+        let old = round_trip(&spec_from_observations("identity", &[(1, 1)]));
+        let new = round_trip(&spec_from_observations("identity", &[(1, 2)]));
+
+        let diff = diff_specs(&old, &new);
+        assert_eq!(diff.changed_postconditions.len(), 1);
+        assert!(diff.comparison_notes.is_empty());
+        assert!(diff.has_regressions());
+    }
+
+    #[test]
+    fn missing_example_on_either_side_generates_a_note() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples.clear();
+        let new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+
+        let diff = diff_specs(&old, &new);
+        assert!(diff.changed_postconditions.is_empty());
+        assert_eq!(diff.comparison_notes.len(), 1);
+    }
+
+    #[test]
+    fn missing_example_on_both_sides_generates_a_note() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples.clear();
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(2) },
+            )],
+        );
+        new.classes[0].examples.clear();
+
+        let diff = diff_specs(&old, &new);
+        assert!(diff.changed_postconditions.is_empty());
+        assert_eq!(diff.comparison_notes.len(), 1);
+    }
+
+    #[test]
+    fn two_present_examples_with_empty_inputs_remain_comparable() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![],
+            return_value: Some(json!(1)),
+            thrown_error: None,
+        }];
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(2) },
+            )],
+        );
+        new.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![],
+            return_value: Some(json!(2)),
+            thrown_error: None,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert_eq!(
+            diff.changed_postconditions.len(),
+            1,
+            "two present zero-argument examples must be treated as comparable"
+        );
+        assert!(diff.comparison_notes.is_empty());
+    }
+
+    #[test]
+    fn object_key_order_does_not_affect_comparability() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![json!({"a": 1, "b": 2})],
+            return_value: Some(json!(1)),
+            thrown_error: None,
+        }];
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(2) },
+            )],
+        );
+        new.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![json!({"b": 2, "a": 1})],
+            return_value: Some(json!(2)),
+            thrown_error: None,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert_eq!(
+            diff.changed_postconditions.len(),
+            1,
+            "object key insertion order must not affect comparability"
+        );
+        assert!(diff.comparison_notes.is_empty());
+    }
+
+    #[test]
+    fn argument_order_affects_comparability() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![json!(1), json!(2)],
+            return_value: Some(json!(1)),
+            thrown_error: None,
+        }];
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(2) },
+            )],
+        );
+        new.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![json!(2), json!(1)],
+            return_value: Some(json!(2)),
+            thrown_error: None,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert!(
+            diff.changed_postconditions.is_empty(),
+            "swapped argument order must not be treated as comparable"
+        );
+        assert_eq!(diff.comparison_notes.len(), 1);
+    }
+
+    #[test]
+    fn note_only_diff_is_not_empty_but_has_no_regressions() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples.clear();
+        let new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+
+        let diff = diff_specs(&old, &new);
+        assert!(
+            !diff.is_empty(),
+            "a note must not be reported as an empty diff"
+        );
+        assert!(!diff.has_regressions(), "a note alone is not a regression");
+    }
+
+    #[test]
+    fn note_coexists_with_independent_regressions() {
+        let mut old = make_spec(
+            "fn1",
+            vec![
+                make_class(
+                    "Class 1",
+                    vec![(0, true)],
+                    vec![],
+                    Postcondition::Returns { value: json!(1) },
+                ),
+                make_class(
+                    "Class 2",
+                    vec![(0, false)],
+                    vec![],
+                    Postcondition::Returns { value: json!(9) },
+                ),
+            ],
+        );
+        old.classes[0].examples.clear();
+        let new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+
+        let diff = diff_specs(&old, &new);
+        assert_eq!(diff.comparison_notes.len(), 1);
+        assert_eq!(diff.removed_classes.len(), 1);
+        assert!(
+            diff.has_regressions(),
+            "an independent removed-class regression must not be suppressed by a note"
+        );
+    }
+
+    #[test]
+    fn comparison_note_json_round_trips() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples.clear();
+        let new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+
+        let diff = diff_specs(&old, &new);
+        let json_str = format_spec_diff_json(&diff).expect("json serialization");
+        assert!(json_str.contains("comparison_notes"));
+        assert!(json_str.contains("missing_comparable_witness"));
+        let deserialized: SpecDiff =
+            serde_json::from_str(&json_str).expect("json deserialization");
+        assert_eq!(diff, deserialized);
+    }
+
+    #[test]
+    fn legacy_json_without_comparison_notes_field_deserializes_with_empty_notes() {
+        let legacy_json = r#"{
+            "function_name": "fn1",
+            "added_classes": [],
+            "removed_classes": [],
+            "changed_postconditions": [],
+            "changed_preconditions": [],
+            "lost_properties": []
+        }"#;
+        let diff: SpecDiff =
+            serde_json::from_str(legacy_json).expect("legacy diff must deserialize");
+        assert!(diff.comparison_notes.is_empty());
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn note_only_text_reports_inconclusive_not_no_changes() {
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples.clear();
+        let new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+
+        let diff = diff_specs(&old, &new);
+        let text = format_spec_diff_text(&diff);
+        assert!(!text.contains("No changes detected"));
+        assert!(text.contains("[INCONCLUSIVE]"));
+        assert!(text.contains("insufficient comparison evidence"));
+    }
+
+    #[test]
+    fn masks_do_not_establish_comparability_for_unequal_inputs() {
+        // A whole-return nondeterminism mask must not let an uncomparable
+        // pair slip through as "equal" instead of being reported as a note:
+        // the guard runs before the mask-aware comparison, not instead of it.
+        let mut old = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(1) },
+            )],
+        );
+        old.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![json!(1)],
+            return_value: Some(json!(1)),
+            thrown_error: None,
+        }];
+        let mut new = make_spec(
+            "fn1",
+            vec![make_class(
+                "Class 1",
+                vec![(0, true)],
+                vec![],
+                Postcondition::Returns { value: json!(2) },
+            )],
+        );
+        new.classes[0].examples = vec![ConcreteExample {
+            inputs: vec![json!(2)],
+            return_value: Some(json!(2)),
+            thrown_error: None,
+        }];
+        new.nondeterministic_fields = vec![NondeterministicField {
+            field_path: "return".to_string(),
+            evidence: vec![NondeterminismEvidence::ObservedWithinRun],
+            confidence: Confidence::High,
+        }];
+
+        let diff = diff_specs(&old, &new);
+        assert!(diff.changed_postconditions.is_empty());
+        assert_eq!(
+            diff.comparison_notes.len(),
+            1,
+            "mismatched canonical inputs must produce a note even with a \
+             whole-return mask present"
+        );
+    }
+
+    mod prop_tests {
+        use super::*;
+        use crate::test_arbitraries::arb_json_value;
+        use proptest::prelude::*;
+
+        fn class_with_example(
+            label: &str,
+            postcondition: Postcondition,
+            inputs: Vec<serde_json::Value>,
+        ) -> SpecClass {
+            let mut class = make_class(label, vec![(0, true)], vec![], postcondition);
+            class.examples = vec![ConcreteExample {
+                inputs,
+                return_value: None,
+                thrown_error: None,
+            }];
+            class
+        }
+
+        proptest! {
+            /// Swapping which side is "old" and which is "new" never changes
+            /// whether a pair of canonical examples is judged comparable.
+            #[test]
+            fn comparability_is_symmetric(
+                old_inputs in prop::collection::vec(arb_json_value(), 0..=3),
+                new_inputs in prop::collection::vec(arb_json_value(), 0..=3),
+            ) {
+                let old = ConcreteExample { inputs: old_inputs, return_value: None, thrown_error: None };
+                let new = ConcreteExample { inputs: new_inputs, return_value: None, thrown_error: None };
+                prop_assert_eq!(
+                    canonical_examples_comparable(Some(&old), Some(&new)),
+                    canonical_examples_comparable(Some(&new), Some(&old))
+                );
+            }
+
+            /// Identical canonical input vectors are always comparable,
+            /// regardless of the arbitrary JSON values involved.
+            #[test]
+            fn identical_inputs_are_always_comparable(
+                inputs in prop::collection::vec(arb_json_value(), 0..=4),
+            ) {
+                let old = ConcreteExample { inputs: inputs.clone(), return_value: None, thrown_error: None };
+                let new = ConcreteExample { inputs, return_value: None, thrown_error: None };
+                prop_assert!(canonical_examples_comparable(Some(&old), Some(&new)));
+            }
+
+            /// A missing canonical example on either side can never be
+            /// comparable, no matter what the other side's inputs are.
+            #[test]
+            fn missing_example_is_never_comparable(
+                inputs in prop::collection::vec(arb_json_value(), 0..=4),
+            ) {
+                let present = ConcreteExample { inputs, return_value: None, thrown_error: None };
+                prop_assert!(!canonical_examples_comparable(None, Some(&present)));
+                prop_assert!(!canonical_examples_comparable(Some(&present), None));
+                prop_assert!(!canonical_examples_comparable(None, None));
+            }
+
+            /// Swapping old/new preserves the resulting comparability
+            /// classification (note vs. compared) through the full
+            /// `diff_specs` pipeline, for arbitrary same/different postcondition
+            /// values and arbitrary canonical inputs.
+            #[test]
+            fn swapping_old_new_preserves_comparability_classification(
+                old_inputs in prop::collection::vec(arb_json_value(), 0..=3),
+                new_inputs in prop::collection::vec(arb_json_value(), 0..=3),
+                old_return in arb_json_value(),
+                new_return in arb_json_value(),
+            ) {
+                let old_spec = make_spec(
+                    "fn1",
+                    vec![class_with_example(
+                        "Class 1",
+                        Postcondition::Returns { value: old_return },
+                        old_inputs.clone(),
+                    )],
+                );
+                let new_spec = make_spec(
+                    "fn1",
+                    vec![class_with_example(
+                        "Class 1",
+                        Postcondition::Returns { value: new_return },
+                        new_inputs.clone(),
+                    )],
+                );
+
+                let forward = diff_specs(&old_spec, &new_spec);
+                let backward = diff_specs(&new_spec, &old_spec);
+
+                let forward_is_note = !forward.comparison_notes.is_empty();
+                let backward_is_note = !backward.comparison_notes.is_empty();
+                prop_assert_eq!(forward_is_note, backward_is_note);
+
+                let should_be_comparable = old_inputs == new_inputs;
+                prop_assert_eq!(forward_is_note, !should_be_comparable);
+            }
+
+            /// A note-bearing diff always round-trips through JSON with its
+            /// structured reason intact.
+            #[test]
+            fn note_bearing_diff_round_trips(
+                old_inputs in prop::collection::vec(arb_json_value(), 0..=3),
+                new_inputs in prop::collection::vec(arb_json_value(), 1..=3),
+            ) {
+                // Bias toward mismatched inputs so most cases produce a note;
+                // when they happen to match, the round-trip property still holds.
+                let old_spec = make_spec(
+                    "fn1",
+                    vec![class_with_example(
+                        "Class 1",
+                        Postcondition::Returns { value: json!(1) },
+                        old_inputs,
+                    )],
+                );
+                let new_spec = make_spec(
+                    "fn1",
+                    vec![class_with_example(
+                        "Class 1",
+                        Postcondition::Returns { value: json!(1) },
+                        new_inputs,
+                    )],
+                );
+
+                let diff = diff_specs(&old_spec, &new_spec);
+                let json_str = format_spec_diff_json(&diff).expect("serialize");
+                let round_tripped: SpecDiff = serde_json::from_str(&json_str).expect("deserialize");
+                prop_assert_eq!(diff, round_tripped);
+            }
+        }
     }
 }
