@@ -7137,13 +7137,28 @@ echo '{{"protocol_version":"0.1.0","id":2,"status":"generate","value":42,"genera
                 TypeInfo::Str => value.is_string(),
                 TypeInfo::Bool => value.is_boolean(),
                 TypeInfo::Array { .. } => value.is_array(),
-                TypeInfo::Object { .. } => value.is_object(),
+                TypeInfo::Object { fields } => {
+                    let arity = positional_object_arity(fields);
+                    if arity > 0 {
+                        value.as_array().is_some_and(|items| items.len() == arity)
+                    } else {
+                        value.is_object()
+                    }
+                }
                 TypeInfo::Nullable { inner } => value.is_null() || value_matches_type(value, inner),
                 TypeInfo::Union { variants, .. } => {
                     variants.is_empty() || variants.iter().any(|v| value_matches_type(value, v))
                 }
                 TypeInfo::Complex { .. } | TypeInfo::Opaque { .. } | TypeInfo::Unknown => true,
             }
+        }
+
+        #[test]
+        fn value_matches_type_accepts_tuple_arrays() {
+            let typ = tuple_type();
+
+            assert!(value_matches_type(&json!([1, "a"]), &typ));
+            assert!(!value_matches_type(&json!({"0": 1, "1": "a"}), &typ));
         }
 
         /// Build a JSON array that *models the str-jeen.85 bug input*: a byte

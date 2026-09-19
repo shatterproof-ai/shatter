@@ -382,6 +382,18 @@ pub fn arb_type_info(depth: u32) -> BoxedStrategy<TypeInfo> {
                     0..=4,
                 )
                 .prop_map(|fields| TypeInfo::Object { fields }),
+            // A fully numeric field-name sequence represents a positional
+            // object (Rust tuple), which serializes as a JSON array rather
+            // than an object. Include it so shared mutation properties cover
+            // both object encodings.
+            1 => prop::collection::vec(arb_type_info(depth - 1), 1..=4)
+                .prop_map(|elements| TypeInfo::Object {
+                    fields: elements
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, typ)| (index.to_string(), typ))
+                        .collect(),
+                }),
             1 => prop::collection::vec(arb_type_info(depth - 1), 2..=4)
                 .prop_map(|variants| TypeInfo::Union {
                     variants,
