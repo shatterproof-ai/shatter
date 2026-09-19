@@ -1927,7 +1927,19 @@ llm:
         )
         .unwrap();
 
-        let configs = discover_configs(&sub).unwrap();
+        // Scope to configs under this test's own tempdir: `discover_configs`
+        // walks upward to the filesystem root by design (mirrors `.git`
+        // discovery), so it can also pick up an unrelated `.shatter/`
+        // directory that happens to exist above the OS temp dir on the host
+        // (e.g. a stray `/tmp/.shatter` from some other tool run). Filtering
+        // by `shatter_dir` prefix keeps the assertions immune to that real,
+        // uncontrolled ancestor state instead of assuming it never exists.
+        let configs: Vec<_> = discover_configs_with_paths(&sub)
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.shatter_dir.starts_with(root.path()))
+            .map(|d| d.config)
+            .collect();
         assert_eq!(configs.len(), 2);
         // Nearest first
         assert_eq!(configs[0].defaults.max_iterations, Some(500));
@@ -1940,7 +1952,14 @@ llm:
         let sub = dir.path().join("some").join("path");
         fs::create_dir_all(&sub).unwrap();
 
-        let configs = discover_configs(&sub).unwrap();
+        // See the comment in `discover_configs_finds_nearest_first`: scope to
+        // this test's own tempdir so a real ancestor `.shatter/` directory on
+        // the host doesn't produce a false failure here.
+        let configs: Vec<_> = discover_configs_with_paths(&sub)
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.shatter_dir.starts_with(dir.path()))
+            .collect();
         assert!(configs.is_empty());
     }
 
@@ -2577,7 +2596,15 @@ functions:
         )
         .unwrap();
 
-        let configs = discover_configs(&sub).unwrap();
+        // See the comment in `discover_configs_finds_nearest_first`: scope to
+        // this test's own tempdir so a real ancestor `.shatter/` directory on
+        // the host doesn't produce a false failure here.
+        let configs: Vec<_> = discover_configs_with_paths(&sub)
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.shatter_dir.starts_with(root.path()))
+            .map(|d| d.config)
+            .collect();
         assert_eq!(configs.len(), 2);
 
         let merged = merge_configs(&configs);
