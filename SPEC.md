@@ -407,14 +407,23 @@ fails to load or parse (§2.11). `--json` for machine-readable output.
 Compare two behavioral specs (from `--spec-json`) by branch path:
 
 - **Added / Removed classes**: present in only one spec.
-- **Changed postconditions**: same branch path, different output.
+- **Changed postconditions**: same branch path, and both specs recorded a
+  canonical example with structurally equal input vectors, but the output
+  differs.
 - **Changed preconditions**: same branch path, different input constraints.
 - **Lost properties**: invariants that held in old but not new.
+- **Comparison notes**: same branch path, but no comparable canonical example
+  exists on both sides (one is missing, or their recorded inputs differ) —
+  reported as inconclusive rather than a changed postcondition, since a
+  sampled return is an example, not the full return set for a path and the
+  two sides may simply have sampled different inputs.
 
-Exit `0` when specs are equivalent, `1` on regressions, `2` if a spec file fails
-to load or parse (§2.11) — e.g. a malformed `--spec-json` file distinguishably
-from a spec that parsed cleanly and diverged. `--json` for machine-readable
-output.
+Exit `0` when no regressions are detected, including when the only output is
+comparison notes — a clean exit does not prove the specs are behaviorally
+equivalent, only that nothing comparable was found to differ. Exit `1` on
+regressions. Exit `2` if a spec file fails to load or parse (§2.11) — e.g. a
+malformed `--spec-json` file distinguishably from a spec that parsed cleanly
+and diverged. `--json` for machine-readable output.
 
 #### `shatter compare <SPEC_A> <SPEC_B>`
 
