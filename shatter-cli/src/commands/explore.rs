@@ -5165,6 +5165,7 @@ pub(crate) async fn run_explore(
                     default_execute_plan: None,
                     // Pin custom-generator/extractor slots through concolic (str-6cdp).
                     value_sources: explore_config.value_sources.clone(),
+                    frontier_ranker: std::sync::Arc::new(shatter_core::frontier::HeuristicRanker),
                 };
                 (Some(cc), seeds, users)
             } else {

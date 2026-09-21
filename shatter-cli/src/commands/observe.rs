@@ -126,6 +126,7 @@ pub(crate) async fn run_observe(
             // This observe path does not resolve custom generators; all slots
             // are built-in, so no pinning is required (str-6cdp).
             value_sources: vec![],
+            frontier_ranker: std::sync::Arc::new(shatter_core::frontier::HeuristicRanker),
         };
         // Instrument the function so the frontend has the source ready for prepare.
         if let Err(e) = frontend
