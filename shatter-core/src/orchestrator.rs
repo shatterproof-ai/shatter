@@ -486,13 +486,6 @@ pub struct OracleHandle<'a> {
     pub function_source: String,
 }
 
-/// Drain at most one ready LLM-oracle candidate, polling each unsolved
-/// frontier in turn until one yields an input vector that survives type
-/// validation and dedup against `attempted_by_condition`.
-///
-/// Returns `Some((inputs, condition_id))` on the first successful drain,
-/// `None` when no oracle is wired in or none of the frontiers had a ready
-/// candidate this tick.
 /// Recover the most recent predicate text and source line observed for
 /// `branch_id` from `raw_results`. Returns `(String::new(), 0)` when the
 /// branch was never seen. Shared by the seed-oracle polling path and the
@@ -513,6 +506,13 @@ pub fn frontier_predicate(
     (String::new(), 0)
 }
 
+/// Drain at most one ready LLM-oracle candidate, polling each unsolved
+/// frontier in turn until one yields an input vector that survives type
+/// validation and dedup against `attempted_by_condition`.
+///
+/// Returns `Some((inputs, condition_id))` on the first successful drain,
+/// `None` when no oracle is wired in or none of the frontiers had a ready
+/// candidate this tick.
 #[allow(clippy::too_many_arguments)]
 fn poll_oracle_for_frontier(
     oracle: Option<&mut OracleHandle<'_>>,
@@ -526,9 +526,15 @@ fn poll_oracle_for_frontier(
 ) -> Option<(InputVector, ConditionId)> {
     let handle = oracle?;
 
-    // Highest effective score first so an installed ranker also governs
-    // which frontier the seed oracle is asked about (str-hjrnp.1).
-    for frontier in frontier_set.sorted_desc() {
+    // When a ranker installed scores this round they also govern which
+    // frontier the seed oracle is asked about; otherwise keep the set's
+    // native order so default behavior is unchanged (str-hjrnp.1).
+    let ordered: Vec<Frontier> = if frontier_set.has_external_scores() {
+        frontier_set.sorted_desc()
+    } else {
+        frontier_set.iter().cloned().collect()
+    };
+    for frontier in ordered {
         // Skip frontiers whose opposite side has already been observed —
         // those conditions are effectively solved.
         if seen_branch_sides.contains(&(frontier.branch_id, true))
@@ -2770,7 +2776,7 @@ pub async fn explore_with_oracle(
         // --- Frontier ranking (str-hjrnp.1): consult the configured policy
         // once per round and install its scores on the frontier set. The
         // default heuristic ranker returns an empty map, which is a no-op.
-        if !frontier_set.is_empty() {
+        if !config.frontier_ranker.is_noop() && !frontier_set.is_empty() {
             let summaries: Vec<FrontierSummary> = frontier_set
                 .sorted_desc()
                 .into_iter()
@@ -2807,10 +2813,14 @@ pub async fn explore_with_oracle(
                     }
                     frontier_set.set_external_scores(scores);
                 }
-                Err(e) => log::warn!(
-                    "frontier ranker {} failed on round {round}: {e}",
-                    config.frontier_ranker.name()
-                ),
+                Err(e) => {
+                    log::warn!(
+                        "frontier ranker {} failed on round {round}: {e}",
+                        config.frontier_ranker.name()
+                    );
+                    // Never steer on a previous round's opinion.
+                    frontier_set.set_external_scores(HashMap::new());
+                }
             }
         }
 
@@ -3110,8 +3120,12 @@ pub async fn explore_with_oracle(
                                                 decision.branch_id,
                                                 DiscoveryMethod::Fuzzed,
                                             ));
-                                            discovery_iterations
-                                                .push((decision.branch_id, total_executions));
+                                            // `total_executions` is only
+                                            // folded in after the fuzz phase.
+                                            discovery_iterations.push((
+                                                decision.branch_id,
+                                                total_executions + fuzz_executions as usize,
+                                            ));
                                         }
                                     }
                                     let branch_ids: Vec<u32> =

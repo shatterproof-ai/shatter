@@ -112,7 +112,15 @@ impl FrontierSet {
     /// Insert a frontier. If a frontier with the same `branch_id` already
     /// exists, it is replaced.
     pub fn insert(&mut self, frontier: Frontier) {
-        self.remove(frontier.branch_id);
+        // Keep any external score installed this round: re-inserting a
+        // frontier refreshes its prefix/depth, not the ranker's opinion.
+        if let Some(pos) = self
+            .frontiers
+            .iter()
+            .position(|f| f.branch_id == frontier.branch_id)
+        {
+            self.frontiers.swap_remove(pos);
+        }
         self.frontiers.push(frontier);
     }
 
@@ -214,6 +222,11 @@ impl FrontierSet {
         self.external_scores = scores;
     }
 
+    /// `true` when a ranker installed at least one score this round.
+    pub fn has_external_scores(&self) -> bool {
+        !self.external_scores.is_empty()
+    }
+
     /// Effective priority of `f`: the external score when one was installed
     /// for its branch id, else [`frontier_score`].
     pub fn score(&self, f: &Frontier) -> f64 {
@@ -286,6 +299,14 @@ pub struct RankContext<'a> {
 #[async_trait]
 pub trait FrontierRanker: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &'static str;
+
+    /// `true` when `rank` always returns an empty map, so the orchestrator
+    /// can skip building a [`RankContext`] entirely. Only the built-in
+    /// heuristic should override this.
+    fn is_noop(&self) -> bool {
+        false
+    }
+
     async fn rank(&self, ctx: &RankContext<'_>) -> anyhow::Result<HashMap<u32, f64>>;
 }
 
@@ -297,6 +318,10 @@ pub struct HeuristicRanker;
 impl FrontierRanker for HeuristicRanker {
     fn name(&self) -> &'static str {
         "heuristic"
+    }
+
+    fn is_noop(&self) -> bool {
+        true
     }
 
     async fn rank(&self, _ctx: &RankContext<'_>) -> anyhow::Result<HashMap<u32, f64>> {
@@ -767,6 +792,26 @@ mod tests {
         assert_eq!(set.peek().unwrap().branch_id, 2);
         set.set_external_scores(HashMap::new());
         assert_eq!(set.peek().unwrap().branch_id, 1);
+    }
+
+    #[test]
+    fn insert_preserves_external_score() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 0, 0));
+        let mut ext = HashMap::new();
+        ext.insert(1, 0.9);
+        set.set_external_scores(ext);
+        assert!(set.has_external_scores());
+        set.insert(make_frontier(1, 3, 2)); // refreshed depth/stall, same id
+        assert_eq!(set.score(&make_frontier(1, 3, 2)), 0.9);
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn heuristic_ranker_is_noop_and_others_are_not() {
+        assert!(HeuristicRanker.is_noop());
+        assert!(!RandomRanker { seed: 1 }.is_noop());
+        assert!(!ScriptedRanker { priority: HashSet::new() }.is_noop());
     }
 
     #[test]
