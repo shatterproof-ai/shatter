@@ -26,6 +26,14 @@ const SAMPLE_SPEC_JSON_OTHER_FN: &str = r#"{
     "total_lines": 1
 }"#;
 
+// str-nfg4y: same branch path, same function, but the two sides' canonical
+// examples recorded different inputs ([1] vs [2]) — the diff must report an
+// inconclusive comparison note, not a changed postcondition, and must not
+// treat that note as a regression.
+const SAMPLE_SPEC_JSON_IDENTITY_INPUT_1: &str = r#"{"function_name":"identity","location":null,"classes":[{"label":"Class 1","branch_path":[{"branch_id":1,"taken":true}],"preconditions":[],"postcondition":{"kind":"returns","value":1},"side_effects":[],"examples":[{"inputs":[1],"return_value":1,"thrown_error":null}],"sample_count":1,"precondition_provenance":"observed","postcondition_provenance":"observed"}],"iterations":1,"lines_covered":1,"total_lines":1}"#;
+
+const SAMPLE_SPEC_JSON_IDENTITY_INPUT_2: &str = r#"{"function_name":"identity","location":null,"classes":[{"label":"Class 1","branch_path":[{"branch_id":1,"taken":true}],"preconditions":[],"postcondition":{"kind":"returns","value":2},"side_effects":[],"examples":[{"inputs":[2],"return_value":2,"thrown_error":null}],"sample_count":1,"precondition_provenance":"observed","postcondition_provenance":"observed"}],"iterations":1,"lines_covered":1,"total_lines":1}"#;
+
 fn shatter_binary() -> &'static str {
     env!("CARGO_BIN_EXE_shatter")
 }
@@ -76,6 +84,68 @@ fn spec_diff_with_regressions_exits_with_gate_code() {
         "a real regression (function removed) must exit 1 (gate fired), not the \
          tool-error code; stderr=\n{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn spec_diff_note_only_json_exits_zero_with_comparison_note() {
+    let a = write_temp(SAMPLE_SPEC_JSON_IDENTITY_INPUT_1);
+    let b = write_temp(SAMPLE_SPEC_JSON_IDENTITY_INPUT_2);
+    let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
+        .args(["spec-diff", "--json"])
+        .arg(a.path())
+        .arg(b.path())
+        .output()
+        .expect("invoke shatter spec-diff");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "mismatched canonical inputs must produce an inconclusive note, not a \
+         regression, and must exit 0; stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("spec-diff --json output must be valid JSON");
+    let diff = &parsed["diffs"][0];
+    assert!(
+        diff["comparison_notes"]
+            .as_array()
+            .is_some_and(|notes| !notes.is_empty()),
+        "JSON output must carry a non-empty comparison note; stdout=\n{stdout}"
+    );
+    assert!(
+        diff["changed_postconditions"]
+            .as_array()
+            .is_some_and(|changes| changes.is_empty()),
+        "a mismatched-input pair must not be reported as a changed postcondition; \
+         stdout=\n{stdout}"
+    );
+}
+
+#[test]
+fn spec_diff_note_only_text_exits_zero_and_reports_inconclusive() {
+    let a = write_temp(SAMPLE_SPEC_JSON_IDENTITY_INPUT_1);
+    let b = write_temp(SAMPLE_SPEC_JSON_IDENTITY_INPUT_2);
+    let output = Command::new(shatter_binary())
+        .env("SHATTER_ALLOW_HOST_WRITES", "1") // str-gg9v: opt into unsandboxed host execution
+        .args(["spec-diff", "--color", "never", "--render", "plain"])
+        .arg(a.path())
+        .arg(b.path())
+        .output()
+        .expect("invoke shatter spec-diff");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "note-only text output must still exit 0; stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("INCONCLUSIVE") || stdout.contains("insufficient comparison evidence"),
+        "text output must explicitly flag the inconclusive comparison, not just \
+         say 'No changes detected'; stdout=\n{stdout}"
     );
 }
 
