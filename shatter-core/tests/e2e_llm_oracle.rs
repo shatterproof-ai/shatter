@@ -444,3 +444,72 @@ async fn concurrency_cap_respected() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// str-hjrnp.1: a `ScriptedRanker` primed with the branch ids a heuristic
+/// run discovered is consulted every round, logs only 0.0/1.0 scores, and
+/// the exploration still reaches the "zero" branch.
+#[tokio::test]
+async fn scripted_ranker_is_consulted_each_round() {
+    use shatter_core::frontier::{FrontierRanker, HeuristicRanker, ScriptedRanker};
+
+    async fn run(ranker: Arc<dyn FrontierRanker>, file_str: &str) -> ExploreResult {
+        let mut frontend = spawn_ts_frontend().await;
+        let analysis = analyze_function(&mut frontend, file_str, "classifyNumber").await;
+        instrument_function(&mut frontend, file_str, "classifyNumber").await;
+        let config = ExploreConfig {
+            max_iterations: Some(30),
+            max_executions: Some(100),
+            plateau_threshold: 0,
+            seed: Some(1),
+            frontier_ranker: ranker,
+            ..Default::default()
+        };
+        let (result, _) = orchestrator::explore(
+            &mut frontend,
+            "classifyNumber",
+            vec![vec![serde_json::json!(5)], vec![serde_json::json!(-3)]],
+            vec![],
+            &analysis.params,
+            &config,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .expect("exploration failed");
+        result
+    }
+
+    let file = examples_dir().join("01-arithmetic.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    let reference = run(Arc::new(HeuristicRanker), &file_str).await;
+    assert!(
+        reference.rank_log.is_empty(),
+        "heuristic ranker must not log scores"
+    );
+    assert_eq!(
+        reference.discoveries.len(),
+        reference.discovery_iterations.len(),
+        "discovery_iterations must be parallel to discoveries"
+    );
+    let all_ids: HashSet<u32> = reference.discoveries.iter().map(|(id, _)| *id).collect();
+
+    let scripted = run(Arc::new(ScriptedRanker { priority: all_ids }), &file_str).await;
+    assert!(
+        !scripted.rank_log.is_empty(),
+        "scripted ranker should have been consulted"
+    );
+    assert!(
+        scripted.rank_log.iter().all(|d| d.score == 0.0 || d.score == 1.0),
+        "scripted scores must be 0.0 or 1.0: {:?}",
+        scripted.rank_log
+    );
+    assert!(
+        return_value_set(&scripted).contains("\"zero\""),
+        "should still discover 'zero' branch; found: {:?}",
+        return_value_set(&scripted)
+    );
+}

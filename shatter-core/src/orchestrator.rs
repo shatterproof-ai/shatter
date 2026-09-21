@@ -33,7 +33,7 @@ use crate::drilling;
 use crate::execution_record::{BranchDecision, ScopeEvent, SymConstraint, TraceEvent};
 use crate::explorer::{apply_live_first_overrides, update_live_first_states};
 use crate::frontend::{Frontend, FrontendError};
-use crate::frontier::{Frontier, FrontierSet, frontier_score};
+use crate::frontier::{Frontier, FrontierSet, FrontierSummary, RankContext};
 use crate::genetic_fitness::{FitnessContext, FitnessWeights};
 use crate::input_gen;
 use crate::mcdc::McdcTable;
@@ -158,6 +158,10 @@ pub struct ExploreConfig {
     /// Set from the first plan returned by the planner; `None` when not using
     /// `--planner` or when the frontend returned no plans.
     pub default_execute_plan: Option<crate::protocol::InvocationPlan>,
+    /// Per-round frontier prioritization policy (str-hjrnp.1). The default
+    /// [`crate::frontier::HeuristicRanker`] installs no external scores, so
+    /// `FrontierSet` orders by `frontier_score` exactly as before.
+    pub frontier_ranker: std::sync::Arc<dyn crate::frontier::FrontierRanker>,
     /// Per-parameter value source for the function under exploration.
     /// Custom-generator/extractor slots (e.g. axum `State<AppState>`) carry
     /// native-replay markers and must never be mutated or seeded over (str-6cdp).
@@ -178,6 +182,10 @@ const BOUNDARY_FITNESS_SECOND: f64 = 0.9;
 
 /// Stall count threshold before bounded symbolic unrolling is eligible.
 const BOUNDED_UNROLL_STALL_THRESHOLD: u32 = drilling::DRILL_STALL_THRESHOLD + 1;
+/// Maximum frontiers handed to a [`crate::frontier::FrontierRanker`] per
+/// round. Matches the 255-option cap of choice-style decision oracles.
+pub const FRONTIER_RANK_CAP: usize = 255;
+
 /// Maximum stalled loop frontiers to target with bounded unroll per round.
 const MAX_BOUNDED_UNROLL_FRONTIERS_PER_ROUND: usize = 2;
 /// Default bounded-unroll depth when no solver timeout budget is configured.
@@ -209,6 +217,7 @@ impl Default for ExploreConfig {
             planner: None,
             default_execute_plan: None,
             value_sources: vec![],
+            frontier_ranker: std::sync::Arc::new(crate::frontier::HeuristicRanker),
         }
     }
 }
@@ -342,6 +351,19 @@ pub(crate) fn clamp_fuzz_budget(
     }
 }
 
+/// One external score a [`crate::frontier::FrontierRanker`] produced
+/// (str-hjrnp.1). Logged so calibration can be computed post hoc against
+/// `ExploreResult::discovery_iterations`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RankDecision {
+    /// 1-based orchestrator round in which the score was produced.
+    pub round: usize,
+    /// `total_executions` at the time of scoring.
+    pub executions: usize,
+    pub branch_id: u32,
+    pub score: f64,
+}
+
 /// Summary of a concolic exploration session.
 #[derive(Debug)]
 pub struct ExploreResult {
@@ -369,6 +391,13 @@ pub struct ExploreResult {
     pub raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)>,
     /// Per-branch discovery attribution with method (Z3, Random, UserProvided).
     pub discoveries: Vec<(u32, DiscoveryMethod)>,
+    /// `(branch_id, total_executions)` at the moment each branch in
+    /// `discoveries` was first seen. Parallel to `discoveries`: same length,
+    /// same order, same branch ids (str-hjrnp.1).
+    pub discovery_iterations: Vec<(u32, usize)>,
+    /// Every external frontier score the configured ranker produced, in
+    /// order (str-hjrnp.1). Empty under the default heuristic ranker.
+    pub rank_log: Vec<RankDecision>,
     /// Number of inputs skipped by triage prediction.
     pub triage_skipped: usize,
     /// Number of sampled skip predictions that were wrong.
@@ -410,6 +439,43 @@ pub struct ExploreResult {
     pub oracle_stats: Option<OracleStats>,
 }
 
+#[cfg(test)]
+impl ExploreResult {
+    /// All-empty result for unit tests that only care about a few fields.
+    pub(crate) fn empty_for_test(function_name: &str) -> Self {
+        Self {
+            function_name: function_name.to_string(),
+            total_lines: 0,
+            executions: vec![],
+            unique_paths: 0,
+            total_executions: 0,
+            z3_generated: 0,
+            fuzz_generated: 0,
+            boundary_generated: 0,
+            drill_generated: 0,
+            termination_reason: TerminationReason::WorklistExhausted,
+            raw_results: vec![],
+            discoveries: vec![],
+            discovery_iterations: vec![],
+            rank_log: vec![],
+            triage_skipped: 0,
+            triage_mispredictions: 0,
+            nondeterministic_fields: vec![],
+            float_probe_results: vec![],
+            boundary_results: vec![],
+            shrunk_witnesses: std::collections::HashMap::new(),
+            mcdc_summary: None,
+            pipeline_overlaps: 0,
+            shrink_stats: crate::shrink::ShrinkStats::default(),
+            abandoned_frontiers: vec![],
+            opaque_suggestions: vec![],
+            stubbed_modules: vec![],
+            timed_out: false,
+            oracle_stats: None,
+        }
+    }
+}
+
 /// Caller-supplied bundle wiring an [`OracleSlotMap`] into the orchestrator.
 ///
 /// `function_source` is the (already-trimmed) source window the orchestrator
@@ -418,6 +484,26 @@ pub struct ExploreResult {
 pub struct OracleHandle<'a> {
     pub slot_map: &'a mut OracleSlotMap,
     pub function_source: String,
+}
+
+/// Recover the most recent predicate text and source line observed for
+/// `branch_id` from `raw_results`. Returns `(String::new(), 0)` when the
+/// branch was never seen. Shared by the seed-oracle polling path and the
+/// per-round frontier ranking context (str-hjrnp.1).
+pub fn frontier_predicate(
+    branch_id: u32,
+    raw_results: &[(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)],
+) -> (String, u32) {
+    for (_, _, result) in raw_results.iter().rev() {
+        if let Some(decision) = result.branch_path.iter().find(|d| d.branch_id == branch_id) {
+            let predicate = match &decision.constraint {
+                crate::execution_record::SymConstraint::Expr { expr } => format!("{expr:?}"),
+                crate::execution_record::SymConstraint::Unknown { hint } => hint.clone(),
+            };
+            return (predicate, decision.line);
+        }
+    }
+    (String::new(), 0)
 }
 
 /// Drain at most one ready LLM-oracle candidate, polling each unsolved
@@ -440,7 +526,15 @@ fn poll_oracle_for_frontier(
 ) -> Option<(InputVector, ConditionId)> {
     let handle = oracle?;
 
-    for frontier in frontier_set.iter() {
+    // When a ranker installed scores this round they also govern which
+    // frontier the seed oracle is asked about; otherwise keep the set's
+    // native order so default behavior is unchanged (str-hjrnp.1).
+    let ordered: Vec<Frontier> = if frontier_set.has_external_scores() {
+        frontier_set.sorted_desc()
+    } else {
+        frontier_set.iter().cloned().collect()
+    };
+    for frontier in ordered {
         // Skip frontiers whose opposite side has already been observed —
         // those conditions are effectively solved.
         if seen_branch_sides.contains(&(frontier.branch_id, true))
@@ -452,26 +546,12 @@ fn poll_oracle_for_frontier(
 
         // Look up the most recent execution that observed this branch to
         // recover a human-readable predicate/location for OracleContext.
-        let mut predicate = String::new();
-        let mut location = format!("branch:{}", frontier.branch_id);
-        for (_, _, result) in raw_results.iter().rev() {
-            if let Some(decision) = result
-                .branch_path
-                .iter()
-                .find(|d| d.branch_id == frontier.branch_id)
-            {
-                location = format!("branch:{}:line:{}", decision.branch_id, decision.line);
-                if let crate::execution_record::SymConstraint::Expr { expr } = &decision.constraint
-                {
-                    predicate = format!("{expr:?}");
-                } else if let crate::execution_record::SymConstraint::Unknown { hint } =
-                    &decision.constraint
-                {
-                    predicate = hint.clone();
-                }
-                break;
-            }
-        }
+        let (predicate, line) = frontier_predicate(frontier.branch_id, raw_results);
+        let location = if line == 0 {
+            format!("branch:{}", frontier.branch_id)
+        } else {
+            format!("branch:{}:line:{}", frontier.branch_id, line)
+        };
 
         let attempted = attempted_by_condition
             .get(&condition_id)
@@ -2119,8 +2199,9 @@ fn solve_and_generate(
             .cloned()
             .collect();
         stalled.sort_by(|a, b| {
-            frontier_score(b)
-                .partial_cmp(&frontier_score(a))
+            frontier_set
+                .score(b)
+                .partial_cmp(&frontier_set.score(a))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         stalled.truncate(drilling::MAX_FRONTIERS_PER_ROUND);
@@ -2154,8 +2235,9 @@ fn solve_and_generate(
             .cloned()
             .collect();
         stalled_loop_frontiers.sort_by(|a, b| {
-            frontier_score(b)
-                .partial_cmp(&frontier_score(a))
+            frontier_set
+                .score(b)
+                .partial_cmp(&frontier_set.score(a))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         stalled_loop_frontiers.truncate(MAX_BOUNDED_UNROLL_FRONTIERS_PER_ROUND);
@@ -2457,6 +2539,9 @@ pub async fn explore_with_oracle(
     let mut raw_results: Vec<(Vec<serde_json::Value>, Vec<MockConfig>, ExecuteResult)> = Vec::new();
     let mut seen_branch_ids: HashSet<u32> = HashSet::new();
     let mut discoveries: Vec<(u32, DiscoveryMethod)> = Vec::new();
+    let mut discovery_iterations: Vec<(u32, usize)> = Vec::new();
+    let mut rank_log: Vec<RankDecision> = Vec::new();
+    let mut round: usize = 0;
     let mut total_executions: usize = 0;
     // str-303gg review fix: remember a representative `not_supported` reason seen
     // during exploration. Used only at finalize to reclassify the function as
@@ -2686,6 +2771,59 @@ pub async fn explore_with_oracle(
     //   4. If new path, call solve_and_generate() for drilling/boundary candidates
     //      and push them to the supplementary queue.
     loop {
+        round += 1;
+
+        // --- Frontier ranking (str-hjrnp.1): consult the configured policy
+        // once per round and install its scores on the frontier set. The
+        // default heuristic ranker returns an empty map, which is a no-op.
+        if !config.frontier_ranker.is_noop() && !frontier_set.is_empty() {
+            let summaries: Vec<FrontierSummary> = frontier_set
+                .sorted_desc()
+                .into_iter()
+                .take(FRONTIER_RANK_CAP)
+                .map(|f| {
+                    let (predicate, line) = frontier_predicate(f.branch_id, &raw_results);
+                    FrontierSummary {
+                        branch_id: f.branch_id,
+                        depth: f.depth,
+                        stall_count: f.stall_count,
+                        line,
+                        predicate,
+                    }
+                })
+                .collect();
+            let ctx = RankContext {
+                function_name,
+                function_source: oracle
+                    .as_ref()
+                    .map(|h| h.function_source.as_str())
+                    .unwrap_or(""),
+                round,
+                frontiers: summaries,
+            };
+            match config.frontier_ranker.rank(&ctx).await {
+                Ok(scores) => {
+                    for (branch_id, score) in &scores {
+                        rank_log.push(RankDecision {
+                            round,
+                            executions: total_executions,
+                            branch_id: *branch_id,
+                            score: *score,
+                        });
+                    }
+                    frontier_set.set_external_scores(scores);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "frontier ranker {} failed on round {round}: {e}",
+                        config.frontier_ranker.name()
+                    );
+                    // Never steer on a previous round's opinion.
+                    frontier_set.set_external_scores(HashMap::new());
+                }
+            }
+        }
+
         // --- Periodic progress summary (parity with random explorer) ---
         // Keep the discovery tracker current even when no callback is
         // registered so the `iters_since_new_discovery` field stays accurate
@@ -2982,6 +3120,12 @@ pub async fn explore_with_oracle(
                                                 decision.branch_id,
                                                 DiscoveryMethod::Fuzzed,
                                             ));
+                                            // `total_executions` is only
+                                            // folded in after the fuzz phase.
+                                            discovery_iterations.push((
+                                                decision.branch_id,
+                                                total_executions + fuzz_executions as usize,
+                                            ));
                                         }
                                     }
                                     let branch_ids: Vec<u32> =
@@ -3131,6 +3275,7 @@ pub async fn explore_with_oracle(
         for decision in &obs.result.branch_path {
             if seen_branch_ids.insert(decision.branch_id) {
                 discoveries.push((decision.branch_id, method));
+                discovery_iterations.push((decision.branch_id, total_executions));
             }
         }
 
@@ -3687,6 +3832,8 @@ pub async fn explore_with_oracle(
             termination_reason,
             raw_results,
             discoveries,
+            discovery_iterations,
+            rank_log,
             triage_skipped,
             triage_mispredictions,
             nondeterministic_fields: vec![],
@@ -7544,5 +7691,17 @@ mod fuzz_trigger_tests {
             is_fuzz_eligible(1, &attempts, None, 15),
             "indefinite mode should become eligible when coverage grows"
         );
+    }
+    #[test]
+    fn discovery_iterations_parallel_to_discoveries() {
+        let result = ExploreResult {
+            discoveries: vec![(3, DiscoveryMethod::Z3), (7, DiscoveryMethod::Random)],
+            discovery_iterations: vec![(3, 12), (7, 40)],
+            ..ExploreResult::empty_for_test("f")
+        };
+        assert_eq!(result.discoveries.len(), result.discovery_iterations.len());
+        for ((a, _), (b, _)) in result.discoveries.iter().zip(&result.discovery_iterations) {
+            assert_eq!(a, b);
+        }
     }
 }

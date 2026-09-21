@@ -3098,6 +3098,7 @@ pub async fn explore_with_scan_mode(
         default_execute_plan: explore_config.default_execute_plan.clone(),
         // Pin custom-generator/extractor slots through the concolic loop (str-6cdp).
         value_sources: explore_config.value_sources.clone(),
+        frontier_ranker: std::sync::Arc::new(crate::frontier::HeuristicRanker),
     };
     let explored = crate::orchestrator::explore(
         frontend,

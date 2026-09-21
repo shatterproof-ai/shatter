@@ -7,6 +7,10 @@
 //! serving them in score order: deeper, less-stalled, constraint-rich frontiers
 //! are explored first.
 
+use std::collections::{HashMap, HashSet};
+
+use async_trait::async_trait;
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 /// Stall count threshold after which a frontier is abandoned.
@@ -94,6 +98,10 @@ pub struct Frontier {
 #[derive(Debug, Clone, Default)]
 pub struct FrontierSet {
     frontiers: Vec<Frontier>,
+    /// Per-round scores installed by a [`FrontierRanker`]. Ids absent from
+    /// the map fall back to [`frontier_score`]. Cleared entries are dropped
+    /// together with their frontier.
+    external_scores: HashMap<u32, f64>,
 }
 
 impl FrontierSet {
@@ -104,7 +112,15 @@ impl FrontierSet {
     /// Insert a frontier. If a frontier with the same `branch_id` already
     /// exists, it is replaced.
     pub fn insert(&mut self, frontier: Frontier) {
-        self.remove(frontier.branch_id);
+        // Keep any external score installed this round: re-inserting a
+        // frontier refreshes its prefix/depth, not the ranker's opinion.
+        if let Some(pos) = self
+            .frontiers
+            .iter()
+            .position(|f| f.branch_id == frontier.branch_id)
+        {
+            self.frontiers.swap_remove(pos);
+        }
         self.frontiers.push(frontier);
     }
 
@@ -140,6 +156,7 @@ impl FrontierSet {
     /// Remove the frontier with the given `branch_id` (e.g., after solving it).
     /// Returns the removed frontier, if any.
     pub fn remove(&mut self, branch_id: u32) -> Option<Frontier> {
+        self.external_scores.remove(&branch_id);
         if let Some(pos) = self.frontiers.iter().position(|f| f.branch_id == branch_id) {
             Some(self.frontiers.swap_remove(pos))
         } else {
@@ -193,6 +210,44 @@ impl FrontierSet {
         self.frontiers.iter()
     }
 
+    /// Replace this round's external scores (str-hjrnp.1). Ids not present
+    /// fall back to [`frontier_score`]; an empty map restores pure heuristic
+    /// ordering.
+    ///
+    /// External and heuristic scores are compared on one axis, and the
+    /// heuristic ranges roughly `0..7.5` while rankers emit `0..1`, so a
+    /// partial map lets heuristic-scored frontiers outrank externally
+    /// scored ones. Rankers should score every frontier they are given.
+    pub fn set_external_scores(&mut self, scores: HashMap<u32, f64>) {
+        self.external_scores = scores;
+    }
+
+    /// `true` when a ranker installed at least one score this round.
+    pub fn has_external_scores(&self) -> bool {
+        !self.external_scores.is_empty()
+    }
+
+    /// Effective priority of `f`: the external score when one was installed
+    /// for its branch id, else [`frontier_score`].
+    pub fn score(&self, f: &Frontier) -> f64 {
+        self.external_scores
+            .get(&f.branch_id)
+            .copied()
+            .unwrap_or_else(|| frontier_score(f))
+    }
+
+    /// All frontiers, highest effective score first. Ties keep insertion
+    /// order (stable sort).
+    pub fn sorted_desc(&self) -> Vec<Frontier> {
+        let mut v: Vec<Frontier> = self.frontiers.clone();
+        v.sort_by(|a, b| {
+            self.score(b)
+                .partial_cmp(&self.score(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        v
+    }
+
     /// Index of the highest-scoring frontier.
     /// Caller must ensure `self.frontiers` is non-empty.
     fn best_index(&self) -> usize {
@@ -200,8 +255,8 @@ impl FrontierSet {
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| {
-                frontier_score(a)
-                    .partial_cmp(&frontier_score(b))
+                self.score(a)
+                    .partial_cmp(&self.score(b))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|(i, _)| i)
@@ -209,9 +264,125 @@ impl FrontierSet {
     }
 }
 
+/// Compact view of a frontier handed to a [`FrontierRanker`] (no input
+/// vectors, so it is cheap to clone and safe to send off-machine).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FrontierSummary {
+    pub branch_id: u32,
+    pub depth: u32,
+    pub stall_count: u32,
+    /// Source line of the branch, `0` when never observed.
+    pub line: u32,
+    /// Predicate text recovered from the branch's symbolic constraint, or
+    /// the opaque hint; empty when unknown.
+    pub predicate: String,
+}
+
+/// Everything a ranker may look at for one exploration round.
+#[derive(Debug, Clone)]
+pub struct RankContext<'a> {
+    pub function_name: &'a str,
+    /// Source of the function under exploration; empty when the caller
+    /// could not supply it.
+    pub function_source: &'a str,
+    /// 1-based round counter of the orchestrator loop.
+    pub round: usize,
+    /// Frontiers in the orchestrator's current effective order, capped by
+    /// the caller.
+    pub frontiers: Vec<FrontierSummary>,
+}
+
+/// Per-round policy that assigns external scores to frontiers
+/// (str-hjrnp.1). Returning an empty map means "use the built-in heuristic
+/// for everything"; ids missing from a non-empty map fall back to the
+/// heuristic individually.
+#[async_trait]
+pub trait FrontierRanker: Send + Sync + std::fmt::Debug {
+    fn name(&self) -> &'static str;
+
+    /// `true` when `rank` always returns an empty map, so the orchestrator
+    /// can skip building a [`RankContext`] entirely. Only the built-in
+    /// heuristic should override this.
+    fn is_noop(&self) -> bool {
+        false
+    }
+
+    async fn rank(&self, ctx: &RankContext<'_>) -> anyhow::Result<HashMap<u32, f64>>;
+}
+
+/// Default policy: no external scores, so [`frontier_score`] governs.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HeuristicRanker;
+
+#[async_trait]
+impl FrontierRanker for HeuristicRanker {
+    fn name(&self) -> &'static str {
+        "heuristic"
+    }
+
+    fn is_noop(&self) -> bool {
+        true
+    }
+
+    async fn rank(&self, _ctx: &RankContext<'_>) -> anyhow::Result<HashMap<u32, f64>> {
+        Ok(HashMap::new())
+    }
+}
+
+/// Uniform random scores in `[0, 1)`, deterministic in `(seed, round)`. The
+/// benchmark floor.
+#[derive(Debug, Clone, Copy)]
+pub struct RandomRanker {
+    pub seed: u64,
+}
+
+#[async_trait]
+impl FrontierRanker for RandomRanker {
+    fn name(&self) -> &'static str {
+        "random"
+    }
+
+    async fn rank(&self, ctx: &RankContext<'_>) -> anyhow::Result<HashMap<u32, f64>> {
+        let round_salt = (ctx.round as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed ^ round_salt);
+        Ok(ctx
+            .frontiers
+            .iter()
+            .map(|f| (f.branch_id, rng.random_range(0.0..1.0)))
+            .collect())
+    }
+}
+
+/// Scores `1.0` for branch ids in `priority` and `0.0` otherwise. The
+/// benchmark ceiling: `priority` is filled from a reference run's discovery
+/// set, so this ranker knows which frontiers actually lead somewhere.
+#[derive(Debug, Clone)]
+pub struct ScriptedRanker {
+    pub priority: HashSet<u32>,
+}
+
+#[async_trait]
+impl FrontierRanker for ScriptedRanker {
+    fn name(&self) -> &'static str {
+        "scripted"
+    }
+
+    async fn rank(&self, ctx: &RankContext<'_>) -> anyhow::Result<HashMap<u32, f64>> {
+        Ok(ctx
+            .frontiers
+            .iter()
+            .map(|f| {
+                let score = if self.priority.contains(&f.branch_id) { 1.0 } else { 0.0 };
+                (f.branch_id, score)
+            })
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn make_frontier(branch_id: u32, depth: u32, stall_count: u32) -> Frontier {
         Frontier {
@@ -568,6 +739,168 @@ mod tests {
             (score - expected).abs() < f64::EPSILON,
             "score {score} != expected {expected}"
         );
+    }
+
+    fn summary(branch_id: u32) -> FrontierSummary {
+        FrontierSummary {
+            branch_id,
+            depth: 0,
+            stall_count: 0,
+            line: 0,
+            predicate: String::new(),
+        }
+    }
+
+    #[test]
+    fn external_scores_override_heuristic() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 5, 0)); // heuristically best (deepest)
+        set.insert(make_frontier(2, 0, 0));
+        assert_eq!(set.peek().unwrap().branch_id, 1);
+
+        let mut ext = HashMap::new();
+        ext.insert(2, 0.9);
+        ext.insert(1, 0.1);
+        set.set_external_scores(ext);
+        assert_eq!(set.peek().unwrap().branch_id, 2);
+        let order: Vec<u32> = set.sorted_desc().iter().map(|f| f.branch_id).collect();
+        assert_eq!(order, vec![2, 1]);
+    }
+
+    #[test]
+    fn missing_external_score_falls_back_to_heuristic() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 5, 0));
+        set.insert(make_frontier(2, 0, 0));
+        let mut ext = HashMap::new();
+        ext.insert(2, 0.5);
+        set.set_external_scores(ext);
+        let deep = make_frontier(1, 5, 0);
+        assert_eq!(set.score(&deep), frontier_score(&deep));
+        assert_eq!(set.score(&make_frontier(2, 0, 0)), 0.5);
+    }
+
+    #[test]
+    fn empty_external_map_restores_heuristic_order() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 5, 0));
+        set.insert(make_frontier(2, 0, 0));
+        let mut ext = HashMap::new();
+        ext.insert(1, 0.1);
+        ext.insert(2, 0.9);
+        set.set_external_scores(ext);
+        assert_eq!(set.peek().unwrap().branch_id, 2);
+        set.set_external_scores(HashMap::new());
+        assert_eq!(set.peek().unwrap().branch_id, 1);
+    }
+
+    #[test]
+    fn insert_preserves_external_score() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 0, 0));
+        let mut ext = HashMap::new();
+        ext.insert(1, 0.9);
+        set.set_external_scores(ext);
+        assert!(set.has_external_scores());
+        set.insert(make_frontier(1, 3, 2)); // refreshed depth/stall, same id
+        assert_eq!(set.score(&make_frontier(1, 3, 2)), 0.9);
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn heuristic_ranker_is_noop_and_others_are_not() {
+        assert!(HeuristicRanker.is_noop());
+        assert!(!RandomRanker { seed: 1 }.is_noop());
+        assert!(!ScriptedRanker { priority: HashSet::new() }.is_noop());
+    }
+
+    #[test]
+    fn remove_drops_external_score() {
+        let mut set = FrontierSet::new();
+        set.insert(make_frontier(1, 0, 0));
+        let mut ext = HashMap::new();
+        ext.insert(1, 0.9);
+        set.set_external_scores(ext);
+        set.remove(1);
+        set.insert(make_frontier(1, 0, 0));
+        assert_eq!(
+            set.score(&make_frontier(1, 0, 0)),
+            frontier_score(&make_frontier(1, 0, 0))
+        );
+    }
+
+    #[tokio::test]
+    async fn heuristic_ranker_returns_empty_map() {
+        let ctx = RankContext {
+            function_name: "f",
+            function_source: "",
+            round: 1,
+            frontiers: vec![summary(1), summary(2)],
+        };
+        assert!(HeuristicRanker.rank(&ctx).await.unwrap().is_empty());
+        assert_eq!(HeuristicRanker.name(), "heuristic");
+    }
+
+    #[tokio::test]
+    async fn random_ranker_is_deterministic_per_seed_and_round() {
+        let ctx = RankContext {
+            function_name: "f",
+            function_source: "",
+            round: 3,
+            frontiers: vec![summary(1), summary(2), summary(3)],
+        };
+        let a = RandomRanker { seed: 7 }.rank(&ctx).await.unwrap();
+        let b = RandomRanker { seed: 7 }.rank(&ctx).await.unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 3);
+        assert!(a.values().all(|v| (0.0..1.0).contains(v)));
+        let ctx_next = RankContext { round: 4, ..ctx.clone() };
+        assert_ne!(a, RandomRanker { seed: 7 }.rank(&ctx_next).await.unwrap());
+        assert_ne!(a, RandomRanker { seed: 8 }.rank(&ctx).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn scripted_ranker_boosts_priority_ids_only() {
+        let ctx = RankContext {
+            function_name: "f",
+            function_source: "",
+            round: 1,
+            frontiers: vec![summary(1), summary(2)],
+        };
+        let ranker = ScriptedRanker {
+            priority: [2].into_iter().collect(),
+        };
+        let r = ranker.rank(&ctx).await.unwrap();
+        assert_eq!(r[&2], 1.0);
+        assert_eq!(r[&1], 0.0);
+    }
+
+    proptest! {
+        #[test]
+        fn sorted_desc_is_nonincreasing_under_score(
+            ids in prop::collection::hash_set(0u32..50, 1..20),
+            seed in any::<u64>(),
+        ) {
+            let mut set = FrontierSet::new();
+            for id in &ids {
+                set.insert(make_frontier(*id, *id % 4, *id % 3));
+            }
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut ext: HashMap<u32, f64> = HashMap::new();
+            for id in &ids {
+                if rng.random_bool(0.5) {
+                    ext.insert(*id, rng.random_range(0.0..1.0));
+                }
+            }
+            set.set_external_scores(ext);
+            let sorted = set.sorted_desc();
+            prop_assert_eq!(sorted.len(), ids.len());
+            for w in sorted.windows(2) {
+                prop_assert!(set.score(&w[0]) >= set.score(&w[1]));
+            }
+            // peek agrees with sorted_desc's head.
+            prop_assert_eq!(set.score(set.peek().unwrap()), set.score(&sorted[0]));
+        }
     }
 }
 
