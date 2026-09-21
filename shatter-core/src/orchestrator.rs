@@ -48,7 +48,7 @@ use crate::strategy::{
 };
 use crate::sym_expr::SymExpr;
 use crate::triage::{TriageState, TriageVerdict};
-use crate::types::{ComplexKind, ParamInfo, TypeInfo, positional_object_arity};
+use crate::types::{ComplexKind, ParamInfo, TypeInfo, index_spelling, positional_object_arity};
 
 /// Parsed frontend capabilities from the handshake response.
 ///
@@ -1360,37 +1360,21 @@ fn serde_rename_variants(snake: &str) -> Vec<String> {
     ]
 }
 
-/// Allocation bound on a single overlay position: writing index `n` materializes
-/// `n + 1` elements, so an unbounded index would let one malformed constraint
-/// allocate without limit. The number is a local safety valve chosen here, NOT a
-/// language or analyzer limit — no `MAX_TUPLE_ARITY` exists in shatter-rust or
-/// shatter-core — and it is deliberately far above the arities the tuple lowering
-/// produces in practice. A segment above the cap is not treated as positional:
-/// it stays an object key, and a declared type whose own field names exceed it
-/// is not recognized as positional (see [`positional_object_arity`]).
-const MAX_OVERLAY_ARRAY_INDEX: usize = 63;
-
 /// Parse one raw path segment as a candidate array index.
 ///
 /// The instrumentor lowers tuple-index access (`p.0`) to the numeric segment
 /// `"0"` (`field_chain_param_json` in `shatter-rust/src/instrument.rs`). Leading
 /// zeros are rejected (`"01"` is not an index the lowering can emit) as are
-/// values above [`MAX_OVERLAY_ARRAY_INDEX`].
+/// values above [`crate::types::MAX_POSITIONAL_ARITY_INDEX`] — the shared cap
+/// on positional indexing, defined once in `types.rs` and reused here via
+/// [`index_spelling`] so this parsing logic and `positional_object_arity`'s
+/// cannot silently drift.
 ///
 /// Parsing alone does NOT make a segment positional — a numeric-looking key is a
 /// perfectly ordinary object key in the TS and Go frontends. Only
 /// [`resolve_field_path`], which has the declared [`TypeInfo`], decides that.
 fn array_index_segment(segment: &str) -> Option<usize> {
-    if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    if segment.len() > 1 && segment.starts_with('0') {
-        return None;
-    }
-    segment
-        .parse::<usize>()
-        .ok()
-        .filter(|index| *index <= MAX_OVERLAY_ARRAY_INDEX)
+    index_spelling(segment)
 }
 
 /// Try to coerce `slot` into a JSON array so a position can be written into it.
@@ -4437,7 +4421,7 @@ mod tests {
 
     /// Only segments the tuple lowering can actually emit are treated as
     /// indices. A leading-zero segment and one past
-    /// `MAX_OVERLAY_ARRAY_INDEX` stay object keys even under a positional type,
+    /// `crate::types::MAX_POSITIONAL_ARITY_INDEX` stay object keys even under a positional type,
     /// so no malformed constraint can force a giant sparse array.
     #[test]
     fn overlay_keeps_non_index_numeric_segments_as_object_keys() {
@@ -4455,6 +4439,46 @@ mod tests {
                 serde_json::json!({ "01": 1 }),
                 serde_json::json!({ "99999": 2 }),
             ]
+        );
+    }
+
+    /// `array_index_segment` (this module's overlay path parsing) must stay in
+    /// lockstep with `types::index_spelling` (declared-type arity parsing) — see
+    /// str-na9db. Both now delegate to the single shared
+    /// `crate::types::index_spelling`/`MAX_POSITIONAL_ARITY_INDEX`, but this test
+    /// pins that delegation directly, including at the cap boundary, so a future
+    /// re-fork of either helper fails a test instead of silently reintroducing
+    /// the divergence str-na9db fixed.
+    #[test]
+    fn array_index_segment_matches_shared_index_spelling_at_the_cap() {
+        use crate::types::{MAX_POSITIONAL_ARITY_INDEX, index_spelling};
+
+        let cases = [
+            "0",
+            "1",
+            "01",
+            "-1",
+            "1.0",
+            "",
+            &MAX_POSITIONAL_ARITY_INDEX.to_string(),
+            &(MAX_POSITIONAL_ARITY_INDEX + 1).to_string(),
+            "99999",
+        ];
+        for segment in cases {
+            assert_eq!(
+                array_index_segment(segment),
+                index_spelling(segment),
+                "array_index_segment({segment:?}) diverged from index_spelling({segment:?})"
+            );
+        }
+        // The cap itself must be the shared constant, not a re-forked literal.
+        assert_eq!(
+            array_index_segment(&MAX_POSITIONAL_ARITY_INDEX.to_string()),
+            Some(MAX_POSITIONAL_ARITY_INDEX)
+        );
+        assert_eq!(
+            array_index_segment(&(MAX_POSITIONAL_ARITY_INDEX + 1).to_string()),
+            None
         );
     }
 
