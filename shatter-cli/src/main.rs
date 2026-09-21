@@ -608,6 +608,21 @@ async fn main() -> ExitCode {
             fail_on_failures,
         } = *__args;
 
+            // Canonicalize the scan directory once, up front, and reuse it for
+            // every resolution below that needs to agree on the same project
+            // root — implicit init, config/scope discovery, and `run_scan`
+            // itself (str-6vl7p). A relative `directory` with no marker file
+            // of its own (e.g. `shatter scan sub` from an unrelated cwd) can
+            // walk to a *different* ancestor when resolved raw vs.
+            // canonicalized, since `Path::parent()` on a relative path
+            // bottoms out at `""` instead of climbing past cwd; canonicalizing
+            // first makes every resolution below agree on the same root
+            // (str-vr7vq).
+            let canonical_directory = std::path::Path::new(&directory).canonicalize().ok();
+            let directory_for_resolution = canonical_directory
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new(&directory));
+
             // str-1wcl: clean external-audit runs (`-o <external> --no-cache
             // --no-seeds`) must not write `.shatter/` into the audited
             // project. Skip the implicit init in that case; the scan
@@ -615,7 +630,7 @@ async fn main() -> ExitCode {
             // initialized.
             let scan_external_audit_mode = !outputs.is_empty() && no_cache && no_seeds;
             if !scan_external_audit_mode {
-                // str-vr7vq: resolve from `directory` (the scan target),
+                // str-vr7vq: resolve from the (canonicalized) scan target,
                 // exactly like `run_scan` resolves its own `project_root_str`
                 // a few lines into the command body. Falling back to
                 // `cli.project_dir` alone (rarely passed) meant implicit
@@ -627,7 +642,7 @@ async fn main() -> ExitCode {
                 // of into the scanned directory.
                 let implicit_init_dir = crate::helpers::resolve_project_root(
                     cli.project_dir.as_deref(),
-                    std::path::Path::new(&directory),
+                    directory_for_resolution,
                 )
                 .map(std::path::PathBuf::from);
                 maybe_implicit_init(implicit_init_dir.as_deref(), &colors);
@@ -678,7 +693,8 @@ async fn main() -> ExitCode {
             // directory the config was found in — the anchor for its
             // include/exclude glob patterns.
             //
-            // Start the walk from the canonicalized scan directory: a relative
+            // Start the walk from the canonicalized scan directory (computed
+            // above, and reused here rather than re-derived): a relative
             // `directory` such as `web/src` would otherwise yield relative
             // ancestor paths (and an empty path at the top), producing a bad
             // anchor that fails to match the canonicalized scan root used
@@ -686,13 +702,12 @@ async fn main() -> ExitCode {
             // `Path::parent()`, so the returned anchor is already canonical and
             // needs no second canonicalize (str-qxmlz).
             //
-            // `canonical_directory` (the `Ok` case) is threaded through to
-            // `run_scan` (str-6vl7p) so it can reuse this canonicalization
+            // `canonical_directory` (the `Ok` case) is also threaded through
+            // to `run_scan` (str-6vl7p) so it can reuse this canonicalization
             // instead of re-deriving the same canonical path from `directory`
             // with a second `canonicalize()` syscall. `run_scan` falls back
             // to canonicalizing itself when this is `None`, preserving its
             // own directory-validation error message.
-            let canonical_directory = std::path::Path::new(&directory).canonicalize().ok();
             let config_search_start = canonical_directory
                 .clone()
                 .unwrap_or_else(|| std::path::PathBuf::from(&directory));
