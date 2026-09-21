@@ -34,18 +34,28 @@ fn clap_error_kind_label(kind: clap::error::ErrorKind) -> &'static str {
     }
 }
 
-/// If `.shatter/` does not exist under `project_dir` (or the current directory),
-/// run `init` implicitly so first-time users get the config structure
-/// automatically. Uses `run_implicit_init` rather than `run_init` so this
-/// never appends to a `.gitignore` that's already tracked in git (str-w5jt9)
-/// — a plain `scan`/`explore`/`analyze` must not dirty a tracked file the
-/// user didn't ask to change.
-fn maybe_implicit_init(project_dir: Option<&std::path::Path>, colors: &crate::helpers::Colors) {
-    let base = project_dir.unwrap_or_else(|| std::path::Path::new("."));
+/// If `.shatter/` does not exist under `resolved_dir` (or the current
+/// directory, when detection fails), run `init` implicitly so first-time
+/// users get the config structure automatically. Uses `run_implicit_init`
+/// rather than `run_init` so this never appends to a `.gitignore` that's
+/// already tracked in git (str-w5jt9) — a plain `scan`/`explore` must not
+/// dirty a tracked file the user didn't ask to change.
+///
+/// `resolved_dir` must be computed the same way the command itself resolves
+/// its project root — via `helpers::resolve_project_root(cli.project_dir,
+/// <the command's actual target>)` — not derived from `cli.project_dir`
+/// alone (str-vr7vq). `--project-dir` is rarely passed, and falling back to
+/// the bare current working directory instead of the target being operated
+/// on meant implicit init could disagree with, and run against a completely
+/// different directory than, the project the command was actually about to
+/// touch (e.g. a `cargo test` integration test whose default working
+/// directory is the crate root, scanning an unrelated fixture in a tempdir).
+fn maybe_implicit_init(resolved_dir: Option<&std::path::Path>, colors: &crate::helpers::Colors) {
+    let base = resolved_dir.unwrap_or_else(|| std::path::Path::new("."));
     let shatter_dir = base.join(".shatter");
     if !shatter_dir.exists() {
         eprintln!("No .shatter/ found — initializing project");
-        if let Err(e) = commands::init::run_implicit_init(project_dir, colors) {
+        if let Err(e) = commands::init::run_implicit_init(resolved_dir, colors) {
             eprintln!("Warning: implicit init failed: {e}");
         }
     }
@@ -271,10 +281,41 @@ async fn main() -> ExitCode {
             // project. Mirrors the scan guard above. Skip the implicit
             // init in that case; run_explore reroutes harness storage to a
             // tempdir for the same reason.
+            //
+            // str-vr7vq: `--from-artifacts` takes the `finalize_explore`
+            // early-return path (see `commands::explore::run_explore`),
+            // which only reads a previously-written artifact directory and
+            // renders a report/spec bundle — it never analyzes, caches, or
+            // seeds against a live project, so there is nothing for
+            // implicit init to prepare. Running it anyway resolves the
+            // project root from the current working directory (not from
+            // `--project-dir`, which finalize-from-artifacts callers rarely
+            // pass), so a `--from-artifacts` invocation with no explicit
+            // `--project-dir` wrote a stray `.shatter/` + managed
+            // `.gitignore` block into whatever directory the process
+            // happened to be launched from (observed as an untracked
+            // `shatter-cli/.gitignore` left behind by `cargo test`
+            // integration tests that invoke the compiled binary without
+            // pinning its working directory).
             let explore_external_audit_mode =
                 !report_outputs.is_empty() && no_cache && no_seeds;
-            if !explore_external_audit_mode {
-                maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+            if from_artifacts.is_none() && !explore_external_audit_mode {
+                // str-vr7vq: resolve from the first target spec (a
+                // "file[:function]" string), exactly like `run_explore`
+                // resolves `storage_project_root` from `parsed[0].file` --
+                // `Path::parent()` on the raw "file:function" string still
+                // yields the right containing directory since `:` is not a
+                // path separator, so no extra parsing is needed here.
+                let implicit_init_dir = targets
+                    .first()
+                    .and_then(|t| {
+                        crate::helpers::resolve_project_root(
+                            cli.project_dir.as_deref(),
+                            std::path::Path::new(t),
+                        )
+                    })
+                    .map(std::path::PathBuf::from);
+                maybe_implicit_init(implicit_init_dir.as_deref(), &colors);
             }
             let shrink_budget = if no_shrink { 0 } else { shrink_budget };
             let parallelism_bounds = match crate::helpers::ParallelismBounds::from_overrides(
@@ -434,7 +475,17 @@ async fn main() -> ExitCode {
             spec_json,
             invariants,
         } => {
-            maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+            // str-vr7vq: `analyze` performs pure offline computation on an
+            // already-produced Stage 1 observation JSON file (`input`) --
+            // "No frontend or solver required" (see the `Analyze` doc
+            // comment in args.rs). It never reads project config, a cache,
+            // or a seed pool, so implicit init has nothing to prepare here.
+            // Running it anyway resolved the project root from the current
+            // working directory (implicit init never consulted `input`),
+            // so a plain `analyze <observation.json>` run with no
+            // `--project-dir` from an arbitrary cwd wrote a stray
+            // `.shatter/` + managed `.gitignore` block into wherever the
+            // process happened to be launched from.
             commands::analyze::run_analyze(
                 &input,
                 output.as_deref(),
@@ -557,6 +608,21 @@ async fn main() -> ExitCode {
             fail_on_failures,
         } = *__args;
 
+            // Canonicalize the scan directory once, up front, and reuse it for
+            // every resolution below that needs to agree on the same project
+            // root — implicit init, config/scope discovery, and `run_scan`
+            // itself (str-6vl7p). A relative `directory` with no marker file
+            // of its own (e.g. `shatter scan sub` from an unrelated cwd) can
+            // walk to a *different* ancestor when resolved raw vs.
+            // canonicalized, since `Path::parent()` on a relative path
+            // bottoms out at `""` instead of climbing past cwd; canonicalizing
+            // first makes every resolution below agree on the same root
+            // (str-vr7vq).
+            let canonical_directory = std::path::Path::new(&directory).canonicalize().ok();
+            let directory_for_resolution = canonical_directory
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new(&directory));
+
             // str-1wcl: clean external-audit runs (`-o <external> --no-cache
             // --no-seeds`) must not write `.shatter/` into the audited
             // project. Skip the implicit init in that case; the scan
@@ -564,7 +630,22 @@ async fn main() -> ExitCode {
             // initialized.
             let scan_external_audit_mode = !outputs.is_empty() && no_cache && no_seeds;
             if !scan_external_audit_mode {
-                maybe_implicit_init(cli.project_dir.as_deref(), &colors);
+                // str-vr7vq: resolve from the (canonicalized) scan target,
+                // exactly like `run_scan` resolves its own `project_root_str`
+                // a few lines into the command body. Falling back to
+                // `cli.project_dir` alone (rarely passed) meant implicit
+                // init resolved the project root from the current working
+                // directory instead of the directory actually being
+                // scanned — e.g. a `--dry-run` invocation with no
+                // `--project-dir`, run from an unrelated cwd, wrote
+                // `.shatter/` + a managed `.gitignore` block there instead
+                // of into the scanned directory.
+                let implicit_init_dir = crate::helpers::resolve_project_root(
+                    cli.project_dir.as_deref(),
+                    directory_for_resolution,
+                )
+                .map(std::path::PathBuf::from);
+                maybe_implicit_init(implicit_init_dir.as_deref(), &colors);
             }
             let parsed_policy: shatter_core::scheduler_policy::SchedulerPolicy =
                 match scheduler_policy.parse() {
@@ -585,10 +666,16 @@ async fn main() -> ExitCode {
                     );
                 }
             }
-            // Resolve hierarchical .shatter/config.yaml defaults for scan budgets.
-            let scan_dir = std::path::Path::new(&directory);
+            // Resolve hierarchical .shatter/config.yaml defaults for scan
+            // budgets. Uses the canonicalized `directory_for_resolution`
+            // (see above) for the same reason implicit-init and project-config
+            // discovery do: `discover_configs` walks ancestors via
+            // `Path::parent()`, which on a relative path bottoms out
+            // immediately instead of climbing past cwd to a real ancestor
+            // marker.
             let yaml_defaults = {
-                let configs = shatter_core::config::discover_configs(scan_dir).unwrap_or_default();
+                let configs = shatter_core::config::discover_configs(directory_for_resolution)
+                    .unwrap_or_default();
                 let merged = shatter_core::config::merge_configs(&configs);
                 merged.defaults
             };
@@ -612,7 +699,8 @@ async fn main() -> ExitCode {
             // directory the config was found in — the anchor for its
             // include/exclude glob patterns.
             //
-            // Start the walk from the canonicalized scan directory: a relative
+            // Start the walk from the canonicalized scan directory (computed
+            // above, and reused here rather than re-derived): a relative
             // `directory` such as `web/src` would otherwise yield relative
             // ancestor paths (and an empty path at the top), producing a bad
             // anchor that fails to match the canonicalized scan root used
@@ -620,13 +708,12 @@ async fn main() -> ExitCode {
             // `Path::parent()`, so the returned anchor is already canonical and
             // needs no second canonicalize (str-qxmlz).
             //
-            // `canonical_directory` (the `Ok` case) is threaded through to
-            // `run_scan` (str-6vl7p) so it can reuse this canonicalization
+            // `canonical_directory` (the `Ok` case) is also threaded through
+            // to `run_scan` (str-6vl7p) so it can reuse this canonicalization
             // instead of re-deriving the same canonical path from `directory`
             // with a second `canonicalize()` syscall. `run_scan` falls back
             // to canonicalizing itself when this is `None`, preserving its
             // own directory-validation error message.
-            let canonical_directory = std::path::Path::new(&directory).canonicalize().ok();
             let config_search_start = canonical_directory
                 .clone()
                 .unwrap_or_else(|| std::path::PathBuf::from(&directory));

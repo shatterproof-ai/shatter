@@ -1,0 +1,6 @@
+# >>> shatter generated paths (managed by `shatter init`)
+.shatter-cache/
+.shatter/seeds/
+shatter-artifacts/
+.shatter/cache/
+# <<< shatter generated paths
