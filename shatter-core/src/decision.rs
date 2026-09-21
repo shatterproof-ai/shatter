@@ -34,6 +34,12 @@ impl ChoiceRequest {
                 self.criteria.len()
             );
         }
+        let mut seen = std::collections::HashSet::with_capacity(self.criteria.len());
+        for (key, _) in &self.criteria {
+            if !seen.insert(key.as_str()) {
+                anyhow::bail!("choice request has duplicate criterion key {key:?}");
+            }
+        }
         Ok(())
     }
 }
@@ -118,6 +124,13 @@ impl DecisionOracle for MockDecisionOracle {
             for v in probabilities.values_mut() {
                 *v /= total;
             }
+        } else {
+            // All pinned to zero: fall back to uniform so the sum-to-one
+            // contract holds.
+            let share = 1.0 / probabilities.len() as f64;
+            for v in probabilities.values_mut() {
+                *v = share;
+            }
         }
         let choice = probabilities
             .iter()
@@ -165,6 +178,18 @@ mod tests {
         assert!(req(&ok).validate().is_ok());
     }
 
+    #[test]
+    fn duplicate_criteria_are_rejected() {
+        assert!(req(&["a", "a"]).validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn mock_scripted_zero_pin_falls_back_to_uniform() {
+        let oracle = MockDecisionOracle::scripted(vec![("k0".into(), 0.0)]);
+        let r = oracle.choose(&req(&["k0"])).await.unwrap();
+        assert!((r.probabilities["k0"] - 1.0).abs() < 1e-9);
+    }
+
     #[tokio::test]
     async fn mock_uniform_sums_to_one() {
         let r = MockDecisionOracle::uniform().choose(&req(&["a", "b"])).await.unwrap();
@@ -184,7 +209,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn mock_scripted_probabilities_cover_every_criterion(n in 1usize..40, pin in 0.0f64..1.0) {
+        fn mock_scripted_probabilities_cover_every_criterion(n in 1usize..40, pin in 0.0f64..=1.0) {
             let keys: Vec<String> = (0..n).map(|i| format!("k{i}")).collect();
             let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
             let r = req(&refs);

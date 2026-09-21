@@ -72,10 +72,19 @@ impl FrontierRanker for DecisionFrontierRanker {
         let req = build_choice_request(ctx);
         let resp = self.oracle.choose(&req).await?;
         self.tokens.fetch_add(resp.input_tokens, Ordering::Relaxed);
-        let mut scores = HashMap::with_capacity(resp.probabilities.len());
+        // Every frontier we asked about gets a score, so none falls back to
+        // the (larger-scale) heuristic; keys the oracle invents are ignored.
+        let mut scores: HashMap<u32, f64> = ctx
+            .frontiers
+            .iter()
+            .take(MAX_CRITERIA)
+            .map(|f| (f.branch_id, 0.0))
+            .collect();
         for (key, p) in resp.probabilities {
-            if let Some(id) = key.strip_prefix('b').and_then(|s| s.parse::<u32>().ok()) {
-                scores.insert(id, p);
+            if let Some(id) = key.strip_prefix('b').and_then(|s| s.parse::<u32>().ok())
+                && let Some(slot) = scores.get_mut(&id)
+            {
+                *slot = p;
             }
         }
         Ok(scores)
@@ -126,6 +135,39 @@ mod tests {
         assert_eq!(scores.len(), 3);
         assert_eq!(ranker.name(), "decision");
         assert!(!ranker.is_noop());
+    }
+
+    #[tokio::test]
+    async fn omitted_and_unknown_keys_are_handled() {
+        #[derive(Debug)]
+        struct Partial;
+        #[async_trait]
+        impl DecisionOracle for Partial {
+            fn name(&self) -> &'static str {
+                "partial"
+            }
+            async fn choose(
+                &self,
+                _req: &ChoiceRequest,
+            ) -> anyhow::Result<shatter_core::decision::ChoiceResponse> {
+                Ok(shatter_core::decision::ChoiceResponse {
+                    choice: "b1".into(),
+                    probabilities: [("b1".to_string(), 0.7), ("b999".to_string(), 0.3)]
+                        .into_iter()
+                        .collect(),
+                    confidence: 0.4,
+                    input_tokens: 9,
+                })
+            }
+        }
+        let ranker = DecisionFrontierRanker::new(Arc::new(Partial));
+        let scores = ranker.rank(&ctx(3)).await.unwrap();
+        assert_eq!(scores.len(), 3, "every sent frontier is scored: {scores:?}");
+        assert!((scores[&1] - 0.7).abs() < 1e-9);
+        assert_eq!(scores[&0], 0.0);
+        assert_eq!(scores[&2], 0.0);
+        assert!(!scores.contains_key(&999));
+        assert_eq!(ranker.tokens_used(), 9);
     }
 
     #[tokio::test]

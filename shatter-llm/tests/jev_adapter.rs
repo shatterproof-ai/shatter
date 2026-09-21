@@ -137,3 +137,33 @@ async fn replay_records_then_serves_without_inner() {
     let err = replay.choose(&miss).await.unwrap_err().to_string();
     assert!(err.contains("replay cache miss"), "got: {err}");
 }
+
+#[tokio::test]
+async fn replay_treats_corrupt_entry_as_miss_and_repairs_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(answer("b2", 0.3, 0.7, 7)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let inner: Arc<dyn DecisionOracle> =
+        Arc::new(JevAdapter::new(config(&server, "k", 5)).unwrap());
+    let recording = ReplayDecisionOracle::new(Some(inner), dir.path().to_path_buf());
+
+    // Simulate a truncated write from an interrupted earlier run.
+    let fp = shatter_core::decision::request_fingerprint(&req());
+    std::fs::write(dir.path().join(format!("{fp}.json")), b"{\"choice\": \"b").unwrap();
+
+    let r = recording.choose(&req()).await.unwrap();
+    assert_eq!(r.choice, "b2");
+    // The entry was rewritten; replay-only now works and no temp file remains.
+    let replay = ReplayDecisionOracle::new(None, dir.path().to_path_buf());
+    assert_eq!(replay.choose(&req()).await.unwrap(), r);
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec![format!("{fp}.json")]);
+}

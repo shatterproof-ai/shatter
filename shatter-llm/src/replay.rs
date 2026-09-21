@@ -40,7 +40,13 @@ impl DecisionOracle for ReplayDecisionOracle {
     async fn choose(&self, req: &ChoiceRequest) -> anyhow::Result<ChoiceResponse> {
         let path = self.path_for(req);
         if let Ok(bytes) = tokio::fs::read(&path).await {
-            return Ok(serde_json::from_slice(&bytes)?);
+            match serde_json::from_slice::<ChoiceResponse>(&bytes) {
+                Ok(resp) => return Ok(resp),
+                Err(e) => log::warn!(
+                    "replay cache entry {} is unreadable ({e}); treating as a miss",
+                    path.display()
+                ),
+            }
         }
         let inner = self.inner.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
@@ -50,7 +56,11 @@ impl DecisionOracle for ReplayDecisionOracle {
         })?;
         let resp = inner.choose(req).await?;
         tokio::fs::create_dir_all(&self.cache_dir).await?;
-        tokio::fs::write(&path, serde_json::to_vec_pretty(&resp)?).await?;
+        // Write-then-rename so an interrupted run never leaves a truncated
+        // entry that would poison every later replay of this request.
+        let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+        tokio::fs::write(&tmp, serde_json::to_vec_pretty(&resp)?).await?;
+        tokio::fs::rename(&tmp, &path).await?;
         Ok(resp)
     }
 }
