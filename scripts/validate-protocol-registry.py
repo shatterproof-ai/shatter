@@ -39,6 +39,7 @@ TS_PROTOCOL = REPO_ROOT / "shatter-ts" / "src" / "protocol.ts"
 GO_CONSTANTS = REPO_ROOT / "shatter-go" / "protocol" / "constants.go"
 GO_HANDLER = REPO_ROOT / "shatter-go" / "protocol" / "handler.go"
 RUST_FE_PROTOCOL = REPO_ROOT / "shatter-rust" / "src" / "protocol.rs"
+RUST_FE_HANDLER = REPO_ROOT / "shatter-rust" / "src" / "handler.rs"
 
 
 # ---------------------------------------------------------------------------
@@ -591,23 +592,33 @@ def extract_go(constants_path: Path, handler_path: Path) -> dict:
     return {"commands": commands, "statuses": statuses, "error_codes": error_codes}
 
 
-def extract_rust_fe(path: Path) -> dict:
-    """Extract commands and error codes from shatter-rust protocol.rs."""
-    text = path.read_text()
+def extract_rust_fe(protocol_path: Path, handler_path: Path) -> dict:
+    """Extract commands, statuses, and error codes from the shatter-rust frontend.
 
-    # Commands: look for command string matches in dispatch
+    Commands come from handler.rs's `match req.command.as_str() { "cmd" =>
+    (...), ... }` dispatch (str-qwua7.7): a hard-coded command alternation
+    silently omitted newly dispatched commands (e.g. "prepare",
+    "get_invocation_plan") from this extraction, producing false "not found
+    in shatter-rust (may be unimplemented)" warnings for commands that were
+    actually implemented. Parsing the real dispatch arms means a new
+    dispatched command is picked up automatically instead of requiring this
+    script to be updated in lockstep.
+    """
+    protocol_text = protocol_path.read_text()
+    handler_text = handler_path.read_text()
+
     commands: set[str] = set()
-    for m in re.finditer(r'"(handshake|analyze|instrument|execute|setup|teardown|generate|shutdown)"', text):
+    for m in re.finditer(r'"(\w+)"\s*=>\s*\(', handler_text):
         commands.add(m.group(1))
 
     # Error codes: extract from ERR_* constants (e.g. pub const ERR_FOO: &str = "foo";)
     error_codes: set[str] = set()
-    for m in re.finditer(r'pub const ERR_\w+:\s*&str\s*=\s*"([^"]+)"', text):
+    for m in re.finditer(r'pub const ERR_\w+:\s*&str\s*=\s*"([^"]+)"', protocol_text):
         error_codes.add(m.group(1))
 
     # Statuses
     statuses: set[str] = set()
-    for m in re.finditer(r'status.*?"([a-z_]+)"', text):
+    for m in re.finditer(r'status.*?"([a-z_]+)"', protocol_text):
         statuses.add(m.group(1))
 
     return {"commands": commands, "statuses": statuses, "error_codes": error_codes}
@@ -709,14 +720,16 @@ def main() -> int:
         all_issues.append(f"WARNING: Go protocol files not found")
 
     # --- Rust frontend ---
-    if RUST_FE_PROTOCOL.exists():
-        rust_fe = extract_rust_fe(RUST_FE_PROTOCOL)
+    if RUST_FE_PROTOCOL.exists() and RUST_FE_HANDLER.exists():
+        rust_fe = extract_rust_fe(RUST_FE_PROTOCOL, RUST_FE_HANDLER)
         issues = validate(registry, "shatter-rust", rust_fe)
         if issues:
-            all_issues.append("shatter-rust/src/protocol.rs:")
+            all_issues.append("shatter-rust/src/protocol.rs + handler.rs:")
             all_issues.extend(issues)
     else:
-        all_issues.append(f"WARNING: {RUST_FE_PROTOCOL} not found")
+        all_issues.append(
+            f"WARNING: {RUST_FE_PROTOCOL} or {RUST_FE_HANDLER} not found"
+        )
 
     # --- Report ---
     if all_issues:
