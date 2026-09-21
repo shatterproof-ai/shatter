@@ -55,6 +55,7 @@ pub mod nondeterminism;
 pub mod observation_aggregator;
 pub mod observe;
 pub mod oracle;
+pub mod decision;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod pipeline_orchestrator;
