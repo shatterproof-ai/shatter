@@ -666,10 +666,16 @@ async fn main() -> ExitCode {
                     );
                 }
             }
-            // Resolve hierarchical .shatter/config.yaml defaults for scan budgets.
-            let scan_dir = std::path::Path::new(&directory);
+            // Resolve hierarchical .shatter/config.yaml defaults for scan
+            // budgets. Uses the canonicalized `directory_for_resolution`
+            // (see above) for the same reason implicit-init and project-config
+            // discovery do: `discover_configs` walks ancestors via
+            // `Path::parent()`, which on a relative path bottoms out
+            // immediately instead of climbing past cwd to a real ancestor
+            // marker.
             let yaml_defaults = {
-                let configs = shatter_core::config::discover_configs(scan_dir).unwrap_or_default();
+                let configs = shatter_core::config::discover_configs(directory_for_resolution)
+                    .unwrap_or_default();
                 let merged = shatter_core::config::merge_configs(&configs);
                 merged.defaults
             };
