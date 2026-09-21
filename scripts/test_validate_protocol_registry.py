@@ -218,5 +218,43 @@ commands:
             self.assertEqual(errors, [], msg=errors)
 
 
+class RustFrontendCommandExtractionTest(unittest.TestCase):
+    """Regression coverage for str-qwua7.7: extract_rust_fe's commands must
+    come from handler.rs's real dispatch arms, not a hard-coded regex
+    alternation that silently omits newly dispatched commands."""
+
+    def test_dispatched_commands_all_found_on_live_repo(self) -> None:
+        # Before this fix, a hard-coded alternation omitted "prepare" and
+        # "get_invocation_plan" (which is legitimately unimplemented), so
+        # "prepare" was falsely reported as missing even though handler.rs
+        # dispatches it.
+        result = validate_protocol_registry.extract_rust_fe(
+            validate_protocol_registry.RUST_FE_PROTOCOL,
+            validate_protocol_registry.RUST_FE_HANDLER,
+        )
+        self.assertIn("prepare", result["commands"])
+        self.assertIn("instrument", result["commands"])
+        self.assertIn("shutdown", result["commands"])
+
+    def test_new_dispatch_arm_is_picked_up_without_updating_this_script(self) -> None:
+        """A command dispatched via a new match arm must be extracted even
+        though it isn't hard-coded anywhere in the extractor."""
+        with tempfile.TemporaryDirectory() as tmp:
+            handler_path = Path(tmp) / "handler.rs"
+            handler_path.write_text(
+                'match req.command.as_str() {\n'
+                '    "handshake" => (self.handle_handshake(resp, req), false),\n'
+                '    "brand_new_command" => (self.handle_new(resp, req), false),\n'
+                "    _ => unreachable!(),\n"
+                "}\n"
+            )
+            protocol_path = Path(tmp) / "protocol.rs"
+            protocol_path.write_text("")
+            result = validate_protocol_registry.extract_rust_fe(
+                protocol_path, handler_path
+            )
+        self.assertIn("brand_new_command", result["commands"])
+
+
 if __name__ == "__main__":
     unittest.main()
