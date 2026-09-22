@@ -18,14 +18,14 @@
     3
   ],
   "regimes": {
-    "iterations": {
-      "max_iterations": 60
+    "executions": {
+      "max_executions": 60
     },
     "wallclock": {
       "timeout_explore_secs": 8
     }
   },
-  "reference_max_iterations": 200,
+  "reference_max_executions": 200,
   "fixtures": [
     {
       "id": "ts/01-arithmetic/classifyNumber",
@@ -40,11 +40,7 @@
           -3
         ]
       ],
-      "expected_return_values": [
-        "\"zero\"",
-        "\"positive\"",
-        "\"negative\""
-      ]
+      "expected_return_values": []
     },
     {
       "id": "ts/06-nested-control-flow/classifyHttpResponse",

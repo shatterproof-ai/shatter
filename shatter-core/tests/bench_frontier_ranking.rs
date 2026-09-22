@@ -41,18 +41,20 @@ struct Manifest {
     #[serde(default)]
     reference_seeds: Vec<u64>,
     regimes: HashMap<String, Regime>,
-    #[serde(default = "default_reference_iterations")]
-    reference_max_iterations: usize,
+    #[serde(default = "default_reference_executions")]
+    reference_max_executions: usize,
     fixtures: Vec<Fixture>,
 }
 
-fn default_reference_iterations() -> usize {
-    400
+fn default_reference_executions() -> usize {
+    200
 }
 
 #[derive(Deserialize, Clone)]
 struct Regime {
-    max_iterations: Option<usize>,
+    /// Execution budget (`ExploreConfig::max_executions`). `None` means
+    /// the wall-clock budget governs.
+    max_executions: Option<usize>,
     timeout_explore_secs: Option<u64>,
 }
 
@@ -66,9 +68,39 @@ struct Fixture {
     expected_return_values: Vec<String>,
 }
 
+/// A branch side packed as `branch_id * 2 + taken`, so it survives JSON as
+/// one integer and unpacks with `/ 2` and `% 2`.
+fn side_id(branch_id: u32, taken: bool) -> u32 {
+    branch_id * 2 + u32::from(taken)
+}
+
+/// First execution index (1-based, in observation order) at which each
+/// branch *side* was seen. Branch-id granularity (`discoveries`) is too
+/// coarse for a ranking benchmark: a seed input observes both ids of a
+/// nested `if` at execution 1 while leaving half the sides unexplored.
+fn side_discoveries(result: &ExploreResult) -> Vec<(u32, usize)> {
+    let mut first: Vec<(u32, usize)> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    for (idx, (_, _, exec)) in result.raw_results.iter().enumerate() {
+        for d in &exec.branch_path {
+            let key = side_id(d.branch_id, d.taken);
+            if seen.insert(key) {
+                first.push((key, idx + 1));
+            }
+        }
+    }
+    first
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct Reference {
+    /// Branch ids the heuristic reference discovered (union over seeds);
+    /// feeds the cheating arm's `ScriptedRanker`.
     branch_ids: Vec<u32>,
+    /// Branch sides (see `side_id`) the reference observed; the coverage
+    /// target for executions-to-cover.
+    #[serde(default)]
+    side_ids: Vec<u32>,
     return_values: Vec<String>,
     /// Solve-stage hints recorded to sanity-check each fixture's stratum.
     #[serde(default)]
@@ -87,7 +119,10 @@ struct Row<'a> {
     budget: u64,
     total_executions: usize,
     wall_ms: u128,
+    /// `(side_id, execution_index)` first-seen pairs; see `side_id`.
     discoveries: Vec<(u32, usize)>,
+    /// `(branch_id, total_executions)` from the orchestrator's own telemetry.
+    branch_discoveries: Vec<(u32, usize)>,
     expected_return_values_hit: usize,
     expected_return_values_total: usize,
     methods: HashMap<String, usize>,
@@ -292,9 +327,11 @@ async fn run_one(fixture: &Fixture, seed: u64, regime: &Regime, arm: &ArmSpec, s
     let analysis = analyze(&mut frontend, &file_str, &fixture.function).await;
     instrument(&mut frontend, &file_str, &fixture.function).await;
 
+    // `max_iterations` caps unique paths, not executions; the benchmark
+    // budgets executions (or wall-clock), so leave the path cap unbounded.
     let config = ExploreConfig {
-        max_iterations: regime.max_iterations,
-        max_executions: Some(10_000),
+        max_iterations: None,
+        max_executions: Some(regime.max_executions.unwrap_or(100_000)),
         plateau_threshold: 0,
         seed: Some(seed),
         timeout_explore: regime.timeout_explore_secs.map(Duration::from_secs),
@@ -380,12 +417,13 @@ async fn bench_frontier_ranking() {
         };
         let arm = build_arm("heuristic", 0, &Reference::default()).unwrap();
         let regime = Regime {
-            max_iterations: Some(manifest.reference_max_iterations),
+            max_executions: Some(manifest.reference_max_executions),
             timeout_explore_secs: None,
         };
         for fx in &fixtures {
             let source = read_source(fx);
             let mut ids = HashSet::new();
+            let mut sides = HashSet::new();
             let mut rvs = HashSet::new();
             let mut abandoned = 0usize;
             let mut max_exec = 0usize;
@@ -405,18 +443,22 @@ async fn bench_frontier_ranking() {
                     out.result.discoveries.len()
                 );
                 ids.extend(out.result.discoveries.iter().map(|(id, _)| *id));
+                sides.extend(side_discoveries(&out.result).into_iter().map(|(k, _)| k));
                 rvs.extend(return_values(&out.result));
                 abandoned = abandoned.max(out.result.abandoned_frontiers.len());
                 max_exec = max_exec.max(out.result.total_executions);
             }
             let mut branch_ids: Vec<u32> = ids.into_iter().collect();
             branch_ids.sort_unstable();
+            let mut side_ids: Vec<u32> = sides.into_iter().collect();
+            side_ids.sort_unstable();
             let mut return_values: Vec<String> = rvs.into_iter().collect();
             return_values.sort();
             eprintln!(
-                "{}: {} branches, {} return values, {} abandoned frontiers, max {} executions",
+                "{}: {} branches, {} sides, {} return values, {} abandoned frontiers, max {} executions",
                 fx.id,
                 branch_ids.len(),
+                side_ids.len(),
                 return_values.len(),
                 abandoned,
                 max_exec
@@ -425,6 +467,7 @@ async fn bench_frontier_ranking() {
                 fx.id.clone(),
                 Reference {
                     branch_ids,
+                    side_ids,
                     return_values,
                     abandoned_frontiers: abandoned,
                     max_executions_seen: max_exec,
@@ -493,13 +536,14 @@ async fn bench_frontier_ranking() {
                         arm: arm.name,
                         regime: regime_name,
                         budget: regime
-                            .max_iterations
+                            .max_executions
                             .map(|n| n as u64)
                             .or(regime.timeout_explore_secs)
                             .unwrap_or(0),
                         total_executions: r.total_executions,
                         wall_ms: outcome.wall_ms,
-                        discoveries: r.discovery_iterations.clone(),
+                        discoveries: side_discoveries(r),
+                        branch_discoveries: r.discovery_iterations.clone(),
                         expected_return_values_hit: expected.iter().filter(|v| rvs.contains(*v)).count(),
                         expected_return_values_total: expected.len(),
                         methods,
@@ -512,8 +556,13 @@ async fn bench_frontier_ranking() {
                         oracle_tokens: outcome.oracle_tokens,
                     };
                     writeln!(out, "{}", serde_json::to_string(&row).unwrap()).unwrap();
+                    let sides_hit = row
+                        .discoveries
+                        .iter()
+                        .filter(|(k, _)| reference.side_ids.contains(k))
+                        .count();
                     eprintln!(
-                        "{} seed={} {} {}: {} exec, {} ms, {}/{} expected, {} branches",
+                        "{} seed={} {} {}: {} exec, {} ms, {}/{} expected, {}/{} sides",
                         fx.id,
                         seed,
                         regime_name,
@@ -522,7 +571,8 @@ async fn bench_frontier_ranking() {
                         outcome.wall_ms,
                         row.expected_return_values_hit,
                         row.expected_return_values_total,
-                        r.discoveries.len()
+                        sides_hit,
+                        reference.side_ids.len()
                     );
                 }
             }
