@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "reference_seeds": [
+    1,
+    2,
+    3
+  ],
+  "regimes": {
+    "iterations": {
+      "max_iterations": 60
+    },
+    "wallclock": {
+      "timeout_explore_secs": 8
+    }
+  },
+  "reference_max_iterations": 200,
+  "fixtures": [
+    {
+      "id": "ts/01-arithmetic/classifyNumber",
+      "file": "01-arithmetic.ts",
+      "function": "classifyNumber",
+      "stratum": "z3-easy",
+      "seed_inputs": [
+        [
+          5
+        ],
+        [
+          -3
+        ]
+      ],
+      "expected_return_values": [
+        "\"zero\"",
+        "\"positive\"",
+        "\"negative\""
+      ]
+    },
+    {
+      "id": "ts/06-nested-control-flow/classifyHttpResponse",
+      "file": "06-nested-control-flow.ts",
+      "function": "classifyHttpResponse",
+      "stratum": "z3-easy",
+      "seed_inputs": [
+        [
+          200,
+          "application/json",
+          "{}"
+        ],
+        [
+          404,
+          "text/html",
+          null
+        ]
+      ],
+      "expected_return_values": []
+    },
+    {
+      "id": "ts/10-path-router/matchRoute",
+      "file": "10-path-router.ts",
+      "function": "matchRoute",
+      "stratum": "high-fanout",
+      "seed_inputs": [],
+      "expected_return_values": []
+    },
+    {
+      "id": "ts/13-roman-numerals/romanToInt",
+      "file": "13-roman-numerals.ts",
+      "function": "romanToInt",
+      "stratum": "loop-stall",
+      "seed_inputs": [
+        [
+          ""
+        ],
+        [
+          "XIV"
+        ]
+      ],
+      "expected_return_values": []
+    },
+    {
+      "id": "ts/09-rate-limiter/checkRateLimit",
+      "file": "09-rate-limiter.ts",
+      "function": "checkRateLimit",
+      "stratum": "loop-stall",
+      "seed_inputs": [],
+      "expected_return_values": []
+    },
+    {
+      "id": "ts/14-semver/parseSemver",
+      "file": "14-semver.ts",
+      "function": "parseSemver",
+      "stratum": "opaque",
+      "seed_inputs": [
+        [
+          "1.2.3"
+        ],
+        [
+          ""
+        ]
+      ],
+      "expected_return_values": []
+    },
+    {
+      "id": "ts/15-email-validator/validateEmail",
+      "file": "15-email-validator.ts",
+      "function": "validateEmail",
+      "stratum": "opaque",
+      "seed_inputs": [
+        [
+          "a@b.co"
+        ],
+        [
+          ""
+        ]
+      ],
+      "expected_return_values": []
+    },
+    {
+      "id": "ts/16-cron-parser/parseCron",
+      "file": "16-cron-parser.ts",
+      "function": "parseCron",
+      "stratum": "opaque",
+      "seed_inputs": [
+        [
+          "* * * * *"
+        ],
+        [
+          ""
+        ]
+      ],
+      "expected_return_values": []
+    }
+  ]
+}
