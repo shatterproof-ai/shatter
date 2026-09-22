@@ -118,8 +118,12 @@ struct Row<'a> {
     regime: &'a str,
     budget: u64,
     total_executions: usize,
+    /// Executions that produced an observation (`raw_results.len()`).
+    /// `discoveries` indices count these; `total_executions` also counts
+    /// frontend-skipped and unsupported iterations.
+    observed_executions: usize,
     wall_ms: u128,
-    /// `(side_id, execution_index)` first-seen pairs; see `side_id`.
+    /// `(side_id, observation_index)` first-seen pairs; see `side_id`.
     discoveries: Vec<(u32, usize)>,
     /// `(branch_id, total_executions)` from the orchestrator's own telemetry.
     branch_discoveries: Vec<(u32, usize)>,
@@ -211,13 +215,34 @@ async fn instrument(frontend: &mut Frontend, file: &str, function: &str) {
     }
 }
 
+/// Canonical, repeatable form of a return value. Scalars and errors are
+/// kept verbatim; objects are reduced to their sorted key set plus a
+/// `reason` string when present, because object bodies echo fuzz-generated
+/// input literals that no other seed reproduces.
+fn canonical_return(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let reason = map
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .map(|r| format!(",reason={r}"))
+                .unwrap_or_default();
+            format!("{{keys={:?}{reason}}}", keys)
+        }
+        serde_json::Value::Array(items) => format!("[len={}]", items.len()),
+        other => other.to_string(),
+    }
+}
+
 fn return_values(result: &ExploreResult) -> HashSet<String> {
     result
         .executions
         .iter()
         .map(|e| match (&e.thrown_error, &e.return_value) {
             (Some(err), _) => format!("ERROR:{}", err.message),
-            (None, Some(v)) => v.to_string(),
+            (None, Some(v)) => canonical_return(v),
             (None, None) => "null".to_string(),
         })
         .collect()
@@ -391,7 +416,7 @@ fn selected(list_env: &str, all: Vec<String>) -> Vec<String> {
 }
 
 #[tokio::test]
-#[ignore = "benchmark; run via task bench-frontier or -- --ignored"]
+#[ignore = "benchmark; run with `cargo test -p shatter-core --test bench_frontier_ranking -- --ignored --nocapture`"]
 async fn bench_frontier_ranking() {
     let manifest: Manifest =
         serde_json::from_str(&std::fs::read_to_string(manifest_path()).expect("manifest"))
@@ -507,10 +532,25 @@ async fn bench_frontier_ranking() {
 
     let mut regimes: Vec<(&String, &Regime)> = manifest.regimes.iter().collect();
     regimes.sort_by(|a, b| a.0.cmp(b.0));
+    // Runs where a non-heuristic ranker never produced a score: the
+    // orchestrator degrades to the heuristic on ranker errors (e.g. a
+    // replay-only jev cache miss), which would silently turn those rows
+    // into heuristic rows.
+    let mut silent_ranker_runs: HashMap<&'static str, usize> = HashMap::new();
 
     for fx in &fixtures {
         let source = read_source(fx);
-        let reference = reference.get(&fx.id).cloned().unwrap_or_default();
+        let reference = reference.get(&fx.id).cloned().unwrap_or_else(|| {
+            panic!(
+                "no reference entry for {}; run BENCH_MODE=reference first",
+                fx.id
+            )
+        });
+        assert!(
+            !reference.side_ids.is_empty(),
+            "reference for {} has no side ids; regenerate it",
+            fx.id
+        );
         let expected: Vec<String> = if fx.expected_return_values.is_empty() {
             reference.return_values.clone()
         } else {
@@ -529,6 +569,13 @@ async fn bench_frontier_ranking() {
                     for (_, m) in &r.discoveries {
                         *methods.entry(format!("{m:?}")).or_default() += 1;
                     }
+                    if arm.name != "heuristic" && r.rank_log.is_empty() {
+                        *silent_ranker_runs.entry(arm.name).or_default() += 1;
+                        eprintln!(
+                            "WARNING: {} seed={} {} {}: ranker produced no scores (ranked by heuristic)",
+                            fx.id, seed, regime_name, arm.name
+                        );
+                    }
                     let row = Row {
                         fixture: &fx.id,
                         stratum: &fx.stratum,
@@ -541,6 +588,7 @@ async fn bench_frontier_ranking() {
                             .or(regime.timeout_explore_secs)
                             .unwrap_or(0),
                         total_executions: r.total_executions,
+                        observed_executions: r.raw_results.len(),
                         wall_ms: outcome.wall_ms,
                         discoveries: side_discoveries(r),
                         branch_discoveries: r.discovery_iterations.clone(),
@@ -577,5 +625,14 @@ async fn bench_frontier_ranking() {
                 }
             }
         }
+    }
+    if let Some(n) = silent_ranker_runs.get("jev") {
+        panic!(
+            "jev arm produced no scores in {n} run(s): a replay-only cache miss or API failure; \
+             set TYPESAFE_API_KEY or regenerate the replay cache"
+        );
+    }
+    for (arm, n) in &silent_ranker_runs {
+        eprintln!("NOTE: {arm} arm had {n} run(s) with an empty rank_log");
     }
 }
