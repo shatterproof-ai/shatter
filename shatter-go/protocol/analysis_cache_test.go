@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
+	"strings"
 	"testing"
 
 	"github.com/shatter-dev/shatter/shatter-go/workspace"
@@ -130,6 +132,48 @@ func TestFrontendFingerprint_SelfHashStable(t *testing.T) {
 	}
 	if len(first) != discoveryHashHexLength {
 		t.Errorf("fingerprint length = %d, want %d", len(first), discoveryHashHexLength)
+	}
+}
+
+// str-gjsb2 regression: a nil entry in BuildInfo.Deps (debug/buildinfo's
+// contract does not guarantee every *Module is non-nil) must not panic
+// writeDepsField's sort.Slice comparator.
+func TestWriteDepsField_NilDepDoesNotPanic(t *testing.T) {
+	var buf strings.Builder
+	deps := []*debug.Module{
+		nil,
+		{Path: "example.com/b", Version: "v1.0.0", Sum: "h1:b"},
+		nil,
+		{Path: "example.com/a", Version: "v1.0.0", Sum: "h1:a"},
+	}
+	writeDepsField(&buf, deps) // must not panic
+	if buf.Len() == 0 {
+		t.Fatal("writeDepsField wrote nothing for non-nil deps")
+	}
+}
+
+// A `replace` directive's target module must affect the fingerprint, so
+// editing what a dependency is replaced with (not just its own declared
+// version) invalidates the cache instead of silently reusing a stale entry.
+func TestWriteDepsField_ReplaceTargetAffectsHash(t *testing.T) {
+	base := []*debug.Module{
+		{Path: "example.com/a", Version: "v1.0.0", Sum: "h1:a"},
+	}
+	replaced := []*debug.Module{
+		{
+			Path:    "example.com/a",
+			Version: "v1.0.0",
+			Sum:     "h1:a",
+			Replace: &debug.Module{Path: "example.com/a-fork", Version: "v1.0.1", Sum: "h1:fork"},
+		},
+	}
+
+	var baseBuf, replacedBuf strings.Builder
+	writeDepsField(&baseBuf, base)
+	writeDepsField(&replacedBuf, replaced)
+
+	if baseBuf.String() == replacedBuf.String() {
+		t.Error("a replace directive's target did not change the fingerprint input")
 	}
 }
 
