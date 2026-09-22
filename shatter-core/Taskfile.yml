@@ -52,11 +52,17 @@ tasks:
           export SHATTER_GO_FRONTEND_BIN="$PWD/../shatter-go/bin/shatter-go"
         fi
         export SHATTER_EXAMPLES_DIR="$examples_root"
+        # str-6nul9: bench_frontier_ranking is an #[ignore]'d benchmark meant
+        # for standalone invocation (see its own doc comment), not gate
+        # coverage -- it runs several deliberate ~8s wallclock phases per
+        # seed across many seeds/fixtures/strategies and structurally takes
+        # far longer than any reasonable per-test gate timeout, regardless
+        # of machine load.
         if command -v cargo-nextest >/dev/null 2>&1; then
           cargo test -p shatter-core --doc
-          bash ../scripts/gate-wrapper.sh core:test-ignored cargo nextest run -p shatter-core --run-ignored all
+          bash ../scripts/gate-wrapper.sh core:test-ignored cargo nextest run -p shatter-core --run-ignored all -E 'not binary(bench_frontier_ranking)'
         else
-          bash ../scripts/gate-wrapper.sh core:test-ignored cargo test -p shatter-core -- --include-ignored
+          bash ../scripts/gate-wrapper.sh core:test-ignored cargo test -p shatter-core -- --include-ignored --skip bench_frontier_ranking
         fi
 
   # Keep this body in sync with test-ignored above. Its separate checksum
@@ -78,11 +84,12 @@ tasks:
           export SHATTER_GO_FRONTEND_BIN="$PWD/../shatter-go/bin/shatter-go"
         fi
         export SHATTER_EXAMPLES_DIR="$examples_root"
+        # str-6nul9: see the matching comment in test-ignored above.
         if command -v cargo-nextest >/dev/null 2>&1; then
           cargo test -p shatter-core --doc
-          bash ../scripts/gate-wrapper.sh core:test-ignored-fast cargo nextest run -p shatter-core --run-ignored all
+          bash ../scripts/gate-wrapper.sh core:test-ignored-fast cargo nextest run -p shatter-core --run-ignored all -E 'not binary(bench_frontier_ranking)'
         else
-          bash ../scripts/gate-wrapper.sh core:test-ignored-fast cargo test -p shatter-core -- --include-ignored
+          bash ../scripts/gate-wrapper.sh core:test-ignored-fast cargo test -p shatter-core -- --include-ignored --skip bench_frontier_ranking
         fi
 
   clippy:

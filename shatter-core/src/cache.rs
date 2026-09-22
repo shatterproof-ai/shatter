@@ -288,6 +288,16 @@ impl BehaviorMapCache {
         project_root.join(".shatter-cache").join("behavior-maps")
     }
 
+    /// Directory this cache is backed by.
+    ///
+    /// Exposed so callers can colocate a sidecar cache (see
+    /// [`CompletedFunctionCache`]) with the behavior maps it complements,
+    /// instead of threading a second directory through their configuration.
+    #[must_use]
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
     fn path_for(&self, function_id: &str) -> PathBuf {
         let mut p = cache_base_path(&self.cache_dir, function_id);
         p.set_extension("json");
@@ -895,6 +905,204 @@ impl StoredInputsCache {
     fn path_for(&self, function_id: &str) -> PathBuf {
         let base = cache_base_path(&self.cache_dir, function_id);
         base.with_extension("inputs.json")
+    }
+}
+
+/// Schema version for the completed-function sidecar file.
+///
+/// Bumped independently of `PROTOCOL_VERSION` when the
+/// [`CompletedFunctionRecord`] field layout changes in a way existing readers
+/// cannot tolerate. A mismatch invalidates the entry silently on read, so a
+/// resumed scan degrades to the pre-str-8q1b4 behavior (the function is
+/// reported as an expected skip) rather than failing.
+pub const COMPLETED_FUNCTION_SCHEMA_VERSION: u32 = 1;
+
+/// The report-bearing half of a completed
+/// [`FunctionResult`](crate::scan_orchestrator::FunctionResult), persisted so a
+/// resumed scan can restore the function as *completed* instead of dropping it
+/// into `skipped_functions` (str-8q1b4).
+///
+/// Deliberately omits `behavior_map`: that half already lives in
+/// [`BehaviorMapCache`] under the same function key, and
+/// [`Self::restore`] re-attaches it on load. Keeping exactly one on-disk copy
+/// means the map used to build the report can never drift from the map used to
+/// mock the function's callers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompletedFunctionRecord {
+    /// Qualified ID of the explored function.
+    pub function_name: String,
+    /// Exploration output (paths, coverage, raw execution results).
+    pub exploration: crate::explorer::ObservationOutput,
+    /// Coverage of callee behaviors exercised by this function.
+    pub behavior_coverage: Vec<crate::behavior::BehaviorCoverage>,
+    /// Mocks used during exploration, with source attribution.
+    pub mocks_used: Vec<crate::scan_orchestrator::MockUsage>,
+    /// Mock misses detected during exploration.
+    pub mock_misses: Vec<crate::scan_orchestrator::MockMiss>,
+    /// Branch coverage metrics from the analyze stage.
+    pub coverage_metrics: crate::coverage_metrics::CoverageMetrics,
+    /// Refactoring recommendations for hard-to-mock dependencies.
+    pub refactoring_recommendations: Vec<crate::mock_analysis::RefactoringRecommendation>,
+}
+
+impl CompletedFunctionRecord {
+    /// Rebuild a full `FunctionResult` by re-attaching `behavior_map`, which
+    /// callers load from [`BehaviorMapCache`] under the same function key.
+    #[must_use]
+    pub fn restore(self, behavior_map: BehaviorMap) -> crate::scan_orchestrator::FunctionResult {
+        crate::scan_orchestrator::FunctionResult {
+            function_name: self.function_name,
+            exploration: self.exploration,
+            behavior_map,
+            behavior_coverage: self.behavior_coverage,
+            mocks_used: self.mocks_used,
+            mock_misses: self.mock_misses,
+            coverage_metrics: self.coverage_metrics,
+            refactoring_recommendations: self.refactoring_recommendations,
+        }
+    }
+}
+
+/// Versioned envelope for cached [`CompletedFunctionRecord`] entries.
+///
+/// Carries the deep fingerprint the record was written under so a load can
+/// reject a record whose function has changed since — the same staleness gate
+/// [`crate::checkpoint::ScanCheckpoint::is_completed`] applies to the
+/// behavior map.
+#[derive(Debug, Serialize, Deserialize)]
+struct CompletedFunctionCacheEntry {
+    protocol_version: String,
+    schema_version: u32,
+    deep_fingerprint: String,
+    record: CompletedFunctionRecord,
+}
+
+/// Borrowed write-side mirror of [`CompletedFunctionCacheEntry`].
+///
+/// A completed function's `ObservationOutput` holds every raw execution result,
+/// so the write path serializes straight out of the live `FunctionResult`
+/// rather than deep-cloning it into an owned record first.
+///
+/// Its field names must stay identical to the owned entry's. They are covered
+/// by the store-then-load round-trip tests, which fail on any drift because a
+/// renamed or dropped field no longer deserializes.
+#[derive(Debug, Serialize)]
+struct CompletedFunctionCacheEntryRef<'a> {
+    protocol_version: &'a str,
+    schema_version: u32,
+    deep_fingerprint: &'a str,
+    record: CompletedFunctionRecordRef<'a>,
+}
+
+/// Borrowed write-side mirror of [`CompletedFunctionRecord`]. See
+/// [`CompletedFunctionCacheEntryRef`] for why it exists.
+#[derive(Debug, Serialize)]
+struct CompletedFunctionRecordRef<'a> {
+    function_name: &'a str,
+    exploration: &'a crate::explorer::ObservationOutput,
+    behavior_coverage: &'a [crate::behavior::BehaviorCoverage],
+    mocks_used: &'a [crate::scan_orchestrator::MockUsage],
+    mock_misses: &'a [crate::scan_orchestrator::MockMiss],
+    coverage_metrics: &'a crate::coverage_metrics::CoverageMetrics,
+    refactoring_recommendations: &'a [crate::mock_analysis::RefactoringRecommendation],
+}
+
+/// Disk-backed cache of completed-function records, written as each function
+/// finishes so a later resume can reconstitute its report row (str-8q1b4).
+///
+/// **Advisory and reconstructible**: every load failure — missing file, corrupt
+/// JSON, version mismatch, fingerprint drift — degrades to `None`, and the
+/// caller falls back to re-exploring or skipping the function. Nothing here is
+/// a source of truth; the record only ever mirrors a `FunctionResult` the scan
+/// already produced.
+///
+/// Sidecar layout: colocated with the behavior map under the same hierarchical
+/// path, with extension `result.json`.
+#[derive(Debug)]
+pub struct CompletedFunctionCache {
+    cache_dir: PathBuf,
+}
+
+impl CompletedFunctionCache {
+    /// Create a new completed-function cache backed by the given directory.
+    ///
+    /// Creates the directory (and parents) if it doesn't exist.
+    pub fn new(cache_dir: PathBuf) -> Result<Self, CacheError> {
+        fs::create_dir_all(&cache_dir)?;
+        Ok(Self { cache_dir })
+    }
+
+    /// Default completed-function cache directory: colocated with behavior maps
+    /// under `<project_root>/.shatter-cache/behavior-maps/`.
+    pub fn default_dir(project_root: &Path) -> PathBuf {
+        project_root.join(".shatter-cache").join("behavior-maps")
+    }
+
+    /// Load the record for `function_id` when one was written under
+    /// `deep_fingerprint`.
+    ///
+    /// Returns `None` for every miss, including a stale entry whose stored
+    /// fingerprint differs from `deep_fingerprint`. Unlike
+    /// [`BehaviorMapCache::is_fresh`], a stale entry is left on disk: the
+    /// function is about to be re-explored and will overwrite it.
+    #[must_use]
+    pub fn load(
+        &self,
+        function_id: &str,
+        deep_fingerprint: &str,
+    ) -> Option<CompletedFunctionRecord> {
+        let path = self.path_for(function_id);
+        let contents = fs::read_to_string(&path).ok()?;
+        let entry: CompletedFunctionCacheEntry = serde_json::from_str(&contents).ok()?;
+        if entry.protocol_version != PROTOCOL_VERSION
+            || entry.schema_version != COMPLETED_FUNCTION_SCHEMA_VERSION
+            || entry.deep_fingerprint != deep_fingerprint
+        {
+            return None;
+        }
+        Some(entry.record)
+    }
+
+    /// Store the persistable half of `result` under `deep_fingerprint`, using
+    /// an atomic temp-file + rename write.
+    ///
+    /// The function's behavior map is not written here — it belongs to
+    /// [`BehaviorMapCache`], and [`CompletedFunctionRecord::restore`] pairs the
+    /// two back up on load.
+    pub fn store(
+        &self,
+        deep_fingerprint: &str,
+        result: &crate::scan_orchestrator::FunctionResult,
+    ) -> Result<(), CacheError> {
+        let function_id = result.function_name.as_str();
+        let entry = CompletedFunctionCacheEntryRef {
+            protocol_version: PROTOCOL_VERSION,
+            schema_version: COMPLETED_FUNCTION_SCHEMA_VERSION,
+            deep_fingerprint,
+            record: CompletedFunctionRecordRef {
+                function_name: function_id,
+                exploration: &result.exploration,
+                behavior_coverage: &result.behavior_coverage,
+                mocks_used: &result.mocks_used,
+                mock_misses: &result.mock_misses,
+                coverage_metrics: &result.coverage_metrics,
+                refactoring_recommendations: &result.refactoring_recommendations,
+            },
+        };
+        let json = serde_json::to_string(&entry)?;
+        let path = self.path_for(function_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp_path = path.with_extension("result.json.tmp");
+        fs::write(&tmp_path, json)?;
+        fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    fn path_for(&self, function_id: &str) -> PathBuf {
+        let base = cache_base_path(&self.cache_dir, function_id);
+        base.with_extension("result.json")
     }
 }
 
@@ -2200,6 +2408,160 @@ mod tests {
             "stored inputs should exist at {inputs_path:?}"
         );
     }
+
+    // --- CompletedFunctionCache tests (str-8q1b4) ---
+
+    fn sample_function_result(
+        function_id: &str,
+        lines_covered: usize,
+    ) -> crate::scan_orchestrator::FunctionResult {
+        use crate::scan_orchestrator::{FunctionResult, MockSource, MockUsage};
+        FunctionResult {
+            function_name: function_id.to_string(),
+            exploration: crate::explorer::ObservationOutput {
+                function_name: function_id.to_string(),
+                iterations: 7,
+                unique_paths: 2,
+                lines_covered,
+                total_lines: 12,
+                ..Default::default()
+            },
+            behavior_map: sample_map(function_id),
+            behavior_coverage: vec![],
+            mocks_used: vec![MockUsage {
+                name: "src/db.ts:query".into(),
+                source: MockSource::CachedBehaviorMap,
+            }],
+            mock_misses: vec![],
+            coverage_metrics: crate::coverage_metrics::CoverageMetrics::default(),
+            refactoring_recommendations: vec![],
+        }
+    }
+
+    #[test]
+    fn completed_function_cache_roundtrips_report_bearing_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        let result = sample_function_result("src/auth.ts:login", 9);
+
+        cache.store("deep_fp", &result).unwrap();
+        let record = cache
+            .load("src/auth.ts:login", "deep_fp")
+            .expect("record should load under the fingerprint it was stored with");
+
+        assert_eq!(record.function_name, "src/auth.ts:login");
+        assert_eq!(record.exploration.lines_covered, 9);
+        assert_eq!(record.exploration.total_lines, 12);
+        assert_eq!(record.exploration.iterations, 7);
+        assert_eq!(record.mocks_used.len(), 1);
+        assert_eq!(record.mocks_used[0].name, "src/db.ts:query");
+    }
+
+    #[test]
+    fn completed_function_cache_restore_reattaches_behavior_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        let result = sample_function_result("src/auth.ts:login", 9);
+        cache.store("deep_fp", &result).unwrap();
+
+        let record = cache.load("src/auth.ts:login", "deep_fp").unwrap();
+        let restored = record.restore(sample_map("src/auth.ts:login"));
+
+        // The behavior map is not persisted in the sidecar; it must arrive
+        // from BehaviorMapCache so both halves agree.
+        assert_eq!(restored.behavior_map.function_id, "src/auth.ts:login");
+        assert_eq!(restored.behavior_map.behaviors.len(), 1);
+        assert_eq!(restored.exploration.lines_covered, 9);
+        assert_eq!(restored.function_name, "src/auth.ts:login");
+    }
+
+    #[test]
+    fn completed_function_cache_rejects_changed_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        cache
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        assert!(
+            cache.load("src/auth.ts:login", "deep_fp_CHANGED").is_none(),
+            "a record written under a different deep fingerprint is stale"
+        );
+    }
+
+    #[test]
+    fn completed_function_cache_misses_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        assert!(cache.load("src/auth.ts:login", "deep_fp").is_none());
+    }
+
+    #[test]
+    fn completed_function_cache_misses_on_corrupt_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        cache
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        let path = cache.path_for("src/auth.ts:login");
+        fs::write(&path, "{not json").unwrap();
+
+        assert!(
+            cache.load("src/auth.ts:login", "deep_fp").is_none(),
+            "a corrupt sidecar must degrade to a miss, not an error"
+        );
+    }
+
+    #[test]
+    fn completed_function_cache_misses_on_schema_version_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+        cache
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        let path = cache.path_for("src/auth.ts:login");
+        let contents = fs::read_to_string(&path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        value["schema_version"] =
+            serde_json::json!(COMPLETED_FUNCTION_SCHEMA_VERSION.saturating_add(1));
+        fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        assert!(cache.load("src/auth.ts:login", "deep_fp").is_none());
+    }
+
+    #[test]
+    fn completed_function_sidecar_does_not_pollute_behavior_map_scans() {
+        // Both caches share a directory, so a `.result.json` sidecar must stay
+        // invisible to every BehaviorMapCache enumeration.
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+        let completed = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+
+        bm_cache.store(&sample_map("src/auth.ts:login")).unwrap();
+        completed
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        assert_eq!(bm_cache.load_all().unwrap().len(), 1);
+        assert_eq!(bm_cache.load_all_for_file("src/auth.ts").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn completed_function_cache_colocates_with_behavior_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let bm_cache = BehaviorMapCache::new(dir.path().to_path_buf()).unwrap();
+        let completed = CompletedFunctionCache::new(bm_cache.cache_dir().to_path_buf()).unwrap();
+        completed
+            .store("deep_fp", &sample_function_result("src/auth.ts:login", 9))
+            .unwrap();
+
+        assert!(
+            dir.path().join("src/auth.ts/login.result.json").exists(),
+            "sidecar should sit next to the behavior map it complements"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2851,6 +3213,66 @@ mod proptests {
             let loaded = cache.load_compatible("fid", &b).unwrap();
             prop_assert_eq!(loaded, None);
             prop_assert!(!path.exists(), "incompatible load should unlink");
+        }
+    }
+
+    // --- CompletedFunctionCache proptests (str-8q1b4) ---
+
+    proptest! {
+        /// The report-bearing half of a FunctionResult survives store → load
+        /// unchanged, and only under the deep fingerprint it was written with.
+        /// This is the boundary a resumed scan's report parity rests on.
+        #[test]
+        fn completed_function_cache_roundtrip(
+            file in "[a-z]{1,8}",
+            name in "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            deep_fp in "[a-f0-9]{8,32}",
+            iterations in 0u32..1000,
+            unique_paths in 0usize..20,
+            lines_covered in 0usize..500,
+            total_lines in 0u32..500,
+        ) {
+            let function_id = format!("src/{file}.ts:{name}");
+            let dir = tempfile::tempdir().unwrap();
+            let cache = CompletedFunctionCache::new(dir.path().to_path_buf()).unwrap();
+
+            let result = crate::scan_orchestrator::FunctionResult {
+                function_name: function_id.clone(),
+                exploration: crate::explorer::ObservationOutput {
+                    function_name: function_id.clone(),
+                    iterations,
+                    unique_paths,
+                    lines_covered,
+                    total_lines,
+                    ..Default::default()
+                },
+                behavior_map: BehaviorMap {
+                    function_id: function_id.clone(),
+                    behaviors: vec![],
+                    fingerprint: Some(deep_fp.clone()),
+                    nondeterministic_fields: vec![],
+                },
+                behavior_coverage: vec![],
+                mocks_used: vec![],
+                mock_misses: vec![],
+                coverage_metrics: crate::coverage_metrics::CoverageMetrics::default(),
+                refactoring_recommendations: vec![],
+            };
+            cache.store(&deep_fp, &result).unwrap();
+
+            let record = cache
+                .load(&function_id, &deep_fp)
+                .expect("record must load under its own fingerprint");
+            prop_assert_eq!(&record.function_name, &function_id);
+            prop_assert_eq!(record.exploration.iterations, iterations);
+            prop_assert_eq!(record.exploration.unique_paths, unique_paths);
+            prop_assert_eq!(record.exploration.lines_covered, lines_covered);
+            prop_assert_eq!(record.exploration.total_lines, total_lines);
+
+            prop_assert!(
+                cache.load(&function_id, &format!("{deep_fp}x")).is_none(),
+                "a record must never load under a fingerprint it was not written with"
+            );
         }
     }
 }
