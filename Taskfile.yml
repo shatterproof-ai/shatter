@@ -432,6 +432,8 @@ tasks:
       - scripts/test_demo_cache_modes.sh
       - scripts/test_root_cargo_phases.py
       - scripts/test_governed_task_graph.py
+      - scripts/bench_frontier_report.py
+      - scripts/test_bench_frontier_report.py
       - scripts/go-test-tier.sh
       - scripts/test_test_tier_wiring.py
       - shatter-cli/Taskfile.yml
@@ -460,6 +462,7 @@ tasks:
       - bash scripts/test_demo_cache_modes.sh
       - python3 -m unittest scripts.test_root_cargo_phases
       - python3 -m unittest scripts.test_governed_task_graph
+      - python3 -m unittest scripts.test_bench_frontier_report
       - python3 -m unittest scripts.test_test_tier_wiring
       - cd shatter-go-tool && go test ./...
       - |

@@ -35,9 +35,12 @@ other arm's number.
 
 ## Reading the report
 
-- **Executions to cover**: executions until every branch side the reference
-  run observed has been seen. Lower is better. The paired delta against
-  heuristic with its bootstrap interval is the headline.
+- **Executions to cover**: observations until every branch side the
+  reference run observed has been seen. Lower is better. Runs that never
+  cover within budget are censored at budget + 1 rather than dropped, so an
+  arm that only covers the easy fixtures cannot look faster than one that
+  covers everything. The paired delta against heuristic with its bootstrap
+  interval is the headline; read it next to the cover rate.
 - **Side coverage**: fraction of reference sides observed within budget;
   the fallback when a run never covers everything.
 - **Pareto table**: side coverage under fixed wall-clock against median

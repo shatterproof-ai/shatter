@@ -31,6 +31,11 @@ class ExecutionsToCover(unittest.TestCase):
     def test_none_for_empty_targets(self):
         self.assertIsNone(r.executions_to_cover(row("a", 1, [[2, 3]]), set()))
 
+    def test_censored_uses_budget_plus_one(self):
+        self.assertEqual(r.censored_executions_to_cover(row("a", 1, [[2, 3]]), {2, 3}), 61)
+        self.assertEqual(r.censored_executions_to_cover(row("a", 1, [[2, 3], [3, 9]]), {2, 3}), 9)
+        self.assertIsNone(r.censored_executions_to_cover(row("a", 1, [[2, 3]]), set()))
+
     def test_coverage_fraction(self):
         self.assertAlmostEqual(r.coverage_fraction(row("a", 1, [[2, 3], [9, 1]]), {2, 3, 4, 5}), 0.25)
 
@@ -76,10 +81,19 @@ class Calibration(unittest.TestCase):
         bottom = next(b for b in bins if b["lo"] == 0.1)
         self.assertEqual(bottom["hit_rate"], 0.0)
 
-    def test_score_one_lands_in_top_bin(self):
-        rows = [row("jev", 1, [], rank_log=[[1, 0, 1, 1.0]])]
+    def test_score_one_lands_in_top_bin_and_negative_in_bottom(self):
+        rows = [row("jev", 1, [], rank_log=[[1, 0, 1, 1.0], [1, 0, 2, -0.05]])]
         bins = r.calibration_bins(rows, bins=10)
         self.assertEqual(bins[-1]["n"], 1)
+        self.assertEqual(bins[0]["n"], 1)
+
+    def test_rank_log_exec_is_rescaled_to_observations(self):
+        # 60 total executions but only 30 observations: a score at exec 40
+        # maps to observation 20, so a side first seen at observation 25 is a hit.
+        rw = row("jev", 1, [[10, 25]], rank_log=[[1, 40, 5, 0.9]])
+        rw["observed_executions"] = 30
+        bins = r.calibration_bins([rw], bins=10, window=20)
+        self.assertEqual(next(b for b in bins if b["lo"] == 0.9)["hit_rate"], 1.0)
 
 
 class SanityGates(unittest.TestCase):
@@ -115,6 +129,20 @@ class Summarize(unittest.TestCase):
         md = r.render_markdown(s)
         self.assertIn("| cheating | 4.0 |", md)
         self.assertIn("## Per stratum", md)
+
+    def test_uncovered_runs_are_censored_not_dropped(self):
+        # random covers the easy fixture fast but never the hard one;
+        # heuristic covers both. Without censoring random would look faster.
+        ref = {"easy": {"side_ids": [2]}, "hard": {"side_ids": [2, 3]}}
+        rows = [
+            row("heuristic", 1, [[2, 5]], fixture="easy"), row("heuristic", 1, [[2, 5], [3, 20]], fixture="hard"),
+            row("random", 1, [[2, 5]], fixture="easy"), row("random", 1, [[2, 5]], fixture="hard"),
+        ]
+        s = r.summarize(rows, ref)
+        self.assertEqual(s["median_exec_to_cover"]["random"], 33)  # median(5, 61)
+        self.assertEqual(s["median_exec_to_cover"]["heuristic"], 12.5)
+        self.assertEqual(s["cover_rate"]["random"], 0.5)
+        self.assertEqual(r.sanity_gates(s), [])
 
 
 if __name__ == "__main__":

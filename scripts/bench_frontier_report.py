@@ -46,6 +46,20 @@ def executions_to_cover(row: dict, target_ids: set[int]) -> int | None:
     return max(seen[s] for s in target_ids)
 
 
+def censored_executions_to_cover(row: dict, target_ids: set[int]) -> int | None:
+    """Like executions_to_cover, but a run that never covers within budget
+    counts as ``budget + 1`` instead of being dropped, so medians and paired
+    deltas do not suffer survivorship bias (an arm that only covers the easy
+    fixtures would otherwise look faster than one that covers them all).
+    Returns None only when there are no targets."""
+    if not target_ids:
+        return None
+    covered = executions_to_cover(row, target_ids)
+    if covered is not None:
+        return covered
+    return int(row["budget"]) + 1
+
+
 def coverage_fraction(row: dict, target_ids: set[int]) -> float:
     if not target_ids:
         return 0.0
@@ -91,17 +105,25 @@ def calibration_bins(rows: list[dict], bins: int = 10, window: int = 20) -> list
     """Hit rate per score bin.
 
     A rank-log entry (round, exec, branch_id, score) is a hit when some side
-    of `branch_id` is first discovered at an execution index in
-    (exec, exec + window]. Bin index is min(int(score * bins), bins - 1).
+    of `branch_id` is first discovered at an observation index in
+    (exec, exec + window]. `exec` is recorded in the orchestrator's
+    `total_executions` space, while discovery indices count observations
+    (`observed_executions`), so `exec` is rescaled by
+    observed_executions / total_executions before comparing. Bin index is
+    min(int(score * bins), bins - 1), clamped at 0.
     """
     hits: list[list[int]] = [[] for _ in range(bins)]
     for r in rows:
         first_by_branch: dict[int, list[int]] = {}
         for sid, idx in r["discoveries"]:
             first_by_branch.setdefault(int(sid) // 2, []).append(int(idx))
+        total = int(r.get("total_executions") or 0)
+        observed = int(r.get("observed_executions") or total)
+        scale = (observed / total) if total else 1.0
         for _round, at_exec, bid, score in r["rank_log"]:
-            b = min(int(float(score) * bins), bins - 1)
-            found = any(at_exec < idx <= at_exec + window for idx in first_by_branch.get(int(bid), []))
+            at_obs = int(round(at_exec * scale))
+            b = max(0, min(int(float(score) * bins), bins - 1))
+            found = any(at_obs < idx <= at_obs + window for idx in first_by_branch.get(int(bid), []))
             hits[b].append(1 if found else 0)
     return [
         {
@@ -126,7 +148,10 @@ def summarize(rows: list[dict], reference: dict) -> dict:
         return {int(x) for x in reference.get(r["fixture"], {}).get("side_ids", [])}
 
     def cover(r: dict) -> float | None:
-        return executions_to_cover(r, targets(r))
+        return censored_executions_to_cover(r, targets(r))
+
+    def covered(r: dict) -> bool:
+        return executions_to_cover(r, targets(r)) is not None
 
     def frac(r: dict) -> float:
         return coverage_fraction(r, targets(r))
@@ -145,7 +170,7 @@ def summarize(rows: list[dict], reference: dict) -> dict:
         },
         "cover_rate": {
             a: (
-                sum(1 for r in by_arm(a, exec_rows) if cover(r) is not None) / len(by_arm(a, exec_rows))
+                sum(1 for r in by_arm(a, exec_rows) if covered(r)) / len(by_arm(a, exec_rows))
                 if by_arm(a, exec_rows)
                 else None
             )
@@ -206,7 +231,7 @@ def render_markdown(summary: dict) -> str:
     lines = [
         "# Frontier-ranking benchmark",
         "",
-        f"Rows: {summary['n_rows']}. Executions-to-cover counts executions until every reference branch side is observed (fixed-execution regime).",
+        f"Rows: {summary['n_rows']}. Executions-to-cover counts observations until every reference branch side is seen (fixed-execution regime); runs that never cover are censored at budget + 1.",
         "",
         "## Executions to cover all reference sides (median)",
         "",
