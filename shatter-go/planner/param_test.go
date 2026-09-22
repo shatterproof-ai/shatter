@@ -647,6 +647,49 @@ func TestPlanParam_HTTPRequestBodyInvariants(t *testing.T) {
 	})
 }
 
+// TestPlanParam_HTTPRequestBodyMinedLiteralDedupedAgainstGenericFamily is a
+// direct regression test for str-qwua7.4: a source-mined string literal
+// identical to one of stringFamily()'s hardcoded generic probes ("a") must be
+// emitted exactly once, at the mined rank — not once there and again,
+// unranked, when the generic string family loop reaches its own copy of the
+// same literal. TestPlanParam_HTTPRequestBodyInvariants above deliberately
+// excludes this exact collision from its rapid draws ("the collision carries
+// no signal", see the seedSet filter), so it does not pin the invariant down;
+// this test asserts it directly and independently of that exclusion.
+func TestPlanParam_HTTPRequestBodyMinedLiteralDedupedAgainstGenericFamily(t *testing.T) {
+	typeName := "*http.Request"
+	param := protocol.ParamInfo{
+		Name:     "r",
+		Type:     protocol.TypeInfo{Kind: "str", Label: typeName},
+		TypeName: &typeName,
+	}
+
+	plans, unsat := planner.PlanParam(testTargetID, 0, param, planner.ParamPlanOptions{
+		StringLiteralsByParam: map[string][]string{"r": {"a"}},
+		MaxPlansPerParam:      8,
+	})
+	if unsat != nil {
+		t.Fatalf("unexpected unsatisfied requirement: %+v", unsat)
+	}
+
+	var indices []int
+	for i, plan := range plans {
+		if plan.Kind != protocol.ValuePlanKindLiteral {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(plan.Literal, &s); err == nil && s == "a" {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) != 1 {
+		t.Fatalf(`literal "a" appears at plan indices %v, want exactly one occurrence`, indices)
+	}
+	if indices[0] != 0 {
+		t.Fatalf(`literal "a" appears at plan[%d], want plan[0] (the mined rank, ahead of the generic family default)`, indices[0])
+	}
+}
+
 // Rapid property (str-b27zm): for a []byte structured-decode param with a
 // configured seed pool —
 //   - the plan count never exceeds MaxPlansPerParam;
