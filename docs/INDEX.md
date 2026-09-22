@@ -28,6 +28,7 @@ Where to find what in Shatter's documentation.
 | [docs/hooks.md](hooks.md) | Git hooks and automation setup | Contributors |
 | [docs/execution-adapters.md](execution-adapters.md) | Long-term architecture reference for framework-specific execution adapters, heuristics, composition, and cross-language extension points | Contributors and architects |
 | [docs/validation/kapow-refute-agent-workflow.md](validation/kapow-refute-agent-workflow.md) | Refute wrapper and smoke workflow for agents validating Kapow | Agents and contributors |
+| [docs/perf/frontier-ranking-benchmark.md](perf/frontier-ranking-benchmark.md) | Frontier-ranking benchmark: arms, running, reading the report, caveats | Maintainers and agents |
 
 ## How to Read These Docs
 
