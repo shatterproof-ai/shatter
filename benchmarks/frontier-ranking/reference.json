@@ -99,12 +99,8 @@
       "ERROR:clock skew detected",
       "ERROR:invalid capacity",
       "ERROR:invalid refill rate",
-      "{\"allowed\":false,\"newState\":{\"lastRefillMs\":-0.5,\"penaltyUntilMs\":-634.1803938995456,\"tokens\":0.0965},\"reason\":\"denied: unknown priority\",\"remainingTokens\":0.0965}",
-      "{\"allowed\":false,\"newState\":{\"lastRefillMs\":0,\"penaltyUntilMs\":0,\"tokens\":1},\"reason\":\"denied: unknown priority\",\"remainingTokens\":1}",
-      "{\"allowed\":false,\"newState\":{\"lastRefillMs\":0,\"penaltyUntilMs\":1,\"tokens\":-0.5},\"reason\":\"denied: penalty active\",\"remainingTokens\":0}",
-      "{\"allowed\":false,\"newState\":{\"lastRefillMs\":0,\"penaltyUntilMs\":1,\"tokens\":0},\"reason\":\"denied: penalty active\",\"remainingTokens\":0}",
-      "{\"allowed\":false,\"newState\":{\"lastRefillMs\":0,\"penaltyUntilMs\":83.92060476878669,\"tokens\":1},\"reason\":\"denied: penalty active\",\"remainingTokens\":0}",
-      "{\"allowed\":false,\"newState\":{\"lastRefillMs\":65,\"penaltyUntilMs\":10,\"tokens\":47.65917511305935},\"reason\":\"denied: unknown priority\",\"remainingTokens\":47.65917511305935}"
+      "{keys=[\"allowed\", \"newState\", \"reason\", \"remainingTokens\"],reason=denied: penalty active}",
+      "{keys=[\"allowed\", \"newState\", \"reason\", \"remainingTokens\"],reason=denied: unknown priority}"
     ],
     "side_ids": [
       0,
@@ -131,10 +127,8 @@
     ],
     "max_executions_seen": 200,
     "return_values": [
-      "{\"message\":\"empty method\",\"status\":\"error\"}",
-      "{\"message\":\"empty path\",\"status\":\"error\"}",
-      "{\"message\":\"path must start with /\",\"status\":\"error\"}",
-      "{\"status\":\"not-found\"}"
+      "{keys=[\"message\", \"status\"]}",
+      "{keys=[\"status\"]}"
     ],
     "side_ids": [
       0,
@@ -142,7 +136,6 @@
       2,
       3,
       4,
-      5,
       6,
       8,
       23,
@@ -185,7 +178,7 @@
     "max_executions_seen": 200,
     "return_values": [
       "ERROR:invalid semver",
-      "{\"major\":1,\"minor\":2,\"patch\":3,\"prerelease\":\"\"}"
+      "{keys=[\"major\", \"minor\", \"patch\", \"prerelease\"]}"
     ],
     "side_ids": [
       0,
@@ -224,9 +217,9 @@
     ],
     "max_executions_seen": 200,
     "return_values": [
-      "{\"reason\":\"empty\",\"valid\":false}",
-      "{\"reason\":\"multiple @\",\"valid\":false}",
-      "{\"valid\":true}"
+      "{keys=[\"reason\", \"valid\"],reason=empty}",
+      "{keys=[\"reason\", \"valid\"],reason=multiple @}",
+      "{keys=[\"valid\"]}"
     ],
     "side_ids": [
       0,
@@ -262,15 +255,17 @@
     "max_executions_seen": 200,
     "return_values": [
       "ERROR:empty expression",
+      "ERROR:expected 5 fields",
       "ERROR:unknown special",
-      "{\"dayOfMonth\":{\"values\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]},\"hour\":{\"values\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]},\"minute\":{\"values\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59]},\"month\":{\"values\":[1,2,3,4,5,6,7,8,9,10,11,12]},\"weekday\":{\"values\":[0,1,2,3,4,5,6]}}"
+      "{keys=[\"dayOfMonth\", \"hour\", \"minute\", \"month\", \"weekday\"]}"
     ],
     "side_ids": [
       0,
       1,
       2,
       3,
-      4
+      4,
+      5
     ]
   }
 }
