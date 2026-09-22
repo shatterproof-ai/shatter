@@ -1,0 +1,271 @@
+{
+  "ts/01-arithmetic/classifyNumber": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "\"negative\"",
+      "\"positive-even\"",
+      "\"positive-odd\"",
+      "\"zero\""
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "ts/06-nested-control-flow/classifyHttpResponse": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "\"auth-error\"",
+      "\"client-error\"",
+      "\"created-empty\"",
+      "\"created-with-body\"",
+      "\"informational\"",
+      "\"no-content\"",
+      "\"ok-binary\"",
+      "\"ok-json\"",
+      "\"ok-text\"",
+      "\"redirect\"",
+      "\"redirect-other\"",
+      "\"server-error\"",
+      "\"success-other\"",
+      "ERROR:invalid status"
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25
+    ]
+  },
+  "ts/09-rate-limiter/checkRateLimit": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "ERROR:clock skew detected",
+      "ERROR:invalid capacity",
+      "ERROR:invalid refill rate",
+      "{keys=[\"allowed\", \"newState\", \"reason\", \"remainingTokens\"],reason=denied: penalty active}",
+      "{keys=[\"allowed\", \"newState\", \"reason\", \"remainingTokens\"],reason=denied: unknown priority}"
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      9
+    ]
+  },
+  "ts/10-path-router/matchRoute": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      11,
+      17
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "{keys=[\"message\", \"status\"]}",
+      "{keys=[\"status\"]}"
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      8,
+      23,
+      34
+    ]
+  },
+  "ts/13-roman-numerals/romanToInt": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "0",
+      "14"
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      7
+    ]
+  },
+  "ts/14-semver/parseSemver": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "ERROR:invalid semver",
+      "{keys=[\"major\", \"minor\", \"patch\", \"prerelease\"]}"
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      8,
+      10
+    ]
+  },
+  "ts/15-email-validator/validateEmail": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "{keys=[\"reason\", \"valid\"],reason=empty}",
+      "{keys=[\"reason\", \"valid\"],reason=multiple @}",
+      "{keys=[\"valid\"]}"
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      4,
+      5,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      32,
+      34,
+      36
+    ]
+  },
+  "ts/16-cron-parser/parseCron": {
+    "abandoned_frontiers": 0,
+    "branch_ids": [
+      0,
+      1,
+      2
+    ],
+    "max_executions_seen": 200,
+    "return_values": [
+      "ERROR:empty expression",
+      "ERROR:expected 5 fields",
+      "ERROR:unknown special",
+      "{keys=[\"dayOfMonth\", \"hour\", \"minute\", \"month\", \"weekday\"]}"
+    ],
+    "side_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  }
+}
