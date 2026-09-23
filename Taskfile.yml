@@ -434,6 +434,8 @@ tasks:
       - scripts/test_governed_task_graph.py
       - scripts/bench_frontier_report.py
       - scripts/test_bench_frontier_report.py
+      - scripts/bench_budget_alloc.py
+      - scripts/test_bench_budget_alloc.py
       - scripts/go-test-tier.sh
       - scripts/test_test_tier_wiring.py
       - shatter-cli/Taskfile.yml
@@ -463,6 +465,7 @@ tasks:
       - python3 -m unittest scripts.test_root_cargo_phases
       - python3 -m unittest scripts.test_governed_task_graph
       - python3 -m unittest scripts.test_bench_frontier_report
+      - python3 -m unittest scripts.test_bench_budget_alloc
       - python3 -m unittest scripts.test_test_tier_wiring
       - cd shatter-go-tool && go test ./...
       - |
@@ -841,6 +844,24 @@ tasks:
     cmds:
       - python3 scripts/perf_runner.py run --scenario-file perf/stable-scenarios.txt --results-dir "{{.RESULTS_DIR}}"
       - python3 scripts/perf_report.py --results-dir "{{.RESULTS_DIR}}"
+
+  bench-budget-alloc:
+    desc: "Flat-vs-static budget allocation benchmark over CORPUS (SEEDS=1,2,3 MAX_ITERATIONS=100 INCLUDE='*.ts' RESULTS_DIR=target/bench-budget); needs a release shatter binary"
+    deps: [ts:build]
+    vars:
+      RESULTS_DIR: '{{.RESULTS_DIR | default "target/bench-budget"}}'
+      SEEDS: '{{.SEEDS | default "1,2,3"}}'
+      MAX_ITERATIONS: '{{.MAX_ITERATIONS | default "100"}}'
+      INCLUDE: '{{.INCLUDE | default ""}}'
+    preconditions:
+      - sh: test -n "{{.CORPUS}}"
+        msg: "set CORPUS=<dir>"
+      - sh: test -x "${SHATTER_BIN:-target/release/shatter}"
+        msg: "build a release binary (cargo build --release) or set SHATTER_BIN"
+    env:
+      SHATTER_ALLOW_HOST_WRITES: "1"
+    cmds:
+      - python3 scripts/bench_budget_alloc.py --corpus "{{.CORPUS}}" --seeds "{{.SEEDS}}" --max-iterations "{{.MAX_ITERATIONS}}" --results-dir "{{.RESULTS_DIR}}" {{if .INCLUDE}}--include "{{.INCLUDE}}"{{end}}
 
   bench-frontier-reference:
     desc: "Regenerate benchmarks/frontier-ranking/reference.json (heuristic ranker, reference seeds and execution budget from the manifest)"
