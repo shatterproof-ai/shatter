@@ -105,6 +105,15 @@ fi'
 # whether Taskfile.yml/task are available — only the actual gate
 # invocation is skipped when those preconditions are missing.
 # Set SHATTER_FULL_PUSH=1 to force the full suite on any push.
+#
+# After the real gate above runs (unchanged), an observational shadow check
+# (scripts/receipt-shadow-check.py, str-35vtk.25) records one receipt_shadow
+# event to the str-35vtk.18 gate event log: it independently asks whether a
+# valid local-tier receipt already covered this exact push, purely for later
+# analysis (str-35vtk.26). It never influences the real gate above, and any
+# failure in it (including failure to append the event) only warns on
+# stderr -- it can never skip or fail the real gate or any other hook
+# section.
 PRE_PUSH_BODY='shatter_is_sha1() {
   sha="$1"
   if [ "${#sha}" -ne 40 ]; then
@@ -120,10 +129,13 @@ SHATTER_ZERO_SHA="0000000000000000000000000000000000000000"
 SHATTER_GATE_RANK=0
 SHATTER_LINE_COUNT=0
 SHATTER_AFFECTED_HEADS=""
+SHATTER_ALL_LINES=""
 
 while IFS= read -r shatter_line || [ -n "${shatter_line}" ]; do
   [ -z "${shatter_line}" ] && continue
   SHATTER_LINE_COUNT=$((SHATTER_LINE_COUNT + 1))
+  SHATTER_ALL_LINES="${SHATTER_ALL_LINES}${shatter_line}
+"
 
   set -f
   # shellcheck disable=SC2086
@@ -173,17 +185,41 @@ else
   esac
 fi
 
+SHATTER_GATE_RAN=0
+SHATTER_GATE_EXIT=0
+
 if [ -z "${PUSH_TASK}" ]; then
   echo "[shatter] No product gate required for this push."
 elif [ -f "Taskfile.yml" ] && command -v task >/dev/null 2>&1; then
   echo "[shatter] Running task ${PUSH_TASK}..."
+  SHATTER_GATE_RAN=1
   if [ "${PUSH_TASK}" = "affected" ]; then
-    AFFECTED_HEADS="${SHATTER_AFFECTED_HEADS}" task "${PUSH_TASK}" 2>&1 || exit 1
+    AFFECTED_HEADS="${SHATTER_AFFECTED_HEADS}" task "${PUSH_TASK}" 2>&1
+    SHATTER_GATE_EXIT=$?
   else
-    task "${PUSH_TASK}" 2>&1 || exit 1
+    task "${PUSH_TASK}" 2>&1
+    SHATTER_GATE_EXIT=$?
   fi
 else
   echo "[shatter] Taskfile.yml or task command unavailable; skipping ${PUSH_TASK} gate."
+fi
+
+# str-35vtk.25: observational shadow check. Runs after the real gate above
+# completes and never affects it -- any failure here (missing python3,
+# missing script, non-zero exit, event-log append failure) is swallowed
+# and only warned about on stderr.
+if command -v python3 >/dev/null 2>&1 && [ -f "scripts/receipt-shadow-check.py" ]; then
+  if ! printf "%s" "${SHATTER_ALL_LINES}" | python3 scripts/receipt-shadow-check.py \
+    --worktree "$(pwd)" \
+    --push-task "${PUSH_TASK}" \
+    --gate-ran "${SHATTER_GATE_RAN}" \
+    --gate-exit "${SHATTER_GATE_EXIT}" >&2; then
+    echo "[shatter] warning: receipt shadow check did not complete cleanly" >&2
+  fi
+fi
+
+if [ "${SHATTER_GATE_EXIT}" -ne 0 ]; then
+  exit 1
 fi'
 
 MISSING=0
