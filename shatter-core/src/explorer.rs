@@ -1343,6 +1343,7 @@ pub async fn explore_function(
         config.pool_seeds.clone(),
         use_generators,
         config.meta_config.clone(),
+        config.seed,
     );
     let strategy_ctx = StrategyContext {
         params: analysis.params.clone(),
@@ -2332,6 +2333,7 @@ async fn explore_function_with_observer_pool(
         config.pool_seeds.clone(),
         use_generators,
         config.meta_config.clone(),
+        config.seed,
     );
     let strategy_ctx = StrategyContext {
         params: analysis.params.clone(),

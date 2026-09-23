@@ -193,6 +193,9 @@ impl RegisteredStrategy {
 /// fallback suppresses the built-in random strategy here. `Z3Solver` remains
 /// registered so generator-backed observations can queue branch-guided
 /// follow-up inputs before the next generator fallback.
+/// `seed`: exploration seed; when `Some`, the random strategy gets a
+/// deterministic domain-separated RNG (parity with the concolic builder).
+#[allow(clippy::too_many_arguments)]
 pub fn build_random_explorer_meta_strategy(
     params: &[ParamInfo],
     literals: &[LiteralValue],
@@ -201,6 +204,7 @@ pub fn build_random_explorer_meta_strategy(
     pool_seeds: Vec<Vec<Value>>,
     use_custom_generator_fallback: bool,
     meta_config: MetaConfig,
+    seed: Option<u64>,
 ) -> MetaStrategy {
     let mut combined_user = user_seeds;
     combined_user.extend(candidate_inputs);
@@ -230,7 +234,9 @@ pub fn build_random_explorer_meta_strategy(
     if !use_custom_generator_fallback {
         strategies.push(RegisteredStrategy::new(
             RegisteredStrategyKind::Random,
-            Box::new(RandomStrategy::new(None)),
+            Box::new(RandomStrategy::new(
+                seed.map(|s| derive_seed(s, SEED_DOMAIN_RANDOM, 0)),
+            )),
         ));
     }
     MetaStrategy::new(strategies, meta_config)
@@ -1677,6 +1683,7 @@ mod tests {
             vec![],
             false,
             MetaConfig::default(),
+            None,
         );
         assert_eq!(
             meta.registered_kinds(),
@@ -1706,6 +1713,7 @@ mod tests {
             vec![],
             true,
             MetaConfig::default(),
+            None,
         );
         assert_eq!(
             meta.registered_kinds(),
@@ -1813,6 +1821,7 @@ mod tests {
                 vec![],
                 false,
                 MetaConfig::default(),
+                None,
             );
             let ctx = StrategyContext {
                 params: params.clone(),
