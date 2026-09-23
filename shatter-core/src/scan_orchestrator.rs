@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -49,113 +49,7 @@ use crate::types::TypeInfo;
 // build/execution timeout wording used for `SkipCategory::Error` rows.
 const TOTAL_SCAN_TIMEOUT_REASON: &str = "not attempted: total scan budget exceeded";
 
-/// Shared budget surplus within a topological layer.
-///
-/// Functions that terminate early (worklist exhausted, coverage plateau, full
-/// branch coverage) donate their unused execution budget here. Functions still
-/// discovering new paths can claim from the surplus when their initial budget
-/// runs out.
-///
-/// Each layer gets a fresh `BudgetSurplus` — budget from layer N does not carry
-/// over to layer N+1.
-#[derive(Debug)]
-pub struct BudgetSurplus {
-    /// Remaining surplus executions available for claiming.
-    available: AtomicU32,
-}
-
-impl Default for BudgetSurplus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BudgetSurplus {
-    /// Create a new empty surplus (used at the start of each layer).
-    pub fn new() -> Self {
-        Self {
-            available: AtomicU32::new(0),
-        }
-    }
-
-    /// Donate unused budget to the shared surplus.
-    pub fn donate(&self, amount: u32) {
-        if amount > 0 {
-            self.available.fetch_add(amount, Ordering::Release);
-        }
-    }
-
-    /// Try to claim up to `requested` executions from the surplus.
-    ///
-    /// Returns the number actually claimed (may be less than requested if the
-    /// surplus is partially depleted, or 0 if less than `min_claim` is
-    /// available).
-    pub fn try_claim(&self, requested: u32, min_claim: u32) -> u32 {
-        let mut current = self.available.load(Ordering::Acquire);
-        loop {
-            if current < min_claim {
-                return 0;
-            }
-            let to_claim = current.min(requested);
-            match self.available.compare_exchange_weak(
-                current,
-                current - to_claim,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return to_claim,
-                Err(updated) => current = updated,
-            }
-        }
-    }
-
-    /// Current surplus available (for diagnostics/testing).
-    pub fn available(&self) -> u32 {
-        self.available.load(Ordering::Acquire)
-    }
-}
-
-/// Policy governing when a function may claim surplus budget.
-#[derive(Debug, Clone)]
-pub struct ClaimPolicy {
-    /// Minimum hit rate (new paths / last N executions) to qualify for claiming.
-    pub min_hit_rate: f64,
-    /// Window size for measuring recent hit rate.
-    pub window: u32,
-    /// Maximum fraction of total surplus a single function can claim at once.
-    pub max_claim_fraction: f64,
-}
-
-impl Default for ClaimPolicy {
-    fn default() -> Self {
-        Self {
-            min_hit_rate: 0.1,
-            window: 10,
-            max_claim_fraction: 0.5,
-        }
-    }
-}
-
-impl ClaimPolicy {
-    /// Determine whether a function should be allowed to claim surplus budget,
-    /// based on its recent exploration productivity.
-    ///
-    /// `recent_new_paths` is the number of new paths discovered in the last
-    /// `window` executions.
-    pub fn should_claim(&self, recent_new_paths: u32) -> bool {
-        if self.window == 0 {
-            return false;
-        }
-        let hit_rate = recent_new_paths as f64 / self.window as f64;
-        hit_rate >= self.min_hit_rate
-    }
-
-    /// Compute the maximum number of executions this function should claim,
-    /// given the current surplus.
-    pub fn max_claimable(&self, surplus_available: u32) -> u32 {
-        (surplus_available as f64 * self.max_claim_fraction).floor() as u32
-    }
-}
+pub use crate::budget_alloc::{BudgetSurplus, ClaimPolicy};
 
 /// Configuration for a scan run.
 #[derive(Debug, Clone)]

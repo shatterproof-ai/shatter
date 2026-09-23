@@ -12,6 +12,7 @@ pub mod bench;
 pub mod boundary_dict;
 pub mod boundary_search;
 pub mod branch_profile;
+pub mod budget_alloc;
 pub mod cache;
 pub mod call_graph;
 pub mod canonical_json;

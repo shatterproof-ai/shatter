@@ -61,7 +61,7 @@ captured from the pre-change `main` binary, not against a same-binary run.
 Pure functions, no I/O.
 
 ```rust
-pub struct BudgetFeatures { branches, opaque_branches, loops, deps, unmocked_deps, complex_params, param_nesting, lines }
+pub struct BudgetFeatures { branches, opaque_branches, loops, deps, module_imports, complex_params, param_nesting, lines }
 pub fn features(analysis: &FunctionAnalysis) -> BudgetFeatures
 pub fn score(f: &BudgetFeatures) -> f64                      // >= 1.0 always
 pub struct Demand { pub score: f64, pub floor: u32, pub ceiling: u32 }
@@ -71,16 +71,16 @@ pub fn allocate(demands: &[Demand], total: u32) -> Allocation
 
 `features` reads only `FunctionAnalysis`: `branches.len()`, branches whose
 `condition` is `None` (opaque to Z3), `loops.len()`, `dependencies.len()`,
-dependencies of kind `UnmockedImport`, `complex_params` = parameters whose
+dependencies of kind `ModuleImport` (`module_imports`; the static analogue of an unmocked import, which is a runtime-detection kind), `complex_params` = parameters whose
 `TypeInfo` is `Str`, `Array`, `Object`, `Union`, or `Nullable` of one of
 those, `param_nesting` = maximum container depth over all parameters (scalar
 0; `Array`/`Nullable` add 1 plus their element's depth; `Object` adds 1 plus
 the max over fields; `Union` adds 1 plus the max over variants), and
 `lines = end_line − start_line + 1`.
 
-`score` is `1 + w_b·branches + w_o·opaque + w_l·loops + w_d·deps + w_u·unmocked + w_p·complex_params + w_n·nesting + w_s·lines/20`
+`score` is `1 + w_b·branches + w_o·opaque + w_l·loops + w_d·deps + w_m·module_imports + w_p·complex_params + w_n·nesting + w_s·lines/20`
 with integer weights held in one `const` table (initial: b=1, o=2, l=3, d=1,
-u=2, p=2, n=1, s=1). The weights are the only tunable and the benchmark is
+m=2, p=2, n=1, s=1). The weights are the only tunable and the benchmark is
 what tunes them.
 
 `allocate` is water-filling with per-function bounds, so the total is
@@ -101,7 +101,7 @@ conserved by construction:
 Invariants (proptests): `Σ per_function == total` whenever
 `Σ floor ≤ total ≤ Σ ceiling`; every share within its own `[floor, ceiling]`;
 among functions that end **open** (strictly between their bounds), a higher
-score never receives less; with equal scores and equal bounds the split is
+score never receives a smaller increment above its floor (`share − floor`); with equal scores and equal bounds the split is
 uniform; deterministic; `allocate` never panics for any non-negative input
 including `total = 0`, empty input, and `ceiling < floor` (treated as
 `ceiling = floor`).
