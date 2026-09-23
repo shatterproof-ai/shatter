@@ -27,8 +27,13 @@ Do not change its scope or reparent it under the audit epic.
 ## Comment text
 
 > Audit 2026-09-22 (Shatter audit finding plugins-08): raising this from P3 to
-> P2 because of a cross-repo dependency. Bd cannot express a dependency across
-> repos, so priority did not carry over automatically.
+> P2 because of a cross-repo dependency. The two issues have no dependency
+> edge between them. Direct issue-ID dependencies do not work across separate
+> bd databases. `bd dep add` does support `external:<project>:<capability>`
+> references, but `external_projects` is not configured here
+> (`bd config get external_projects` returns "not set"). Even if such an edge
+> existed, it would not change this issue's priority. So the priority is
+> raised by hand.
 >
 > - Dependent: shatter **str-qwua7.53** "Wire bugshot for walkthrough output
 >   once bugshot supports CLI capture (bgs-3tq)". It is P2 and OPEN, created
@@ -37,7 +42,7 @@ Do not change its scope or reparent it under the audit epic.
 > - Until this issue lands, bento's agent-env doctor keeps reporting bugshot as
 >   "dormant: capture-command missing" in every shatter session, and
 >   str-qwua7.53 cannot start.
-> - Verified 2026-09-23: `bd show bgs-3tq` shows P3 OPEN;
+> - Verified 2026-09-23 (live bd): `bd show bgs-3tq` shows P3 OPEN;
 >   `bd show str-qwua7.53` (in /home/ketan/project/shatter) shows P2 OPEN.
 >
 > When this closes, comment on str-qwua7.53 in the shatter tracker so the

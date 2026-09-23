@@ -1,73 +1,81 @@
 ---
 slug: concolic-vs-default-benchmark
 kind: new
-title: "Add a controlled default-vs-concolic coverage benchmark (fixed seeds, fresh artifacts, examples corpus + one downstream project), published per release"
+title: "Add a controlled default-vs-concolic coverage benchmark (fixed seeds, isolated caches, equal execution budgets, examples corpus + one downstream subset)"
 priority: P1
 type: task
 labels: [audit-2026-09-22, concolic, benchmark, effectiveness]
 parent_epic: "Epic: Audit 2026-09-22 findings"
-blocked_by: []
+blocked_by: [explore-stop-reason-accounting, explore-budget-semantics, concolic-fuzz-rng-unseeded]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Add a controlled default-vs-concolic coverage benchmark (fixed seeds, fresh artifacts, examples corpus + one downstream project), published per release
+# Add a controlled default-vs-concolic coverage benchmark (fixed seeds, isolated caches, equal execution budgets, examples corpus + one downstream subset)
 
 ## Problem
 
-README.md:1-3, SPEC.md, CLAUDE.md:3 and the CLI `--help` about text (`shatter-cli/src/args.rs:117`) describe Shatter as "automatic exploratory testing via concolic execution". The default explorer, however, is the adaptive random/hybrid scheduler (`explorer.rs`). The Z3-driven concolic orchestrator (`orchestrator.rs`) runs only with `--concolic` (SPEC.md:148, 713-715). Nobody has measured whether `--concolic` finds more than the default:
+README.md:1-3, SPEC.md, CLAUDE.md:3 and the CLI `--help` about text (`shatter-cli/src/args.rs:117`) describe Shatter as "automatic exploratory testing via concolic execution". The default explorer, however, is the adaptive random/hybrid scheduler (`explorer.rs`). The Z3-driven concolic orchestrator (`orchestrator.rs`) runs only with `--concolic` (SPEC.md:148, 713-715). Nobody has measured under controlled conditions whether `--concolic` finds more than the default:
 
-- The audit's one fresh concolic run (21 hard TS functions) scored 164/454 lines (36.1%). The audit report compared this with a default number of 185/454 (40.7%), but the verifier found no default-subset artifact for those 21 functions, so **the default baseline is unverified and must be re-measured**.
-- Kapow agent memory (2026-07-02) records "--concolic ... ZERO coverage delta vs random".
-- str-ior1 ("re-baseline Zolem with --concolic") was closed with the reason "Closed" and no data.
+- The audit's one fresh concolic run (21 hard TS functions) scored 164/454 lines (36.1%). The audit compared it with a default figure of 185/454 (40.7%), but no default-subset artifact for those 21 functions exists, so **the default baseline is unverified**. The run's per-function table is reproduced in concolic-early-termination. Its raw files are untracked (local to the audit worktree), and its command and examples SHA were not recorded.
+- The maintainer's local agent memory for kapow (`~/.claude/projects/-home-ketan-project-shatter/memory/project_kapow_shatter_advise_log.md`, entry dated 2026-07-02; not in any repo) records "--concolic ... ZERO coverage delta vs random". That run was not controlled either.
+- str-ior1 ("re-baseline Zolem with --concolic", P1) was closed with the reason "Closed" and no data.
 
-Maintainer decision D3 (2026-09-23): **measure first**. This issue delivers the measurement. A separate decision issue (concolic-positioning-decision) re-decides the README/SPEC positioning from these numbers. Do not change positioning docs here.
+Maintainer decision D3 (2026-09-23): **measure first**. This issue builds the benchmark harness and produces a first, pre-fix measurement. The post-fix measurement that the positioning decision uses is concolic-benchmark-postfix-run. The decision itself is concolic-positioning-decision. Do not change positioning docs here.
+
+## Why this is blocked
+
+Today no single entry point can run both arms under equal, reproducible conditions:
+
+- **Stop reason and solver counts are constant in explore artifacts.** `ExploreResultAccumulator` drops them (explore-stop-reason-accounting).
+- **Budgets are not equal.** `scan --concolic` gives the orchestrator `max_executions = 5 × --max-iterations` (`concolic_scan_max_executions`, `shatter-core/src/scan_orchestrator.rs:3144-3150`). `explore --concolic` uses 1× (`shatter-cli/src/commands/explore.rs:5145`), and `observe` uses 5×. No flag sets the execution budget directly (explore-budget-semantics).
+- **Seeds do not control the concolic arm.** `--seed` exists only on `scan` (`args.rs:970-979`). Even there, the orchestrator's plateau fuzz phase draws from `StdRng::from_os_rng()` (`shatter-core/src/orchestrator.rs:3060`), ignoring the configured seed (concolic-fuzz-rng-unseeded).
+- **Caches and resume leak across arms.** `scan` has no `--clean`. Its cache controls are `--no-cache` (behavior-map, fingerprint analysis and stored-inputs caches; `args.rs:1016`) and `--cache-dir`. Explore silently resumes prior results in the same artifact directory regardless of explorer mode (explore-resume-options-key).
 
 ## Evidence
 
-- Concolic run: `audits/2026-09-22/goals-runs/ts-sub-concolic.{err,md}` (fresh directory; 9 files, 21 functions, `-w 4`). Artifacts are in `goals-runs/ts-concolic-fresh/shatter-artifacts/explore-results/`.
-- The claimed default comparison (`areas/goals.md:90-99`): classifyHttpResponse 89% -> 59%, matchRoute 12% -> 4%, authorizeRequest 14% -> 21%. No matching default artifact exists under `goals-runs/` (verifier note on goals-08).
-- Line totals from the markdown reports are themselves suspect: the random explorer under-counts paths from the float-probe phase (float-probe-paths-uncounted, bucket shatter-engine-correctness). Use branch outcomes as the primary metric and lines as secondary.
-- Resume contamination: a later run in the same artifact dir silently re-emits prior results regardless of explorer mode (`areas/artifacts.md:105-113`; explore-resume-options-key). One such replay printed `[resumed] classifyNumber: 3 branches, 7.6s (prior run)` under a `--concolic` step.
-- Seeds: `--seed` exists only on `scan` (`shatter-cli/src/args.rs:970-979`), not on `explore` (seed-for-explore-and-run). The concolic config built by `explore` hard-codes `seed: None` (`shatter-cli/src/commands/explore.rs:5150`).
-- Budgets differ by entry point: `explore --concolic` sets `max_executions = max_iterations` (`explore.rs:5145`), while scan uses 5x (`scan_orchestrator.rs:3144-3150`). An A/B that mixes entry points is not controlled (engine-path-identity-budget-config).
 - Reusable pieces:
   - `benchmarks/frontier-ranking/manifest.json` already defines seeds, regimes and fixtures with strata.
-  - `task bench-frontier` / `bench-frontier-report` (Taskfile.yml:845-876) and `scripts/bench_frontier_report.py` already run and report such benchmarks.
-  - Unlike those, this benchmark calls `orchestrator::explore_with_oracle` directly (`shatter-core/tests/bench_frontier_ranking.rs:381`), so it bypasses the CLI wiring that differs between modes.
+  - `task bench-frontier` / `bench-frontier-report` (Taskfile.yml:845-876) and `scripts/bench_frontier_report.py` run and report such benchmarks.
+  - The existing frontier bench calls `orchestrator::explore_with_oracle` directly (`shatter-core/tests/bench_frontier_ranking.rs:381`), so it bypasses the CLI wiring that differs between modes. This benchmark must not.
 - Examples corpus: the external checkout resolved by `scripts/examples_checkout.py` (unpinned `origin/main`; see pin-examples-repo).
+- Line totals are suspect for the random explorer, which under-counts float-probe paths (float-probe-paths-uncounted). Branch outcomes are the primary metric.
 
 ## Acceptance criteria
 
-- [ ] A `task bench-explorers` target (name is the implementer's choice) runs the **same** function set under the default explorer and under `--concolic`. Requirements:
-  - it goes through the user-facing CLI entry point, not `orchestrator::` directly;
-  - it uses the same entry point for both arms and a documented, equal execution budget;
-  - it uses fixed seeds, at least 3 per arm;
-  - each arm × seed gets a fresh artifact directory (plus `--clean`), and the run fails if any stderr contains `[resumed]`.
-- [ ] Corpus: all TS/Go/Rust examples-corpus functions that have `EXPECTED BRANCHES` comments, run at a pinned examples SHA that is recorded in the output, plus one named subset of one downstream project (kapow, zolem or pickpackit). The subset is listed in a manifest file.
-- [ ] Per function and in aggregate, the output reports:
-  - branch outcomes covered and known-answer expected outcomes hit;
-  - lines covered, labelled secondary;
-  - executions used and stop reason;
+- [ ] A task target (for example `task bench-explorers`) runs the **same** function manifest under the default explorer and under `--concolic`. It must:
+  - go through one user-facing CLI entry point for both arms (`scan` or `explore`), never `orchestrator::` or `explorer::` directly;
+  - pass an explicit execution budget that is **equal** for both arms, using the flag that explore-budget-semantics provides. The harness reads each arm's effective budget back from the run output and fails if the two differ;
+  - use at least 3 fixed seeds per arm, passed with `--seed`;
+  - give each arm × seed a fresh artifact directory and an empty `--cache-dir`, and pass `--no-cache` when using `scan`. The harness fails if any stderr contains `[resumed]` or `Found prior explore summary`.
+- [ ] Reproducibility check in the harness: one arm × seed is run twice. The two per-function branch-outcome sets must be identical. If they are not, the harness fails and prints the first differing function.
+- [ ] Corpus manifest (checked in):
+  - every TS/Go/Rust examples-corpus function with `EXPECTED BRANCHES` comments, at a pinned examples SHA;
+  - the audit's 21-function TS subset (listed in concolic-early-termination), as a named stratum;
+  - one named subset of one downstream project (kapow, zolem or pickpackit), pinned by commit. Choose the project with the most functions that `shatter scan` completes without unsupported-target errors, and record that count in the manifest.
+- [ ] Output, per function and in aggregate:
+  - branch outcomes covered, and known-answer expected outcomes hit (primary);
+  - lines covered (labelled secondary);
+  - executions used, `stop_reason`, and `solver_guided_inputs`;
   - wall time;
-  - mean and spread across seeds.
-- [ ] The default-explorer baseline for the audit's 21-function subset (see `goals-runs/ts-sub-concolic.md`) is re-measured, and the 40.7% figure is confirmed or replaced in this issue's close note.
-- [ ] Results are committed under `benchmarks/baselines/explorers/<version>.json` (or similar) and summarized in the release notes. The release checklist (RELEASE docs or release workflow) gains a step to run the benchmark per release.
-- [ ] Proof at close: the command line and full output of one forced, uncached run on a clean checkout, the committed results file, and a link to the release-notes entry for the first release that carries the numbers.
+  - mean and min/max across seeds.
+- [ ] Every result file records its provenance: the shatter commit, the examples SHA, the downstream commit, the full command line for each arm, the effective budget, the seeds, and the host.
+- [ ] A first pre-fix result is committed under `benchmarks/baselines/explorers/` and includes the default-explorer baseline for the 21-function subset. The close note states whether the audit's 40.7% default figure is confirmed or replaced.
+- [ ] The release checklist (RELEASE docs or the release workflow) gains a step to run the benchmark and attach the results to the release notes.
+- [ ] Proof at close: the command line and full output of one forced, uncached run from a clean checkout, the reproducibility-check output, and the committed results file.
 
 ## Suggested approach
 
-1. Reuse the frontier-ranking manifest format and `bench_frontier_report.py` style. Drive `shatter scan --seed N [--concolic]` (the only entry point with `--seed` today), or `explore` once seed-for-explore-and-run lands.
-2. Pin budgets explicitly (`--max-iterations`, plus the effective `max_executions`) and record them in the output. The budget mismatch is itself a finding for engine-path-identity-budget-config.
-3. Where explorers differ on the same function, keep per-function rows, so that regressions such as classifyHttpResponse 13/13 -> 10/13 stay visible.
-4. The benchmark can share a harness with effectiveness-benchmark-holdout, but it measures coverage per explorer, not bug-finding.
+1. Reuse the frontier-ranking manifest format and the `bench_frontier_report.py` style.
+2. Keep per-function rows so that regressions such as classifyHttpResponse 13/13 -> 10/13 stay visible.
+3. The benchmark may share a harness with effectiveness-benchmark-holdout, but it measures coverage per explorer, not bug-finding.
 
 ## Out of scope
 
-- Fixing concolic early termination (concolic-early-termination).
+- Fixing concolic early termination (concolic-early-termination, concolic-early-termination-fix).
+- The post-fix measurement (concolic-benchmark-postfix-run).
 - Changing README/SPEC/CLAUDE.md positioning (concolic-positioning-decision, D3).
-- Fixing the budget/config divergence itself (engine-path-identity-budget-config).
-- Resume keying (explore-resume-options-key).
+- Fixing the blockers themselves: budget semantics, fuzz RNG seeding, accumulator fields, resume keying.
 
 ## Metadata
 
@@ -75,7 +83,8 @@ Maintainer decision D3 (2026-09-23): **measure first**. This issue delivers the 
 - Type: task
 - Labels: audit-2026-09-22, concolic, benchmark, effectiveness
 - Parent epic: Epic: Audit 2026-09-22 findings
-- Blocked by: none (fresh dirs and `scan --seed` avoid hard dependencies)
-- Related: concolic-early-termination, concolic-positioning-decision (blocked by this issue), effectiveness-benchmark-holdout, explore-resume-options-key, seed-for-explore-and-run, engine-path-identity-budget-config, pin-examples-repo, float-probe-paths-uncounted; str-ior1 (closed without data), str-2fui, str-qwua7.6
+- Blocked by: explore-stop-reason-accounting, explore-budget-semantics, concolic-fuzz-rng-unseeded
+- Blocks: concolic-benchmark-postfix-run
+- Related: concolic-early-termination, concolic-positioning-decision, effectiveness-benchmark-holdout, explore-resume-options-key, seed-for-explore-and-run (needed if the harness uses `explore`), pin-examples-repo, float-probe-paths-uncounted; str-ior1 (closed without data), str-2fui, str-qwua7.6
 - Source findings: goals-08 (draft shatter-code/80)
 - Decision refs: D3

@@ -35,13 +35,13 @@ Target: `str-qwua7.52`. Post the text below as a comment with `bd comments add s
 > 10. **Agent-driven usage** through the shatter-agents plugin (run-shatter, interpret-shatter-spec).
 > 11. **HTML report review.**
 >
-> **Tooling blocker to know about.** storystore's inventory currently finds **0 `cli-command` surfaces** in shatter. Its only CLI extractor matches commander.js `.command('name')`. On this repo it detects go, javascript, rust and typescript but extracts only javascript and typescript, so all of Shatter's clap subcommands in `shatter-cli/src/args.rs` are invisible. `stories-coverage`, whose headline surface kind is cli-command, will therefore report nothing uncovered until the storystore issue **clap-cobra-extractors** (storystore epic "Audit 2026-09-22 findings (storystore)") lands. Seeding stories does not need to wait for it. Running the coverage gate (str-u394l.3) does, or it needs a manual command list.
+> **Tooling limitation (not a blocker for this issue or for str-u394l.3's basic gate).** storystore's inventory currently finds **0 `cli-command` surfaces** in shatter. Its only CLI extractor matches commander.js `.command('name')`. On this repo it detects go, javascript, rust and typescript but extracts only javascript and typescript, so Shatter's clap subcommands in `shatter-cli/src/args.rs` are invisible to it. The consequence is narrow: automatic *CLI-surface completeness* reporting from `stories-coverage` will show nothing uncovered until the storystore issue **clap-cobra-extractors** (storystore epic "Audit 2026-09-22 findings (storystore)") lands. Everything else can proceed now: `stories-init`, seeding, and str-u394l.3's recorded acceptance (directory and INDEX exist, the index is fresh, active stories carry evidence fields, patrol wiring). drift-patrol's `check_docs_stories` (`scripts/drift-patrol.py:453`ff.) already checks the index without any CLI extraction. Until the extractor lands, list the clap subcommands manually in the stories README if CLI completeness is wanted.
 >
 > Also link `docs/stories/INDEX.md` from `docs/INDEX.md` when it exists, as this issue already requires.
 
 ## Why a note and not a new issue
 
-str-qwua7.52 already owns stories-init, seeding, the INDEX link and landing str-u394l.3. The audit adds a concrete journey list and one external blocker.
+str-qwua7.52 already owns stories-init, seeding, the INDEX link and landing str-u394l.3. The audit adds a concrete journey list and records one external tooling limitation that affects only automatic CLI-surface completeness.
 
 ## Source
 

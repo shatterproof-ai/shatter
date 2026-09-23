@@ -22,4 +22,4 @@ Audit 2026-09-22 (finding plugins-02): this issue was closed when the compose-sh
 - `catalog/skills/compose-shatter-recipe/SKILL.md:145` documents `.shatter/recipes/<target-id>/<name>.json`, lines 221-239 document a `stubs:` section in `.shatter/config.yaml`, and line 342 documents resolver errors such as `unsupported recipe schemaVersion <n>`. The shatter engine has no recipe loader, no `stubs` config key and no such errors.
 - `catalog/skills/run-shatter/SKILL.md:69-89` says run-shatter discovers recipes and runs each target once per recipe. `run_targets.py` contains no occurrence of "recipe".
 
-Follow-up: **<recipes-marked-design-only id>** marks the recipe material as a design proposal (or withdraws it), removes the per-recipe-run claim from run-shatter, and links a shatter-repo issue for the engine side. sa-mty (the design) stays closed.
+Follow-up: **<recipes-marked-design-only id>** withdraws compose-shatter-recipe from the published payload (the catalog copy stays as a labelled design proposal), deletes the per-recipe-run section from run-shatter, and links a shatter-repo issue for the engine side. sa-mty (the design) stays closed.

@@ -9,6 +9,8 @@
   - stories and drift gates
 - **Repo / tracker:** shatter, via `bd` in /home/ketan/project/shatter (prefix `str`).
 - **Parent epic:** "Epic: Audit 2026-09-22 findings".
+- **Revision:** revised after the Codex cross-check (`issues/crosscheck/shatter-docs.codex.md`); see `REVISION.md` in this directory.
+- **Evidence paths:** `audits/2026-09-22/...` files exist on branch `audit-2026-09-22` until the audit directory lands on `main`.
 - **Status:** drafts only. Nothing has been filed. Under D6 the maintainer runs one filer script after reconciliation and the Codex cross-check.
 - **Verified against:** the `audit-2026-09-22` worktree at 56c86168 (2026-09-23). Line numbers were re-checked there.
 
@@ -45,11 +47,12 @@ Decisions that touch this bucket:
 | 03 | 03-spec-s5-contract-table-and-samples.md | new | - | P2 | SPEC §5: add an artifact producer/consumer table and replace the obsolete §5.1/§5.3/§5.6 samples with real output | artifact-json-schemas, spec-json-shapes-compare |
 | 04 | 04-spec-s6-layout-and-checkpoint.md | new | - | P2 | SPEC §6.1/§6.2 describe stale progress-event fields, scan-id derivation and artifact layout | mixed-language-scan-deletes-artifacts |
 | 05 | 05-crate-claude-md-stale-facts.md | new | - | P2 | Correct stale and false facts in the crate CLAUDE.md files (core, ts, go, rust) and the parity-matrix notes they cite | - |
-| 06 | 06-docs-smoke-coverage.md | new | - | P3 | Extend docs-smoke to resource-parameters, distribution, execution-adapters, PROJECT-LAYOUT and PROTOCOL.md | - |
+| 06 | 06-docs-smoke-coverage.md | new | - | P3 | Extend docs-smoke to resource-parameters, distribution, execution-adapters, CI-INTEGRATION, PROJECT-LAYOUT and PROTOCOL.md | - |
 | 07 | 07-test-tier-docs-overstate-coverage.md | new | - | P3 | CLAUDE.md test-tier table overstates what each tier covers; check-fast's description and the CI snapshot claim are stale | - |
 | 08 | 08-qwua7-52-story-seed-list.md | note-to-existing | str-qwua7.52 | P2 | Proposed journey-level seed stories; storystore finds no clap CLI surfaces | - |
 | 09 | 09-wurp-changelog-row-and-reverse-check.md | note-to-existing | str-wurp | P2 | Fold the flag-level, reverse and changelog-row checks into str-wurp's acceptance | - |
 | 10 | 10-u394l-3-pending-turns-fail.md | note-to-existing | str-u394l.3 | P2 | A PENDING drift-patrol slot older than 60 days should turn FAIL | - |
+| 11 | 11-qwua7-25-refresh-note.md | note-to-existing | str-qwua7.25 | P2 | Refreshed line-number and .js evidence for the frontend CLAUDE.md files | - |
 
 Blockers in other buckets:
 - spec-json-shapes-compare and mixed-language-scan-deletes-artifacts are code issues in other shatter buckets.
@@ -58,6 +61,7 @@ Blockers in other buckets:
 Reconciliation notes:
 - spec-s6-layout-and-checkpoint is the SPEC half only. The checkpoint-path code fix belongs to mixed-language-scan-deletes-artifacts.
 - crate-claude-md-stale-facts leaves the preflight_failed claims and dangling divergence IDs to str-qwua7.34. One claim from the original draft was dropped because it did not re-verify: PARITY.md's "30 s" Rust timeout.
+- crate-claude-md-stale-facts no longer carries items owned by str-qwua7.25 (frontend line numbers, the two `.js` paths) or str-qwua7.24 (TS `ite` claim); the refreshed evidence for .25 is note 11 (qwua7-25-refresh-note). See REVISION.md.
 - test-tier-docs-overstate-coverage leaves out the e2e-runs-twice item, which belongs to collapse-test-tiers.
 - str-wurp already holds 2026-09-04 notes proposing similar checks. The new note asks for them to be promoted into acceptance, and adds the current drift list.
 
@@ -104,7 +108,8 @@ Re-verified against `audit-2026-09-22` at 56c86168 (2026-09-23):
 ## Acceptance criteria
 
 - [ ] §2.8 documents the `.gitignore` block that `shatter init` manages, and implicit init. It links the str-qwua7.58 decision.
-- [ ] §2.9 `shatter doctor` documents `-d/--directory`, the gitignore-coverage check, the project-configuration report (if doctor prints one) and the exit codes, and matches `shatter doctor --help` at the time of the change.
+- [ ] §2.9 `shatter doctor` documents `-d/--directory`, the gitignore-coverage check and the exit codes, and matches `shatter doctor --help` at the time of the change.
+- [ ] The str-mktn §8 row claims doctor reports which config files are present and their precedence; `doctor --help` does not mention this. Run `shatter doctor` in a project with both `shatter.config.json` and `.shatter/config.yaml` present, paste the output into the close note, and then either document that report in §2.9 (if doctor prints it) or correct the str-mktn row's claim (if it does not). Leaving the row unchanged without that pasted output does not satisfy this item.
 - [ ] §3.6 documents `shatter.config.json`: what it holds, and its precedence relative to `.shatter/config.yaml` and `--set`.
 - [ ] §8 has rows for str-qwua7.8, str-qwua7.9.2, str-qwua7.15 and str-nfg4y. The `Last updated` header equals the date of the newest row.
 - [ ] Every existing §8 row's "Section" column has been spot-checked against `git show <commit> -- SPEC.md` for the commit that row describes. False claims are corrected, and the PR description lists the rows that were checked.
@@ -134,7 +139,7 @@ The broader mechanical gate (every clap flag documented in SPEC, every SPEC flag
 
 ## Source
 
-Audit 2026-09-22, finding docs-05 (confirmed, P2). Evidence is in `audits/2026-09-22/areas/docs.md`.
+Audit 2026-09-22, finding docs-05 (confirmed, P2). Evidence is in `audits/2026-09-22/areas/docs.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).
 
 ---
 
@@ -190,11 +195,13 @@ Re-verified at 56c86168:
   - scan summary, manifest and run-status
   - the scan checkpoint
   - the explore per-function artifact
+  - the staged-pipeline JSON outputs: Stage 1 observation JSON (`observe` / `explore` observation output), Stage 2 analysis JSON (`analyze --output`), and the `solve` output
   - BehaviorMap, if it is still a user-facing artifact after retire-snapshot-diff; otherwise record why it is omitted
+- [ ] `protocol/schemas/artifacts/README.md` holds an inventory with one line per JSON artifact that spec-s5-contract-table-and-samples will list: either its schema file, or "no schema" with a reason (for example, no stable serde type yet). Non-JSON outputs (Markdown, HTML, text, YAML specs) are listed as "not applicable". spec-s5-contract-table-and-samples uses this inventory as its schema column, so the two issues cannot disagree.
 - [ ] Each schema has `$id`, `title` and a `version` or `const` field that matches the artifact's own version field where one exists (for example `FileSpecBundle.version`).
 - [ ] A `--check` mode regenerates into a temporary directory and fails on any difference. It is wired into `task parity` or `task check-static`, and its inputs are listed in that task's `sources:` so checksum caching cannot skip it after a type change.
   - Proof at close: a forced run (`--check` invoked directly, output pasted into the close note) that fails after a deliberate one-field change to `ScanSummary` and passes once the schema is regenerated.
-- [ ] A test validates real producer output against the schemas. It runs `explore --spec-out` and a small `scan` on `examples/` fixtures, then validates each written artifact. Proof: a validator that fails on a hand-edited, non-conforming artifact.
+- [ ] A test validates real producer output against the schemas. It runs `explore --spec-out`, a small `scan`, and the staged commands on `examples/` fixtures, then validates each written artifact that has a schema. Because it needs built frontends, it runs in `task e2e` (not `check-static`); name the task step in the close note and list the schema directory and the test file in that task's `sources:`. Proof at close: the validator fails on a hand-edited, non-conforming artifact (paste the failing run) and passes on real output (paste the direct, uncached run).
 - [ ] `protocol/GOVERNANCE.md` (or a short `protocol/schemas/artifacts/README.md`) states that output-artifact shape changes require regenerating the schemas and updating the relevant SPEC §5 row.
 
 ## Suggested approach
@@ -219,7 +226,7 @@ Re-verified at 56c86168:
 
 ## Source
 
-Audit 2026-09-22, finding artifacts-10 (confirmed, P2). The schema half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/artifacts.md`.
+Audit 2026-09-22, finding artifacts-10 (confirmed, P2). The schema half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/artifacts.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).
 
 ---
 
@@ -274,7 +281,12 @@ Re-verified at 56c86168:
   - the checkpoint
   - the explore per-function artifacts
   - behavior maps
-- [ ] Each table row gives the producing command and flag, the default path under `shatter-artifacts/`, the consuming commands, and the schema path under `protocol/schemas/artifacts/` (from artifact-json-schemas).
+- [ ] Each table row gives:
+  - the producing command and flag;
+  - the output location: the default path under `shatter-artifacts/` where one exists, otherwise "stdout" or "caller-selected path (`<flag>`)" (for example the staged commands' `--output`);
+  - the consuming commands (or "none");
+  - the schema: the path under `protocol/schemas/artifacts/`, or "no schema: <reason>" / "not applicable (Markdown/HTML/text/YAML)", copied from the inventory in `protocol/schemas/artifacts/README.md` that artifact-json-schemas produces. No row may name a schema that does not exist in that directory, and every JSON row must have either a schema path or a stated reason.
+- [ ] A docs-smoke (or unit-test) check parses the §5 table and fails if a named schema file is missing or a JSON row has an empty schema cell. Proof at close: the check fails when one schema path in the table is misspelled, and passes on the committed table (direct run, output pasted).
 - [ ] Regression checking is described as `shatter spec-diff` over `--spec-out` bundles (D2 decision). §5 does not describe a snapshot artifact or `shatter diff`. If retire-snapshot-diff has not yet removed §5.5 when this lands, remove or replace §5.5 here and coordinate the §8 row.
 - [ ] §5.1, §5.3 and §5.6 samples are regenerated from real output on an `examples/` fixture. They sit in tagged fences (for example ```` ```json shatter-artifact=file-spec-bundle ````) that docs-smoke validates. At minimum, JSON samples are validated against their schema. Proof at close: docs-smoke fails when one field is deleted from the §5.3 sample, and passes on the committed text. Run `scripts/docs-smoke.py` directly and paste the output.
 - [ ] §5.3 documents the FileSpecBundle, and the input shapes `compare`, `spec-diff` and `stale` accept, matching what spec-json-shapes-compare implements.
@@ -301,7 +313,7 @@ Wait for the schemas and the shared spec reader to land. Generate every sample b
 
 ## Source
 
-Audit 2026-09-22, findings docs-03 (docs half), docs-08 and artifacts-10 (all confirmed, P2). The SPEC half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/docs.md` and `areas/artifacts.md`.
+Audit 2026-09-22, findings docs-03 (docs half), docs-08 and artifacts-10 (all confirmed, P2). The SPEC half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/docs.md` and `areas/artifacts.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).
 
 ---
 
@@ -339,7 +351,7 @@ The code half is owned by mixed-language-scan-deletes-artifacts (P1): the checkp
 Re-verified at 56c86168:
 
 - **Scan-id derivation.** `SPEC.md:960-970` (§6.2) shows `shatter-artifacts/scan-results/<scan-id-prefix>/checkpoint.json`. It says the prefix is "the first 16 hex characters of a SHA-256 hash computed from the sorted list of source file paths". The code does not work that way:
-  - `compute_scan_id_for_targets` in `shatter-core/src/scan_orchestrator.rs` hashes `scan_id_v2:` plus (qualified_id, source_file) pairs.
+  - `compute_scan_id_for_targets` in `shatter-core/src/checkpoint.rs:132` hashes `scan_id_v2:` plus (qualified_id, source_file) pairs.
   - `scan_root` (`scan_orchestrator.rs:557`ff.) resolves `resolve_artifact_root` (`shatter-core/src/harness_storage.rs:77`, which honours `SHATTER_ARTIFACT_DIR`) plus `scan-results/<full 64-hex id>/`.
   - `manifest.json`, `run-status.{json,tsv}`, `summary.json` and `functions/` are written under that `scan_root`.
 - **Checkpoint location.** `ScanCheckpoint::default_path` (`shatter-core/src/checkpoint.rs:197`ff., called from `shatter-cli/src/commands/scan.rs:1203`) hard-codes `project_root/shatter-artifacts/scan-results/<first 16 hex>/checkpoint.json`. That is a second directory for the same scan. Observed directory: `scan-results/4dfd2b95…36f8/`.
@@ -370,7 +382,7 @@ After the blocker lands, run a two-language scan with `--progress` and `SHATTER_
 
 ## Source
 
-Audit 2026-09-22, finding docs-07 (confirmed, P2; docs half). Draft `shatter-docs-ui/06`. Evidence is in `audits/2026-09-22/areas/docs.md`.
+Audit 2026-09-22, finding docs-07 (confirmed, P2; docs half). Draft `shatter-docs-ui/06`. Evidence is in `audits/2026-09-22/areas/docs.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).
 
 ---
 
@@ -393,7 +405,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 ## Problem
 
-Claude Code injects the crate CLAUDE.md files into any agent that reads a file in that subtree, and the root CLAUDE.md tells dispatchers to rely on this. Each of the four files contains claims that are now false. Those claims send agents to the wrong engine, to dead code, or to a contract the code does not follow. The fixes are cheap and independent of the larger restructuring issues (str-qwua7.24 generated tables, str-qwua7.25 slimming), which have had no commits since 2026-09-04.
+Claude Code injects the crate CLAUDE.md files into any agent that reads a file in that subtree, and the root CLAUDE.md tells dispatchers to rely on this. Each of the four files contains claims that are now false. Those claims send agents to the wrong engine, to dead code, or to a contract the code does not follow. The items below are the ones not already owned by the larger restructuring issues (str-qwua7.24 generated tables, str-qwua7.25 slimming), which have had no commits since 2026-09-04. Items those issues already own were removed from this draft; str-qwua7.25 gets a refreshed-evidence note instead (qwua7-25-refresh-note).
 
 ## Evidence
 
@@ -405,24 +417,22 @@ All lines were re-verified at 56c86168. Where this issue replaces a line-number 
 - The Key Modules list has no entry for `solver.rs`, `strategy.rs`, `shrink.rs`, `pipeline_orchestrator.rs` or `planner_consumer.rs`.
 
 ### shatter-ts/CLAUDE.md
-- `:16-17` cite "Lines ~278-352" (`buildSymExprWithFlow`) and "Lines ~860-951" (`buildSymExpr`). The real locations are about 874 and 1862.
-- `:44` says "TS is the only frontend that produces `ite` … Go and Rust … do not produce it". `protocol/parity-matrix.yaml:1095`ff. (`ite-symexpr-production-partial`) says Go produces it too.
 - `:375` says "str-jeen.40 will refine bucketing". str-jeen.40 is closed.
-- `:379-380` cite `src/browser-globals-recognizer.js` and `src/handlers.js`. The files are `.ts`. This absorbs audit finding docs-24, so str-qwua7.25 needs no separate note.
 - The Key Files list names 2 of about 30 `src/` modules.
+- **Not in this issue (already owned elsewhere):** the stale line ranges at `:16-17` and the `.js` paths at `:379-380` are str-qwua7.25's acceptance ("Line-number citations replaced by symbol names; the two .js references corrected"); the refreshed evidence goes to that issue as note `qwua7-25-refresh-note`. The "TS is the only frontend that produces `ite`" claim at `:44` is str-qwua7.24's acceptance ("The five stale claims above no longer appear").
 
 ### shatter-go/CLAUDE.md (54,640 bytes)
 - `:57-58` name `instrument/flow.go` and `instrument/flowwalk.go` as the `ite` mechanism. `deadcode ./...` reports both as unreachable. The live path is `walkBodyForFlow` → `buildSymExprWithFlow` (see matrix `ite-symexpr-production-partial`).
 - `:273` says `planner.ResolveMockSpecs` emits MockSpecs. `deadcode` reports it as unreachable.
 - `str-8v66` and `str-ruw0` are cited in CLAUDE.md and in `shatter-go/planner/plan.go:100,128`. `bd show` returns "no issue found" for both.
 - `:318` mentions `SHATTER_HARNESS_CACHE`, but no Go source reads that variable.
-- `:138` reads "TS and Rust currently declare `outcome` only". This is stale (protocol-parity-13). For example, TS's handshake `SUPPORTED_CAPABILITIES` (`shatter-ts/src/handlers.ts:56`ff.) declares analyze, execute, instrument, prepare, setup, teardown, generate and many `complex_type:*` entries. Restate which *Go-only* capabilities TS and Rust decline, and point to the matrix.
+- `:138` reads "TS and Rust currently declare `outcome` only". This is stale (protocol-parity-13). str-qwua7.24 fixes the same claim in the TS and Rust files only; this Go-file sentence is not in its list. For example, TS's handshake `SUPPORTED_CAPABILITIES` (`shatter-ts/src/handlers.ts:56`ff.) declares analyze, execute, instrument, prepare, setup, teardown, generate and many `complex_type:*` entries. Restate which *Go-only* capabilities TS and Rust decline, and point to the matrix.
 - The outcome status list omits `preflight_failed`. `:240` mentions `skipped_by_policy` separately, so check whether the list itself includes it.
 
 ### shatter-rust/CLAUDE.md, plus the matrix entries it points to
 - `:109` and `protocol/parity-matrix.yaml:887` (`adapter_capabilities.async_runtime`) say `tokio::runtime::Runtime::new().block_on(...)`. The generated harness uses `tokio::runtime::Builder::new_current_thread()` at `shatter-rust/src/executor.rs:2547, 2845, 4942, 6801`, and does so deliberately.
 - `:79` and `:93` cite a "single-file constraint". `shatter-rust/src/analyzer.rs:834-952` resolves same-crate cross-file types, and CLAUDE.md `:86` itself describes a cross-file enum E2E.
-- `:234-235` cite `src/handler.rs:552, 620` and "line 803". `last_file` is actually set at `handler.rs:693` and `:767`, and read at `:842` and `:970`.
+- (`:234-235` stale `handler.rs` line numbers are str-qwua7.25's line-number item; see note `qwua7-25-refresh-note`.)
 - `protocol/parity-matrix.yaml:496` marks `rust: captured` for `console_output`. The same entry's notes (`:491-492`) and `protocol/PARITY.md:120` say the crate-bridge harness does not capture it, and `PARITY.md:109` still shows ✅. Mark it partial, with the crate-bridge exception.
 - The matrix's axum adapter note (around `:897-907`) does not list the `Multipart` extractor, which the adapter handles.
 
@@ -432,10 +442,10 @@ The claim that "PARITY.md:96 says 30 s but the Rust timeout fallback is 120 s" d
 ## Acceptance criteria
 
 - [ ] Every item under Evidence is corrected, or deleted in favour of a pointer to `protocol/parity-matrix.yaml`/`PARITY.md`. The close note lists each item with its disposition.
-- [ ] No crate CLAUDE.md cites a source line number (`:NNN`, "Lines ~NNN", "line NNN"). Symbol names are used instead.
+- [ ] Every line this issue edits refers to code by symbol name, not source line number. Removing the remaining line-number citations across the three frontend files is str-qwua7.25; do not expand into it here.
 - [ ] `task parity` passes after the matrix edits (console_output partial, async_runtime flavour, axum Multipart). Run the validator directly and paste the output, because `task` results can be served from the checksum cache.
 - [ ] A check fails when a crate CLAUDE.md cites a `src/…` path that does not exist, or a `str-*` ID that the tracker cannot resolve. Its home is the agent-rules drift lint, str-u394l.4, or a `task docs` step if .4 is not ready.
-  - Proof at close: a unit test that fails on a fixture CLAUDE.md citing `src/handlers.js` and `str-8v66`, and passes on the fixed files.
+  - Proof at close: a unit test that fails on a fixture CLAUDE.md citing a nonexistent `src/…` path and `str-8v66`, and passes on the committed crate CLAUDE.md files (if str-qwua7.25 has not yet fixed the `.js` paths, the real files will still fail; land after .25's TS PR or allowlist those two paths with a pointer to .25).
   - Divergence-ID resolution is str-qwua7.34's check; do not duplicate it.
 
 ## Suggested approach
@@ -445,18 +455,19 @@ Work file by file. Verify each claim against `rg`/`deadcode`/`bd show`, then cor
 ## Out of scope
 
 - Generating capability tables from the matrix (str-qwua7.24).
-- Slimming the files to 5 KB (str-qwua7.25).
+- Slimming the files to 5 KB, frontend line-number citations and the two `.js` paths (str-qwua7.25).
+- The TS `ite` and TS/Rust "outcome only" claims (str-qwua7.24).
 - The false "does not emit `preflight_failed`" claims (shatter-go/CLAUDE.md:206, `shatter-go/protocol/constants.go:16-19`, `types.go:584-590`) and the dangling divergence IDs (`loop-body-states-typescript-only`, `error-code-preflight-failed-typescript-only`, `rust-side-effects-not-captured`). These are already str-qwua7.34's acceptance; coordinate so they are not edited twice.
 - Adding `.rs` to the `explore --help` extension list (`shatter-cli/src/args.rs:501`). That is a CLI help change, not a CLAUDE.md fact.
 
 ## Dependencies
 
 - Blocked by: none.
-- Related: str-qwua7.24, str-qwua7.25, str-qwua7.34, str-qwua7.59, str-u394l.4.
+- Related: str-qwua7.24, str-qwua7.25 (see note qwua7-25-refresh-note), str-qwua7.34, str-qwua7.59, str-u394l.4.
 
 ## Source
 
-Audit 2026-09-22, findings core-21, frontend-ts-15, frontend-go-09, frontend-rust-08, docs-24 and protocol-parity-13 (all confirmed). Draft `shatter-docs-ui/22`. Evidence is in `audits/2026-09-22/areas/{core-engine,frontend-ts,frontend-go,frontend-rust,protocol-parity,docs}.md`.
+Audit 2026-09-22, findings core-21, frontend-ts-15, frontend-go-09, frontend-rust-08 and protocol-parity-13 (docs-24 goes to str-qwua7.25 via qwua7-25-refresh-note) (all confirmed). Draft `shatter-docs-ui/22`. Evidence is in `audits/2026-09-22/areas/{core-engine,frontend-ts,frontend-go,frontend-rust,protocol-parity,docs}.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).
 
 ---
 
@@ -465,7 +476,7 @@ Audit 2026-09-22, findings core-21, frontend-ts-15, frontend-go-09, frontend-rus
 ---
 slug: docs-smoke-coverage
 kind: new
-title: "Extend docs-smoke to resource-parameters, distribution, execution-adapters, PROJECT-LAYOUT and PROTOCOL.md"
+title: "Extend docs-smoke to resource-parameters, distribution, execution-adapters, CI-INTEGRATION, PROJECT-LAYOUT and PROTOCOL.md"
 priority: P3
 type: task
 labels: [docs, smoke, quality-gates, audit-2026-09-22]
@@ -475,11 +486,11 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Extend docs-smoke to resource-parameters, distribution, execution-adapters, PROJECT-LAYOUT and PROTOCOL.md
+# Extend docs-smoke to resource-parameters, distribution, execution-adapters, CI-INTEGRATION, PROJECT-LAYOUT and PROTOCOL.md
 
 ## Problem
 
-`task docs-smoke` runs the examples in the docs against the built CLI to catch stale flags, removed commands and invalid JSON/YAML. It checks only the four docs it was created with. User-facing docs added since then are not checked, and PROTOCOL.md's JSON examples, which frontend authors copy, are never validated.
+`task docs-smoke` runs the examples in the docs against the built CLI to catch stale flags, removed commands and invalid JSON/YAML. It checks only the four docs it was created with. User-facing and contributor docs added since then are not checked, and PROTOCOL.md's JSON examples, which frontend authors copy, are never validated.
 
 ## Evidence
 
@@ -487,7 +498,7 @@ Re-verified at 56c86168:
 
 - `scripts/docs-smoke.yaml:20-24` lists exactly `README.md`, `QUICKSTART.md`, `SPEC.md` and `docs/INDEX.md`.
 - The `docs-smoke` task in `Taskfile.yml` (around `:334`) repeats the same four files in its `sources:`. Because task results are checksum-cached, a doc added to the YAML but not to `sources:` would not trigger a re-run when it changes.
-- `docs/INDEX.md` lists these user-facing docs, none of which is covered:
+- `docs/INDEX.md` lists these docs, none of which is covered (Audience per INDEX: PROJECT-LAYOUT "Users and contributors", distribution "Users and CI maintainers", resource-parameters "Users and contributors", execution-adapters "Contributors and architects", CI-INTEGRATION "Contributors"):
   - `docs/PROJECT-LAYOUT.md` (`:11`)
   - `docs/distribution.md` (`:12`)
   - `docs/resource-parameters.md` (`:25`)
@@ -498,13 +509,18 @@ Re-verified at 56c86168:
 
 ## Acceptance criteria
 
-- [ ] `docs/resource-parameters.md`, `docs/distribution.md`, `docs/execution-adapters.md`, `docs/PROJECT-LAYOUT.md` and `docs/CI-INTEGRATION.md` are added to `scripts/docs-smoke.yaml` and to the `docs-smoke` task's `sources:`. `python3 scripts/docs-smoke.py` passes when run directly; paste the output into the close note.
-- [ ] Each PROTOCOL.md JSON example is either validated against `protocol/schemas/request.schema.json` / `response.schema.json` (selected by its `command` field), or marked illustrative with an explicit fence tag that docs-smoke recognizes and skips. Proof at close: docs-smoke fails when a required field is removed from one validated PROTOCOL.md example.
-- [ ] A unit test in `scripts/test_docs_smoke.py` asserts that the docs-smoke doc list equals the docs in `docs/INDEX.md` whose Audience includes users, minus an explicit exclusion list in `docs-smoke.yaml` that gives a reason for each exclusion. The test also asserts that the `docs-smoke` task's `sources:` include every listed doc. Proof: the test fails on a fixture INDEX that lists an uncovered doc.
+- [ ] `docs/resource-parameters.md`, `docs/distribution.md`, `docs/execution-adapters.md`, `docs/PROJECT-LAYOUT.md`, `docs/CI-INTEGRATION.md` and `PROTOCOL.md` are added to `scripts/docs-smoke.yaml` and to the `docs-smoke` task's `sources:`. `python3 scripts/docs-smoke.py` passes when run directly; paste the output into the close note.
+- [ ] The `docs-smoke` task's `sources:` also include `protocol/schemas/*.schema.json`, so a schema-only change invalidates the checksum cache once PROTOCOL.md examples are validated against the schemas. Proof at close: after a passing run, touch one field in a schema and show `task docs-smoke` re-executes (not "up to date").
+- [ ] Each PROTOCOL.md JSON example is either validated against a schema or explicitly skipped. Selection is by an explicit fence tag, not by guessing from keys: for example ```` ```json protocol=request ```` / ```` ```json protocol=response ```` (or a specific per-message schema name), and ```` ```json illustrative ```` for examples that are deliberately partial. Note that requests carry `command` while responses carry `status` (for example `PROTOCOL.md:18-19`), so a single key-based selector cannot work. An untagged ```` ```json ```` fence in PROTOCOL.md fails docs-smoke. Proof at close: docs-smoke fails when a required field is removed from one validated request example and from one validated response example (paste both failing runs), and passes on the committed text.
+- [ ] A unit test in `scripts/test_docs_smoke.py` checks coverage by rules that the committed list can satisfy:
+  - every doc in `docs/INDEX.md` whose Audience cell contains "Users" (case-insensitive) is in the docs-smoke list, unless it is in an explicit `exclude:` list in `docs-smoke.yaml` with a reason (subset rule, not equality);
+  - the docs-smoke list may contain additional docs (for example `docs/INDEX.md` itself, `docs/execution-adapters.md`, `docs/CI-INTEGRATION.md`, `PROTOCOL.md`) that are not user-audience docs;
+  - every doc in the docs-smoke list is also in the `docs-smoke` task's `sources:`.
+  Proof: the test fails on a fixture INDEX that adds an uncovered Users-audience doc, and fails on a fixture Taskfile missing one listed doc from `sources:`; it passes on the committed files.
 
 ## Suggested approach
 
-Add the docs first, since that is free. Then add a `schema:` mode to docs-smoke for PROTOCOL.md that loads the schemas with `jsonschema` (already used by `protocol/schemas/test_schema_validation.py`). Validating output-artifact samples in SPEC §5 is handled by spec-s5-contract-table-and-samples and can reuse this mode.
+Add the docs first, since that is free. Then add a `schema:` mode to docs-smoke for PROTOCOL.md, driven by the fence tag, that loads the schemas with `jsonschema` (already used by `protocol/schemas/test_schema_validation.py`). Validating output-artifact samples in SPEC §5 is handled by spec-s5-contract-table-and-samples and can reuse this mode.
 
 ## Out of scope
 
@@ -518,7 +534,7 @@ Add the docs first, since that is free. Then add a `schema:` mode to docs-smoke 
 
 ## Source
 
-Audit 2026-09-22, finding docs-19 (confirmed, P3). Draft `shatter-docs-ui/29`. Evidence is in `audits/2026-09-22/areas/docs.md`.
+Audit 2026-09-22, finding docs-19 (confirmed, P3). Draft `shatter-docs-ui/29`. Evidence is in `audits/2026-09-22/areas/docs.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).
 
 ---
 
@@ -554,7 +570,13 @@ Re-verified at 56c86168:
 ## Acceptance criteria
 
 - [ ] The tier table gains a "Covers" column listing, for each tier, the crates/frontends and test kinds it runs (unit, proptest, E2E, snapshot, clippy).
-- [ ] `scripts/test_test_tier_wiring.py` validates that column against the Taskfile deps graph, so the table cannot drift again. Proof at close: the test fails when `workspace-test` is removed from `test-standard` (or when the table claims a frontend the tier does not run), and passes on the committed table.
+- [ ] `scripts/test_test_tier_wiring.py` (it already exists and parses task bodies) validates the "Covers" column for the **fixed** tiers only: Quick, Standard, Full, E2E, Parity (and check-fast if it is kept). Its expansion from a tier to leaf tasks must follow all three ways this Taskfile invokes work, or it will miss real coverage:
+  - `deps:` lists (for example `test-standard` → `frontends-built`, `workspace-clippy`);
+  - `cmds:` entries of the form `- task: <name>` (for example `test-standard` → `workspace-test`, `check-governed` → `check-static`, `check-unit`, `check-integration`);
+  - shell commands of the form `bash scripts/gate-wrapper.sh <gate> task <name>` (for example `check` → `check-governed`, `e2e` → `e2e-governed`). Any other shell command in a tier's expansion is mapped to a leaf by an explicit table in the test, and an unmapped command fails the test, so new wiring cannot be silently ignored.
+  Included per-crate Taskfiles (`core:`, `cli:`, `ts:`, `go:`, `rust-fe:`) are followed through their namespaces.
+- [ ] The Affected tier's row does not claim fixed coverage. Its "Covers" cell says it is selected from the diff by `scripts/affected-gates.py` (falling back to Full on unknown paths) and points there; the wiring test asserts that this cell names `affected-gates.py` and does not list crates.
+- [ ] Proof at close: the test fails when `workspace-test` is removed from `test-standard`, fails when the table claims a frontend that a fixed tier does not reach, and fails on a fixture tier that invokes an unmapped shell command; it passes on the committed table. Paste the direct `python3 -m unittest scripts/test_test_tier_wiring.py` runs.
 - [ ] `check-fast` is resolved one of two ways:
   - It is documented in the CLAUDE.md table with an accurate description, and its `desc:` no longer says "pre-push".
   - Or it is removed, together with its `gate-wrapper.sh` wiring and the AGENTS.md:540 mention.
@@ -564,7 +586,7 @@ Re-verified at 56c86168:
 
 ## Suggested approach
 
-Parse `Taskfile.yml` (and the included per-crate Taskfiles) in the wiring test, expand each tier's deps to leaf tasks, and map leaf names to a short coverage vocabulary. Keep the table's "Covers" cells in that vocabulary so the test can compare them.
+Extend the existing wiring test to parse `Taskfile.yml` and the included per-crate Taskfiles, expand each fixed tier through `deps`, `task:` cmds and `gate-wrapper.sh` invocations to leaf tasks, and map leaf names to a short coverage vocabulary. Keep the table's "Covers" cells in that vocabulary so the test can compare them.
 
 ## Out of scope
 
@@ -579,7 +601,7 @@ Parse `Taskfile.yml` (and the included per-crate Taskfiles) in the wiring test, 
 
 ## Source
 
-Audit 2026-09-22, findings gates-07 (partially confirmed; verifier corrected it to P3) and tests-ci-17 (confirmed, P3). Draft `shatter-docs-ui/21`, minus its e2e-duplication item. Evidence is in `audits/2026-09-22/areas/tests-ci.md`.
+Audit 2026-09-22, findings gates-07 (partially confirmed; verifier corrected it to P3) and tests-ci-17 (confirmed, P3). Draft `shatter-docs-ui/21`, minus its e2e-duplication item. Evidence is in `audits/2026-09-22/areas/tests-ci.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).
 
 ---
 
@@ -622,13 +644,13 @@ Target: `str-qwua7.52`. Post the text below as a comment with `bd comments add s
 > 10. **Agent-driven usage** through the shatter-agents plugin (run-shatter, interpret-shatter-spec).
 > 11. **HTML report review.**
 >
-> **Tooling blocker to know about.** storystore's inventory currently finds **0 `cli-command` surfaces** in shatter. Its only CLI extractor matches commander.js `.command('name')`. On this repo it detects go, javascript, rust and typescript but extracts only javascript and typescript, so all of Shatter's clap subcommands in `shatter-cli/src/args.rs` are invisible. `stories-coverage`, whose headline surface kind is cli-command, will therefore report nothing uncovered until the storystore issue **clap-cobra-extractors** (storystore epic "Audit 2026-09-22 findings (storystore)") lands. Seeding stories does not need to wait for it. Running the coverage gate (str-u394l.3) does, or it needs a manual command list.
+> **Tooling limitation (not a blocker for this issue or for str-u394l.3's basic gate).** storystore's inventory currently finds **0 `cli-command` surfaces** in shatter. Its only CLI extractor matches commander.js `.command('name')`. On this repo it detects go, javascript, rust and typescript but extracts only javascript and typescript, so Shatter's clap subcommands in `shatter-cli/src/args.rs` are invisible to it. The consequence is narrow: automatic *CLI-surface completeness* reporting from `stories-coverage` will show nothing uncovered until the storystore issue **clap-cobra-extractors** (storystore epic "Audit 2026-09-22 findings (storystore)") lands. Everything else can proceed now: `stories-init`, seeding, and str-u394l.3's recorded acceptance (directory and INDEX exist, the index is fresh, active stories carry evidence fields, patrol wiring). drift-patrol's `check_docs_stories` (`scripts/drift-patrol.py:453`ff.) already checks the index without any CLI extraction. Until the extractor lands, list the clap subcommands manually in the stories README if CLI completeness is wanted.
 >
 > Also link `docs/stories/INDEX.md` from `docs/INDEX.md` when it exists, as this issue already requires.
 
 ## Why a note and not a new issue
 
-str-qwua7.52 already owns stories-init, seeding, the INDEX link and landing str-u394l.3. The audit adds a concrete journey list and one external blocker.
+str-qwua7.52 already owns stories-init, seeding, the INDEX link and landing str-u394l.3. The audit adds a concrete journey list and records one external tooling limitation that affects only automatic CLI-surface completeness.
 
 ## Source
 
@@ -669,11 +691,15 @@ Context for the filer: str-wurp's **description** still has only command-level a
 >
 > Please make these part of this issue's **acceptance criteria**, not just notes:
 > 1. **Forward check:** every non-hidden long flag of every subcommand appears as a backticked token in that command's SPEC §2 section, or in an allowlist (for example "shared with explore").
-> 2. **Reverse check:** every backticked `--flag` in SPEC §2 and §2.11 exists in clap. This would have caught `--failure-threshold`.
-> 3. **Changelog-row rule:** if `shatter-cli/src/args.rs` or SPEC §2 changed relative to `origin/main` and SPEC §8 gained no row (and the `Last updated` line did not change), fail, unless the commit carries an explicit trailer such as `Spec-Changelog: none (reason)`. This check is diff-relative, so it belongs in `task affected` / pre-push and PR CI, not in static `check-static`.
+> 2. **Reverse check:** every backticked `--flag` in SPEC §2 and §2.11 that is presented as a *Shatter* flag exists in clap for that command. This would have caught `--failure-threshold`. It must be context-aware, because SPEC legitimately names other tools' flags: for example `SPEC.md:176` (the explore flag table) says `--memory-limit` maps to Node's `--max-old-space-size`. Either (a) check only flag-table first columns and `shatter <cmd> …` usage lines, or (b) check every backticked flag but keep an explicit `external_flags:` allowlist (flag, SPEC location, owning tool, reason), seeded with `--max-old-space-size`. Unknown flags fail; allowlisted ones do not.
+> 3. **Changelog-row rule**, as two separate requirements so neither can be satisfied alone:
+>    - (a) *Row required:* if `shatter-cli/src/args.rs` or SPEC §2 changed relative to `origin/main`, SPEC §8 must gain at least one new row in that diff. Editing only the `Last updated` header does **not** satisfy this.
+>    - (b) *Header consistent:* the `Last updated` date must equal the newest §8 row's date (a static check, which can run everywhere). Several rows may share a date, so same-day changes simply add another row with the same date; the header is unchanged in that case and still passes.
+>    - Exemption: a commit trailer such as `Spec-Changelog: none (<reason>)` waives (a) only, never (b). The gate prints the reason.
+>    (a) is diff-relative, so it belongs in `task affected` / pre-push and PR CI, not in static `check-static`. (b) can live in `check-static` (spec-changelog-backfill adds a first version of it in docs-smoke; reuse it rather than duplicate).
 > 4. Take the inventory from clap itself (a `#[test]` walking `Cli::command()` subcommands and arguments), not by parsing help text.
 >
-> **Proof at close:** running the gate on the pre-fix HEAD reports exactly the drift listed above. It passes after the fix. drift-patrol's `cli-surface-drift` slot (`scripts/drift-patrol.py:437`) turns from PENDING into a real check. Show all three with forced runs, not cached `task` results.
+> **Proof at close:** on the pre-fix HEAD, the gate reports **at least** the drift listed above (`--failure-threshold`, doctor `-d/--directory`, list-targets `--scope`), and every other item it reports is either real drift fixed in the same change or added to an allowlist with a reason — list them in the close note. It does not flag `--max-old-space-size`. It passes after the fix. A fixture diff that changes `args.rs` and only the `Last updated` header fails rule (a); a fixture with a new row but a stale header fails rule (b). drift-patrol's `cli-surface-drift` slot (`scripts/drift-patrol.py:437`) turns from PENDING into a real check. Show all of these with forced, direct runs, not cached `task` results.
 >
 > Note on D2 (2026-09-23): snapshot `shatter diff` is being retired (retire-snapshot-diff). The allowlist must not carry a `diff` entry once that lands.
 
@@ -710,11 +736,56 @@ Target: `str-u394l.3`. Post the text below as a comment. Do not change status.
 >
 > By design, PENDING does not fail the patrol (`scripts/drift-patrol.py:25-32`). A PENDING slot only becomes FAIL in two cases: under `--strict-pending`, or when its tracking issue is *closed* (`:290-307`). A slot whose issue simply stays open is therefore a reminder that never escalates. Combined with the scheduled patrol not running (audit finding prior-01), nobody sees even the reminder.
 >
-> **Proposal (auditor's, for the maintainer to accept or reject):** add an age limit. A PENDING slot whose tracking issue has been open more than **60 days** (by its `created_at`, or a per-slot `pending_since` date recorded in `drift-patrol.py`) reports FAIL, with a message naming the issue and its age. A maintainer can extend a slot deliberately by bumping `pending_since` in a commit, which leaves a visible record of the decision.
-> - Acceptance: a unit test covers 59 days (PENDING) and 61 days (FAIL).
-> - Acceptance: `docs/DRIFT-PATROL.md` documents the rule.
-> - Result at close: under this rule, both slots above would fail today. That is the intended pressure, and it is resolved by landing this issue and str-wurp, or by explicitly re-dating them.
+> **Proposal (auditor's, for the maintainer to accept or reject):** add an age limit, with these semantics:
+> - **Age source and precedence.** Each PENDING slot may carry a `pending_since: YYYY-MM-DD` in `drift-patrol.py`. If present, it is the age source and overrides the tracking issue's `created_at` (this is how a maintainer extends a slot: bump `pending_since` in a commit, leaving a visible record). If absent, the tracking issue's `created_at` is used.
+> - **Boundary.** Age is whole days between the source date and the patrol run date (UTC). Age ≤ 60 stays PENDING; age ≥ 61 reports FAIL, with a message naming the issue, the age source and the age.
+> - **Unavailable data.** If there is no `pending_since` and the tracker cannot be read (bd missing, issue not found), the slot stays PENDING with an explicit "age unknown: <reason>" message, and FAILs under `--strict-pending` as today. It never silently passes.
+> - Acceptance: unit tests cover age 60 (PENDING), age 61 (FAIL), `pending_since` overriding an older `created_at` (PENDING), and tracker-unavailable without `pending_since` (PENDING with "age unknown"; FAIL under `--strict-pending`).
+> - Acceptance: `docs/DRIFT-PATROL.md` documents the rule, including precedence and the extension procedure.
+> - Result at close: under this rule, both slots above would fail today. That is the intended pressure, and it is resolved by landing this issue and str-wurp, or by explicitly re-dating them with `pending_since`.
 >
 > The rule is patrol-wide, not stories-specific. If the maintainer prefers, move it to a small child issue of the drift-patrol work (str-u394l). It is posted here because this issue owns one of the two stale slots.
 >
-> Current blocker for this issue's coverage gate: storystore's inventory finds 0 clap CLI surfaces in shatter (see the note on str-qwua7.52 and the storystore issue clap-cobra-extractors).
+> Not a blocker for this issue: storystore's inventory finds 0 clap CLI surfaces in shatter (see the note on str-qwua7.52 and the storystore issue clap-cobra-extractors). That limits only automatic CLI-surface completeness reporting. This issue's recorded acceptance (docs/stories with README and INDEX, three observed-mode stories, a check that fails on a missing directory or stale index, patrol wiring, contributor instructions) needs no CLI extraction, and `check_docs_stories` already validates the index. It can proceed now.
+
+---
+
+<!-- file: 11-qwua7-25-refresh-note.md -->
+
+---
+slug: qwua7-25-refresh-note
+kind: note-to-existing
+title: "Note on str-qwua7.25: refreshed line-number and .js evidence for the frontend CLAUDE.md files"
+priority: P2
+type: task
+labels: [docs, agents, audit-2026-09-22]
+parent_epic: "Epic: Audit 2026-09-22 findings"
+blocked_by: []
+existing_id: str-qwua7.25
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Note on str-qwua7.25 (open, P2: "Slim each frontend CLAUDE.md to ≤5 KB of rules; move per-issue history to docs/frontends/<lang>.md")
+
+Target: `str-qwua7.25`. Post the text below as a comment with `bd comments add str-qwua7.25`. Do not change status or priority.
+
+## Comment text
+
+> **Audit 2026-09-22 (findings frontend-ts-15, frontend-rust-08, docs-24): still open, evidence refreshed at 56c86168.**
+>
+> This issue's acceptance already owns "line-number citations replaced by symbol names; the two .js references corrected". The re-audit found the same items still present, with drifted locations:
+> - `shatter-ts/CLAUDE.md:16-17` cite "Lines ~278-352" (`buildSymExprWithFlow`) and "Lines ~860-951" (`buildSymExpr`). The real definitions are around `instrumentor.ts:874` and `:1862`. Replace with the symbol names.
+> - `shatter-ts/CLAUDE.md:379-380` cite `src/browser-globals-recognizer.js` and `src/handlers.js`; the files are `.ts`.
+> - `shatter-rust/CLAUDE.md:234-235` cite `src/handler.rs:552, 620` and "line 803". `last_file` is set at `handler.rs:693` and `:767` and read at `:842` and `:970`. Replace with symbol names.
+>
+> **Proof at close (suggested):** `rg -n ':[0-9]{2,}|Lines? ~?[0-9]' shatter-{ts,go,rust}/CLAUDE.md` returns nothing, pasted into the close note, and the three `.ts`/`.rs` paths resolve.
+>
+> The non-overlapping stale facts in the crate CLAUDE.md files (core explorer/orchestrator mislabel, Go dead `flow.go`/`ResolveMockSpecs` references, unresolved `str-8v66`/`str-ruw0`, Rust `Runtime::new()` vs `new_current_thread()`, matrix console_output/axum notes) are filed separately as crate-claude-md-stale-facts. Coordinate so the same lines are not edited twice.
+
+## Why a note and not a new issue
+
+The Codex cross-check pointed out that str-qwua7.25's committed acceptance already owns these items; excluding "slimming" from a new issue does not transfer them.
+
+## Source
+
+Audit 2026-09-22, findings frontend-ts-15, frontend-rust-08 and docs-24 (confirmed). Split from crate-claude-md-stale-facts during the cross-check revision.

@@ -29,31 +29,39 @@ with the text below. Do not close it and do not change its priority.
 >   audit (`git worktree list` shows none).
 > - The five dead dirs under `~/.local/share/worktrees/shatter/` and the
 >   `.claude/worktrees/str-umw3/` orphan still exist. Their operator-confirmed
->   removal is now tracked by the new audit issues `env-doctor-decisions`
->   (five dirs) and `agent-config-gitignore` (str-umw3). Drop them from this
->   issue's acceptance.
+>   removal (or documented retention) is now tracked by
+>   <orphan-worktree-dirs-cleanup>. Drop them from this issue's acceptance.
 > - A second instance of the same damage class was found: the fixture identity
 >   `[user] name = Test, email = test@example.com` had leaked into the primary's
 >   repo-local `.git/config` (str-jttrf leak). The maintainer removed it
->   2026-09-23. The `.mailmap` and fixture-side config snapshot are tracked in
->   the new audit issue `mailmap-and-fixture-config-snapshot`.
+>   2026-09-23. The `.mailmap` and fixture-side config guard are tracked in
+>   <mailmap-and-fixture-config-snapshot>.
 >
 > **Re-scoped acceptance for this issue (the check only):**
 > - A repo-state check (a new entry in `scripts/drift-patrol.py` `CHECKS`,
 >   `:757`, as this issue already chose; optionally surfaced by
->   `scripts/setup-hooks.sh --check`) FAILs when any of these holds in the
->   checkout it runs in:
+>   `scripts/setup-hooks.sh --check`) inspects **the checkout drift-patrol is
+>   invoked from** (its repo root, not an arbitrary cwd such as a fixture
+>   repo) and FAILs when any of these holds:
 >   1. a repo-local `user.name` or `user.email` override exists
 >      (`git config --local --get user.email` / `user.name` non-empty);
 >   2. the effective `user.email` (any scope) matches `*@example.com` (also
 >      `*.invalid` / `example.org`, if cheap);
 >   3. `core.bare=true`;
 >   4. a repo-local `core.hooksPath` override exists.
-> - It SKIPs (does not FAIL) in CI or when not in a git work tree, consistent
->   with this issue's existing SKIP rule for machine-specific roots.
+> - **Discovery precedence (this order, tested):** (a) locate the repository
+>   with `git rev-parse --git-dir` / `--git-common-dir`, which succeed even
+>   when `core.bare=true` makes `--is-inside-work-tree` return false; (b) read
+>   the common dir's `config` directly (`git config --file <common>/config`)
+>   and evaluate conditions 1-4; (c) only if no git directory can be
+>   discovered at all, or the run is in CI, report SKIP. A checkout whose
+>   config says `core.bare=true` must never be reported as "not a work tree ->
+>   SKIP".
 > - Unit tests in `scripts/test_drift_patrol.py` build a temporary repo per
->   condition and assert FAIL, plus one clean repo asserting PASS. Include a
->   failing-then-passing run in the close reason.
+>   condition and assert FAIL, plus one clean repo asserting PASS, plus one
+>   directory with no repository asserting SKIP. One test sets
+>   `core.bare=true` on a non-bare checkout and asserts **FAIL, not SKIP**.
+>   Include a failing-then-passing run in the close reason.
 > - `python3 scripts/drift-patrol.py` shows the check PASS on the primary
 >   checkout. Record the output in the close reason.
 > - The prunable-worktree / stale-preview / non-repo-dir detections from the

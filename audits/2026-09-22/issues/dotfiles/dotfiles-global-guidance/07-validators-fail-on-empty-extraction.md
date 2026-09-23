@@ -13,7 +13,7 @@ tracker: "gh -R ketang/dotfiles (GitHub Issues; no .beads in the repo)"
 
 # Fail-closed guidance does not cover vacuous validators: require failure on empty extraction and a canary test
 
-Part of #<epic>. Priority: P3. Type: enhancement.
+Part of #<epic>. Priority: P3. Type: enhancement. Cross-references to other drafts use their slugs; the filer posts a slug-to-issue map on the epic.
 
 ## Problem
 
@@ -31,11 +31,21 @@ Part of #<epic>. Priority: P3. Type: enhancement.
 
 ## Acceptance criteria
 
-- [ ] `fail-closed-defaults.md` (or `validation-and-errors.md`, with a pointer from the other) states two rules for any gate or validator that extracts facts from source:
-  - It must fail when an expected extraction is empty, or when a declared pattern, allowlist entry or known-drift entry never matches.
-  - It must carry a canary or mutation test showing that it goes red on a seeded defect.
-- [ ] The rule includes one short example, for example: "a registry validator that finds 0 message types in a frontend fails; its test deletes one handler and asserts the validator reports it."
-- [ ] Proof at close: the closing comment shows the output of `grep -n "canary\|empty extraction" ~/dotfiles/docs/code-writing-guidance/*.md`.
+- [ ] `fail-closed-defaults.md` (or `validation-and-errors.md`, with a pointer from the other) states these rules for any gate or validator that extracts facts from source:
+  - It fails when an extraction that the gate's contract expects to be non-empty returns nothing (for example, a frontend that must declare message types yields zero).
+  - Declarations whose contract says "this specific thing exists", such as known-drift entries, expected-failure entries or suppressions of a named current defect, are reported as stale when they no longer match anything. The gate fails or warns on stale entries, as the gate's own docs define.
+  - Ordinary allowlist or permit entries are not required to match anything in a given repository or run. An entry that matches nothing is valid, and the rule must say so, so that implementers do not add false failures.
+  - It carries a canary or mutation test showing that it goes red on a seeded defect.
+- [ ] The text includes two short examples: a registry validator that finds 0 message types in a frontend fails, and its test deletes one handler and asserts the validator reports it; and an allowlist entry for a path absent from this repo is accepted without error.
+- [ ] The existing rule "An empty allowlist means deny" (`fail-closed-defaults.md:4`) is left unchanged, and the new text does not contradict it.
+
+## Proof at close
+
+The closing comment quotes the new rule text and shows `grep -n "canary\|empty extraction\|stale" ~/dotfiles/docs/code-writing-guidance/*.md`.
+
+## Maintainer decisions that apply
+
+D6: nothing from this audit is filed by agents; the maintainer runs the filer.
 
 ## Out of scope
 

@@ -1,54 +1,33 @@
 ---
 slug: landing-deletes-remote-branches
-kind: new
-title: "land-work: delete the landed remote feature branch and superseded same-issue branches as a verified step"
+kind: note-to-existing
+title: "Note on bento-73de: shatter evidence; call the lease-protected delete helper from land.py; superseded same-issue branches are report-only; closure report of merged remote heads"
 priority: P2
-type: feature
+type: note
 labels: [audit, land-work, cleanup]
 parent_epic: "Epic: Audit 2026-09-22 findings (bento)"
 blocked_by: []
-existing_id: ""
+existing_id: bento-73de
 tracker: "bd in /home/ketan/project/bento (prefix bento)"
 ---
 
-# land-work: delete the landed remote feature branch and superseded same-issue branches as a verified step
+# Note on bento-73de: shatter evidence and remaining deltas
 
-## Problem
+Target: **bento-73de** (open, P2, "land-work cleanup: delete the landed feature branch on the remote, not only locally"). Post as a comment. Do not file a new issue.
 
-Landing cleans up only the local branch and its worktree. Consumer repos therefore pile up merged remote branches, and branches that a re-landing superseded stay on the remote. Shatter's AGENTS.md calls remote deletion "mandatory" and keeps a hand-run `scripts/cleanup-merged-remote-branches.sh` to make up for it, but land.py never deletes a remote branch and never checks for one. Close reasons still claim the deletions happened.
+This draft was originally a new issue. bento-73de (filed 2026-09-23) already specifies the core fix, and specifies it more safely than the draft did: a helper `land-work-delete-remote-branch.py` that fetches the exact `refs/heads/<branch>` into a private ref, checks ancestry of that exact SHA, and deletes with `--force-with-lease=refs/heads/<branch>:<remote_sha>`, so a push that lands after the check is never deleted (its `test_delete_remote_branch_lease_rejected`). The draft's `git ls-remote --heads` confirmation and unconditional ancestry-then-delete are dropped in favour of 73de's design. Only the deltas below are posted.
 
-## Evidence
+Comment text:
 
-Re-verified 2026-09-23 in the shatter audit worktree (56c86168) and bento origin/main b1bb787:
-
-- `git branch -r | wc -l` gives 66, and `git branch -r --merged origin/main | wc -l` gives 38. Examples: `origin/str-hjrnp.1` through `.4`, `origin/str-2tyfk-lint-errcheck`.
-- `git ls-remote origin 'refs/heads/str-qwua7*'` still lists `str-qwua7.4-testplan-http-body-fix`, `str-qwua7.7-protocol-registry-validate`, `str-qwua7.16-restore-bd-dolt` and `str-qwua7.17-stale-claims-cleanup`. They are unmerged, each about 102 commits ahead of main, and each contains a stray fixture commit, e50fc399 "init". The close reason for str-qwua7.4 says its duplicate branches were deleted; one of them is still there.
-- At audit time a `/tmp/land-work-preview-a5l9ycto` worktree (detached at 16794cef) was still registered after its landing. It has since been removed (`git worktree list` now shows no preview), but nothing in land.py checks for its own preview after cleanup.
-- `catalog/skills/land-work/SKILL.md:516-533` (step 10) deletes only the local branch and worktree.
-- `catalog/skills/land-work/scripts/land.py`: the only pushes are to the primary ref (`:211`, `:232-233`). There is no `git push origin --delete`.
-
-## Acceptance criteria
-
-- [ ] After `verify_landing` succeeds, land.py deletes `origin/<feature>` when it is an ancestor of the landed SHA. Repos can opt out with verifier.json `delete_remote_branch: false`.
-- [ ] land.py then confirms the deletion with `git ls-remote --heads origin <feature>` and reports `remote_branch_deleted: true|false|skipped` (plus a reason) in the final JSON. A failed deletion is a warning, not a failed landing.
-- [ ] Optional `--superseded <branch>...`: land.py deletes those remote branches too, but only after checking that each one's issue id (parsed with the same issue-id rule closure uses) matches the landed branch's issue id. It confirms each deletion with `ls-remote` and reports it.
-- [ ] land.py removes its own scratch preview in a `finally` block and confirms that `git worktree list --porcelain` no longer contains it. The result is reported in the JSON.
-- [ ] Closure gains a report-only section listing remote branches already merged into the primary branch, with the `git push origin --delete` command for each. It does not delete anything automatically.
-- [ ] Tests with a bare-remote fixture cover: merged branch deleted; opt-out honoured; unmerged feature ref not deleted; `--superseded` with a mismatched issue id refused; preview absent after both success and failure.
-- [ ] Proof at close: test names plus passing output, and one real landing's JSON showing `remote_branch_deleted: true`. "Merged" is not sufficient.
-
-## Suggested approach
-
-Add a `delete_remote` step after `verify_landing`, recorded with `_record()` like the other steps. Use `git merge-base --is-ancestor origin/<feature> <merge_sha>` as the safety check.
-
-## Out of scope
-
-- One-off cleanup of shatter's existing 38 merged and 4 contaminated remote branches. That is a shatter task.
-- The general preview-leak and scoping work (`stale-previews-leak-and-scoping`, bento-e583).
-
-## Dependencies
-
-- Blocked by: none.
-- Related: bento-rdtn.14 (closed), bento-gd2 and bento-7n7 (closed; preview leaks), bento-rdtn.9 (closed; closure tracker_mismatch), `close-reason-evidence` (bucket bento-guards-doctor-tracker), shatter str-qwua7.19.
-
-Priority: P2 · Type: feature · Labels: audit, land-work, cleanup · Parent: Epic: Audit 2026-09-22 findings (bento) · Sources: bento/11, bento-15, prior-06
+> **Addendum from the shatter audit 2026-09-22 (findings bento/11, bento-15, prior-06)**
+>
+> **Evidence from shatter** (audit worktree 56c86168, 2026-09-23):
+> - `git branch -r | wc -l` gives 66, and `git branch -r --merged origin/main | wc -l` gives 38 (for example `origin/str-hjrnp.1` through `.4`, `origin/str-2tyfk-lint-errcheck`).
+> - `git ls-remote origin 'refs/heads/str-qwua7*'` still lists `str-qwua7.4-testplan-http-body-fix`, `str-qwua7.7-protocol-registry-validate`, `str-qwua7.16-restore-bd-dolt` and `str-qwua7.17-stale-claims-cleanup`: unmerged, each about 102 commits ahead of main, each carrying a stray fixture commit (e50fc399 "init"). The close reason of str-qwua7.4 says its duplicate branches were deleted; one is still there. Shatter's AGENTS.md calls remote deletion "mandatory" and keeps a hand-run `scripts/cleanup-merged-remote-branches.sh` to compensate.
+>
+> **Proposed deltas to this issue's scope** (each optional; the maintainer decides which to take here and which to split):
+> 1. **land.py calls the helper.** 73de says "if land.py later gains teardown, it calls the same helper". Since land.py is the default serial path, add a `delete_remote` step after `verify_landing` that invokes `land-work-delete-remote-branch.py --branch <feature>` and copies its JSON into the final result as `remote_branch: {deleted, reason, remote_sha}`. A non-`deleted` outcome is a warning, not a failed landing. Test: a land.py run against the bare-origin fixture ends with `remote_branch.reason == "deleted"`, and with the opt-out key set ends with `"opted-out"`.
+> 2. **Superseded same-issue branches are reported, never auto-deleted.** A matching issue id proves neither that a branch's commits are safe to discard nor that no other session is using it (the shatter str-qwua7.* branches above have about 102 unique commits each). So land.py only lists other remote branches that carry the landed branch's issue id, with `git cherry` unique-commit counts and whether any local worktree has them checked out, under `superseded_candidates` in the final JSON. Deletion stays an explicit operator action through the same helper, which already refuses anything that is not an ancestor of the primary branch.
+> 3. **Closure report of merged remote heads.** 73de lists "closure remote reporting" as a possible follow-up. Shatter shows it is needed for the backlog that already exists: a report-only closure section listing remote heads that are ancestors of the primary branch, each with the helper command to delete it. No automatic deletion.
+>
+> Related: bento-rdtn.14 (closed; land.py), bento-rdtn.9 (closed; closure tracker_mismatch), `close-reason-evidence` (audit bucket bento-guards-doctor-tracker), shatter str-qwua7.19.

@@ -37,7 +37,8 @@ Re-verified against `audit-2026-09-22` at 56c86168 (2026-09-23):
 ## Acceptance criteria
 
 - [ ] §2.8 documents the `.gitignore` block that `shatter init` manages, and implicit init. It links the str-qwua7.58 decision.
-- [ ] §2.9 `shatter doctor` documents `-d/--directory`, the gitignore-coverage check, the project-configuration report (if doctor prints one) and the exit codes, and matches `shatter doctor --help` at the time of the change.
+- [ ] §2.9 `shatter doctor` documents `-d/--directory`, the gitignore-coverage check and the exit codes, and matches `shatter doctor --help` at the time of the change.
+- [ ] The str-mktn §8 row claims doctor reports which config files are present and their precedence; `doctor --help` does not mention this. Run `shatter doctor` in a project with both `shatter.config.json` and `.shatter/config.yaml` present, paste the output into the close note, and then either document that report in §2.9 (if doctor prints it) or correct the str-mktn row's claim (if it does not). Leaving the row unchanged without that pasted output does not satisfy this item.
 - [ ] §3.6 documents `shatter.config.json`: what it holds, and its precedence relative to `.shatter/config.yaml` and `--set`.
 - [ ] §8 has rows for str-qwua7.8, str-qwua7.9.2, str-qwua7.15 and str-nfg4y. The `Last updated` header equals the date of the newest row.
 - [ ] Every existing §8 row's "Section" column has been spot-checked against `git show <commit> -- SPEC.md` for the commit that row describes. False claims are corrected, and the PR description lists the rows that were checked.
@@ -67,4 +68,4 @@ The broader mechanical gate (every clap flag documented in SPEC, every SPEC flag
 
 ## Source
 
-Audit 2026-09-22, finding docs-05 (confirmed, P2). Evidence is in `audits/2026-09-22/areas/docs.md`.
+Audit 2026-09-22, finding docs-05 (confirmed, P2). Evidence is in `audits/2026-09-22/areas/docs.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).

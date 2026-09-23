@@ -1,69 +1,68 @@
 ---
 slug: rust-runtime-path-and-doctor
 kind: new
-title: "Following the Rust-frontend hint still fails on the undocumented SHATTER_RUNTIME_PATH, and `shatter doctor` reports all green"
+title: "Rust explore outside the source tree fails per function on the undocumented SHATTER_RUNTIME_PATH, with the language labelled `any`"
 priority: P2
 type: bug
-labels: [rust-frontend, docs, ux, install, doctor, audit-2026-09-22]
+labels: [rust-frontend, docs, ux, install, audit-2026-09-22]
 parent_epic: "Epic: Audit 2026-09-22 findings"
 blocked_by: []
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Following the Rust-frontend hint still fails on the undocumented SHATTER_RUNTIME_PATH, and `shatter doctor` reports all green
+# Rust explore outside the source tree fails per function on the undocumented SHATTER_RUNTIME_PATH, with the language labelled `any`
 
 ## Problem
 
-A user who explores a `.rs` target outside the shatter source tree hits a chain of failures, and nothing in the tooling explains it:
+A user who installs `shatter-rust` on PATH (as the missing-frontend hint tells them to) and explores a `.rs` target outside the shatter source tree gets:
 
-1. **Without `shatter-rust`**, explore prints a roughly 600-character, contributor-oriented hint twice (1,345 bytes of stderr). It frames the situation as "the expected state after `cargo build --release --bin shatter` from the workspace root", which is source-checkout guidance shown to every user.
-2. **With `shatter-rust` on PATH**, as the hint instructs, every function fails with `execute error (FileNotFound): cannot locate shatter-rust-runtime crate; set SHATTER_RUNTIME_PATH`. The error repeats once per function, and the "Failure impact" table labels the language `any` although the target is `.rs`.
-3. **`SHATTER_RUNTIME_PATH` is undocumented.** It does not appear in README, QUICKSTART, SPEC or any `--help` text.
-4. **`shatter doctor` exits 0** and checks none of this: not the Rust frontend, the runtime crate, the node or go toolchains, or sandbox and host-write readiness. Without sandbox or host-write readiness, every execution command refuses to run.
+1. `execute error (FileNotFound): cannot locate shatter-rust-runtime crate; set SHATTER_RUNTIME_PATH`, **once per function**.
+2. A "Failure impact" table whose only row is labelled `any`, with no `rust` row, although every target is `.rs`.
+3. No documentation of `SHATTER_RUNTIME_PATH`: it is not in README, QUICKSTART, SPEC or any `--help` text, and the error does not say what value to set or where the CLI looked.
+
+Scope note: this draft was narrowed during the cross-check. The doctor and missing-frontend-hint parts of the original finding are owned elsewhere:
+
+- Rust-frontend resolution and runtime-crate location in `shatter doctor`: str-qwua7.40 (see doctor-rust-runtime-note in this bucket).
+- The missing-frontend hint printed twice and its length: str-qwua7.13 (see rust-hint-once-note in this bucket).
+- Toolchain and sandbox/host-write readiness in `shatter doctor`: doctor-execution-readiness (this bucket).
 
 ## Evidence
 
-Re-verified against the audit worktree (HEAD 56c86168):
+Re-verified against the audit worktree (code at HEAD 56c86168):
 
-- The hint text is `RUST_FRONTEND_INSTALL_HINT` at `shatter-cli/src/helpers.rs:418-424` (the audit cited line 497, which is stale).
-- The runtime lookup and the error are at `shatter-rust/src/executor.rs:1200-1223`. `SHATTER_RUNTIME_PATH` is read first, and the fallback error is `"cannot locate shatter-rust-runtime crate; set SHATTER_RUNTIME_PATH"`.
+- `shatter-rust/src/executor.rs:1198-1223` `find_runtime_crate_path()`: reads `SHATTER_RUNTIME_PATH` first (used only if `<path>/Cargo.toml` exists), then walks up to five ancestors of the **`shatter-rust` executable** (`std::env::current_exe()`), not the cwd, looking for a sibling `shatter-rust-runtime/Cargo.toml`. Otherwise it returns `"cannot locate shatter-rust-runtime crate; set SHATTER_RUNTIME_PATH"`. So a `shatter-rust` built inside a checkout finds the crate from any cwd, and a copied or installed binary never does.
 - `shatter-cli/src/commands/build_frontend.rs:607-630` is the only other place that mentions the variable (warnings during `build-frontend`).
-- `shatter-cli/src/commands/doctor.rs:59-61` runs `check_embedded_frontend` and `check_generated_paths_ignored` plus the project-configuration report. There are no toolchain, runtime-crate or sandbox checks.
 - `grep -n SHATTER_RUNTIME_PATH README.md QUICKSTART.md SPEC.md` returns no matches.
-- Transcripts in `audits/2026-09-22/cli-ux-transcripts/`:
-  - `rust-explore.err` (1.3 KB) has the hint printed twice.
-  - `rust-explore2.err` has the runtime-crate error three times, plus the `any` language label.
-  - `doctor.out` shows version and hashes, the project configuration, "Embedded Go frontend: up to date." and "Generated-path gitignore: all configured output paths are ignored." It exits 0.
-- Root cause of the missing test coverage: the E2E Rust suite (`shatter-core/tests/e2e_concolic_rust.rs`) runs from the workspace root, where the runtime crate is found automatically, so the out-of-tree path is never exercised.
+- `shatter-cli/src/commands/explore.rs:3240-3278`: the failure-impact rollup has per-language classifier rows only for Go (`BuildFailed`) and TS (`BuildFailed`/`RuntimeFailed`). Rust failures only reach the outcome-only `("any", tok)` row.
+- Transcript `audits/2026-09-22/cli-ux-transcripts/rust-explore2.out` / `.err`: the runtime-crate error three times (three functions), and the failure-impact row `| runtime_failed | any | 3 | 1 | 47 | 47 | 100.0% |`.
+- Why tests miss it: the E2E Rust suite does not rely on discovery at all. `shatter-core/tests/e2e_concolic_rust.rs:122-125` and `shatter-core/tests/support/rust_frontend_harness.rs:77` set `SHATTER_RUNTIME_PATH` explicitly, and the test binaries live under the workspace `target/`, where the executable-ancestor walk would also succeed. No test runs a relocated `shatter-rust` with the variable unset.
 - Source findings: audit 2026-09-22 cli-ux-10 (confirmed, P2). Area evidence: `audits/2026-09-22/areas/cli-ux.md` F10.
 
 ## Acceptance criteria
 
-- [ ] `shatter doctor` reports each of the following with a pass/warn/fail status and a one-line fix command:
-  - Rust frontend resolution: which `shatter-rust` is found, or why none is.
-  - shatter-rust-runtime crate location: `SHATTER_RUNTIME_PATH` value, or the auto-discovered path, or "not found".
-  - node and go toolchain presence and version.
-  - Sandbox and host-write readiness: whether a backend or `SHATTER_ALLOW_HOST_WRITES` is set, and what execution commands will do.
-- [ ] `doctor` exits non-zero when a check that blocks execution fails. It stays exit 0 for warnings, such as "Rust frontend absent; Rust targets will be skipped". The exit codes are documented in SPEC §2.9.
-- [ ] The missing-frontend hint is at most two lines, printed once per run, and points at `shatter doctor` for details. Source-checkout build instructions move to README "Build from source".
-- [ ] The runtime-crate failure is reported once per run, not once per function, and names `SHATTER_RUNTIME_PATH` with an example value. The failure-impact table shows `rust` for `.rs` targets.
-- [ ] `SHATTER_RUNTIME_PATH` is documented in the README install section and in the env-var table that str-qwua7.20.2 adds, until str-qwua7.60 embeds the runtime.
-- [ ] A test runs a Rust explore from a temp directory outside the repo with `SHATTER_RUNTIME_PATH` unset, and asserts either success or the single actionable error. A second test asserts `doctor`'s runtime-crate check output in the same setup. Both must fail on current main (repeated error or all-green doctor) and pass after the fix. Record both in the close reason.
-- [ ] SPEC §2.9 and §8 are updated. `task affected` passes, with `Gates selected` recorded, and `cargo test --test e2e_concolic_rust` passes.
+- [ ] When the runtime crate cannot be located, the error is reported **once per run** (not once per function) and the remaining Rust functions in that run are reported as skipped for the same reason. The message names `SHATTER_RUNTIME_PATH`, gives an example value (`/path/to/shatter/shatter-rust-runtime`), and lists where it looked (the env var value if set but invalid, and the executable-ancestor walk).
+- [ ] The failure-impact table has a `rust` row for Rust runtime-setup failures (a dedicated category such as `runtime_crate_missing`, added alongside the Go/TS classifiers at explore.rs:3244-3258). The `any` rollup row may remain.
+- [ ] In machine mode (`--progress`) the once-per-run error follows the machine-mode stderr contract from scan-progress-post-hoc if that has landed; otherwise it is the same human line.
+- [ ] `SHATTER_RUNTIME_PATH` is documented in the README install section and in the env-var table that str-qwua7.20.2 adds (if it exists by then), until str-qwua7.60 embeds the runtime.
+- [ ] **Relocated-frontend integration test** (must fail on current main and pass after the fix): build or copy `shatter-rust` into a temp directory with no `shatter-rust-runtime` sibling in any of its five ancestors, put that directory first on PATH, **remove `SHATTER_RUNTIME_PATH` from the child environment**, run `shatter explore` from a temp cwd outside the repository on a `.rs` fixture with **at least three functions**, and assert: exactly one occurrence of the runtime-crate error on stderr, the message contains `SHATTER_RUNTIME_PATH`, and the failure-impact table has a `rust` row. On current main the error appears three times and there is no `rust` row.
+- [ ] Positive control in the same test setup: with `SHATTER_RUNTIME_PATH` set to the real crate, explore of the same fixture completes with at least one executed path per function. This proves the documented remedy works.
+- [ ] Record the red run on main and the green run on the branch in the close reason. `cargo test --test e2e_concolic_rust` passes. SPEC §8 has a changelog row. `task affected` passes, with `Gates selected` recorded.
 
 ## Suggested approach
 
-Add doctor checks as small, independent functions that follow the existing `check_*` pattern in `doctor.rs`. Reuse the frontend-resolution helper in `helpers.rs` so doctor and explore agree on what "found" means. Reuse `sandbox_backend_configured()` and `execution_permitted()` from `host_writes.rs` for the readiness line. Once sandbox-backend-disables-guard lands, report the backend as Go-only.
+Make the runtime-crate check a per-run precondition on the Rust frontend session (check once when the session starts, or cache the first `FileNotFound` for the run) instead of a per-execute failure. Carry the language on the failure summary so the rollup can add a Rust row.
 
 ## Out of scope
 
 - Embedding the Rust frontend or runtime in the shatter binary (str-qwua7.60).
+- Doctor checks (str-qwua7.40, doctor-execution-readiness).
+- The missing-frontend hint text and its duplication (str-qwua7.13).
 - The general SHATTER_* env-var table (str-qwua7.20.2). This issue only adds the `SHATTER_RUNTIME_PATH` row, if that table exists by then.
 
 ## Related
 
-str-qwua7.40 (open; extends doctor to Rust-frontend resolution. Coordinate with it or fold it in), str-qwua7.20.2, str-qwua7.60, str-qwua7.13 (prints the hint once), sandbox-backend-disables-guard (the readiness line should reflect its Go-only rule).
+str-qwua7.40 (open, doctor Rust section), str-qwua7.13 (open, hint once / scan-run agreement), str-qwua7.20.2, str-qwua7.60. In this bucket: doctor-rust-runtime-note, rust-hint-once-note, doctor-execution-readiness, scan-progress-post-hoc.
 
 ## Priority / Type
 

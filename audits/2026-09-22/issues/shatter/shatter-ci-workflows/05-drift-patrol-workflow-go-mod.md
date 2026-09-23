@@ -21,21 +21,28 @@ The weekly Drift Patrol workflow has never run its patrol step on a schedule. `.
 
 ## Evidence
 
-Re-verified 2026-09-23 against the worktree at `56c86168`:
+Re-verified 2026-09-23 against the audit worktree (main 70465921 plus audit files):
 
 - `.github/workflows/drift-patrol.yml:82-85`: `uses: actions/setup-go@v5` / `go-version-file: go.mod` (wrong, and no `cache-dependency-path`). The other workflows use `shatter-go/go.mod`: `ci.yml:53`, `perf-ci.yml:36`, `release.yml:131-132` (only release also sets `cache-dependency-path: shatter-go/go.sum`).
 - `gh run list --workflow drift-patrol.yml` → `{"failure":7,"success":2}`. The failures are the schedule runs of 08-10, 08-17, 08-24, 08-31, 09-07, 09-14 and 09-21, and the two successes are the 08-07 PR runs. `gh run view 35620815498` (09-21 schedule) shows: `The specified go version file at: go.mod does not exist`.
 - The patrol job installs no system packages. `ci.yml:61-64` installs `libclang-dev z3`. Once setup-go is fixed, the `task ts:build go:build rust-fe:build` step (`:115-116`) or the `--require-conformance` patrol (`:118-126`) may surface the next missing dependency.
 - `scripts/test_ci_workflow_structure.py` never mentions `drift-patrol.yml`, and it checks only `ci.yml`'s shape. str-35vtk.35 (open) wires that script into a local Taskfile task.
 - `docs/DRIFT-PATROL.md:27-28`: "...so the patrol cannot rot in place." `:24` Owner: "The maintainer on the weekly triage rotation; if there is no rotation, whoever is landing work that week". No rotation exists.
-- `docs/DRIFT-PATROL.md:33-43` "What it checks" lists 7 checks. `scripts/drift-patrol.py:757-766` `CHECKS` registers 8 (the extra one is `("tracker-server", check_tracker_server)`, defined at `:686`, added by str-qwua7.16). `AGENTS.md:22` references `--only tracker-server`.
+- `docs/DRIFT-PATROL.md:33-43` "What it checks" lists 7 checks. `scripts/drift-patrol.py:757-767` `CHECKS` registers 8 (the extra one is `("tracker-server", check_tracker_server)`, defined at `:686`, registered at `:765`, added by str-qwua7.16). `AGENTS.md:22` references `--only tracker-server`.
 - Tracker data in CI: `scripts/drift-patrol.py:183-221` `load_tracker()` falls back to the committed `.beads/issues.jsonl` when `bd` is absent, as it is in CI. D4 (2026-09-23) retires the JSONL import. `beads-jsonl-consumers-drop-bd-sync` (shatter-tracker-and-beads bucket) owns changing that data source.
 - Run locally, `python3 scripts/drift-patrol.py` does run and reports a tracker-hygiene FAIL. The script works; only the workflow is broken.
 
 ## Acceptance criteria
 
 - [ ] `drift-patrol.yml` uses `go-version-file: shatter-go/go.mod` and `cache-dependency-path: shatter-go/go.sum`.
-- [ ] A test fails on the current tree and passes after the fix. It lives in `scripts/test_ci_workflow_structure.py` or a new module that `task meta` runs; coordinate with str-35vtk.35. For every `.github/workflows/*.yml` it asserts that each `go-version-file`, `cache-dependency-path`, `working-directory` and `hashFiles(...)` literal path exists in the repo. Paste the failing and then passing output in the close reason.
+- [ ] A test fails on the current tree and passes after the fix. It lives in `scripts/test_ci_workflow_structure.py` or a new module that `task meta` runs; coordinate with str-35vtk.35. It parses every `.github/workflows/*.yml` with a YAML parser and applies this path contract:
+  - **Literal paths** (`with.go-version-file`, `with.cache-dependency-path`, `with.node-version-file`, and step or job `working-directory`) must exist in the checkout, relative to the repo root. `cache-dependency-path` values may be multi-line; check each line.
+  - **Globs** (each argument of `hashFiles(...)`, and any path value containing `*`, `?` or `[`) are expanded with `glob.glob(..., recursive=True)` from the repo root and must match at least one file. For example, `hashFiles('**/Cargo.lock')` passes because `Cargo.lock` exists.
+  - **Expressions.** A value containing `${{` that is not a `hashFiles(...)` call (for example `working-directory: ${{ matrix.dir }}`) is skipped and listed in the test output. It is not treated as a failure.
+  - **Runtime-created paths.** A path that a workflow creates at run time (for example `staging/`) is exempt only if it appears in an explicit allowlist in the test file, each entry with a one-line reason. Today the allowlist is empty, since every `working-directory` in the workflows is a checked-in directory (`shatter-go`, `shatter-rust`, `shatter-ts`).
+  - Unit cases in the test cover: a missing literal path fails; a glob with zero matches fails; a glob with matches passes; an expression is skipped; an allowlisted path passes.
+
+  Paste the failing output (which names `drift-patrol.yml` `go-version-file: go.mod`) and then the passing output in the close reason.
 - [ ] One `workflow_dispatch` or scheduled run of Drift Patrol reaches and executes the `Run drift patrol` step, with its report in the run summary. Cite the run URL in the close reason. A PR run is not sufficient. A patrol FAIL on real drift (for example tracker-hygiene) is acceptable here. A setup or build failure before the patrol step is not.
 - [ ] `docs/DRIFT-PATROL.md` changes:
   - adds a `tracker-server` row to the "What it checks" table;

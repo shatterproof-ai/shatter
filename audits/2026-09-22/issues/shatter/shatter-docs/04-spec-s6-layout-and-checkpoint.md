@@ -30,7 +30,7 @@ The code half is owned by mixed-language-scan-deletes-artifacts (P1): the checkp
 Re-verified at 56c86168:
 
 - **Scan-id derivation.** `SPEC.md:960-970` (§6.2) shows `shatter-artifacts/scan-results/<scan-id-prefix>/checkpoint.json`. It says the prefix is "the first 16 hex characters of a SHA-256 hash computed from the sorted list of source file paths". The code does not work that way:
-  - `compute_scan_id_for_targets` in `shatter-core/src/scan_orchestrator.rs` hashes `scan_id_v2:` plus (qualified_id, source_file) pairs.
+  - `compute_scan_id_for_targets` in `shatter-core/src/checkpoint.rs:132` hashes `scan_id_v2:` plus (qualified_id, source_file) pairs.
   - `scan_root` (`scan_orchestrator.rs:557`ff.) resolves `resolve_artifact_root` (`shatter-core/src/harness_storage.rs:77`, which honours `SHATTER_ARTIFACT_DIR`) plus `scan-results/<full 64-hex id>/`.
   - `manifest.json`, `run-status.{json,tsv}`, `summary.json` and `functions/` are written under that `scan_root`.
 - **Checkpoint location.** `ScanCheckpoint::default_path` (`shatter-core/src/checkpoint.rs:197`ff., called from `shatter-cli/src/commands/scan.rs:1203`) hard-codes `project_root/shatter-artifacts/scan-results/<first 16 hex>/checkpoint.json`. That is a second directory for the same scan. Observed directory: `scan-results/4dfd2b95…36f8/`.
@@ -61,4 +61,4 @@ After the blocker lands, run a two-language scan with `--progress` and `SHATTER_
 
 ## Source
 
-Audit 2026-09-22, finding docs-07 (confirmed, P2; docs half). Draft `shatter-docs-ui/06`. Evidence is in `audits/2026-09-22/areas/docs.md`.
+Audit 2026-09-22, finding docs-07 (confirmed, P2; docs half). Draft `shatter-docs-ui/06`. Evidence is in `audits/2026-09-22/areas/docs.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).

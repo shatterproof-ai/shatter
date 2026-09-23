@@ -33,7 +33,7 @@ Line numbers re-checked against `56c86168` (branch `audit-2026-09-22`):
 - [ ] Old cache entries (bare-name files without fingerprints) are ignored and never served as a hit. They may be deleted lazily. There is no silent migration that could pair a map with the wrong file.
 - [ ] CLI test: scan a fixture dir twice with no changes. The second run reports `expected_skipped == n` (all functions). At close, show the test failing on current `main` and passing after the fix.
 - [ ] Test: two same-named functions in different files keep separate maps with their own return values.
-- [ ] Stored maps record their source file (add the field if `BehaviorMap` lacks it). `revalidate` refuses, with exit 2 and a clear message, any map whose recorded source file differs from its `<SOURCE>` argument.
+- [ ] Stored maps record their source file (add the field if `BehaviorMap` lacks it). `revalidate` refuses, with exit 2 and a clear message, any map whose recorded source file differs from its `<SOURCE>` argument. `BehaviorMap` (`shatter-core/src/behavior.rs:214`) has no schema version today, so the field is added as `#[serde(default)] Option<String>`; a map without it is a legacy map and is handled by the legacy rule above (never served as a hit). BehaviorMap is core-internal cache state, not a frontend protocol type, so no parity-matrix change applies; say so in the close note.
 - [ ] `task affected` passes, and its `Gates selected` output is recorded.
 
 ## Suggested approach

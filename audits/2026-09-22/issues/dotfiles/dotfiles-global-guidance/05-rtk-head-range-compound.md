@@ -56,22 +56,26 @@ It was reproduced twice on 2026-09-22 and once on 2026-09-23. The same summarisi
   - `head` or `tail` with an explicit `-n N` / `-N`;
   - `sed -n '<range>p'`;
   - `cat` of a named file.
-- [ ] Proof at close: new cases in `claude/tests/test_rtk_prefilter.py` fail before the fix and pass after it. The closing comment includes both runs. The cases must cover at least:
+- [ ] New cases in `claude/tests/test_rtk_prefilter.py`, run with `python3 -m pytest claude/tests/test_rtk_prefilter.py -q` (`claude/tests/run.sh` runs only `test_*.sh`), fail before the fix and pass after it. The closing comment includes both runs. The cases must cover at least:
   - `a; head -5 f; b`
   - `a && tail -n 3 f`
   - `sed -n '1,4p' f | cat`
   - `wc -l f; true; head -5 f` (the reproduction above)
 - [ ] The reproduction command above prints the true first five lines in a live session. Paste the output into the closing comment.
-- [ ] Optional: an upstream rtk issue is filed asking that requested ranges never be replaced with summaries, and it is linked here.
+- [ ] The closing comment says whether an upstream rtk report ("never replace requested ranges with summaries") is worth filing. The maintainer files it; the implementer does not.
 
 ## Suggested approach
 
-Split the command on top-level `;`, `&&`, `||` and `|` using the prefilter's existing tokenizer, if it has one. If any segment is an exact-range read, exit 0 with no output so the command runs byte-identical, as the prefilter already does for its other skip cases.
+`rtk_prefilter.py` has no shell tokenizer. `skip_reason()` (`:84-95`) runs word-bounded regexes over the whole raw command, deliberately unanchored to position so that chains, `$(...)` and multi-line scripts are covered (see the comment at `:66-82`). Follow that design: add one more whole-string regex for exact-range reads (`head`/`tail` with `-n N` or `-N`, `sed -n '...p'`, `cat <path>`) and return a skip reason when it matches. The prefilter then exits 0 with no output, so the command runs byte-identical, as it already does for its other skip cases. A false positive only costs rtk's token savings. Note that `|` pipelines are not currently a skip case (only `tee` is), so `sed -n '1,4p' f | cat` needs the new regex too.
 
 ## Out of scope
 
 - The `find -not/-exec` case, which #11 already handles (`rtk_prefilter.py:50-91`).
 - rtk's own rewrite logic in `~/.claude/hooks/rtk-rewrite.sh`, which the rtk tool owns.
+
+## Maintainer decisions that apply
+
+D6: nothing from this audit is filed by agents; the maintainer runs the filer.
 
 ## Dependencies
 

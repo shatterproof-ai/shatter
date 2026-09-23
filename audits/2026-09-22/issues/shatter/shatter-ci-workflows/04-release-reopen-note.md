@@ -25,10 +25,11 @@ Comment text:
 >
 > The release job `needs` every leg, so it is skipped every time.
 >
-> Maintainer decision D1 (2026-09-23): both targets stay in the matrix and get fixed. The work is tracked in three new issues:
-> - `<id of release-windows-z3-build>`: Windows Z3 build
-> - `<id of release-aarch64-openssl-cross>`: aarch64 openssl/cross build (note that str-qwua7.41 deleted Cross.toml/cross/ on the false premise that no workflow uses cross)
-> - `<id of release-publish-and-install-smoke>`: first published continuous-* prerelease, plus install.sh/action.yml smoke tests in CI
+> Maintainer decision D1 (2026-09-23): both targets stay in the matrix and get fixed. The work is tracked in four new issues:
+> - `<id of release-publish-guard-and-target>`: restrict publishing to push-on-main and pass `--target $GITHUB_SHA`, so branch runs can iterate on the fixes without publishing
+> - `<id of release-windows-z3-build>`: the Windows Z3 build, plus the Unix-only code in shatter-cli that fails next
+> - `<id of release-aarch64-openssl-cross>`: the aarch64 openssl/cross build, plus build.rs embedding a host-arch Go frontend (str-qwua7.41 deleted Cross.toml and cross/ on the false premise that no workflow uses cross)
+> - `<id of release-publish-and-install-smoke>`: the first published continuous-* prerelease, and install.sh/action.yml smoke tests on clean runners inside release.yml
 >
 > Each closes only with a green release-run URL. Release work should not be closed on "landed" again.
 

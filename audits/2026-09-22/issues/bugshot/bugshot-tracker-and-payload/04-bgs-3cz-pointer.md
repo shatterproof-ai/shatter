@@ -19,7 +19,8 @@ on main"; it has no comments yet).
 
 Action: `bd comments add bgs-3cz` with the text below. **Do not reopen and do
 not change status or priority.** Filer: file `installed-cache-bloat-investigation`
-first, then replace `<NEW-ID>` below with its id. The `blocked_by` in the
+first, then replace `<NEW-ID>` below with its id. Filing
+`publish-staged-plugin-bundle` first is not required. The `blocked_by` in the
 front-matter is an ordering constraint for the filer, not a bd edge on this
 closed issue.
 
@@ -27,7 +28,8 @@ closed issue.
 
 > Audit 2026-09-22 (Shatter audit finding plugins-18): the installed plugin cache
 > `~/.claude/plugins/cache/bento/bugshot/1.0.20` is still 125 MB, with
-> `node_modules/` at about 122 MB, plus `.beads/`, `tests/` and `docs/`. The bento
+> `node_modules/` at about 122 MB, plus development-only `.beads/`, `tests/` and
+> `docs/plans/`. The bento
 > marketplace entry still points at the repo root
 > (`{"source":"github","repo":"ketang/bugshot"}`), and the f8bf685 staging
 > mode (`scripts/build-plugin --bundle-dir`) is opt-in.
@@ -38,8 +40,9 @@ closed issue.
 > `gitCommitSha` 4fb4d82 predates f8bf685, even though the cached files match
 > HEAD e622d73. The mechanism is being traced in **<NEW-ID>**
 > ("Investigate why the installed bugshot plugin cache is 125 MB ...").
-> Reopen this issue only if that investigation concludes the f8bf685 fix does
-> not address the shipped payload.
+> Any publication fix is owned by the follow-up issue that the investigation
+> blocks ("Publish a slim bugshot plugin payload ..."). This issue stays
+> closed, so the fix has a single open owner.
 
 ## Close proof
 

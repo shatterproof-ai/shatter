@@ -38,6 +38,10 @@ A cheap upper-bound run with a scripted perfect ranker on the existing code woul
 - [ ] It says that experiment code stays on an experiment branch or a bento expedition until the probe passes, and that a negative probe result is reported as the outcome.
 - [ ] Proof at close: the closing comment shows the output of `grep -n "falsification\|upper-bound" ~/dotfiles/docs/agent-guidance/planning.md`.
 
+## Maintainer decisions that apply
+
+D6: nothing from this audit is filed by agents; the maintainer runs the filer.
+
 ## Out of scope
 
 Re-evaluating the landed str-hjrnp work in shatter.

@@ -37,11 +37,9 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
 - Repo `.gitignore:130` `.claude/settings.local.json`, `:134` `.codex/`,
   `:165` `.claude/worktrees/`. There is no `!` negation.
 - `git ls-files .claude | wc -l` -> 17. `git ls-files .codex | wc -l` -> 0.
-  The primary checkout's `.codex/` holds untracked symlinks (`skills`,
-  `swarm-config.md`) and a `worktrees/` dir.
-- An orphan checkout `/home/ketan/project/shatter/.claude/worktrees/str-umw3/`
-  (9.0 MB; issue str-umw3 closed 2026-04-11) still exists. It is not
-  registered in `git worktree list`, and greps still match it.
+  The primary checkout's `.codex/` holds untracked symlinks (`skills` ->
+  `../.claude/skills`, `swarm-config.md`) and a `worktrees/` dir. Un-ignoring
+  `.codex/` wholesale would surface these as untracked.
 - `task meta` (`Taskfile.yml:396`) is the home for repo meta tests; its
   `sources:` list must include any new test file, or the checksum cache will
   skip it.
@@ -52,25 +50,25 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
 
 1. Repo `.gitignore` un-ignores `/.claude/` (`!/.claude/`) and re-ignores
    `/.claude/settings.local.json` and `/.claude/worktrees/`. It replaces the
-   blanket `.codex/` ignore with rules that track `/.codex/AGENTS.md` (and any
-   other codex files the project intends to track) and keep machine-local
-   codex state ignored.
+   blanket `.codex/` ignore with exactly: ignore `/.codex/*`, un-ignore
+   `!/.codex/AGENTS.md`. Everything else under `.codex/` (the `skills` and
+   `swarm-config.md` symlinks, `worktrees/`, session state) stays ignored.
+   Tracking any further `.codex/` file needs its own `!` line and test case.
 2. A meta test (for example `scripts/test_agent_config_trackable.py`) is wired
    into `task meta` `cmds:` and `sources:`. It asserts that
    `git check-ignore -q --no-index` **fails** (not ignored) for
    `.claude/skills/x/SKILL.md` and `.codex/AGENTS.md`, and **succeeds**
-   (ignored) for `.claude/settings.local.json` and `.claude/worktrees/x`. It
+   (ignored) for `.claude/settings.local.json`, `.claude/worktrees/x`,
+   `.codex/skills`, `.codex/swarm-config.md` and `.codex/worktrees/x`. It
    runs with the maintainer's real global excludes, and also with
    `core.excludesFile` pointing at a temp file containing `.claude/` and
    `.codex/`, so it holds on CI where the global file is absent.
 3. Failing-then-passing proof in the close reason: the test run before the
    `.gitignore` change (fails) and after (passes).
-4. `git status` in a worktree shows a newly created `.claude/skills/probe/SKILL.md`
-   as untracked (recorded, then the probe is deleted).
-5. The `.claude/worktrees/str-umw3/` orphan is removed **only after explicit
-   operator confirmation**, with its size recorded. (This item moves here from
-   str-qwua7.1.)
-6. `task affected` passes, with `Gates selected` recorded.
+4. `git status --porcelain` in a scratch worktree shows a newly created
+   `.claude/skills/probe/SKILL.md` as `??` and shows nothing under `.codex/`
+   in the primary checkout (recorded, then the probe is deleted).
+5. `task affected` passes, with `Gates selected` recorded.
 
 ## Suggested approach
 
@@ -89,6 +87,8 @@ on each developer's global config.
 ## Out of scope
 
 - Writing `.codex/AGENTS.md` itself (str-qwua7.54).
+- Removing the `.claude/worktrees/str-umw3/` orphan (moved to
+  `orphan-worktree-dirs-cleanup`).
 - Changing the dotfiles global gitignore (see the alternative above; no
   dotfiles issue is filed from this audit).
 

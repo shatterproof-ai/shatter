@@ -19,10 +19,11 @@ A test-fixture git identity leaked into the primary checkout's repo-local
 `.git/config` as a `[user]` section (`name = Test`, `email = test@example.com`).
 It was a side effect of the GIT_DIR fixture leak that str-jttrf and str-y0rcz
 fixed on 2026-09-12. Those fixes stopped the leak but never repaired the damage
-it had already done, so every commit made in the primary checkout from about
-2026-06-23 was authored `Test` or `Test User <test@example.com>`, and all were
-pushed to GitHub. The maintainer removed the leaked `[user]` section on
-2026-09-23 (decision D5). **That step is done and is not part of this issue.**
+it had already done, so nearly every commit made in the primary checkout from
+about 2026-06-23 was authored `Test` or `Test User <test@example.com>`, and
+all were pushed to GitHub. The maintainer removed the leaked `[user]` section
+on 2026-09-23 (decision D5). **That step is done and is not part of this
+issue.**
 
 Two things are still missing:
 
@@ -35,9 +36,15 @@ Two things are still missing:
    sentinel, and checks that the sentinel is unchanged. It never checks the
    repository the test runs in: the real checkout's
    `$(git rev-parse --git-common-dir)/config`. That file is what was damaged
-   in 2026-06..09. A fixture that bypasses the sanitizer, or a new fixture
-   missing from `ENTRYPOINTS`, could rewrite the real config and this test
-   would still pass.
+   in 2026-06..09. A fixture that bypasses the sanitizer could rewrite the
+   real config and this test would still pass.
+3. **Unregistered fixtures are invisible.** The test only runs what is listed
+   in `ENTRYPOINTS`. A fixture creator that nobody registered is never
+   executed, so no before/after snapshot, of the sentinel or of the real
+   config, can detect its leak. Several identity-writing fixtures are already
+   unregistered (see Evidence). Guarding the real config therefore needs a
+   **registration-completeness** check as well, or the protection claim must
+   be narrowed to registered entrypoints.
 
 The repo-state check (FAIL on local identity override, `*@example.com`,
 `core.bare=true`, local `core.hooksPath`) is **not** in this issue. It goes to
@@ -56,8 +63,9 @@ Re-verified 2026-09-23 in the audit worktree
   `git log --all --format='%an <%ae>%n%cn <%ce>' | grep example | sort | uniq -c`
   -> `285 Test <test@example.com>`, `961 Test User <test@example.com>` (author
   and committer lines). `git log -300 origin/main --format='%an <%ae>' | sort | uniq -c`
-  -> 177 `Test User`, 123 `Test`, 0 real. The first leaked commit is
-  `131ebe06` (2026-06-23, `Test User`).
+  -> 177 `Test User`, 123 `Test`, 0 real. Since 2026-06-24 origin/main has
+  about 6 real-identity commits against several hundred fixture-identity ones.
+  The first leaked commit is `131ebe06` (2026-06-23, `Test User`).
 - No `.mailmap` exists at the repo root.
 - Fixtures that write this identity (any one of them hits the real repo if
   GIT_DIR leaks in):
@@ -67,11 +75,21 @@ Re-verified 2026-09-23 in the audit worktree
   `scripts/test_git_sandbox_test_lib.py:93-94,134-135`,
   `scripts/test_walkthrough_examples_checkout.py:57,63` (`Test User`),
   `shatter-cli/tests/implicit_init_gitignore_test.rs:51-52` (`Test User`),
+  `shatter-cli/src/commands/init.rs:379-380` (unit test, `Test User`),
+  `shatter-cli/src/generated_paths.rs:750-752` (unit test, `Test`),
   `shatter-core/src/scm.rs:709` (`t@example.com`).
 - `scripts/test_git_fixture_isolation.py:19-31` (`ENTRYPOINTS`) lists only the
-  shell and Python fixtures. The Rust fixtures (`implicit_init_gitignore_test.rs`,
-  the `scm.rs` unit tests) are not covered. `:48-105` snapshots only the
-  temporary `caller` repo, never `ROOT`'s git common dir.
+  shell and Python fixtures. None of the four Rust fixture sites above is
+  registered, and nothing checks that a fixture creator is registered.
+  `:50-111` snapshots only the temporary `caller` repo, never `ROOT`'s git
+  common dir.
+- `git grep -l -E 'user\.(email|name)'` over `scripts/`, `*/tests/`, `*/src/`
+  also matches non-fixtures (for example `shatter-core/tests/e2e_concolic.rs:952`,
+  a JS `props.user.name` string), so a completeness check needs an explicit
+  allowlist, not a bare grep.
+- The shared `$(git rev-parse --git-common-dir)/config` is legitimately
+  rewritten by concurrent sessions (`branch.<name>.*` from `push -u`, remotes,
+  worktree config). A whole-file digest would fail spuriously during swarms.
 - The test runs under `task meta` (`Taskfile.yml:450`,
   `python3 -m unittest scripts.test_git_fixture_isolation`) and is already in
   `meta`'s `sources:` (`Taskfile.yml:418`).
@@ -91,33 +109,51 @@ Re-verified 2026-09-23 in the audit worktree
    prints the real identity twice, and
    `git log --use-mailmap --format='%aN <%aE>' origin/main | grep -c example.com`
    prints `0`.
-3. `scripts/test_git_fixture_isolation.py` hashes
-   `$(git -C ROOT rev-parse --git-common-dir)/config` before and after each
-   `ENTRYPOINTS` command, and before and after the whole run. It fails, naming
-   the entrypoint and the diff, if the file changed. The test only reads the
-   real config and never writes it.
-4. Failing-then-passing proof in the close reason: on a scratch branch, add a
-   throwaway entrypoint that runs `git -C "$ROOT" config user.email leak@example.com`
-   (against a *copy* of the repo, reached by pointing `ROOT` at a temporary
-   clone). Record the test failing, then remove it and record the pass. Do
-   not run the leaking probe against the real primary checkout.
-5. The Rust fixtures that set identities (`implicit_init_gitignore_test.rs`,
-   `scm.rs` tests) are either added as entrypoints (a focused
-   `cargo test -p <crate> <name>` invocation) or covered by the same
-   before/after config hash in a wrapper. The choice is recorded in the test
-   file's comment block above `ENTRYPOINTS`.
-6. `task meta` passes, and `task affected` passes with its `Gates selected`
+3. **Guarded key set, not a whole-file hash.** The test reads the real
+   config (`git config --file <common-dir>/config --list`, common dir resolved
+   with the test's `clean_env` so a leaked `GIT_DIR` cannot redirect it)
+   before and after each `ENTRYPOINTS` command and around the whole run. It
+   compares only the damage-class keys: `user.*`, `core.bare`,
+   `core.hooksPath`, `core.worktree`, plus any newly added key whose value
+   contains `example.com`, `example.invalid` or `example.org`. On a change it
+   fails, naming the entrypoint and the key diff. It only reads the real
+   config and never writes it. The guarded key list is a named constant in
+   the test file.
+4. **No false positive under concurrency.** A unit test adds a
+   `branch.<x>.remote` entry to a temp repo's config between the before and
+   after reads and asserts the guard passes. A second unit test adds
+   `user.email=leak@example.com` and asserts it fails.
+5. **The guard is a function that takes the repo root as a parameter**
+   (required form, so the proof exercises the same code path as the real
+   run). Failing-then-passing proof in the close reason: call it against a
+   temporary clone with a throwaway entrypoint that runs
+   `git -C "$root" config user.email leak@example.com`; record the failure,
+   remove the entrypoint, record the pass. Never run the leaking probe
+   against the real primary checkout.
+6. **Registration completeness.** A second test enumerates tracked files
+   under `scripts/`, `*/tests/` and `*/src/` that set a git identity
+   (`git config user.email|user.name`, `-c user.email=`, or equivalent) and
+   fails unless each is either reachable from an `ENTRYPOINTS` command or
+   listed in a `NOT_EXECUTED = {path: reason}` allowlist in the test file.
+   Close-time proof: the test fails on the current tree, listing at least the
+   four Rust sites above, and passes after they are registered or allowlisted.
+7. The four Rust fixture sites are either registered (a focused
+   `cargo test -p <crate> <name>` entrypoint each) or allowlisted with a
+   reason stating why they cannot reach a real repo. The choice is recorded
+   in the comment block above `ENTRYPOINTS`. If any are allowlisted, the
+   test file's docstring states that the real-config guard covers registered
+   entrypoints only.
+8. `task meta` passes, and `task affected` passes with its `Gates selected`
    output recorded.
 
 ## Suggested approach
 
-- Add a small `real_config_digest()` helper next to `snapshot()`. Call it
-  around the existing loop body so both contamination modes are covered. Use
-  `git rev-parse --git-common-dir` with a clean env (the same `clean_env` the
-  test builds), so a leaked `GIT_DIR` cannot redirect the probe.
-- For the proof in item 4, make `ROOT` overridable through an env var used
-  only by the test, or factor the check into a function that takes the root
-  as a parameter and unit-test that function against a temporary clone.
+- Add `guarded_config(root) -> dict[str, list[str]]` next to `snapshot()`,
+  and call it around the existing loop body so both contamination modes are
+  covered.
+- For the completeness test, prefer `git grep -n -E` over tracked files with
+  a pattern that targets git-config calls, and keep the allowlist small and
+  explained.
 
 ## Out of scope
 

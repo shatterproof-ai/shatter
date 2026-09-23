@@ -1,7 +1,7 @@
 ---
 slug: tool-precedence-vs-harness-mode
 kind: new
-title: "Global Read/Grep-first rule contradicts the harness bypass-mode text: state one rule that acknowledges both"
+title: "Tool-Specific Notes never say the Read/Grep-first rule overrides the harness's bypass-mode Bash guidance (missed #10 acceptance check)"
 priority: P3
 type: enhancement
 labels: [documentation]
@@ -11,39 +11,32 @@ existing_id: ""
 tracker: "gh -R ketang/dotfiles (GitHub Issues; no .beads in the repo)"
 ---
 
-# Global Read/Grep-first rule contradicts the harness bypass-mode text: state one rule that acknowledges both
+# Tool-Specific Notes never say the Read/Grep-first rule overrides the harness's bypass-mode Bash guidance (missed #10 acceptance check)
 
-Part of #<epic>. Priority: P3. The verifier notes this is mostly a conflict of preferences with little effect on correctness. Type: enhancement.
+Part of #<epic>. Priority: P3. Type: enhancement. Follow-up to closed **#10** ("Reconcile subagent, tools-vs-Bash, and RTK guidance into one paragraph"). Cross-references to other drafts use their slugs; the filer posts a slug-to-issue map on the epic.
 
 ## Problem
 
-The global rule and the harness instructions give opposite defaults:
+Closed #10 had this acceptance check: the "How to act" section "states explicitly that this rule wins over harness auto-mode prompts that prefer Bash for reads, because it is user instruction (which the harness ranks above its defaults)". #10 was closed on 2026-09-07 as landed (`af7864c`). The current text does not contain that statement.
 
-- `codex/AGENTS.md` "Tool-Specific Notes" (lines 129-137 at dotfiles @ `81f35e1`) says to prefer `Read`/`Grep`/`Glob` over Bash `cat`/`grep`/`find`.
-- Claude Code's bypass-permissions harness text explicitly allows reading and searching with `cat`, `grep`, `sed` and `find` through Bash.
-
-Agents follow the harness. Neither source says which one wins, and the global rule reads as ignored boilerplate.
+The two sources do not strictly contradict each other: the harness permits shell reads, and the user rule prefers dedicated tools. But the harness text is specific and recent in context, the user rule does not say it takes precedence, and agents follow the harness. #10 already decided the precedence; this issue only lands the missing sentence.
 
 ## Evidence
 
-Counts from Shatter transcripts since 2026-09-04 (the verifier did not recount them):
-
-- 655 Bash calls led by grep, cat, sed, find or head, across 34 sessions: grep 372, cat 151, sed 70, find 58.
-- Dedicated tools: Read 379, Grep 128, Glob 11.
-- All-time totals: 1,470 shell-led calls against 1,429 dedicated-tool calls.
-
-The source finding also cited rtk rejecting `find -not/-exec`. **That part is resolved.** Every occurrence of `rtk find does not support compound predicates` in the Shatter transcripts is dated between 2026-08-27 and 2026-09-07, before #11 landed (`88e9cb5`, 2026-09-07). `claude/rtk_prefilter.py:50-91` now passes those forms through, so it is excluded here.
-
-The exact-range read problem, where `head`/`sed -n` output is summarized in compound commands, is a live reason to prefer `Read`. It is tracked in `rtk-head-range-compound`.
+- `codex/AGENTS.md:131-138` (dotfiles @ `81f35e1`), Tool-Specific Notes: "prefer `Read`/`Grep`/`Glob` over Bash `cat`/`grep`/`find` pipelines for anything those tools cover natively" and "dedicated harness tools (`Read`, `Grep`, `Glob`, `Edit`) still take precedence over any shell equivalent". `grep -n -i "auto-mode\|auto mode\|bypass" codex/AGENTS.md` finds nothing. The only "harness" match (`:137`) refers to the tools, not to harness mode text.
+- The harness's bypass-permissions text, as it appears in a Claude Code session's system context on 2026-09-23: "While bypass permissions mode is active: You can do much of your work through the Bash tool when it is the simpler route: read files with cat, head, or sed -n, search with grep and find … The choice is yours".
+- Usage, indicative only (the verifier did not recount, and these counts do not show that each shell call could have used a dedicated tool): in Shatter transcripts since 2026-09-04, 655 Bash calls led by grep, cat, sed, find or head across 34 sessions, against Read 379, Grep 128 and Glob 11. #10 itself measured 886 non-piped `grep/cat/sed/find` calls where Read/Grep/Glob fit.
+- The rtk `find -not/-exec` rejections cited by the source finding all predate #11 (`88e9cb5`, 2026-09-07) and are excluded. The live exact-range problem (`head`/`sed -n` summarised inside compound commands) is tracked in `rtk-head-range-compound`.
 
 ## Acceptance criteria
 
-- [ ] The Tool-Specific Notes bullet (or its successor after #23's rewrite) acknowledges the harness's bypass mode and states the rule that matters:
-  - use `Read` for files you will edit, or when you need exact byte ranges;
-  - use `Grep`/`Glob` for multi-file search;
-  - plain shell is acceptable for one-off reads and for pipelines that the dedicated tools cannot express.
-- [ ] The wording fits dotfiles#23's ≤ 150-word target for Tool-Specific Notes. If #23 has landed, it must not break `test/global-instructions-budget-test.sh`.
-- [ ] Proof at close: the closing comment shows the new bullet, the output of `wc -w codex/AGENTS.md`, and `codex/agents-sync.sh status` reporting `render vs snapshot: ok`.
+- [ ] Tool-Specific Notes (or its successor after #23's rewrite) states that the Read/Grep/Glob preference is user instruction and takes precedence over harness mode text that permits or encourages shell reads, including bypass-permissions mode. This implements #10's acceptance check and does not change the rule itself.
+- [ ] The wording fits dotfiles#23's ≤ 150-word target for Tool-Specific Notes. If #23 has landed, `test/global-instructions-budget-test.sh` still passes.
+- [ ] Relaxing the rule (for example "plain shell is acceptable for one-off reads") is **not** part of this issue. It would reverse #10's decision and needs a separate maintainer decision.
+
+## Proof at close
+
+The closing comment shows the new text, `wc -w codex/AGENTS.md`, and `grep -n -i "bypass\|harness mode" ~/.codex/AGENTS.md` finding the sentence in the rendered Codex file (not only `agents-sync.sh status`).
 
 ## Out of scope
 
@@ -51,10 +44,14 @@ The exact-range read problem, where `head`/`sed -n` output is summarized in comp
 - The shatter-local Tool-rules block (str-qwua7.26).
 - Hook enforcement of tool choice.
 
+## Maintainer decisions that apply
+
+D6: nothing from this audit is filed by agents; the maintainer runs the filer.
+
 ## Dependencies
 
 None blocking. Coordinate with dotfiles#23, which rewrites the same section under a word budget. Whichever lands second rebases onto the other. Related: `rtk-head-range-compound`.
 
 ## Source
 
-Shatter audit 2026-09-22 finding sessions-16 (verifier: partially confirmed, P3).
+Shatter audit 2026-09-22 finding sessions-16 (verifier: partially confirmed, P3). Reframed during the Codex cross-check of 2026-09-23.

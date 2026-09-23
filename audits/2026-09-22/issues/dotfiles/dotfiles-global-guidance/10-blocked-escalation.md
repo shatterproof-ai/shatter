@@ -13,7 +13,7 @@ tracker: "gh -R ketang/dotfiles (GitHub Issues; no .beads in the repo)"
 
 # Sessions stall for hours on unseen questions and classifier denials: add escalation guidance
 
-Part of #<epic>. Priority: P3. The verifier lowered this from P2 because part of the root cause is harness UI, outside first-party control. Type: enhancement.
+Part of #<epic>. Priority: P3. Cross-references to other drafts use their slugs; the filer posts a slug-to-issue map on the epic. The verifier lowered this from P2 because part of the root cause is harness UI, outside first-party control. Type: enhancement.
 
 ## Problem
 
@@ -32,9 +32,22 @@ Shatter transcripts in `~/.claude/projects/-home-ketan-project-shatter/`:
 ## Acceptance criteria
 
 - [ ] `docs/agent-guidance/questions.md` says what to do when the work is blocked on the user. Send a PushNotification (where available) with the one-line question, and restate the question in plain text at the end of the turn, not only inside AskUserQuestion.
-- [ ] It says that an auto-mode classifier denial means "use the sanctioned tool or path", for example the bento land-work driver for pushes to main. It does not mean "wait", and it does not mean "retry with a bypass" (consistent with `never-recommend-bypass`).
-- [ ] The summary line is in the core-rules file from `global-guidance-actually-loads`.
-- [ ] Proof at close: the closing comment shows the output of `grep -n "PushNotification\|classifier" ~/dotfiles/docs/agent-guidance/questions.md` and `codex/agents-sync.sh status` reporting `render vs snapshot: ok`.
+- [ ] It says what an auto-mode classifier denial means. The action, as attempted, is not authorized. The agent:
+  - stops that action and tells the user in plain text what was denied and why it was attempted, then asks how to proceed (with a PushNotification where available), instead of waiting silently;
+  - may continue through a different path only when that path is already authorized for this task, for example the user already asked to land through the bento land-work flow and the denied command was a manual push that the flow replaces;
+  - never uses another tool or command to get the same effect the denial blocked;
+  - never retries with a bypass (`--no-verify`, a hooks-path override), consistent with `never-recommend-bypass` and D4.
+- [ ] The text uses the `455c2cd7` case as its example: a denied `git push --no-verify … :refs/heads/main` was an unauthorized action that needed the user's decision, not a prompt to find another way to push.
+- [ ] If `docs/agent-guidance/core.md` (from `global-guidance-actually-loads`) is on `main` when this lands, this issue adds the rule's one-line summary to it. If not, that issue adds it.
+
+## Proof at close
+
+The closing comment quotes the new `questions.md` text, and, if `core.md` exists, shows the summary line in the output of the SessionStart core-rules hook (and in `~/.codex/AGENTS.md` once `codex-render-composes-core-rules` has landed). `codex/agents-sync.sh status` alone is not proof: it does not look at leaf files.
+
+## Maintainer decisions that apply
+
+- D4 (2026-09-23): no hook-bypass guidance anywhere.
+- D6: nothing from this audit is filed by agents; the maintainer runs the filer.
 
 ## Out of scope
 

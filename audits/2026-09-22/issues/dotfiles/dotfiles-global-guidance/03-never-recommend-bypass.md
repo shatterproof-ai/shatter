@@ -1,7 +1,7 @@
 ---
 slug: never-recommend-bypass
 kind: new
-title: "Agents mark hook or gate bypass as the (Recommended) option: add a framing rule to failing-checks.md"
+title: "Agents offer hook or gate bypass as the (Recommended) option: forbid offering bypass options in failing-checks.md"
 priority: P2
 type: enhancement
 labels: [documentation]
@@ -11,15 +11,15 @@ existing_id: ""
 tracker: "gh -R ketang/dotfiles (GitHub Issues; no .beads in the repo)"
 ---
 
-# Agents mark hook or gate bypass as the (Recommended) option: add a framing rule to failing-checks.md
+# Agents offer hook or gate bypass as the (Recommended) option: forbid offering bypass options in failing-checks.md
 
-Part of #<epic>. Priority: P2. Type: enhancement.
+Part of #<epic>. Priority: P2. Type: enhancement. Cross-references to other drafts use their slugs; the filer posts a slug-to-issue map on the epic.
 
 ## Problem
 
 Sometimes a gate or hook fails for a reason unrelated to the diff. In those cases agents offer a bypass (`--no-verify`, `core.hooksPath=/dev/null`, "waive this gate") as the **(Recommended)** AskUserQuestion option. Every recorded time, the user declined and asked for the flake to be fixed or isolated instead.
 
-`failing-checks.md` already forbids self-granted waivers ("Never grant yourself a waiver … let the user decide"). It does not say how to frame the options, so agents obey the letter and steer the user toward the bypass.
+`failing-checks.md` already forbids self-granted waivers ("Never grant yourself a waiver … let the user decide"). It says nothing about which options an agent may offer, so agents obey the letter and steer the user toward the bypass.
 
 ## Evidence
 
@@ -30,23 +30,37 @@ Verbatim quotes from Shatter transcripts in `~/.claude/projects/-home-ketan-proj
 - `e724dbd8`, 2026-09-07T23:09: the agent offered "File the bug now, proceed with --no-verify landings (Recommended)".
 - `9f13ca23`, 2026-09-19T16:04: the agent proposed "Waive this gate and land". The user chose "Hold off, fix the flake first".
 
-The rule's current text, re-verified at dotfiles @ `81f35e1`: `docs/agent-guidance/failing-checks.md` has 26 lines. `grep -in "recommended\|bypass\|no-verify"` on it finds nothing. The waiver bullet is the last bullet.
+Current text, re-verified at dotfiles @ `81f35e1`: `docs/agent-guidance/failing-checks.md` has 26 lines. `grep -in "recommended\|bypass\|no-verify"` on it finds nothing. The waiver bullet is the last bullet.
 
 ## Acceptance criteria
 
-- [ ] `docs/agent-guidance/failing-checks.md` states the rule. When a gate or hook fails for a reason unrelated to the diff, the recommended option is to isolate or fix the cause, or to file it and pause. A bypass (`--no-verify`, `core.hooksPath` override, gate waiver, skip env var) may be listed only as a non-default option. It is never marked Recommended, never listed first, and never presented as the default.
+- [ ] `docs/agent-guidance/failing-checks.md` states the rule. When a gate or hook fails for a reason unrelated to the diff, the agent offers only these options: isolate or fix the cause; file it and pause; keep retrying with evidence. The agent never proposes a bypass (`--no-verify`, a `core.hooksPath` override, a skip environment variable, a gate waiver) as an option, recommended or not.
+- [ ] The rule stays consistent with the existing waiver bullet: the agent presents the evidence and the user decides. The agent does not add a bypass to the choices it presents.
 - [ ] The user's "filesystem isolation" answer is quoted as the canonical example.
-- [ ] The rule's one-line summary appears in the core-rules file from `global-guidance-actually-loads`. If that issue has not landed yet, it picks the line up.
-- [ ] Proof at close: the closing comment shows the output of `grep -n "Recommended" ~/dotfiles/docs/agent-guidance/failing-checks.md` and of `codex/agents-sync.sh status`, with `render vs snapshot: ok` so Codex has the rule.
+- [ ] No text added by this issue describes how to bypass a hook, anywhere (D4).
+- [ ] If `docs/agent-guidance/core.md` (from `global-guidance-actually-loads`) is on `main` when this lands, this issue adds the rule's one-line summary to it. If not, that issue adds it.
+
+## Proof at close
+
+The closing comment includes:
+
+- the new bullet as it reads in `failing-checks.md`;
+- `grep -n -i "no-verify\|hooksPath" ~/dotfiles/docs/agent-guidance/failing-checks.md`, where every match is inside the prohibition;
+- if `core.md` exists, the rule's summary line in the output of the SessionStart core-rules hook (and in `~/.codex/AGENTS.md` once `codex-render-composes-core-rules` has landed). `codex/agents-sync.sh status` alone is not proof: it does not look at leaf files.
 
 ## Out of scope
 
-- Enforcing this at the hook level (blocking `--no-verify`). That is tracked in bento as `git-guard-bypasses-and-false-positives`.
-- Any guidance that recommends bypassing a hook. Per maintainer decision D4 (2026-09-23), no bypass guidance is written anywhere. Slow hooks are fixed at their root cause instead. For example, the shatter beads hook stall is fixed by retiring the JSONL import.
+- Enforcing this at the hook level (blocking `--no-verify`). That is drafted in bento as `git-guard-bypasses-and-false-positives`.
+- Slow hooks are fixed at their root cause, not bypassed. For example, the shatter beads hook stall is fixed by retiring the JSONL import (D4).
+
+## Maintainer decisions that apply
+
+- D4 (2026-09-23): no timeout environment variable and no hook-bypass guidance anywhere.
+- D6: nothing from this audit is filed by agents; the maintainer runs the filer.
 
 ## Dependencies
 
-None blocking. Related: `global-guidance-actually-loads`.
+None blocking. Related: `global-guidance-actually-loads`, `blocked-escalation`.
 
 ## Source
 

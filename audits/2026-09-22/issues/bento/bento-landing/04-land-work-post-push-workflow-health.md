@@ -32,7 +32,7 @@ Re-verified 2026-09-23: `gh run list --workflow <w> -L 50 --json conclusion` in 
 | release.yml | 50 failure, 0 success (0 successes ever; 169 failures and 98 cancellations in the last 300) |
 | ci.yml | 41 success, 7 failure, 2 cancelled |
 
-Bento code, at origin/main b1bb787 (land-work scripts unchanged since the audit's 1c0c1e6):
+Bento code, at origin/main 0b8d488 (land-work scripts unchanged since the audit's 1c0c1e6):
 - `catalog/skills/land-work/scripts/land.py:273-341`: `run()` ends after `verify_landing`. There is no `gh` call anywhere in land-work (`grep -rn "gh run" catalog/skills/land-work` finds nothing).
 - `land-work-verify-landing.py` checks that the expected tree landed on the ref, not CI.
 - `catalog/hooks/bento/{claude,codex}/scripts/agent-env-doctor.py` has no workflow-health check (no `gh` invocation).
@@ -40,18 +40,30 @@ Bento code, at origin/main b1bb787 (land-work scripts unchanged since the audit'
 
 ## Acceptance criteria
 
-- [ ] After a successful push, land.py (or verify-landing) runs `gh run list --commit <landed-sha> --json name,conclusion,status,url`, polling until all runs complete or a timeout expires. The timeout is configurable in verifier.json (`post_push_workflows: {enabled, timeout_s}`, default enabled with about 600 s; 0 disables it).
-- [ ] land.py prints one line per workflow and adds `workflows: [{name, conclusion, url}]` plus `workflows_status: complete|timed_out|skipped` to the final JSON. A `failure` conclusion is reported as a warning. The landing is not rolled back and the exit code is unchanged.
-- [ ] The step is skipped cleanly, with `workflows_skipped_reason` in the JSON, when `gh` is missing or unauthenticated or the remote is not GitHub.
-- [ ] The SessionStart doctor lists each workflow on the primary branch, scheduled workflows included, whose last 3 or more completed runs all failed. It prints one collapsed line per workflow with the latest run URL, and caches the result so SessionStart makes at most one `gh` call per repo per hour.
-- [ ] Tests use a stubbed `gh` on PATH and cover: all green, one failure (warning, exit 0), timeout, `gh` missing, non-GitHub remote, and the doctor's 3-consecutive-failures rule.
-- [ ] Proof at close: the test names and passing output, plus one real land.py run against a GitHub repo whose final JSON contains a populated `workflows` array (paste it into the close reason). "Merged" is not sufficient.
+Post-push reporting (land.py):
+
+- [ ] After `verify_landing` succeeds, land.py polls `gh run list --commit <merge_sha> --json databaseId,name,workflowName,event,status,conclusion,url --limit 100`. Polling has two phases with separate budgets from verifier.json `post_push_workflows: {enabled, discovery_s, timeout_s}` (defaults: enabled, `discovery_s` about 90, `timeout_s` about 600; `enabled: false` disables it):
+  - **Discovery.** GitHub creates runs asynchronously, so an empty first response does not mean "no workflows". land.py keeps polling until at least one run appears or `discovery_s` expires. If none ever appears it reports `workflows_status: no_runs` (distinct from `complete`).
+  - **Settling.** Once runs exist, land.py keeps polling until every run it has seen is `completed` and no new run has appeared for one further poll interval, or `timeout_s` expires (`workflows_status: timed_out`, with the incomplete runs listed).
+  - **Pagination.** If a response returns exactly `--limit` rows, land.py reports `workflows_truncated: true` rather than silently treating the first page as the full set.
+- [ ] land.py prints one line per workflow run and adds `workflows: [{name, event, conclusion, url}]` and `workflows_status: complete|no_runs|timed_out|skipped` to the final JSON. A `failure` conclusion is a warning: the landing is not rolled back and the exit code is unchanged.
+- [ ] The step is skipped cleanly, with `workflows_status: skipped` and `workflows_skipped_reason`, when `gh` is missing or unauthenticated or the remote is not GitHub.
+
+Doctor (SessionStart):
+
+- [ ] The doctor fetches the primary branch's recent runs in **one** call, `gh run list --branch <primary> --status completed --limit 200 --json workflowName,conclusion,createdAt,url`, groups them by workflow client-side, and lists each workflow (scheduled ones included) whose 3 most recent completed runs all have conclusion `failure`. In-progress and queued runs are excluded by `--status completed`; `cancelled` and `skipped` runs are ignored when counting, so they neither break nor extend a streak. Output is one collapsed line per red workflow with the latest failed run URL.
+- [ ] The result is cached per repo for one hour, so SessionStart makes at most one `gh` call per repo per hour. A workflow with fewer than 3 completed runs in the window is not flagged.
+
+Tests and proof:
+
+- [ ] Tests use a stubbed `gh` on PATH (a script that replays a sequence of responses) and cover: all green; one failure (warning, exit 0); **initially empty then runs appear** (reported `complete`, not `no_runs`); never any runs (`no_runs` after `discovery_s`); a run that appears after the first ones completed (included); timeout; truncated page; `gh` missing; non-GitHub remote; the doctor's streak rule with interleaved `cancelled` runs; and the doctor cache (a second invocation within the hour makes no `gh` call).
+- [ ] Proof at close: the test names and passing output, plus one real land.py run against a GitHub repo whose final JSON contains a populated `workflows` array and `workflows_status: complete` (paste it into the close reason). "Merged" is not sufficient.
 
 ## Suggested approach
 
 - Reuse the landed SHA that land.py already has (`merge_sha`). Run the poll after `verify_landing`, so a slow CI never delays the landing verdict itself.
-- Build the doctor check on `gh run list --branch <primary> --workflow <file> -L 3`, with the list of workflows taken from `gh workflow list`. Include scheduled workflows: they are the ones nobody watches.
-- Keep the output collapsed. One line per red workflow is the ceiling.
+- Use a fixed poll interval (for example 15 s) and keep a set of seen `databaseId`s so newly appearing runs are detected.
+- Keep the doctor output collapsed. One line per red workflow is the ceiling.
 
 ## Out of scope
 
@@ -62,6 +74,6 @@ Bento code, at origin/main b1bb787 (land-work scripts unchanged since the audit'
 ## Dependencies
 
 - Blocked by: none.
-- Related: bento-1qry (in_progress; local gate evidence), bento-rdtn.14 (closed; land.py), shatter `workflow-health-patrol` (repo-side counterpart), `merge-push-observability`.
+- Related: bento-2jo (open; the pre-push side: warn when pushing main triggers publishing workflows), bento-1qry (in_progress; local gate evidence), bento-rdtn.14 (closed; land.py), shatter `workflow-health-patrol` (repo-side counterpart), `merge-push-observability`.
 
 Priority: P1 · Type: feature · Labels: audit, land-work, hygiene, ci · Parent: Epic: Audit 2026-09-22 findings (bento) · Sources: bento/04, tests-ci-03 (verifier kept P1)

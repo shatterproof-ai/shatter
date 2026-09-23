@@ -28,7 +28,13 @@ Re-verified at 56c86168:
 ## Acceptance criteria
 
 - [ ] The tier table gains a "Covers" column listing, for each tier, the crates/frontends and test kinds it runs (unit, proptest, E2E, snapshot, clippy).
-- [ ] `scripts/test_test_tier_wiring.py` validates that column against the Taskfile deps graph, so the table cannot drift again. Proof at close: the test fails when `workspace-test` is removed from `test-standard` (or when the table claims a frontend the tier does not run), and passes on the committed table.
+- [ ] `scripts/test_test_tier_wiring.py` (it already exists and parses task bodies) validates the "Covers" column for the **fixed** tiers only: Quick, Standard, Full, E2E, Parity (and check-fast if it is kept). Its expansion from a tier to leaf tasks must follow all three ways this Taskfile invokes work, or it will miss real coverage:
+  - `deps:` lists (for example `test-standard` → `frontends-built`, `workspace-clippy`);
+  - `cmds:` entries of the form `- task: <name>` (for example `test-standard` → `workspace-test`, `check-governed` → `check-static`, `check-unit`, `check-integration`);
+  - shell commands of the form `bash scripts/gate-wrapper.sh <gate> task <name>` (for example `check` → `check-governed`, `e2e` → `e2e-governed`). Any other shell command in a tier's expansion is mapped to a leaf by an explicit table in the test, and an unmapped command fails the test, so new wiring cannot be silently ignored.
+  Included per-crate Taskfiles (`core:`, `cli:`, `ts:`, `go:`, `rust-fe:`) are followed through their namespaces.
+- [ ] The Affected tier's row does not claim fixed coverage. Its "Covers" cell says it is selected from the diff by `scripts/affected-gates.py` (falling back to Full on unknown paths) and points there; the wiring test asserts that this cell names `affected-gates.py` and does not list crates.
+- [ ] Proof at close: the test fails when `workspace-test` is removed from `test-standard`, fails when the table claims a frontend that a fixed tier does not reach, and fails on a fixture tier that invokes an unmapped shell command; it passes on the committed table. Paste the direct `python3 -m unittest scripts/test_test_tier_wiring.py` runs.
 - [ ] `check-fast` is resolved one of two ways:
   - It is documented in the CLAUDE.md table with an accurate description, and its `desc:` no longer says "pre-push".
   - Or it is removed, together with its `gate-wrapper.sh` wiring and the AGENTS.md:540 mention.
@@ -38,7 +44,7 @@ Re-verified at 56c86168:
 
 ## Suggested approach
 
-Parse `Taskfile.yml` (and the included per-crate Taskfiles) in the wiring test, expand each tier's deps to leaf tasks, and map leaf names to a short coverage vocabulary. Keep the table's "Covers" cells in that vocabulary so the test can compare them.
+Extend the existing wiring test to parse `Taskfile.yml` and the included per-crate Taskfiles, expand each fixed tier through `deps`, `task:` cmds and `gate-wrapper.sh` invocations to leaf tasks, and map leaf names to a short coverage vocabulary. Keep the table's "Covers" cells in that vocabulary so the test can compare them.
 
 ## Out of scope
 
@@ -53,4 +59,4 @@ Parse `Taskfile.yml` (and the included per-crate Taskfiles) in the wiring test, 
 
 ## Source
 
-Audit 2026-09-22, findings gates-07 (partially confirmed; verifier corrected it to P3) and tests-ci-17 (confirmed, P3). Draft `shatter-docs-ui/21`, minus its e2e-duplication item. Evidence is in `audits/2026-09-22/areas/tests-ci.md`.
+Audit 2026-09-22, findings gates-07 (partially confirmed; verifier corrected it to P3) and tests-ci-17 (confirmed, P3). Draft `shatter-docs-ui/21`, minus its e2e-duplication item. Evidence is in `audits/2026-09-22/areas/tests-ci.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).

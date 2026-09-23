@@ -47,7 +47,12 @@ Re-verified at 56c86168:
   - the checkpoint
   - the explore per-function artifacts
   - behavior maps
-- [ ] Each table row gives the producing command and flag, the default path under `shatter-artifacts/`, the consuming commands, and the schema path under `protocol/schemas/artifacts/` (from artifact-json-schemas).
+- [ ] Each table row gives:
+  - the producing command and flag;
+  - the output location: the default path under `shatter-artifacts/` where one exists, otherwise "stdout" or "caller-selected path (`<flag>`)" (for example the staged commands' `--output`);
+  - the consuming commands (or "none");
+  - the schema: the path under `protocol/schemas/artifacts/`, or "no schema: <reason>" / "not applicable (Markdown/HTML/text/YAML)", copied from the inventory in `protocol/schemas/artifacts/README.md` that artifact-json-schemas produces. No row may name a schema that does not exist in that directory, and every JSON row must have either a schema path or a stated reason.
+- [ ] A docs-smoke (or unit-test) check parses the §5 table and fails if a named schema file is missing or a JSON row has an empty schema cell. Proof at close: the check fails when one schema path in the table is misspelled, and passes on the committed table (direct run, output pasted).
 - [ ] Regression checking is described as `shatter spec-diff` over `--spec-out` bundles (D2 decision). §5 does not describe a snapshot artifact or `shatter diff`. If retire-snapshot-diff has not yet removed §5.5 when this lands, remove or replace §5.5 here and coordinate the §8 row.
 - [ ] §5.1, §5.3 and §5.6 samples are regenerated from real output on an `examples/` fixture. They sit in tagged fences (for example ```` ```json shatter-artifact=file-spec-bundle ````) that docs-smoke validates. At minimum, JSON samples are validated against their schema. Proof at close: docs-smoke fails when one field is deleted from the §5.3 sample, and passes on the committed text. Run `scripts/docs-smoke.py` directly and paste the output.
 - [ ] §5.3 documents the FileSpecBundle, and the input shapes `compare`, `spec-diff` and `stale` accept, matching what spec-json-shapes-compare implements.
@@ -74,4 +79,4 @@ Wait for the schemas and the shared spec reader to land. Generate every sample b
 
 ## Source
 
-Audit 2026-09-22, findings docs-03 (docs half), docs-08 and artifacts-10 (all confirmed, P2). The SPEC half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/docs.md` and `areas/artifacts.md`.
+Audit 2026-09-22, findings docs-03 (docs half), docs-08 and artifacts-10 (all confirmed, P2). The SPEC half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/docs.md` and `areas/artifacts.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).

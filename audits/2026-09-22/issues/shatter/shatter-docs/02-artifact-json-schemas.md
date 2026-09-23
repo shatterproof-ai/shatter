@@ -48,11 +48,13 @@ Re-verified at 56c86168:
   - scan summary, manifest and run-status
   - the scan checkpoint
   - the explore per-function artifact
+  - the staged-pipeline JSON outputs: Stage 1 observation JSON (`observe` / `explore` observation output), Stage 2 analysis JSON (`analyze --output`), and the `solve` output
   - BehaviorMap, if it is still a user-facing artifact after retire-snapshot-diff; otherwise record why it is omitted
+- [ ] `protocol/schemas/artifacts/README.md` holds an inventory with one line per JSON artifact that spec-s5-contract-table-and-samples will list: either its schema file, or "no schema" with a reason (for example, no stable serde type yet). Non-JSON outputs (Markdown, HTML, text, YAML specs) are listed as "not applicable". spec-s5-contract-table-and-samples uses this inventory as its schema column, so the two issues cannot disagree.
 - [ ] Each schema has `$id`, `title` and a `version` or `const` field that matches the artifact's own version field where one exists (for example `FileSpecBundle.version`).
 - [ ] A `--check` mode regenerates into a temporary directory and fails on any difference. It is wired into `task parity` or `task check-static`, and its inputs are listed in that task's `sources:` so checksum caching cannot skip it after a type change.
   - Proof at close: a forced run (`--check` invoked directly, output pasted into the close note) that fails after a deliberate one-field change to `ScanSummary` and passes once the schema is regenerated.
-- [ ] A test validates real producer output against the schemas. It runs `explore --spec-out` and a small `scan` on `examples/` fixtures, then validates each written artifact. Proof: a validator that fails on a hand-edited, non-conforming artifact.
+- [ ] A test validates real producer output against the schemas. It runs `explore --spec-out`, a small `scan`, and the staged commands on `examples/` fixtures, then validates each written artifact that has a schema. Because it needs built frontends, it runs in `task e2e` (not `check-static`); name the task step in the close note and list the schema directory and the test file in that task's `sources:`. Proof at close: the validator fails on a hand-edited, non-conforming artifact (paste the failing run) and passes on real output (paste the direct, uncached run).
 - [ ] `protocol/GOVERNANCE.md` (or a short `protocol/schemas/artifacts/README.md`) states that output-artifact shape changes require regenerating the schemas and updating the relevant SPEC §5 row.
 
 ## Suggested approach
@@ -77,4 +79,4 @@ Re-verified at 56c86168:
 
 ## Source
 
-Audit 2026-09-22, finding artifacts-10 (confirmed, P2). The schema half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/artifacts.md`.
+Audit 2026-09-22, finding artifacts-10 (confirmed, P2). The schema half of draft `shatter-docs-ui/05`. Evidence is in `audits/2026-09-22/areas/artifacts.md` (on branch `audit-2026-09-22` until the audit directory lands on `main`).

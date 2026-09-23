@@ -38,7 +38,10 @@ Line numbers re-checked against `56c86168` (branch `audit-2026-09-22`):
   - README.md:338 ("`shatter diff` and `shatter spec-diff`: compare current behavior against a saved baseline").
   - QUICKSTART.md:160-164 (§5 follow-on `shatter diff snapshots/shipping.json current/shipping.json`, with no way to produce either file).
   - PLAN.md:838-841 and :924.
-- Doc tooling: `scripts/docs-smoke.py:27` and `:590-600` (`validate_snapshot_against_struct` validates SPEC §5.5 by running `shatter diff <f> <f>`), and `scripts/test_docs_smoke.py:33`, `:43`, `:51` (the `("diff",)` entries).
+- Doc tooling: `scripts/docs-smoke.py:24-28`, `:528` and `:590-600` (`validate_snapshot_against_struct` validates SPEC §5.5 by running `shatter diff <f> <f>`), and `scripts/test_docs_smoke.py:33`, `:43`, `:51` (the `("diff",)` entries) and `:398` (comment naming `snapshot::Snapshot`).
+- CONTRIBUTING.md:130 describes docs-smoke as validating against `snapshot::Snapshot`.
+- `docs/perf/inventories/rust-shatter-core.txt:2704-2722` lists the `snapshot::tests::*` tests. It is a point-in-time inventory "captured at the same commit" (`docs/perf/gate-budgets.md:82-84`), so it is historical and is not edited here.
+- Unrelated names that a loose search would hit and that must stay: `SourceFileSnapshot::path` (`shatter-cli/src/commands/run.rs:1318`) and `SourceFileSnapshot::line_count` (`shatter-core/src/run_manifest.rs:126`).
 - spec-diff already detects the return-value change that snapshot diff was meant to catch (verified on the goals-02 repro: `[CHANGED] zero -> nil`).
 
 ## Acceptance criteria
@@ -47,8 +50,16 @@ Line numbers re-checked against `56c86168` (branch `audit-2026-09-22`):
 - [ ] `shatter-core/src/snapshot.rs` and `pub mod snapshot` are deleted. `run_diff` and the snapshot import are removed from `shatter-cli/src/commands/diff.rs`. `run_spec_diff` and its tests are unchanged. Moving them to `spec_diff.rs` is optional.
 - [ ] SPEC: §2.6 covers only `spec-diff` and `compare` and names spec-diff as the regression tool. §5.5 is removed and later sections are renumbered, or §5.5 is replaced by a pointer to the spec bundle section. The overview lines (:13, :27, :48), the command table (:84) and the behavior-map purpose list (:669-671) no longer mention snapshots or `diff`. A §8 changelog row records the removal and names spec-diff as the replacement.
 - [ ] README (:338) and QUICKSTART §5 show the spec-diff workflow instead: `explore --spec-out old.json`, change the code, `explore --spec-out new.json`, `shatter spec-diff old.json new.json` (exit 1 on regression). PLAN.md references are updated or marked retired.
-- [ ] `scripts/docs-smoke.py` no longer validates snapshots, and `scripts/test_docs_smoke.py` drops the `diff` entries. `task docs-smoke` passes (forced, not served from the checksum cache: run with the cache cleared or `--force` on the leaf, and record the output).
-- [ ] A repo-wide search, `rg -n "shatter diff\b|Snapshot::|snapshot::" --glob '!audits/**' --glob '!.beads/**'`, finds no remaining references outside the changelog. Paste the output in the close note.
+- [ ] `scripts/docs-smoke.py` no longer validates snapshots (code and docstrings), `scripts/test_docs_smoke.py` drops the `diff` entries and the `snapshot::Snapshot` comment, and CONTRIBUTING.md:130 no longer names `snapshot::Snapshot`. `task docs-smoke` passes (forced, not served from the checksum cache: run with the cache cleared or `--force` on the leaf, and record the output).
+- [ ] This repo-wide search prints nothing except SPEC §8 changelog rows and PLAN.md lines inside text explicitly marked retired, and the close note pastes its output:
+
+  ```
+  rg -n -e 'shatter diff([^-\w]|$)' -e '\bsnapshot::(Snapshot|diff)\b' \
+        -e '\bSnapshot::(read_from_file|from_behavior_maps?|write_to_file)\b' -e '\bSnapshotDiff\b' \
+        --glob '!audits/**' --glob '!.beads/**' --glob '!docs/perf/inventories/**'
+  ```
+
+  The pattern deliberately does not match `SourceFileSnapshot::…`, `shatter diff-explore`, or `spec-diff`. On `56c86168` it reports hits in README.md, SPEC.md, QUICKSTART.md, PLAN.md, CONTRIBUTING.md, `scripts/docs-smoke.py`, `scripts/test_docs_smoke.py` and `shatter-cli/src/commands/diff.rs` (plus `shatter-core/src/snapshot.rs` itself), which is the expected edit list. `docs/perf/inventories/**` is excluded as a historical record.
 - [ ] E2E or CLI test (`shatter-cli/tests/`) for the documented replacement workflow: explore a TS fixture with `--spec-out`, mutate a return value, re-explore, run `shatter spec-diff`. It exits 1 and names the change. If an equivalent test already exists, cite it in the close note instead.
 - [ ] `task affected` passes, and its `Gates selected` output is recorded. `task parity` and `task conformance` pass, in case any capability or help listing names `diff`.
 
