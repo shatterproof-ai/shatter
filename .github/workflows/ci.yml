@@ -3,6 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+    # str-35vtk.31: beads exports its full tracker snapshot to
+    # .beads/issues.jsonl on every landing, producing frequent main pushes
+    # whose entire diff is under .beads/**. Those don't need a full CI run.
+    # A push that touches anything else (even alongside .beads/**) still
+    # triggers normally; pull_request is untouched by this filter.
+    paths-ignore:
+      - ".beads/**"
   pull_request:
     branches: [main]
 
@@ -108,3 +115,10 @@ jobs:
       # edit can't silently reintroduce a duplicate or redundant gate.
       - name: CI workflow structure regression test
         run: python3 scripts/test_ci_workflow_structure.py
+
+      # str-35vtk.31: asserts the tracker/mixed/workflow/source/PR matrix
+      # against the actual on.push paths-ignore config in ci.yml and
+      # release.yml, so a future edit can't silently drop or narrow the
+      # .beads/** skip filter (or widen it to swallow real changes).
+      - name: Tracker-only push skip regression test
+        run: python3 scripts/test_ci_tracker_only_push_skip.py
