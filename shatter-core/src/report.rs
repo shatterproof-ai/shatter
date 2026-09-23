@@ -486,6 +486,12 @@ pub struct FunctionReport {
     pub constraint_stats: ConstraintStats,
     /// Total iterations attempted.
     pub iterations: u32,
+    /// Executions allocated by static budget allocation (str-03mfx); omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub budget_allocated: u32,
+    /// Executions claimed from the layer surplus (str-03mfx.2); omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub budget_claimed: u32,
     /// Number of unique source lines covered.
     pub lines_covered: usize,
     /// Total source lines in the function.
@@ -920,6 +926,10 @@ fn build_source_set_summary_from_snapshot(
 /// rather than `== 0.0` to avoid a clippy float-equality lint; because
 /// `coverage_pct` is `lines_covered / total_lines * 100`, the only way it
 /// falls below epsilon is `lines_covered == 0`.
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
 fn is_zero_coverage(coverage_pct: f64) -> bool {
     coverage_pct < f64::EPSILON
 }
@@ -1450,6 +1460,8 @@ pub(crate) fn build_function_report(result: &FunctionResult, file_path: &str) ->
             solver_guided_inputs,
         },
         iterations: exploration.iterations,
+        budget_allocated: exploration.budget_allocated,
+        budget_claimed: exploration.budget_claimed,
         lines_covered,
         total_lines: exploration.total_lines,
         mocks_used: result
@@ -4723,6 +4735,8 @@ mod tests {
                 solver_guided_inputs: 0,
             },
             iterations: 0,
+            budget_allocated: 0,
+            budget_claimed: 0,
             lines_covered: 0,
             total_lines,
             mocks_used: vec![],
@@ -6196,6 +6210,8 @@ mod low_coverage_bucket_tests {
                 solver_guided_inputs: 0,
             },
             iterations: 1,
+            budget_allocated: 0,
+            budget_claimed: 0,
             lines_covered,
             total_lines,
             mocks_used: vec![],

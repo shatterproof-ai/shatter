@@ -3104,6 +3104,14 @@ pub async fn explore_with_scan_mode(
         // Pin custom-generator/extractor slots through the concolic loop (str-6cdp).
         value_sources: explore_config.value_sources.clone(),
         frontier_ranker: std::sync::Arc::new(crate::frontier::HeuristicRanker),
+        // str-03mfx.2: surplus claiming is part of static allocation; under
+        // flat (no override) the concolic path keeps today's behavior.
+        budget_surplus: if explore_config.max_executions_override.is_some() {
+            explore_config.budget_surplus.clone()
+        } else {
+            None
+        },
+        claim_policy: explore_config.claim_policy.clone(),
     };
     let explored = crate::orchestrator::explore(
         frontend,
@@ -3573,6 +3581,12 @@ fn estimate_nesting_depth(branches: &[BranchInfo], target_ids: &[u32]) -> u32 {
 /// Carries all per-function data needed to dispatch one worker. When
 /// `workers_per_fn > 1`, a function may appear in multiple `ExploreTask`s
 /// with different seeds so that parallel workers explore different paths.
+/// Executions a function hands back to the layer surplus: what it was
+/// allocated plus what it claimed, minus what it used (str-03mfx.2).
+fn unused_executions(allocated: u32, claimed: u32, used: u32) -> u32 {
+    allocated.saturating_add(claimed).saturating_sub(used)
+}
+
 /// One function's static share, for logging and tests (str-03mfx).
 #[derive(Debug, Clone, PartialEq)]
 struct StaticShare {
@@ -6077,8 +6091,11 @@ async fn explore_single_function(
     }
     let explore_config = &effective_config;
     let explore_started = Instant::now();
-    let exploration =
+    let mut exploration =
         explore_with_scan_mode(frontend, analysis, concolic, explore_config, None).await?;
+    if let Some(allocated) = explore_config.max_executions_override {
+        exploration.budget_allocated = allocated as u32;
+    }
 
     // Genetic algorithm follow-up phase: target unsolved branches.
     let mut ga_discoveries: Vec<crate::behavior::Behavior> = Vec::new();
@@ -6138,7 +6155,22 @@ async fn explore_single_function(
     }
 
     // Donate unused budget to the layer surplus so other functions can use it.
+    // str-03mfx.2: under static allocation, donate in executions and account
+    // for claims; under flat, keep the historical (iteration-unit) behavior.
     if let Some(ref surplus) = explore_config.budget_surplus
+        && let Some(allocated) = explore_config.max_executions_override
+    {
+        let unused = unused_executions(allocated as u32, exploration.budget_claimed, exploration.iterations);
+        if unused > 0 {
+            surplus.donate(unused);
+            log::debug!(
+                "{func_name}: donated {unused} unused executions to surplus (used {}/{} + {} claimed)",
+                exploration.iterations,
+                allocated,
+                exploration.budget_claimed
+            );
+        }
+    } else if let Some(ref surplus) = explore_config.budget_surplus
         && let Some(allocated) = explore_config.max_iterations
     {
         let used = exploration.iterations;
@@ -13752,6 +13784,14 @@ for line in sys.stdin:
         let after: Vec<_> = tasks.iter().map(|t| (t.explore_config.max_iterations, t.explore_config.max_executions_override)).collect();
         assert_eq!(before, after);
         assert!(after.iter().all(|(_, o)| o.is_none()));
+    }
+
+    #[test]
+    fn unused_executions_accounts_for_claims() {
+        assert_eq!(unused_executions(500, 0, 120), 380);
+        assert_eq!(unused_executions(500, 0, 600), 0);
+        assert_eq!(unused_executions(100, 50, 110), 40);
+        assert_eq!(unused_executions(100, 50, 160), 0);
     }
 
     #[test]

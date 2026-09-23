@@ -127,6 +127,8 @@ pub(crate) async fn run_observe(
             // are built-in, so no pinning is required (str-6cdp).
             value_sources: vec![],
             frontier_ranker: std::sync::Arc::new(shatter_core::frontier::HeuristicRanker),
+            budget_surplus: None,
+            claim_policy: shatter_core::budget_alloc::ClaimPolicy::default(),
         };
         // Instrument the function so the frontend has the source ready for prepare.
         if let Err(e) = frontend

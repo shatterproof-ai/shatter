@@ -101,6 +101,8 @@ fn make_function_report(
             solver_guided_inputs: 0,
         },
         iterations: 0,
+        budget_allocated: 0,
+        budget_claimed: 0,
         lines_covered: 0,
         total_lines,
         mocks_used: vec![],

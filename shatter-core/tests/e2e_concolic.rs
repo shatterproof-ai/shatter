@@ -3291,3 +3291,71 @@ async fn seeded_exploration_with_fuzz_phase_is_repeatable() {
     assert_eq!(first.fuzz_phases, second.fuzz_phases);
     assert_eq!(first.total_executions, second.total_executions);
 }
+
+/// str-03mfx.2: with a layer surplus attached and a function still finding
+/// paths at its execution cap, the concolic loop claims surplus and keeps
+/// exploring; with a policy that never claims, it stops exactly at the cap.
+#[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
+async fn concolic_claims_surplus_when_productive() {
+    use shatter_core::budget_alloc::{BudgetSurplus, ClaimPolicy};
+    use std::sync::Arc;
+
+    let file = examples_dir().join("16-cron-parser.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    async fn run(file_str: &str, surplus: Arc<BudgetSurplus>, policy: ClaimPolicy) -> ExploreResult {
+        let mut frontend = spawn_ts_frontend().await;
+        let analysis = analyze_function(&mut frontend, file_str, "parseCron").await;
+        instrument_function(&mut frontend, file_str, "parseCron").await;
+        let config = ExploreConfig {
+            max_iterations: None,
+            max_executions: Some(8),
+            plateau_threshold: 0,
+            seed: Some(3),
+            solver_timeout_ms: Some(120_000),
+            budget_surplus: Some(surplus),
+            claim_policy: policy,
+            ..Default::default()
+        };
+        let (result, _) = orchestrator::explore(
+            &mut frontend,
+            "parseCron",
+            vec![vec![serde_json::json!("* * * * *")], vec![serde_json::json!("")]],
+            vec![],
+            &analysis.params,
+            &config,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .expect("exploration failed");
+        result
+    }
+
+    let surplus = Arc::new(BudgetSurplus::new());
+    surplus.donate(40);
+    let productive = ClaimPolicy {
+        min_hit_rate: 0.1,
+        window: 8,
+        max_claim_fraction: 0.5,
+    };
+    let r = run(&file_str, surplus.clone(), productive).await;
+    assert!(r.budget_claimed > 0, "expected a surplus claim; result {:?}", r.termination_reason);
+    assert!(r.total_executions > 8, "claimed budget must extend the run: {}", r.total_executions);
+    assert_eq!(surplus.available(), 40 - r.budget_claimed);
+
+    let untouched = Arc::new(BudgetSurplus::new());
+    untouched.donate(40);
+    let never = ClaimPolicy {
+        window: 0,
+        ..ClaimPolicy::default()
+    };
+    let r2 = run(&file_str, untouched.clone(), never).await;
+    assert_eq!(r2.budget_claimed, 0);
+    assert_eq!(r2.total_executions, 8, "no claim → stop exactly at the cap");
+    assert_eq!(untouched.available(), 40);
+}

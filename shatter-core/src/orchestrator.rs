@@ -162,6 +162,12 @@ pub struct ExploreConfig {
     /// [`crate::frontier::HeuristicRanker`] installs no external scores, so
     /// `FrontierSet` orders by `frontier_score` exactly as before.
     pub frontier_ranker: std::sync::Arc<dyn crate::frontier::FrontierRanker>,
+    /// Layer-level execution surplus to claim from when this function's caps
+    /// are exhausted but it is still finding new paths (str-03mfx.2). `None`
+    /// disables claiming (today's behavior).
+    pub budget_surplus: Option<std::sync::Arc<crate::budget_alloc::BudgetSurplus>>,
+    /// Policy governing surplus claims. Only used when `budget_surplus` is set.
+    pub claim_policy: crate::budget_alloc::ClaimPolicy,
     /// Per-parameter value source for the function under exploration.
     /// Custom-generator/extractor slots (e.g. axum `State<AppState>`) carry
     /// native-replay markers and must never be mutated or seeded over (str-6cdp).
@@ -218,6 +224,8 @@ impl Default for ExploreConfig {
             default_execute_plan: None,
             value_sources: vec![],
             frontier_ranker: std::sync::Arc::new(crate::frontier::HeuristicRanker),
+            budget_surplus: None,
+            claim_policy: crate::budget_alloc::ClaimPolicy::default(),
         }
     }
 }
@@ -419,6 +427,9 @@ pub struct ExploreResult {
     /// Every external frontier score the configured ranker produced, in
     /// order (str-hjrnp.1). Empty under the default heuristic ranker.
     pub rank_log: Vec<RankDecision>,
+    /// Executions claimed from the layer surplus on top of the configured
+    /// cap (str-03mfx.2). Zero when no surplus was attached.
+    pub budget_claimed: u32,
     /// Number of inputs skipped by triage prediction.
     pub triage_skipped: usize,
     /// Number of sampled skip predictions that were wrong.
@@ -481,6 +492,7 @@ impl ExploreResult {
             discoveries: vec![],
             discovery_iterations: vec![],
             rank_log: vec![],
+            budget_claimed: 0,
             triage_skipped: 0,
             triage_mispredictions: 0,
             nondeterministic_fields: vec![],
@@ -1660,15 +1672,16 @@ async fn observe_one(
     prepare_id: Option<&str>,
     native_pins: Option<&crate::input_gen::NativePins>,
 ) -> Result<ObserveOneResult, ExploreError> {
-    // Check termination budgets.
-    if let Some(max) = config.max_iterations
+    // Check termination budgets (effective caps: configured plus any surplus
+    // claims, str-03mfx.2).
+    if let Some(max) = budget.max_iterations
         && budget.unique_paths >= max
     {
         return Ok(ObserveOneResult::Terminated(
             TerminationReason::MaxIterations,
         ));
     }
-    if let Some(max) = config.max_executions
+    if let Some(max) = budget.max_executions
         && budget.total_executions >= max
     {
         return Ok(ObserveOneResult::Terminated(
@@ -1811,6 +1824,10 @@ struct ExploreBudget {
     total_executions: usize,
     plateau_counter: usize,
     explore_start: Instant,
+    /// Effective unique-path cap: the configured cap plus surplus claims.
+    max_iterations: Option<usize>,
+    /// Effective execution cap: the configured cap plus surplus claims.
+    max_executions: Option<usize>,
 }
 
 /// Classification of a branch's position within a loop iteration sequence.
@@ -2585,6 +2602,17 @@ pub async fn explore_with_oracle(
     let mut discovery_iterations: Vec<(u32, usize)> = Vec::new();
     let mut rank_log: Vec<RankDecision> = Vec::new();
     let mut round: usize = 0;
+    // str-03mfx.2: effective caps grow when surplus is claimed.
+    let mut effective_max_executions = config.max_executions;
+    let mut effective_max_iterations = config.max_iterations;
+    let mut budget_claimed: u32 = 0;
+    let claim_window = config.claim_policy.window as usize;
+    let mut recent_hits: std::collections::VecDeque<bool> =
+        std::collections::VecDeque::with_capacity(claim_window.max(1));
+    let custom_generators = config
+        .value_sources
+        .iter()
+        .any(|s| matches!(s, crate::input_gen::ValueSource::CustomGenerator { .. }));
     let mut total_executions: usize = 0;
     // str-303gg review fix: remember a representative `not_supported` reason seen
     // during exploration. Used only at finalize to reclassify the function as
@@ -2976,11 +3004,37 @@ pub async fn explore_with_oracle(
         }
         apply_live_first_overrides(&live_first_states, &mut entry.mock_values);
 
+        // str-03mfx.2: at either cap, claim surplus if still productive.
+        if let Some(ref surplus) = config.budget_surplus {
+            let at_exec_cap = effective_max_executions.is_some_and(|m| total_executions >= m);
+            let at_path_cap = effective_max_iterations.is_some_and(|m| executions.len() >= m);
+            if at_exec_cap || at_path_cap {
+                let recent_new = recent_hits.iter().filter(|&&h| h).count() as u32;
+                if config.claim_policy.should_claim(recent_new) {
+                    let requested = config.claim_policy.max_claimable(surplus.available());
+                    let claimed = surplus.try_claim(requested, 1);
+                    if claimed > 0 {
+                        let c = claimed as usize;
+                        effective_max_executions = effective_max_executions.map(|m| m + c);
+                        effective_max_iterations = effective_max_iterations
+                            .map(|m| m + if custom_generators { c } else { (c / 5).max(1) });
+                        budget_claimed += claimed;
+                        log::debug!(
+                            "{function_name}: claimed {claimed} surplus executions (cap now {:?})",
+                            effective_max_executions
+                        );
+                    }
+                }
+            }
+        }
+
         let budget = ExploreBudget {
             unique_paths: executions.len(),
             total_executions,
             plateau_counter,
             explore_start,
+            max_iterations: effective_max_iterations,
+            max_executions: effective_max_executions,
         };
 
         let observe_result = observe_one(
@@ -3090,7 +3144,7 @@ pub async fn explore_with_oracle(
                         // of a small user cap.
                         let fuzz_max_executions = clamp_fuzz_budget(
                             fuzz_max_executions_raw,
-                            config.max_executions,
+                            effective_max_executions,
                             total_executions,
                         );
                         let fuzz_timeout = std::time::Duration::from_secs(
@@ -3235,6 +3289,14 @@ pub async fn explore_with_oracle(
                 break;
             }
         };
+
+        // str-03mfx.2: recent productivity for surplus-claim decisions.
+        if claim_window > 0 {
+            if recent_hits.len() >= claim_window {
+                recent_hits.pop_front();
+            }
+            recent_hits.push_back(obs.is_new_path);
+        }
 
         // --- LiveFirst state transitions (parity with explorer.rs) ---
         update_live_first_states(&obs.result, &mut live_first_states);
@@ -3894,6 +3956,7 @@ pub async fn explore_with_oracle(
             discoveries,
             discovery_iterations,
             rank_log,
+            budget_claimed,
             triage_skipped,
             triage_mispredictions,
             nondeterministic_fields: vec![],

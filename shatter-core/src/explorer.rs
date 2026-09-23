@@ -463,6 +463,13 @@ pub enum StopReason {
 /// discovery attribution. Used as the input to the Analyze pipeline stage.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ObservationOutput {
+    /// Executions allocated to this function by static budget allocation
+    /// (str-03mfx); zero under flat allocation.
+    #[serde(default)]
+    pub budget_allocated: u32,
+    /// Executions claimed from the layer surplus (str-03mfx.2).
+    #[serde(default)]
+    pub budget_claimed: u32,
     /// Name of the explored function.
     pub function_name: String,
     /// Total iterations attempted.
