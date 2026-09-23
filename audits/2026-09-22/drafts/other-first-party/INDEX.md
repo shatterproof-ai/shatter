@@ -1,3 +1,5 @@
+SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here
+
 # Audit 2026-09-22: other first-party issue drafts (not filed)
 
 Scope: findings whose `target_repo` is dotfiles, shatter-agents, storystore, bugshot or other. The findings had to have a verify verdict other than refuted, and a dedupe relation of new, duplicate-closed-but-unfixed or partially-covered. Findings marked `related` were treated as new when the dedupe note said no existing issue covers them; each such draft says so. Findings targeted at bento or shatter are drafted elsewhere.

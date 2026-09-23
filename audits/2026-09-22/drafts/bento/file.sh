@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+echo "SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here; use ../../issues/file-all.sh" >&2
+exit 1
 # Files the bento drafts from shatter audit 2026-09-22 into the bento beads tracker.
 # NOT run by the drafting agent. Review drafts and run bento:issue-readiness-check
 # (fresh reviewer) on each before running this.

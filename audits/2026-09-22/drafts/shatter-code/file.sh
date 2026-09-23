@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+echo "SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here; use ../../issues/file-all.sh" >&2
+exit 1
 # Files the audit 2026-09-22 shatter code/design/goals drafts into the shatter beads tracker.
 # NOT executed by the drafting agent. Review drafts (INDEX.md) and run a readiness pass first.
 # Usage: bash file.sh            (from anywhere; cds into the shatter repo)

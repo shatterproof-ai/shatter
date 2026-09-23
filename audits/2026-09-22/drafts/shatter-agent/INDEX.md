@@ -1,3 +1,5 @@
+SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here
+
 # Audit 2026-09-22 — shatter / AGENT-level issue drafts
 
 Selection: findings with `target_repo=shatter` and `level=AGENT`, verify verdict not refuted, dedupe relation `new`, `duplicate-closed-but-unfixed`, `partially-covered`, or `related` (treated as new-with-references, since no existing issue covers them). `duplicate-open` findings are listed below with the existing ID and not drafted.

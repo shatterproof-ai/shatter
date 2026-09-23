@@ -1,3 +1,5 @@
+SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here
+
 # Shatter code/design/goals drafts — audit 2026-09-22
 
 Selection: target_repo=shatter, level in L1/L4/L5, verify verdict not refuted, dedupe relation new /

@@ -1,3 +1,5 @@
+SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here
+
 # Audit 2026-09-22: shatter issue drafts for L2, L3 and L6 (docs and UI)
 
 These drafts were selected with: `target_repo == shatter`, level in {L2, L3, L6}, verify verdict not refuted, and dedupe relation in {new, duplicate-closed-but-unfixed, partially-covered}. Closely related findings are grouped into single drafts. Nothing has been filed yet: review this file, then run `APPLY=1 ./file.sh` (the default is a dry run).

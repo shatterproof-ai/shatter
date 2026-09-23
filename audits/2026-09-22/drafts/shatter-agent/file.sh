@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+echo "SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here; use ../../issues/file-all.sh" >&2
+exit 1
 # Files the shatter AGENT-level audit drafts into the shatter bd tracker.
 # DO NOT RUN until every draft passed bento:issue-readiness-check.
 # Usage: bash file.sh [--dry-run]

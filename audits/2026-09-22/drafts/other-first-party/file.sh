@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+echo "SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here; use ../../issues/file-all.sh" >&2
+exit 1
 # Filer for audit 2026-09-22 "other first-party" issue drafts.
 #
 # NOT executed by the drafting agent. Review the drafts first, and re-run

@@ -1,3 +1,5 @@
+SUPERSEDED by ../../issues/INDEX.md — do not run file.sh here
+
 # Bento issue drafts: shatter audit 2026-09-22
 
 The target tracker is beads in `/home/ketan/project/bento` (prefix `bento-`), and the filer is `file.sh`, which has not been run. Each draft has a metadata header, then `---BODY---`, then the body that file.sh passes via `--body-file`. Source code facts were checked against bento `1c0c1e6` (catalog/ paths are canonical; plugins/ is generated).
