@@ -244,6 +244,29 @@ pub fn build_random_explorer_meta_strategy(
 /// Drilling, boundary-search interpolation, and MC/DC targets are intentional
 /// special cases handled by
 /// [`SpecialCandidatePath::OrchestratorSupplementaryQueue`].
+/// Mix `(seed, domain, phase)` into one 64-bit seed with SplitMix64-style
+/// finalisation, so distinct tuples do not collide the way plain XOR does
+/// (`seed ^ d` at phase `p ^ d` would otherwise equal `seed` at `p`).
+pub fn derive_seed(seed: u64, domain: u64, phase: u64) -> u64 {
+    fn mix(mut z: u64) -> u64 {
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    let golden = 0x9E37_79B9_7F4A_7C15u64;
+    let mut z = mix(seed.wrapping_add(golden));
+    z = mix(z ^ domain.wrapping_mul(golden));
+    mix(z ^ phase.wrapping_add(golden).wrapping_mul(golden))
+}
+
+/// Domain tags for the seeded strategies inside the concolic meta strategy.
+pub const SEED_DOMAIN_FUZZER: u64 = 0x4655_5A5A_4552_5354; // "FUZZERST"
+pub const SEED_DOMAIN_RANDOM: u64 = 0x5241_4E44_4F4D_5354; // "RANDOMST"
+
+/// `seed` is the exploration seed; when `Some`, the fuzzer and random
+/// strategies get deterministic, domain-separated RNGs so seeded concolic
+/// runs are repeatable (str-03mfx.5). `None` keeps OS entropy.
+#[allow(clippy::too_many_arguments)]
 pub fn build_concolic_meta_strategy(
     user_inputs: Vec<Vec<Value>>,
     seed_inputs: Vec<Vec<Value>>,
@@ -252,6 +275,7 @@ pub fn build_concolic_meta_strategy(
     loops: Vec<LoopInfo>,
     solver_timeout_ms: Option<u64>,
     meta_config: MetaConfig,
+    seed: Option<u64>,
 ) -> MetaStrategy {
     let mut combined_seed = user_inputs;
     combined_seed.extend(seed_inputs);
@@ -277,11 +301,15 @@ pub fn build_concolic_meta_strategy(
             ),
             RegisteredStrategy::new(
                 RegisteredStrategyKind::Fuzzer,
-                Box::new(FuzzerStrategy::new(None)),
+                Box::new(FuzzerStrategy::new(
+                    seed.map(|s| derive_seed(s, SEED_DOMAIN_FUZZER, 0)),
+                )),
             ),
             RegisteredStrategy::new(
                 RegisteredStrategyKind::Random,
-                Box::new(RandomStrategy::new(None)),
+                Box::new(RandomStrategy::new(
+                    seed.map(|s| derive_seed(s, SEED_DOMAIN_RANDOM, 0)),
+                )),
             ),
         ],
         meta_config,
@@ -1710,6 +1738,7 @@ mod tests {
             vec![],
             None,
             MetaConfig::default(),
+            None,
         );
         assert_eq!(
             meta.registered_kinds(),
@@ -1746,6 +1775,7 @@ mod tests {
                 vec![],
                 None,
                 MetaConfig::default(),
+                None,
             );
             let ctx = StrategyContext {
                 params: params.clone(),
@@ -1818,6 +1848,7 @@ mod tests {
             vec![],
             None,
             MetaConfig::default(),
+            None,
         );
         let ctx = StrategyContext {
             params,
@@ -2016,6 +2047,7 @@ mod tests {
             vec![],
             None,
             MetaConfig::default(),
+            None,
         );
         let ctx = StrategyContext {
             params,
@@ -2710,5 +2742,16 @@ mod tests {
             assert!(!fuzzer.is_finite());
             assert_eq!(fuzzer.tier(), StrategyTier::Hybrid);
         }
+    }
+
+    #[test]
+    fn derive_seed_is_deterministic_and_collision_resistant() {
+        assert_eq!(derive_seed(7, 1, 0), derive_seed(7, 1, 0));
+        assert_ne!(derive_seed(7, 1, 0), derive_seed(7, 1, 1));
+        assert_ne!(derive_seed(7, 1, 0), derive_seed(8, 1, 0));
+        assert_ne!(derive_seed(7, 1, 0), derive_seed(7, 2, 0));
+        // The plain-XOR collision the review found: seed 4 / phase 1 vs seed 5 / phase 0.
+        assert_ne!(derive_seed(4, 1, 1), derive_seed(5, 1, 0));
+        assert_ne!(derive_seed(7, SEED_DOMAIN_FUZZER, 0), derive_seed(7, SEED_DOMAIN_RANDOM, 0));
     }
 }

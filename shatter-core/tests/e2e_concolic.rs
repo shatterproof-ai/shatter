@@ -3237,6 +3237,10 @@ async fn seeded_exploration_with_fuzz_phase_is_repeatable() {
             max_executions: Some(120),
             plateau_threshold: 5,
             seed: Some(3),
+            // A generous solver timeout: a string constraint near the default
+            // timeout boundary would otherwise flip between sat and timeout
+            // from run to run, which is nondeterminism this test is not about.
+            solver_timeout_ms: Some(120_000),
             ..Default::default()
         };
         let (result, _) = orchestrator::explore(
@@ -3260,13 +3264,17 @@ async fn seeded_exploration_with_fuzz_phase_is_repeatable() {
     let first = run(&file_str).await;
     let second = run(&file_str).await;
     assert!(
-        first.fuzz_generated > 0,
-        "fixture must trigger a fuzz phase for this test to mean anything; fuzz_generated={}",
-        first.fuzz_generated
+        first.fuzz_phases > 0,
+        "fixture must trigger a plateau fuzz phase for this test to mean anything"
     );
     let inputs = |r: &ExploreResult| -> Vec<Vec<serde_json::Value>> {
         r.raw_results.iter().map(|(i, _, _)| i.clone()).collect()
     };
-    assert_eq!(inputs(&first), inputs(&second), "seeded runs must execute identical inputs");
+    assert_eq!(inputs(&first), inputs(&second), "seeded runs must execute identical main-loop inputs");
+    assert_eq!(
+        first.fuzz_phase_inputs_digest, second.fuzz_phase_inputs_digest,
+        "seeded runs must execute identical fuzz-phase inputs"
+    );
+    assert_eq!(first.fuzz_phases, second.fuzz_phases);
     assert_eq!(first.total_executions, second.total_executions);
 }
