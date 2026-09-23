@@ -1,0 +1,68 @@
+Discover, analyze, and explore an entire repository in one shot
+
+Usage: shatter run [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>  Path to the repository root (local directory)
+
+Options:
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace [default: info]
+      --output-dir <OUTPUT_DIR>
+          Write per-function reports to this directory
+      --max-iterations <MAX_ITERATIONS>
+          Maximum number of iterations per function (default: 50) [default: 50]
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+      --timeout <TIMEOUT>
+          Overall timeout in seconds (default: 300) [default: 300]
+      --analyze-only
+          Only discover and analyze, skip exploration
+      --timing <TIMING>
+          Timing output mode [default: off] [possible values: off, summary, detailed]
+      --concolic
+          Use the concolic (Z3-backed) explorer instead of the random explorer. Routes every function through the concolic orchestrator (the same path as `explore --concolic` / `scan --concolic`); pair with `--solver-timeout` to bound per-query Z3 time
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts [default: text] [possible values: text, json, both]
+      --request-timeout <REQUEST_TIMEOUT>
+          Per-request timeout in seconds (how long to wait for a single frontend response) [default: 30]
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+      --exec-timeout <EXEC_TIMEOUT>
+          Execution timeout in seconds for each function invocation in the frontend. Default: 10s [default: 10]
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+      --build-timeout <BUILD_TIMEOUT>
+          Build timeout in seconds for compiling instrumented code in the frontend. Default: 30s [default: 30]
+      --project-dir <DIR>
+          Override auto-detected project root directory
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox
+      --min-source-representation-percent <MIN_SOURCE_REPRESENTATION_PERCENT>
+          Fail when represented source percent is below this threshold
+      --max-failed-span-percent <MAX_FAILED_SPAN_PERCENT>
+          Fail when failed + timed-out source span percent exceeds this threshold
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable)
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --max-unsupported-span-percent <MAX_UNSUPPORTED_SPAN_PERCENT>
+          Fail when unsupported source span percent exceeds this threshold
+      --fail-on-stale-source-set
+          Fail when the run report is stale because the source set changed
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+      --fail-on-missing-artifacts
+          Fail when the run report has invalid or missing artifact references
+      --fail-on-low-report-validity
+          Fail when report validity is low or worse
+      --release
+          Compile harnesses in release mode (optimized but slower compilation). Default is debug mode for faster compilation [env: SHATTER_HARNESS_RELEASE=]
+      --solver-timeout <SOLVER_TIMEOUT>
+          Z3 solver timeout in seconds per query. Default: no limit
+      --memory-limit <MEMORY_LIMIT>
+          Memory limit in MB for the frontend process
+  -h, --help
+          Print help (see more with '--help')

@@ -1,0 +1,183 @@
+# Shatter Explore
+
+## `classifyNumber` *(ts/01-arithmetic.ts:10-21)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+
+{
+  "function_name": "classifyNumber",
+  "location": "ts/01-arithmetic.ts:10-21",
+  "classes": [
+    {
+      "label": "Class 1 — returns \"zero\"",
+      "branch_path": [
+        {
+          "branch_id": 0,
+          "taken": false
+        },
+        {
+          "branch_id": 1,
+          "taken": true
+        }
+      ],
+      "preconditions": [
+        {
+          "AllEqual": {
+            "param_index": 0,
+            "value": 0
+          }
+        }
+      ],
+      "postcondition": {
+        "kind": "returns",
+        "value": "zero"
+      },
+      "side_effects": [],
+      "examples": [
+        {
+          "inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null
+        }
+      ],
+      "sample_count": 33,
+      "precondition_provenance": "observed",
+      "postcondition_provenance": "observed"
+    },
+    {
+      "label": "Class 2 — returns \"negative\"",
+      "branch_path": [
+        {
+          "branch_id": 0,
+          "taken": true
+        }
+      ],
+      "preconditions": [
+        {
+          "AllEqual": {
+            "param_index": 0,
+            "value": -1
+          }
+        }
+      ],
+      "postcondition": {
+        "kind": "returns",
+        "value": "negative"
+      },
+      "side_effects": [],
+      "examples": [
+        {
+          "inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null
+        }
+      ],
+      "sample_count": 33,
+      "precondition_provenance": "observed",
+      "postcondition_provenance": "observed"
+    },
+    {
+      "label": "Class 3 — returns \"positive-even\"",
+      "branch_path": [
+        {
+          "branch_id": 0,
+          "taken": false
+        },
+        {
+          "branch_id": 1,
+          "taken": false
+        },
+        {
+          "branch_id": 2,
+          "taken": true
+        }
+      ],
+      "preconditions": [
+        {
+          "AllEqual": {
+            "param_index": 0,
+            "value": 2
+          }
+        }
+      ],
+      "postcondition": {
+        "kind": "returns",
+        "value": "positive-even"
+      },
+      "side_effects": [],
+      "examples": [
+        {
+          "inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null
+        }
+      ],
+      "sample_count": 11,
+      "precondition_provenance": "observed",
+      "postcondition_provenance": "observed"
+    },
+    {
+      "label": "Class 4 — returns \"positive-odd\"",
+      "branch_path": [
+        {
+          "branch_id": 0,
+          "taken": false
+        },
+        {
+          "branch_id": 1,
+          "taken": false
+        },
+        {
+          "branch_id": 2,
+          "taken": false
+        }
+      ],
+      "preconditions": [
+        {
+          "AllEqual": {
+            "param_index": 0,
+            "value": 1
+          }
+        }
+      ],
+      "postcondition": {
+        "kind": "returns",
+        "value": "positive-odd"
+      },
+      "side_effects": [],
+      "examples": [
+        {
+          "inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null
+        }
+      ],
+      "sample_count": 23,
+      "precondition_provenance": "observed",
+      "postcondition_provenance": "observed"
+    }
+  ],
+  "iterations": 100,
+  "lines_covered": 7,
+  "total_lines": 7,
+  "fingerprint": "cbf8e260f7b769a5d31f392a8b018add670cf70108d41a7d2f312f9ae947e560"
+}
+
+---
+
+**Summary:** 4 path(s) across 1 function(s) · **100%** coverage (7/7 lines)

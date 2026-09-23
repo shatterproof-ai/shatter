@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "scan_id": "896e5a62592d8079450c94d8009d21fd99422db6e94e5637ec588092b00f6b2d",
+  "status": "interrupted",
+  "total_functions": 8,
+  "completed": 1,
+  "failed": 0,
+  "skipped": 7,
+  "elapsed_secs": 170.356005111,
+  "functions": [
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts::classifyNumber",
+      "status": "completed",
+      "index": 1,
+      "artifact": "functions/00001_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_01-arithmetic-copy.ts__classifyNumber.json"
+    },
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts::compareMagnitudes",
+      "status": "skipped",
+      "index": 2,
+      "artifact": "functions/00002_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_01-arithmetic-copy.ts__compareMagnitudes.json",
+      "reason": "not attempted: total scan budget exceeded"
+    },
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.ts::classifyNumber",
+      "status": "skipped",
+      "index": 3,
+      "artifact": "functions/00003_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_01-arithmetic.ts__classifyNumber.json",
+      "reason": "not attempted: total scan budget exceeded"
+    },
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.ts::compareMagnitudes",
+      "status": "skipped",
+      "index": 4,
+      "artifact": "functions/00004_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_01-arithmetic.ts__compareMagnitudes.json",
+      "reason": "not attempted: total scan budget exceeded"
+    },
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/02-strings.ts::classifyString",
+      "status": "skipped",
+      "index": 5,
+      "artifact": "functions/00005_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_02-strings.ts__classifyString.json",
+      "reason": "not attempted: total scan budget exceeded"
+    },
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/02-strings.ts::transformString",
+      "status": "skipped",
+      "index": 6,
+      "artifact": "functions/00006_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_02-strings.ts__transformString.json",
+      "reason": "not attempted: total scan budget exceeded"
+    },
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.ts::computeStats",
+      "status": "skipped",
+      "index": 7,
+      "artifact": "functions/00007_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_04-errors.ts__computeStats.json",
+      "reason": "not attempted: total scan budget exceeded"
+    },
+    {
+      "function_name": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.ts::safeDivide",
+      "status": "skipped",
+      "index": 8,
+      "artifact": "functions/00008_tmp_claude-1000_-home-ketan-project-shatter_63ab6471-d62f-4111-8969-df8076934da8_scratchpad_proj_mix_04-errors.ts__safeDivide.json",
+      "reason": "not attempted: total scan budget exceeded"
+    }
+  ],
+  "source_diff": {
+    "added": [],
+    "removed": [],
+    "changed": []
+  }
+}

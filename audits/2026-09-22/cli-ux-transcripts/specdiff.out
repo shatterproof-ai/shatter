@@ -1,0 +1,11 @@
+Spec diff: classifyNumber
+
+  Summary: 4 added, 2 removed
+
+  [ADDED]   Class 3 — returns "positive-even"
+  [ADDED]   Class 4 — returns "positive-odd"
+  [ADDED]   Class 5 — returns "large-odd"
+  [ADDED]   Class 6 — returns "large-even"
+  [REMOVED] Class 3 — returns "positive-even"
+  [REMOVED] Class 4 — returns "positive-odd"
+

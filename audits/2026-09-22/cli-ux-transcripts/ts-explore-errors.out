@@ -1,0 +1,21 @@
+# Shatter Explore
+
+## `safeDivide` *(04-errors.ts:10-22)*
+
+**0 path(s)** · **88%** coverage (7/8 lines)
+
+
+## `computeStats` *(04-errors.ts:31-65)*
+
+**3 path(s)** · **63%** coverage (10/16 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `computeStats([10.0,982.0596102041002,-960.83614587...)` | throws `Error: negative value` |
+| 2 | `computeStats({"length":0})` | throws `Error: empty array` |
+| 3 | `computeStats({"length":1})` | throws `TypeError: items is not iterable` |
+
+
+---
+
+**Summary:** 3 path(s) across 2 function(s) · **71%** coverage (17/24 lines)

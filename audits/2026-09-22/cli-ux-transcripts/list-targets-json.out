@@ -1,0 +1,61 @@
+{
+  "schema_version": "1",
+  "kind": "target_manifest",
+  "scan_id": "3377e6e8-cd9d-4173-96f2-d5a39dceaa33",
+  "project_root": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj",
+  "config_hash": "170de33ea509f8bc6d431cba351b14946f1f6534ecf586d90757f4de154f9ab9",
+  "source_set_hash": "29a9c1e13d281d019744df947fc160591642beba760043374f65cc415f36ff24",
+  "generated_at_ns": 1790098388873371236,
+  "selected": [
+    {
+      "path": "01-arithmetic.ts",
+      "language": "typescript",
+      "frontend": "shatter-ts",
+      "line_count": 45,
+      "content_hash": "f0496154a54c82c64e8064f4ca9c1e2f6710f8971ff5a040a1cf59b42d27c466"
+    },
+    {
+      "path": "02-strings.ts",
+      "language": "typescript",
+      "frontend": "shatter-ts",
+      "line_count": 62,
+      "content_hash": "54ba42c715cf9487fcf999d3ad7b365d2943c0fd9c37caa382cd74333a25e573"
+    },
+    {
+      "path": "03-objects.ts",
+      "language": "typescript",
+      "frontend": "shatter-ts",
+      "line_count": 61,
+      "content_hash": "131b11a510cf1c55bda231f66c4c0bb89f487d7998a1d53cd97c3a4e5a991b73"
+    },
+    {
+      "path": "04-errors.ts",
+      "language": "typescript",
+      "frontend": "shatter-ts",
+      "line_count": 65,
+      "content_hash": "14f0fd9a103ae26ff54f9577633773bf59535a3069a9e371851491fa81d755ac"
+    },
+    {
+      "path": "arithmetic-v1.ts",
+      "language": "typescript",
+      "frontend": "shatter-ts",
+      "line_count": 22,
+      "content_hash": "24e21ebaed51f92f3c172cbdd5bf84d883ddc79e4e607854f91299afe11c00d5"
+    },
+    {
+      "path": "arithmetic-v2.ts",
+      "language": "typescript",
+      "frontend": "shatter-ts",
+      "line_count": 31,
+      "content_hash": "7e65166c1419904efd0f04b487ee50704ad39617edf895a4689479e43f0aa458"
+    }
+  ],
+  "excluded": [],
+  "unsupported": [
+    {
+      "path": "t.py",
+      "detected_language": "python"
+    }
+  ],
+  "candidate_outside_policy": []
+}

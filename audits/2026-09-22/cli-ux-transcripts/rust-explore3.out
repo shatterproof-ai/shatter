@@ -1,0 +1,48 @@
+# Shatter Explore
+
+## `safe_divide` *(04_errors.rs:6-14)*
+
+**1 path(s)** · **44%** coverage (4/9 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `safe_divide(0.0, 0.0)` | returns `{"Err":"division by zero"}` |
+- *Mocks: to_string*
+
+## `compute_stats` *(04_errors.rs:25-54)*
+
+**17 path(s)** · **53%** coverage (16/30 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `compute_stats([2.0])` | returns `{"Ok":{"avg":2.0,"flag":null,"max":2....` |
+| 2 | `compute_stats([])` | returns `{"Err":"empty array"}` |
+| 3 | `compute_stats([77.155272133881,-2.0])` | returns `{"Err":"negative value"}` |
+| 4 | `compute_stats([0.0])` | returns `{"Ok":{"avg":0.0,"flag":null,"max":0....` |
+| 5 | `compute_stats([0.0,0.0])` | returns `{"Ok":{"avg":0.0,"flag":null,"max":0....` |
+| 6 | `compute_stats([-99.0,-9.0])` | returns `{"Err":"negative value"}` |
+| 7 | `compute_stats([1.0,2.0])` | returns `{"Ok":{"avg":1.5,"flag":null,"max":2....` |
+| 8 | `compute_stats([0.5,0.0,-2.0])` | returns `{"Err":"negative value"}` |
+| 9 | `compute_stats([10.0,681.4270693532153,-0.5,801.2913...)` | returns `{"Err":"negative value"}` |
+| 10 | `compute_stats([811.8329507755675])` | returns `{"Ok":{"avg":811.8329507755675,"flag"...` |
+| 11 | `compute_stats([549.4016661229905,0.0])` | returns `{"Ok":{"avg":274.70083306149525,"flag...` |
+| 12 | `compute_stats([10.0,0.0,2.0,-0.5])` | returns `{"Err":"negative value"}` |
+| 13 | `compute_stats([1.0,0.5])` | returns `{"Ok":{"avg":0.75,"flag":null,"max":1...` |
+| 14 | `compute_stats([10.0,2.0,0.5])` | returns `{"Ok":{"avg":4.166666666666667,"flag"...` |
+| 15 | `compute_stats([1.0,2.0,0.0])` | returns `{"Ok":{"avg":1.0,"flag":null,"max":2....` |
+| 16 | `compute_stats([10.0,1.0,798.8940780651753])` | returns `{"Ok":{"avg":269.9646926883918,"flag"...` |
+| 17 | `compute_stats([0.5,330.10588766077035,20.0])` | returns `{"Ok":{"avg":116.86862922025678,"flag...` |
+- *Mocks: to_string*
+
+## `main` *(04_errors.rs:56-63)*
+
+**1 path(s)** · **63%** coverage (5/8 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `main()` | void |
+
+
+---
+
+**Summary:** 19 path(s) across 3 function(s) · **53%** coverage (25/47 lines)

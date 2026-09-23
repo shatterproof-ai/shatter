@@ -1,0 +1,166 @@
+Explore functions by analyzing their branches and generating test inputs
+
+Usage: shatter explore [OPTIONS] <TARGETS>...
+
+Arguments:
+  <TARGETS>...  Targets to explore: <file>:<function> for a single function, just <file> to explore all exported functions, or a quoted glob over file paths (e.g. 'src/**/*.ts') which is expanded against the filesystem and filtered to supported source extensions. Globs in the <function> portion are rejected. The file extension determines the language frontend (.ts = TypeScript, .go = Go)
+
+Options:
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace [default: info]
+      --max-iterations <MAX_ITERATIONS>
+          Maximum number of iterations per function [default: 100]. Pass 0 for unbounded exploration (run until timeout or interrupt)
+      --per-function-timeout <PER_FUNCTION_TIMEOUT>
+          Per-function default exploration timeout in seconds (applied when no .shatter/config.yaml per-function timeout is set). For the per-function wall-clock cap, see --timeout-explore. For the whole-run wall-clock cap, see --time-limit
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+      --timeout-explore <TIMEOUT_EXPLORE>
+          Per-function exploration wall-clock timeout in seconds. If both --max-iterations and --timeout-explore are set, whichever triggers first stops exploration for that function
+      --time-limit <SECONDS>
+          Total wall-clock time limit in seconds for the entire explore run. Stops launching new functions once this limit is reached. Unlike --timeout-explore (per-function), this bounds the whole run
+      --timing <TIMING>
+          Timing output mode [default: off] [possible values: off, summary, detailed]
+      --coverage-threshold <PERCENT>
+          Stop exploration when aggregate branch coverage reaches this percentage (0.0–100.0). Checked after each function completes
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts [default: text] [possible values: text, json, both]
+      --max-executions <COUNT>
+          Maximum total execute calls across all functions. Unlike --max-iterations (per-function iteration cap), this is a global budget shared across the entire explore run
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+      --scope <SCOPE>
+          Path to a scope configuration YAML file (shatter.scope.yaml)
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+      --analyze-only
+          Only run the analyze phase (skip exploration)
+      --project-dir <DIR>
+          Override auto-detected project root directory
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox
+      --show-clusters
+          Show behavior clusters after exploration
+      --cache-dir <CACHE_DIR>
+          Directory for caching behavior maps across runs. Falls back to SHATTER_CACHE_DIR env var, then `.shatter-cache/behavior-maps/` [env: SHATTER_CACHE_DIR=]
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable)
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --no-cache
+          Disable behavior map caching entirely
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+      --request-timeout <REQUEST_TIMEOUT>
+          Per-request timeout in seconds (how long to wait for a single frontend response) [default: 30]
+      --inputs <INPUTS>
+          Path to a candidate inputs JSON file (overrides .shatter/ config inputs)
+      --exec-timeout <EXEC_TIMEOUT>
+          Execution timeout in seconds for each function invocation in the frontend (e.g., how long a single Go function call may run). Default: 10s [default: 10]
+      --build-timeout <BUILD_TIMEOUT>
+          Build timeout in seconds for compiling instrumented code in the frontend. Default: 30s [default: 30]
+      --release
+          Compile harnesses in release mode (optimized but slower compilation). Default is debug mode for faster compilation [env: SHATTER_HARNESS_RELEASE=]
+      --config <CONFIG_PATH>
+          Path to a .shatter/config.yaml file (bypasses hierarchical discovery)
+      --spec-out <SPEC_OUT>
+          Write per-file spec JSON to a file (implies --spec-json)
+      --spec
+          Output a behavioral specification (markdown by default, JSON with --spec-json)
+      --spec-json
+          Output the behavioral specification as JSON instead of markdown
+      --no-boundary-values
+          Disable built-in boundary values as seed inputs
+      --invariants
+          Enable Daikon-style invariant detection on explored functions
+      --concolic
+          Use the concolic (Z3-backed) explorer instead of the random explorer
+      --genetic
+          Enable the genetic algorithm explorer
+      --genetic-population <GENETIC_POPULATION>
+          Population size for the genetic algorithm (default: 50)
+      --genetic-generations <GENETIC_GENERATIONS>
+          Maximum generations for the genetic algorithm (default: 100)
+      --genetic-timeout <GENETIC_TIMEOUT>
+          Timeout in seconds for the genetic algorithm (default: 300)
+      --no-adaptive
+          Disable adaptive strategy scoring (use round-robin instead)
+      --score-window <SCORE_WINDOW>
+          Sliding window size for strategy outcome scoring
+      --cold-start <COLD_START>
+          Minimum candidates before a strategy can be deprioritized
+      --strategy-floor <STRATEGY_FLOOR>
+          Minimum allocation fraction per strategy (0.0–1.0)
+      --strategy-weights <STRATEGY_WEIGHTS>
+          Static strategy weight distribution (e.g. "literals=0.3,random=0.5,boundary=0.2")
+      --planner <PLANNER>
+          Select a frontend-provided invocation planner by name. The invocation planner (get_invocation_plan) is consulted automatically whenever the frontend advertises that capability, so this flag is not required to pick up `.shatter/config.yaml` `defaults`/`generators`; set it to `go` only to force consultation explicitly. The returned InvocationPlan is fed as seeds and attached to every Execute request so method targets dispatch into a real constructor
+      --solver-timeout <SOLVER_TIMEOUT>
+          Z3 solver timeout in seconds per query. Default: no limit
+      --memory-limit <MEMORY_LIMIT>
+          Memory limit in MB for the frontend process. For TS, sets --max-old-space-size; for Go, sets GOMEMLIMIT
+      --clean
+          Force full re-exploration. Ignores any existing spec file (no incremental reuse) and discards prior explore artifacts (per-target `summary.json` and per-function JSON / resume-state sidecars under `shatter-artifacts/explore-results/`) for the targets being explored so resume detection cannot reuse stale results. Artifacts for other targets are untouched
+      --dry-run
+          Analyze and compare fingerprints, print stale/fresh/removed functions, then exit without exploring. Requires --output
+      --loop-buckets <LOOP_BUCKETS>
+          Loop iteration bucket boundaries for path hashing (comma-separated). Controls how loop iteration counts affect path identity. Default "0,1,2,5" gives 5 levels: 0, 1, 2, 3–5, 6+ iterations. Use "none" to disable bucketing (only branch profiles matter) [default: 0,1,2,5]
+      --seeds-dir <SEEDS_DIR>
+          Directory for cross-function seed pool (default: .shatter/seeds/). Falls back to SHATTER_SEEDS_DIR env var [env: SHATTER_SEEDS_DIR=] [default: .shatter/seeds]
+      --no-seeds
+          Disable loading and saving the cross-function seed pool
+      --setup-timeout <SETUP_TIMEOUT>
+          Override all setup/teardown timeouts (seconds). Sets SHATTER_SETUP_TIMEOUT env var before spawning frontends
+      --fail-on-setup-error
+          Treat setup failures as fatal errors (abort exploration immediately)
+      --record
+          Record external dependency I/O (passthrough mode). Saves observed call data to shatter-artifacts/recorded-mocks/ as seed fixtures for future runs
+      --observe-output <OBSERVE_OUTPUT>
+          Write raw observation data (Stage 1 output) to a directory for offline analysis with `shatter analyze`. One JSON file per function
+      --persist-stages <DIR>
+          Persist canonical stage JSON artifacts for each explored function. Writes `observe.json`, `analyze.json`, `solve.json`, and `specify.json` under a per-function directory so later CLI runs can reuse them
+      --replay-recorded
+          Replay previously recorded mock fixtures from shatter-artifacts/recorded-mocks/. When set, auto-detects recorded mocks for each file+function pair and uses observed return values as seed mock configs
+      --no-replay
+          Disable auto-detection of recorded mocks (overrides --replay-recorded)
+      --refine-budget <REFINE_BUDGET>
+          Per-boundary refinement budget (number of executions). After discovery, binary-searches between witness pairs to find precise transition points. Set to 0 to disable. Default: 20 [default: 20]
+      --shrink-budget <SHRINK_BUDGET>
+          Cap total shrink attempts per witness. Set to 0 to disable. Default: 20 [default: 20]
+      --no-shrink
+          Disable the shrink phase entirely (equivalent to --shrink-budget 0)
+      --mcdc
+          Enable MC/DC (Modified Condition/Decision Coverage) analysis. Decomposes compound boolean decisions into individual conditions and targets condition-independence witnesses. Implies increased iteration/execution/plateau budgets
+      --isolation <ISOLATION>
+          Execution isolation level [default: none] [possible values: none, function, serial]
+      --capture-side-effects
+          Enable rich side-effect capture during exploration
+  -o, --output <PATH>
+          Write exploration report to file; format inferred from extension (.html, .md, .json, .txt). May be repeated to write multiple formats simultaneously
+      --stdout
+          Write report to stdout in addition to any -o files. When no -o flags are given, stdout is the default output
+      --format <FORMAT>
+          Format for stdout output. One of: markdown (default), html, text [default: markdown] [possible values: markdown, html, text]
+  -w, --workers <WORKERS>
+          Maximum number of parallel exploration workers. Each worker spawns its own frontend process. Default: number of available CPUs (0 = auto-detect) [default: 0]
+      --observer-pool <OBSERVER_POOL>
+          Number of observer subprocesses the random explorer uses to fan candidate executions out *within a single function*. Each slot is an independent frontend subprocess (frontends remain serial per process). `1` (default) preserves the legacy single-process exploration path. Distinct from `--workers`, which controls across-function parallelism. Overrides `observer_pool` from `shatter.config.json`. See str-frc.3 / str-frc.6
+      --candidate-queue-capacity <CANDIDATE_QUEUE_CAPACITY>
+          Override the bounded candidate queue capacity that sits between the candidate generator and the observer pool (str-frc.5). When unset, the capacity is auto-derived from `--observer-pool` and `--max-iterations`. Has no effect when `--observer-pool` is `1`. Overrides `candidate_queue_capacity` from `shatter.config.json`
+      --parallelism-min <PARALLELISM_MIN>
+          Lower bound applied to auto-detected `--workers` (built-in default: 4). Does NOT clamp an explicit `--workers N` request — that value is honored as-is. Useful on tiny CI runners to lower the auto-detect floor. See str-v01r / str-p2rz
+      --parallelism-max <PARALLELISM_MAX>
+          Upper bound on resolved `--workers` (built-in default: 16). Applies to both auto-detected and explicit `--workers N` values to cap per-worker toolchain fan-out. Raise on large dedicated machines with tuned `GOMAXPROCS`. See str-v01r
+      --from-artifacts <FROM_ARTIFACTS>
+          Finalize a previous explore run from saved artifacts on disk. Skips exploration and produces reports/specs from saved per-function result files. Use when a prior run wrote artifacts but crashed before final assembly
+      --require-rust
+          Treat an unavailable Rust frontend as a hard failure even when other-language targets remain runnable. Without this flag, Rust targets are skipped with a `skipped_by_unavailable_frontend` status when shatter-rust is missing from the host so mixed-language broad runs continue with available languages (str-jeen.13)
+      --llm
+          Enable LLM oracle (adapter and settings from config; overrides llm.enabled)
+      --llm-adapter <ADAPTER>
+          LLM adapter to use, overrides llm.adapter in config
+      --llm-token-budget <TOKENS>
+          Cumulative token cap, overrides llm.max_token_budget in config
+  -h, --help
+          Print help (see more with '--help')

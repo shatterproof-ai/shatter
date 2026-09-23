@@ -1,0 +1,17 @@
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts::classifyNumber` | 4 | 100% |
+
+---
+
+Scan complete: **1 completed**, **4 failed**, **0 unsupported**, **7 interrupted**, **0 expected skipped** (5 worker(s))
+
+**Errors:**
+- `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go::ClassifyNumber`: timed out during build after 120s
+- `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go::CompareMagnitudes`: timed out during task after 125s
+- `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go::ClassifyAge`: timed out during task after 125s
+- `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go::SafeDivide`: timed out during task after 125s
+
+**7 function(s) not attempted** (total budget 300s exhausted). Raise --timeout-total or narrow the target to reach the remaining functions.

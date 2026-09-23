@@ -1,0 +1,112 @@
+# Aggregate (89 sessions, since 2026-09-04)
+
+date span 2026-09-04 -> 2026-09-22
+by month {'2026-09': 89}
+primary-dir sessions 40
+sessions with human msgs 59 human msgs 125
+interrupts 1 in 1 sessions
+teammate msgs 49 task notifs 158
+compactions 0 usage-limit notices 0
+models [('claude-sonnet-5', 54), ('claude-opus-4-7', 31), ('claude-fable-5-1', 2), ('claude-opus-5-5', 1), ('claude-opus-5-5[1m]', 1), ('<synthetic>', 1)]
+permission modes Counter({'auto': 33, 'bypassPermissions': 8})
+slash commands [('/bento:swarm', 5), ('/bento:closure', 1)]
+
+## tools total 5858
+[('Bash', 3940), ('ReadNotifications', 600), ('Read', 379), ('Edit', 192), ('TaskOutput', 174), ('Grep', 128), ('Skill', 76), ('SendMessage', 74), ('ToolSearch', 70), ('Agent', 37), ('StructuredOutput', 34), ('ListAgents', 32), ('Write', 27), ('AskUserQuestion', 24), ('Monitor', 21), ('ScheduleWakeup', 15), ('TaskStop', 15), ('Glob', 11), ('WebFetch', 7), ('ReportFindings', 1), ('Workflow', 1)]
+median tools 8  sessions >200 tools: 6
+   (1575, '87606e10', '2026-09-19', '-home-ketan-project-shatter')
+   (761, '9f13ca23', '2026-09-17', '-home-ketan-project-shatter')
+   (456, '5617a8ed', '2026-09-08', '-home-ketan-project-shatter')
+   (250, 'e724dbd8', '2026-09-07', '-home-ketan-project-shatter')
+   (223, 'c1689435', '2026-09-21', '-home-ketan-project-shatter')
+   (207, '455c2cd7', '2026-09-07', '-home-ketan-project-shatter')
+   (189, 'b6375e4e', '2026-09-09', '-home-ketan-project-shatter')
+   (186, '19cbf3b5', '2026-09-06', '-home-ketan-project-shatter')
+   (155, '301e2059', '2026-09-09', '-home-ketan-project-shatter')
+   (144, '63cfd30d', '2026-09-09', '-home-ketan-project-shatter')
+   (134, '490acdb8', '2026-09-09', '-home-ketan-project-shatter')
+   (104, '4c6e73e3', '2026-09-08', '-home-ketan-project-shatter')
+   (100, 'd7d501b3', '2026-09-06', 'rees-shatter-str-mpgg1-revert-hook-edits')
+   (92, '9d73bda0', '2026-09-09', '-home-ketan-project-shatter')
+   (80, '4b75d5a6', '2026-09-06', 'rees-shatter-str-mpgg1-revert-hook-edits')
+   (79, 'f53b3446', '2026-09-08', '-home-ketan-project-shatter')
+   (78, 'e1d1c770', '2026-09-08', '-home-ketan-project-shatter')
+   (78, '7b30bd7d', '2026-09-07', '-home-ketan-project-shatter')
+   (74, '8a3bdc24', '2026-09-06', 'rees-shatter-str-mpgg1-revert-hook-edits')
+   (70, 'ad59d49b', '2026-09-07', '-home-ketan-project-shatter')
+
+skills [('code-review', 38), ('pre-completion', 16), ('bento:land-work', 7), ('bento:launch-work', 3), ('superpowers:brainstorming', 2), ('ts-conventions', 1), ('superpowers:systematic-debugging', 1), ('audit', 1), ('workflow-authoring', 1), ('walkthrough-review', 1), ('formal-methods-policy', 1), ('superpowers:writing-plans', 1), ('superpowers:executing-plans', 1), ('bento:beads-issue-flow', 1), ('bento:issue-readiness-check', 1)]
+agent types [('general-purpose', 18), (None, 11), ('claude', 5), ('fork', 3)]
+
+## Bash 3940 calls, 169 errors (4.3%)
+top prefixes (n, err, rate)
+  sleep                                 845   15   1.8%
+  grep                                  372   25   6.7%
+  git status                            186    3   1.6%
+  cd                                    184    9   4.9%
+  cat                                   151    7   4.6%
+  tail                                  145    0   0.0%
+  ls                                    100    4   4.0%
+  git log                                86    2   2.3%
+  echo                                   75    1   1.3%
+  git push                               74    7   9.5%
+  sed                                    70    2   2.9%
+  git worktree                           66    1   1.5%
+  true                                   62    0   0.0%
+  find                                   58    6  10.3%
+  RUNHEAVY                               51    0   0.0%
+  git show                               49    0   0.0%
+  git add                                47    3   6.4%
+  git fetch                              45    2   4.4%
+  git branch                             43    2   4.7%
+  land-work-create-preview.py            40    4  10.0%
+  bd show                                39    1   2.6%
+  cargo test                             38    0   0.0%
+  git rebase                             38    1   2.6%
+  :                                      37    0   0.0%
+  git commit                             34    3   8.8%
+  git diff                               29    2   6.9%
+  rm                                     29    5  17.2%
+  for                                    28    1   3.6%
+  land-work-prepare.py                   28    9  32.1%
+  git merge-base                         28    0   0.0%
+  land.py                                28    0   0.0%
+  python -                               26    0   0.0%
+  ps                                     25    1   4.0%
+  wc                                     24    0   0.0%
+  swarm-worktree-verify.py               24    8  33.3%
+  bd update                              24    0   0.0%
+  git rev-parse                          23    0   0.0%
+  pwd                                    23    0   0.0%
+  land-work-run-verifier.py              22    2   9.1%
+  bd close                               22    0   0.0%
+  bd create                              21    2   9.5%
+  land-work-verify-lease.py              20    0   0.0%
+  git -C                                 19    0   0.0%
+  task affected                          18    1   5.6%
+  cargo build                            17    0   0.0%
+highest failure-rate prefixes n>=8
+  land-work-verify-landing.py            17   10  58.8%
+  swarm-worktree-verify.py               24    8  33.3%
+  land-work-prepare.py                   28    9  32.1%
+  bd ready                               13    4  30.8%
+  land-work-root-hygiene.py               8    2  25.0%
+  git config                              8    2  25.0%
+  timeout                                 9    2  22.2%
+  rm                                     29    5  17.2%
+  python affected-gates.py               13    2  15.4%
+  run-lifecycle-extensions.py             9    1  11.1%
+  find                                   58    6  10.3%
+  python swarm-worktree-verify.py        10    1  10.0%
+  land-work-create-preview.py            40    4  10.0%
+
+text-tools-in-bash (lead grep/cat/sed/find/rg/head): 655 {'sed': 70, 'find': 58, 'grep': 372, 'cat': 151, 'head': 4} sessions 34 worst [('87606e10', 111), ('5617a8ed', 70), ('9f13ca23', 66), ('c1689435', 52), ('63cfd30d', 48)]
+dedicated tools {'Read': 379, 'Grep': 128, 'Edit': 192, 'Glob': 11, 'Write': 27}
+sed -i edits 3 heredoc file writes 7
+
+## failure streaks (>=3 consecutive errors, any tool)
+count 2
+   (3, 'e724dbd8', '2026-09-07T20:37', ['TaskOutput:', 'TaskOutput:', 'ScheduleWakeup:'])
+   (3, 'd7d501b3', '2026-09-07T00:10', ['Bash:grep -n "^  ts:test:" -A 25 Taskfile.yml shatter-ts/Taskfile', 'Bash:grep -rn "ts:test:" --include="Taskfile*.yml" . 2>/dev/null', 'Bash:find . -iname "Taskfile*.yml" -not -path "*/node_modules/*" '])
+
+identical failing bash cmd >=3x in a session: 0

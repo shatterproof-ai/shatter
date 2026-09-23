@@ -1,0 +1,15 @@
+Target manifest — /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj
+  config hash:      170de33ea509f8bc6d431cba351b14946f1f6534ecf586d90757f4de154f9ab9
+  source set hash:  29a9c1e13d281d019744df947fc160591642beba760043374f65cc415f36ff24
+
+Selected (6):
+  01-arithmetic.ts  [typescript, 45 lines]
+  02-strings.ts  [typescript, 62 lines]
+  03-objects.ts  [typescript, 61 lines]
+  04-errors.ts  [typescript, 65 lines]
+  arithmetic-v1.ts  [typescript, 22 lines]
+  arithmetic-v2.ts  [typescript, 31 lines]
+
+Unsupported (1):
+  t.py  [python]
+

@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "file": "sd/calc.ts",
+  "functions": [
+    {
+      "function_name": "grade",
+      "location": "sd/calc.ts:1-12",
+      "classes": [
+        {
+          "label": "Class 1 — returns \"invalid\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "AllNegative": {
+                "param_index": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "invalid"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                -1
+              ],
+              "return_value": "invalid",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 13,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 2 — returns \"fail\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            },
+            {
+              "branch_id": 2,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "SameType": {
+                "param_index": 0,
+                "type_name": "number"
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "fail"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                0
+              ],
+              "return_value": "fail",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 13,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 3 — returns \"overflow\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "AllPositive": {
+                "param_index": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "overflow"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                101
+              ],
+              "return_value": "overflow",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 9,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 4 — returns \"pass\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            },
+            {
+              "branch_id": 2,
+              "taken": false
+            }
+          ],
+          "preconditions": [
+            {
+              "AllPositive": {
+                "param_index": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "pass"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                100
+              ],
+              "return_value": "pass",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 10,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        }
+      ],
+      "iterations": 40,
+      "lines_covered": 7,
+      "total_lines": 7,
+      "fingerprint": "8331b5716b063bf06a28d3d3e5f2183222ca036b8b1dab91f4deb735b6a6de87"
+    }
+  ]
+}

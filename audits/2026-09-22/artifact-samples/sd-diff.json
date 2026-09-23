@@ -1,0 +1,161 @@
+{
+  "diffs": [
+    {
+      "function_name": "grade",
+      "added_classes": [
+        {
+          "label": "Class 2 — returns \"fail\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            },
+            {
+              "branch_id": 2,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "SameType": {
+                "param_index": 0,
+                "type_name": "number"
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "fail"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                0
+              ],
+              "return_value": "fail",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 13,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 4 — returns \"pass\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            },
+            {
+              "branch_id": 2,
+              "taken": false
+            }
+          ],
+          "preconditions": [
+            {
+              "AllPositive": {
+                "param_index": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "pass"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                100
+              ],
+              "return_value": "pass",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 10,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        }
+      ],
+      "removed_classes": [
+        {
+          "label": "Class 3 — returns \"pass\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            }
+          ],
+          "preconditions": [
+            {
+              "AllPositive": {
+                "param_index": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "pass"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                50
+              ],
+              "return_value": "pass",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 12,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        }
+      ],
+      "changed_postconditions": [],
+      "changed_preconditions": [
+        {
+          "class_label": "Class 2 — returns \"fail\"",
+          "removed": [
+            {
+              "SameType": {
+                "param_index": 0,
+                "type_name": "number"
+              }
+            }
+          ],
+          "added": [
+            {
+              "AllPositive": {
+                "param_index": 0
+              }
+            }
+          ]
+        }
+      ],
+      "lost_properties": [],
+      "comparison_notes": [
+        {
+          "class_label": "Class 2 — returns \"fail\"",
+          "reason": "missing_comparable_witness"
+        }
+      ]
+    }
+  ],
+  "added_functions": [],
+  "removed_functions": []
+}

@@ -1,0 +1,4 @@
+Telemetry:    enabled
+Config:       /home/ketan/.config/shatter/telemetry.yaml
+Anonymous ID: 05a313110f23…
+Queue:        /home/ketan/.local/share/shatter/telemetry/events.jsonl (0 events)

@@ -1,0 +1,11 @@
+# Cross-language comparison: classifyNumber vs ClassifyNumber
+
+**4 of 4 shared behaviors match — 100% equivalent**
+
+## Matching behaviors (4)
+
+- Input (0) → `"zero"`
+- Input (-1) → `"negative"`
+- Input (2) → `"positive-even"`
+- Input (1) → `"positive-odd"`
+

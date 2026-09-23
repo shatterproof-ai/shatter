@@ -1,0 +1,5 @@
+Fresh (1):
+  classifyNumber
+Untracked (1, not in spec):
+  compareMagnitudes
+All tracked functions are fresh (1 untracked function(s) ignored; pass --strict to fail on untracked).

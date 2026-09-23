@@ -1,0 +1,49 @@
+
+## Report Validity: degraded
+
+| Reason | Detail | Recommended action |
+|---|---|---|
+| degraded_representation | represented_source_percent=61.5 below high threshold 75.0 | Inspect unrepresented_*_lines buckets and broaden frontend coverage where feasible. |
+
+# Shatter Run Report
+
+**Repository**: /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj
+**Elapsed**: 73.9s
+
+## Files Discovered
+
+| Language | Files |
+|----------|-------|
+| TypeScript | 6 |
+| **Total** | **6** |
+
+## Functions Analyzed
+
+- **Total functions**: 10
+- **Total branches**: 40
+- **Exported functions**: 10
+- **Unexported functions**: 0
+
+## Call Graph
+
+- **Nodes**: 10
+- **Edges**: 0
+- **Topological layers**: 1
+- **Cycles**: 0
+
+## Exploration Results
+
+| Function | Paths | Lines Covered | Coverage |
+|----------|-------|---------------|----------|
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts::classifyNumber | 4 | 7/7 | 100% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts::compareMagnitudes | 4 | 9/9 | 100% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts::classifyString | 5 | 10/11 | 91% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts::transformString | 5 | 10/11 | 91% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts::categorizeUser | 3 | 6/11 | 55% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts::describeRectangle | 4 | 8/8 | 100% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts::safeDivide | 3 | 7/8 | 88% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts::computeStats | 2 | 5/16 | 31% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v1.ts::classifyNumber | 4 | 7/7 | 100% |
+| /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v2.ts::classifyNumber | 6 | 11/11 | 100% |
+| **Total** | **40** | **80/99** | **81%** |
+

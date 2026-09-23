@@ -1,0 +1,26 @@
+Run tests with impact analysis: only execute tests affected by changed files
+
+Usage: shatter test [OPTIONS]
+
+Options:
+      --all                            Run all tests, bypassing impact analysis
+      --log-level <LOG_LEVEL>          Log verbosity level: error, warn, info (default), debug, trace [default: info]
+      --record                         Force coverage recording to refresh the coverage map
+  -v, --verbose...                     Increase verbosity (-v = debug, -vv = trace)
+  -q, --quiet                          Decrease verbosity to warnings and errors only
+      --tier <TIER>                    Run a specific test tier and write a success marker
+      --base <BASE>                    Base git ref for change detection (default: HEAD) [default: HEAD]
+      --timing <TIMING>                Timing output mode [default: off] [possible values: off, summary, detailed]
+      --include-untracked              Include untracked files in change detection
+      --timing-format <TIMING_FORMAT>  Format for timing output. `json` and `both` are intended for persisted artifacts [default: text] [possible values: text, json, both]
+      --dry-run                        Dry run: show which tests would run without executing them
+      --timing-output <PATH>           Write one timing artifact JSON file to this path
+      --prioritize                     Prioritize test execution order by marginal coverage per unit time
+      --timing-output-dir <DIR>        Write timing artifact JSON files into this directory
+      --budget <BUDGET>                Time budget for test execution (e.g. "10s", "2m"). Tests beyond this cumulative time are skipped. Implies --prioritize
+      --project-dir <DIR>              Override auto-detected project root directory
+      --allow-host-writes              Permit executing target functions on the host without an OS sandbox
+      --set <KEY=VALUE>                Override config values using dotted-path key=value pairs (repeatable)
+      --color <WHEN>                   When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --render <MODE>                  Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+  -h, --help                           Print help (see more with '--help')

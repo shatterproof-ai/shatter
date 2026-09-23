@@ -1,0 +1,1184 @@
+  Created  .shatter/
+  Created  .shatter/config.yaml  (detected language: unknown)
+  Created  .gitignore  (4 generated path(s) ignored)
+Initialized Shatter project at /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p
+{
+  "version": 9,
+  "functions": [
+    {
+      "function_name": "classifyNumber",
+      "display_name": "classifyNumber",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::classifyNumber",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 3,
+      "branches_covered": 3,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            15
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            12
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            20
+          ],
+          "outcome_status": "completed"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 201,
+        "solver_guided_inputs": 98
+      },
+      "iterations": 100,
+      "lines_covered": 7,
+      "total_lines": 7,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "compareMagnitudes",
+      "display_name": "compareMagnitudes",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::compareMagnitudes",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 3,
+      "branches_covered": 3,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            -121,
+            -511
+          ],
+          "return_value": "product-large",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            42
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            959,
+            291
+          ],
+          "return_value": "both-large",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            36,
+            37
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -0.3931863475133923,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            100.29841286672078,
+            1.0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            36,
+            39
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.7576604267795402,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -0.22223255335067804,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            42.786728753358815,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            -16.823901301291507
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            3.485023661301799
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            -17.18878471452765
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            -2.6130891031157772
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            -0.3594524453452075
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            100.0,
+            0.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            101,
+            0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            36,
+            39
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            0.0,
+            100.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1000.0,
+            0.0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            36,
+            39
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            0.0,
+            1000.0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            36,
+            39
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            100,
+            0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -12,
+            -77
+          ],
+          "return_value": "both-small",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            41,
+            44
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -458,
+            578
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null,
+          "lines_executed": [
+            32,
+            33,
+            35,
+            36,
+            39
+          ],
+          "outcome_status": "completed"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            -0.3931863475133923,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            100.29841286672078,
+            1.0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            1.7576604267795402,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            -0.22223255335067804,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 4,
+          "representative_inputs": [
+            42.786728753358815,
+            1.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 5,
+          "representative_inputs": [
+            1.0,
+            -16.823901301291507
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 6,
+          "representative_inputs": [
+            1.0,
+            3.485023661301799
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 7,
+          "representative_inputs": [
+            1.0,
+            -17.18878471452765
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 8,
+          "representative_inputs": [
+            1.0,
+            -2.6130891031157772
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 9,
+          "representative_inputs": [
+            1.0,
+            -0.3594524453452075
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 10,
+          "representative_inputs": [
+            100.0,
+            0.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 11,
+          "representative_inputs": [
+            101,
+            0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null
+        },
+        {
+          "id": 12,
+          "representative_inputs": [
+            0.0,
+            100.0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 13,
+          "representative_inputs": [
+            1000.0,
+            0.0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null
+        },
+        {
+          "id": 14,
+          "representative_inputs": [
+            0.0,
+            1000.0
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null
+        },
+        {
+          "id": 15,
+          "representative_inputs": [
+            -121,
+            -511
+          ],
+          "return_value": "product-large",
+          "thrown_error": null
+        },
+        {
+          "id": 16,
+          "representative_inputs": [
+            100,
+            0
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 17,
+          "representative_inputs": [
+            959,
+            291
+          ],
+          "return_value": "both-large",
+          "thrown_error": null
+        },
+        {
+          "id": 18,
+          "representative_inputs": [
+            -12,
+            -77
+          ],
+          "return_value": "both-small",
+          "thrown_error": null
+        },
+        {
+          "id": 19,
+          "representative_inputs": [
+            -458,
+            578
+          ],
+          "return_value": "sum-large",
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 220,
+        "solver_guided_inputs": 96
+      },
+      "iterations": 100,
+      "lines_covered": 9,
+      "total_lines": 9,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "computeStats",
+      "display_name": "computeStats",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::computeStats",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 5,
+      "branches_covered": 5,
+      "coverage_pct": 81.25,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            [
+              13.0,
+              347.94246888017096,
+              842.3876210413405
+            ]
+          ],
+          "return_value": {
+            "avg": 401.11002997383713,
+            "flag": "high-max",
+            "max": 842.3876210413405,
+            "sum": 1203.3300899215114
+          },
+          "thrown_error": null,
+          "lines_executed": [
+            37,
+            41,
+            42,
+            44,
+            45,
+            48,
+            49,
+            45,
+            48,
+            49,
+            50,
+            45,
+            48,
+            49,
+            50,
+            54,
+            56,
+            60,
+            61
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            {
+              "length": 0
+            }
+          ],
+          "return_value": null,
+          "thrown_error": "Error: empty array",
+          "lines_executed": [
+            37,
+            38
+          ],
+          "outcome_status": "runtime_failed",
+          "outcome_reason": "empty array"
+        },
+        {
+          "inputs": [
+            {
+              "length": 1
+            }
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: items is not iterable",
+          "lines_executed": [
+            37,
+            41,
+            42,
+            44
+          ],
+          "outcome_status": "runtime_failed",
+          "outcome_reason": "items is not iterable"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            [
+              13.0,
+              347.94246888017096,
+              842.3876210413405
+            ]
+          ],
+          "return_value": {
+            "avg": 401.11002997383713,
+            "flag": "high-max",
+            "max": 842.3876210413405,
+            "sum": 1203.3300899215114
+          },
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            {
+              "length": 0
+            }
+          ],
+          "return_value": null,
+          "thrown_error": "Error: empty array"
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            {
+              "length": 1
+            }
+          ],
+          "return_value": null,
+          "thrown_error": "TypeError: items is not iterable"
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 108,
+        "solver_guided_inputs": 99
+      },
+      "iterations": 100,
+      "lines_covered": 13,
+      "total_lines": 16,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    },
+    {
+      "function_name": "safeDivide",
+      "display_name": "safeDivide",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::safeDivide",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 3,
+      "branches_covered": 3,
+      "coverage_pct": 87.5,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            0.0,
+            0.0
+          ],
+          "return_value": null,
+          "thrown_error": "Error: division by zero",
+          "lines_executed": [
+            11,
+            12
+          ],
+          "outcome_status": "runtime_failed",
+          "outcome_reason": "division by zero"
+        },
+        {
+          "inputs": [
+            -16.946680055649388,
+            1.0
+          ],
+          "return_value": -16.946680055649388,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            0.4501909281705124,
+            1.0
+          ],
+          "return_value": 0.4501909281705124,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.9713236487781622,
+            1.0
+          ],
+          "return_value": 1.9713236487781625,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -2.5886606959591036,
+            1.0
+          ],
+          "return_value": -2.5886606959591036,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            3.542142005439845,
+            1.0
+          ],
+          "return_value": 3.542142005439845,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            100.16808907795702
+          ],
+          "return_value": 0.009983219298730335,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            257.23617774432904
+          ],
+          "return_value": 0.003887478070809757,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            3.5146566787878126
+          ],
+          "return_value": 0.28452281158366083,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            7.323307537198651
+          ],
+          "return_value": 0.13655032168463666,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0,
+            257.10739301274515
+          ],
+          "return_value": 0.0038894253031083736,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            21
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            0.0,
+            1
+          ],
+          "return_value": 0,
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18,
+            19
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            0.0,
+            0
+          ],
+          "return_value": null,
+          "thrown_error": "Error: division by zero",
+          "lines_executed": [
+            11,
+            12
+          ],
+          "outcome_status": "runtime_failed",
+          "outcome_reason": "division by zero"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            -16.946680055649388,
+            1.0
+          ],
+          "return_value": -16.946680055649388,
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            0.4501909281705124,
+            1.0
+          ],
+          "return_value": 0.4501909281705124,
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            1.9713236487781622,
+            1.0
+          ],
+          "return_value": 1.9713236487781625,
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            -2.5886606959591036,
+            1.0
+          ],
+          "return_value": -2.5886606959591036,
+          "thrown_error": null
+        },
+        {
+          "id": 4,
+          "representative_inputs": [
+            3.542142005439845,
+            1.0
+          ],
+          "return_value": 3.542142005439845,
+          "thrown_error": null
+        },
+        {
+          "id": 5,
+          "representative_inputs": [
+            1.0,
+            100.16808907795702
+          ],
+          "return_value": 0.009983219298730335,
+          "thrown_error": null
+        },
+        {
+          "id": 6,
+          "representative_inputs": [
+            1.0,
+            257.23617774432904
+          ],
+          "return_value": 0.003887478070809757,
+          "thrown_error": null
+        },
+        {
+          "id": 7,
+          "representative_inputs": [
+            1.0,
+            3.5146566787878126
+          ],
+          "return_value": 0.28452281158366083,
+          "thrown_error": null
+        },
+        {
+          "id": 8,
+          "representative_inputs": [
+            1.0,
+            7.323307537198651
+          ],
+          "return_value": 0.13655032168463666,
+          "thrown_error": null
+        },
+        {
+          "id": 9,
+          "representative_inputs": [
+            1.0,
+            257.10739301274515
+          ],
+          "return_value": 0.0038894253031083736,
+          "thrown_error": null
+        },
+        {
+          "id": 10,
+          "representative_inputs": [
+            0.0,
+            0.0
+          ],
+          "return_value": null,
+          "thrown_error": "Error: division by zero"
+        },
+        {
+          "id": 11,
+          "representative_inputs": [
+            0.0,
+            1
+          ],
+          "return_value": 0,
+          "thrown_error": null
+        },
+        {
+          "id": 12,
+          "representative_inputs": [
+            0.0,
+            0
+          ],
+          "return_value": null,
+          "thrown_error": "Error: division by zero"
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 228,
+        "solver_guided_inputs": 98
+      },
+      "iterations": 100,
+      "lines_covered": 7,
+      "total_lines": 8,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    }
+  ],
+  "codebase": {
+    "attempted_functions": 4,
+    "completed_functions": 4,
+    "completed_with_behavior": 4,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "completed_skipped_by_policy": 0,
+    "failed_functions": 0,
+    "skipped_functions_count": 0,
+    "unsupported_functions": 0,
+    "total_discovered_functions": 4,
+    "total_branches": 14,
+    "overall_coverage": 100.0,
+    "productionish_source_lines": 110,
+    "source_set": {
+      "production_ish": {
+        "file_count": 2,
+        "line_count": 110
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "low_coverage": {
+      "low_coverage_threshold_pct": 10.0,
+      "failed": 0,
+      "unsupported": 0,
+      "zero_coverage_with_branches": 0,
+      "zero_coverage_no_branches": 0,
+      "positive_low_coverage": 0,
+      "top_branch_heavy": [],
+      "by_area": []
+    },
+    "skipped_functions": [],
+    "budget_total_secs": 300,
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::classifyNumber",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::compareMagnitudes",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::computeStats",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::safeDivide"
+  ],
+  "test_order_display_names": [
+    "classifyNumber",
+    "compareMagnitudes",
+    "computeStats",
+    "safeDivide"
+  ]
+}

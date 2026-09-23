@@ -1,0 +1,23 @@
+Compare current behaviors against a previous snapshot to detect regressions
+
+Usage: shatter diff [OPTIONS] <SNAPSHOT> <CURRENT>
+
+Arguments:
+  <SNAPSHOT>  Path to the previous snapshot JSON file
+  <CURRENT>   Path to the current snapshot JSON file to compare against
+
+Options:
+      --json                           Output the diff result as JSON instead of human-readable text
+      --log-level <LOG_LEVEL>          Log verbosity level: error, warn, info (default), debug, trace [default: info]
+  -v, --verbose...                     Increase verbosity (-v = debug, -vv = trace)
+  -q, --quiet                          Decrease verbosity to warnings and errors only
+      --timing <TIMING>                Timing output mode [default: off] [possible values: off, summary, detailed]
+      --timing-format <TIMING_FORMAT>  Format for timing output. `json` and `both` are intended for persisted artifacts [default: text] [possible values: text, json, both]
+      --timing-output <PATH>           Write one timing artifact JSON file to this path
+      --timing-output-dir <DIR>        Write timing artifact JSON files into this directory
+      --project-dir <DIR>              Override auto-detected project root directory
+      --allow-host-writes              Permit executing target functions on the host without an OS sandbox
+      --set <KEY=VALUE>                Override config values using dotted-path key=value pairs (repeatable)
+      --color <WHEN>                   When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --render <MODE>                  Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+  -h, --help                           Print help (see more with '--help')

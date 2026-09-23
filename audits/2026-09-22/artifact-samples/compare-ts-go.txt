@@ -1,0 +1,1 @@
+Error: failed to parse spec A '/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/audits/2026-09-22/artifact-samples/ts-spec-out.json': missing field `function_name` at line 172 column 1

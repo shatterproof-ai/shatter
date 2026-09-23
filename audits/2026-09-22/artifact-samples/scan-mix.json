@@ -1,0 +1,299 @@
+{
+  "version": 9,
+  "functions": [
+    {
+      "function_name": "classifyNumber",
+      "display_name": "classifyNumber",
+      "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts::classifyNumber",
+      "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 3,
+      "branches_covered": 3,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            15
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            12
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            18
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null,
+          "lines_executed": [
+            11,
+            14,
+            17,
+            20
+          ],
+          "outcome_status": "completed"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            0
+          ],
+          "return_value": "zero",
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            -1
+          ],
+          "return_value": "negative",
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            2
+          ],
+          "return_value": "positive-even",
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            1
+          ],
+          "return_value": "positive-odd",
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 60,
+        "solver_guided_inputs": 28
+      },
+      "iterations": 30,
+      "lines_covered": 7,
+      "total_lines": 7,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    }
+  ],
+  "codebase": {
+    "attempted_functions": 5,
+    "completed_functions": 1,
+    "completed_with_behavior": 1,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "completed_skipped_by_policy": 0,
+    "failed_functions": 4,
+    "skipped_functions_count": 7,
+    "unsupported_functions": 0,
+    "total_discovered_functions": 12,
+    "total_branches": 3,
+    "overall_coverage": 100.0,
+    "productionish_source_lines": 630,
+    "source_set": {
+      "production_ish": {
+        "file_count": 12,
+        "line_count": 630
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "low_coverage": {
+      "low_coverage_threshold_pct": 10.0,
+      "failed": 4,
+      "unsupported": 0,
+      "zero_coverage_with_branches": 0,
+      "zero_coverage_no_branches": 0,
+      "positive_low_coverage": 0,
+      "top_branch_heavy": [],
+      "by_area": []
+    },
+    "failed": [
+      {
+        "function_name": "ClassifyNumber",
+        "display_name": "ClassifyNumber",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go::ClassifyNumber",
+        "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go",
+        "reason": "timed out during build after 120s",
+        "language": "go",
+        "status": "failed",
+        "error_type": "build_timeout",
+        "error_message": "timed out during build after 120s",
+        "failed_at": "build"
+      },
+      {
+        "function_name": "CompareMagnitudes",
+        "display_name": "CompareMagnitudes",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go::CompareMagnitudes",
+        "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go",
+        "reason": "timed out during task after 125s",
+        "language": "go",
+        "status": "failed",
+        "error_type": "timeout",
+        "error_message": "timed out during task after 125s",
+        "failed_at": "exploration"
+      },
+      {
+        "function_name": "ClassifyAge",
+        "display_name": "ClassifyAge",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go::ClassifyAge",
+        "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go",
+        "reason": "timed out during task after 125s",
+        "language": "go",
+        "status": "failed",
+        "error_type": "timeout",
+        "error_message": "timed out during task after 125s",
+        "failed_at": "exploration"
+      },
+      {
+        "function_name": "SafeDivide",
+        "display_name": "SafeDivide",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go::SafeDivide",
+        "file_path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go",
+        "reason": "timed out during task after 125s",
+        "language": "go",
+        "status": "failed",
+        "error_type": "timeout",
+        "error_message": "timed out during task after 125s",
+        "failed_at": "exploration"
+      }
+    ],
+    "skipped_functions": [
+      {
+        "function_name": "compareMagnitudes",
+        "display_name": "compareMagnitudes",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts::compareMagnitudes",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      },
+      {
+        "function_name": "classifyNumber",
+        "display_name": "classifyNumber",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.ts::classifyNumber",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      },
+      {
+        "function_name": "compareMagnitudes",
+        "display_name": "compareMagnitudes",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.ts::compareMagnitudes",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      },
+      {
+        "function_name": "classifyString",
+        "display_name": "classifyString",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/02-strings.ts::classifyString",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      },
+      {
+        "function_name": "transformString",
+        "display_name": "transformString",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/02-strings.ts::transformString",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      },
+      {
+        "function_name": "computeStats",
+        "display_name": "computeStats",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.ts::computeStats",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      },
+      {
+        "function_name": "safeDivide",
+        "display_name": "safeDivide",
+        "qualified_id": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.ts::safeDivide",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      }
+    ],
+    "budget_total_secs": 300,
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go::ClassifyNumber",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go::CompareMagnitudes",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go::ClassifyAge",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go::SafeDivide",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts::classifyNumber",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts::compareMagnitudes",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.ts::classifyNumber",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.ts::compareMagnitudes",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/02-strings.ts::classifyString",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/02-strings.ts::transformString",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.ts::computeStats",
+    "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.ts::safeDivide"
+  ],
+  "test_order_display_names": [
+    "ClassifyNumber",
+    "CompareMagnitudes",
+    "ClassifyAge",
+    "SafeDivide",
+    "classifyNumber",
+    "compareMagnitudes",
+    "classifyNumber",
+    "compareMagnitudes",
+    "classifyString",
+    "transformString",
+    "computeStats",
+    "safeDivide"
+  ]
+}

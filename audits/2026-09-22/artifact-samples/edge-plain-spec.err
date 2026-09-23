@@ -1,0 +1,5 @@
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[progress] starting 1/1: fmt2
+[progress] completed 1/1: fmt2 (3.2s)
+[batch 1/1] fmt2: 30 iters, 3 paths, 2/2 branches, 3.3s (ok)
+[info] Wrote explore artifact for fmt2 -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/shatter-artifacts/explore-results/edge_plain.ts/00001_fmt2.json

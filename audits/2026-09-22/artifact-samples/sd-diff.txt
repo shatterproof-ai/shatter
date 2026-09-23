@@ -1,0 +1,12 @@
+Spec diff: grade
+
+  Summary: 2 added, 1 removed, 1 precondition(s) changed, 1 class(es) with insufficient comparison evidence
+
+  [ADDED]   Class 2 — returns "fail"
+  [ADDED]   Class 4 — returns "pass"
+  [REMOVED] Class 3 — returns "pass"
+  [PRECOND] Class 2 — returns "fail"
+            - typeof param[0] == "number"
+            + param[0] > 0
+  [INCONCLUSIVE] Class 2 — returns "fail": insufficient comparison evidence (no comparable recorded example on both sides)
+

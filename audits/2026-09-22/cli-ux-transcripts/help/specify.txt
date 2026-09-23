@@ -1,0 +1,88 @@
+Build a FunctionSpec from an observation file produced by `shatter observe`
+
+Usage: shatter specify [OPTIONS] <OBSERVATION_FILE>
+
+Arguments:
+  <OBSERVATION_FILE>
+          Path to an ObserveStageOutput JSON file
+
+Options:
+      --analyze-file <FILE>
+          Path to an AnalyzeStageOutput JSON file from `shatter analyze --output`. If omitted, the analyze stage runs inline
+
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace
+          
+          [default: info]
+
+      --json
+          Output spec as JSON instead of markdown
+
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+
+      --yaml
+          Output spec as YAML with human-friendly property descriptions instead of markdown. Invariants are rendered as `property:` descriptions (requires --invariants to populate them)
+
+      --solve-file <FILE>
+          Path to a SolveStageOutput JSON file from `shatter solve --output`. When provided, enriches the spec with Z3-proven provenance and coverage completeness accounting
+
+      --timing <TIMING>
+          Timing output mode
+          
+          [default: off]
+          [possible values: off, summary, detailed]
+
+      --invariants
+          Detect and include function-wide invariants
+
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts
+          
+          [default: text]
+          [possible values: text, json, both]
+
+  -o, --output <FILE>
+          Write spec to this file. If omitted, writes to stdout
+
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+
+      --project-dir <DIR>
+          Override auto-detected project root directory
+
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox.
+          
+          By default (str-gg9v) Shatter refuses to execute target functions when no sandbox backend is configured, because a target can create, modify, or delete files by relative path in the invoking repository. Pass this flag (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in, targets still run in a throwaway working directory so relative-path writes do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap` is the safer alternative and does not require this flag.
+
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable).
+          
+          Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`
+          
+          Keys follow the `.shatter/config.yaml` YAML structure. Values are parsed as YAML scalars (integers, floats, booleans, strings). Precedence: above any `.shatter/config.yaml` file but below dedicated flags like `--max-iterations`.
+
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never)
+          
+          [default: auto]
+          [possible values: always, auto, never]
+
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI)
+
+          Possible values:
+          - md:    Markdown rendered via termimad (default). Use `--color never` for raw Markdown
+          - plain: Legacy plain ANSI text output (deprecated)
+          
+          [default: md]
+
+  -h, --help
+          Print help (see a summary with '-h')

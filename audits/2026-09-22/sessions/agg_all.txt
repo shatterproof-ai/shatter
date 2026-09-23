@@ -1,0 +1,116 @@
+# Aggregate (212 sessions)
+
+date span 2026-08-16 -> 2026-09-22
+by month {'2026-08': 103, '2026-09': 109}
+primary-dir sessions 86
+sessions with human msgs 131 human msgs 375
+interrupts 3 in 2 sessions
+teammate msgs 143 task notifs 479
+compactions 1 usage-limit notices 14
+models [('claude-sonnet-5', 123), ('claude-opus-4-7', 59), ('<synthetic>', 24), ('claude-fable-5-1', 19), ('claude-opus-5', 7), ('claude-opus-5-5', 1), ('claude-opus-5-5[1m]', 1)]
+permission modes Counter({'auto': 61, 'bypassPermissions': 41})
+slash commands [('/bento:swarm', 8), ('/bento:closure', 2), ('/effort', 1), ('/bento:handoff', 1)]
+
+## tools total 12609
+[('Bash', 8651), ('Read', 1024), ('ReadNotifications', 600), ('Edit', 388), ('Grep', 350), ('ScheduleWakeup', 247), ('TaskOutput', 221), ('SendMessage', 197), ('Agent', 159), ('Skill', 141), ('ToolSearch', 128), ('Write', 103), ('Monitor', 98), ('ListAgents', 84), ('StructuredOutput', 65), ('Glob', 55), ('AskUserQuestion', 53), ('TaskStop', 24), ('ReportFindings', 8), ('WebFetch', 7), ('Artifact', 3), ('PushNotification', 2), ('Workflow', 1)]
+median tools 11  sessions >200 tools: 12
+   (1805, 'c5f4fd7f', '2026-08-23', '-home-ketan-project-shatter')
+   (1575, '87606e10', '2026-09-19', '-home-ketan-project-shatter')
+   (761, '9f13ca23', '2026-09-17', '-home-ketan-project-shatter')
+   (504, 'd98d1b93', '2026-08-26', '-home-ketan-project-shatter')
+   (463, '5f2377ef', '2026-08-27', '-home-ketan-project-shatter')
+   (461, 'b9773c2d', '2026-08-16', '-home-ketan-project-shatter')
+   (456, '5617a8ed', '2026-09-08', '-home-ketan-project-shatter')
+   (264, '78569314', '2026-08-23', '-home-ketan-project-shatter')
+   (250, 'e724dbd8', '2026-09-07', '-home-ketan-project-shatter')
+   (242, '69d32a39', '2026-08-30', '-home-ketan-project-shatter')
+   (223, 'c1689435', '2026-09-21', '-home-ketan-project-shatter')
+   (207, '455c2cd7', '2026-09-07', '-home-ketan-project-shatter')
+   (189, 'b6375e4e', '2026-09-09', '-home-ketan-project-shatter')
+   (188, '884b07cc', '2026-09-02', '-home-ketan-project-shatter')
+   (186, '19cbf3b5', '2026-09-06', '-home-ketan-project-shatter')
+   (155, '301e2059', '2026-09-09', '-home-ketan-project-shatter')
+   (144, '63cfd30d', '2026-09-09', '-home-ketan-project-shatter')
+   (142, '28304d62', '2026-08-30', '-home-ketan-project-shatter')
+   (134, '490acdb8', '2026-09-09', '-home-ketan-project-shatter')
+   (133, '13fe621d', '2026-08-26', '-home-ketan-project-shatter')
+
+skills [('code-review', 58), ('pre-completion', 27), ('bento:land-work', 13), ('bento:launch-work', 10), ('formal-methods-policy', 5), ('bento:issue-readiness-check', 4), ('superpowers:brainstorming', 3), ('bento:beads-issue-flow', 3), ('ts-conventions', 2), ('bento:cross-check', 2), ('superpowers:writing-plans', 2), ('audit', 2), ('bento:swarm', 2), ('bento:closure', 1), ('rust-conventions', 1), ('superpowers:systematic-debugging', 1), ('bento:wire-land-verifier', 1), ('workflow-authoring', 1), ('walkthrough-review', 1), ('artifact-design', 1), ('superpowers:executing-plans', 1)]
+agent types [('general-purpose', 94), ('fork', 26), (None, 18), ('Explore', 10), ('claude', 9), ('claude-code-guide', 2)]
+
+## Bash 8651 calls, 370 errors (4.3%)
+top prefixes (n, err, rate)
+  cd                                   1076   44   4.1%
+  sleep                                 878   27   3.1%
+  grep                                  779   53   6.8%
+  git status                            341    9   2.6%
+  cat                                   335   12   3.6%
+  tail                                  324    4   1.2%
+  echo                                  322   13   4.0%
+  ls                                    253   18   7.1%
+  sed                                   234    5   2.1%
+  RUNHEAVY                              176    0   0.0%
+  git push                              170    7   4.1%
+  git fetch                             154    4   2.6%
+  land-work-create-preview.py           144    6   4.2%
+  git log                               140    3   2.1%
+  python -                              111    1   0.9%
+  git worktree                          111    2   1.8%
+  find                                  107    9   8.4%
+  git diff                              103    2   1.9%
+  for                                   102    5   4.9%
+  true                                  101    0   0.0%
+  git add                               100    3   3.0%
+  land-work-run-verifier.py              94    4   4.3%
+  cargo test                             92    1   1.1%
+  git -C                                 81    1   1.2%
+  bd show                                79    2   2.5%
+  git show                               69    0   0.0%
+  git rev-parse                          67    0   0.0%
+  rm                                     67    9  13.4%
+  wc                                     63    2   3.2%
+  git rebase                             61    1   1.6%
+  land-work-verify-lease.py              58    7  12.1%
+  bd update                              56    2   3.6%
+  mkdir                                  55    3   5.5%
+  timeout                                54    4   7.4%
+  git commit                             52    4   7.7%
+  ps                                     50    1   2.0%
+  git ls-remote                          50    0   0.0%
+  bd create                              49    4   8.2%
+  git merge-base                         49    0   0.0%
+  git branch                             48    2   4.2%
+  land-work-prepare.py                   48   15  31.2%
+  pwd                                    42    3   7.1%
+  bd close                               42    0   0.0%
+  land-work-verify-landing.py            40   10  25.0%
+  :                                      39    0   0.0%
+highest failure-rate prefixes n>=8
+  land-work-prepare.py                   48   15  31.2%
+  launch-work-verify.py                  11    3  27.3%
+  swarm-worktree-verify.py               35    9  25.7%
+  land-work-verify-landing.py            40   10  25.0%
+  bd ready                               18    4  22.2%
+  closure-scan.py                        10    2  20.0%
+  git config                             14    2  14.3%
+  rm                                     67    9  13.4%
+  python affected-gates.py               16    2  12.5%
+  land-work-verify-lease.py              58    7  12.1%
+  land-work-root-hygiene.py              18    2  11.1%
+  python swarm-worktree-verify.py        10    1  10.0%
+  export                                 10    1  10.0%
+
+text-tools-in-bash (lead grep/cat/sed/find/rg/head): 1470 {'find': 107, 'grep': 779, 'cat': 335, 'sed': 234, 'rg': 1, 'head': 14} sessions 89 worst [('c5f4fd7f', 178), ('87606e10', 111), ('5f2377ef', 110), ('28304d62', 72), ('5617a8ed', 70)]
+dedicated tools {'Read': 1024, 'Write': 103, 'Grep': 350, 'Glob': 55, 'Edit': 388}
+sed -i edits 12 heredoc file writes 87
+
+## failure streaks (>=3 consecutive errors, any tool)
+count 5
+   (4, 'c1a7d7c2', '2026-08-30T23:06', ['Edit:', 'Bash:cd /home/ketan/project/shatter && git status --short && git ', 'Bash:pwd; ls -la /home/ketan/project/shatter/.git 2>&1 | head -5;', 'Bash:cd /home/ketan/project/shatter && git worktree list && echo '])
+   (4, '884b07cc', '2026-09-03T20:59', ['Agent:', 'Agent:', 'Agent:', 'Agent:'])
+   (4, '884b07cc', '2026-09-03T13:33', ['Agent:', 'Agent:', 'Agent:', 'Agent:'])
+   (3, 'e724dbd8', '2026-09-07T20:37', ['TaskOutput:', 'TaskOutput:', 'ScheduleWakeup:'])
+   (3, 'd7d501b3', '2026-09-07T00:10', ['Bash:grep -n "^  ts:test:" -A 25 Taskfile.yml shatter-ts/Taskfile', 'Bash:grep -rn "ts:test:" --include="Taskfile*.yml" . 2>/dev/null', 'Bash:find . -iname "Taskfile*.yml" -not -path "*/node_modules/*" '])
+
+identical failing bash cmd >=3x in a session: 1
+   4 ('d98d1b93', '/home/ketan/.claude/plugins/cache/bento/bento/2.2.5/skills/land-work/scripts/land-work-prepare.py --require-up-to-date')

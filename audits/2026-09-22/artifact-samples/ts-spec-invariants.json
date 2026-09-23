@@ -1,0 +1,687 @@
+{
+  "version": 1,
+  "file": "ts/03-objects.ts",
+  "functions": [
+    {
+      "function_name": "categorizeUser",
+      "location": "ts/03-objects.ts:19-36",
+      "classes": [
+        {
+          "label": "Class 1 — returns \"child\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "SameType": {
+                "param_index": 0,
+                "type_name": "object"
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "child"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                {
+                  "age": 0,
+                  "isVerified": false,
+                  "name": "age",
+                  "role": ""
+                }
+              ],
+              "return_value": "child",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 19,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed",
+          "invariants": [
+            {
+              "invariant": {
+                "description": "age != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "age"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.age is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": "age == 0",
+                "target": "input",
+                "kind": {
+                  "kind": "numeric_constant",
+                  "path": [
+                    "age"
+                  ],
+                  "value": 0.0
+                }
+              },
+              "target": "input",
+              "label": "input.age == 0",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": "age >= 0",
+                "target": "input",
+                "kind": {
+                  "kind": "numeric_comparison",
+                  "path": [
+                    "age"
+                  ],
+                  "op": "ge",
+                  "value": 0.0
+                }
+              },
+              "target": "input",
+              "label": "input.age >= 0",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": "isVerified != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "isVerified"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.isVerified is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": "isVerified is always false",
+                "target": "input",
+                "kind": {
+                  "kind": "always_false",
+                  "path": [
+                    "isVerified"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.isVerified is always false",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": "name != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "name"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.name is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": "role != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "role"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.role is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": " != null",
+                "target": "output",
+                "kind": {
+                  "kind": "not_null",
+                  "path": []
+                }
+              },
+              "target": "output",
+              "label": "output is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            },
+            {
+              "invariant": {
+                "description": " is non-empty",
+                "target": "output",
+                "kind": {
+                  "kind": "string_non_empty",
+                  "path": []
+                }
+              },
+              "target": "output",
+              "label": "output is non-empty string",
+              "confidence": 1.0,
+              "satisfied_count": 19,
+              "total_count": 19
+            }
+          ]
+        },
+        {
+          "label": "Class 2 — throws Error: invalid age",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "SameType": {
+                "param_index": 0,
+                "type_name": "object"
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "throws",
+            "error": {
+              "error_type": "Error",
+              "message": "invalid age",
+              "stack": null
+            }
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                {
+                  "age": -1,
+                  "isVerified": false,
+                  "name": "age",
+                  "role": ""
+                }
+              ],
+              "return_value": null,
+              "thrown_error": {
+                "error_type": "Error",
+                "message": "invalid age",
+                "stack": null
+              }
+            }
+          ],
+          "sample_count": 6,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed",
+          "invariants": [
+            {
+              "invariant": {
+                "description": "age != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "age"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.age is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            },
+            {
+              "invariant": {
+                "description": "age < 0",
+                "target": "input",
+                "kind": {
+                  "kind": "numeric_comparison",
+                  "path": [
+                    "age"
+                  ],
+                  "op": "lt",
+                  "value": 0.0
+                }
+              },
+              "target": "input",
+              "label": "input.age < 0",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            },
+            {
+              "invariant": {
+                "description": "age == -1",
+                "target": "input",
+                "kind": {
+                  "kind": "numeric_constant",
+                  "path": [
+                    "age"
+                  ],
+                  "value": -1.0
+                }
+              },
+              "target": "input",
+              "label": "input.age == -1",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            },
+            {
+              "invariant": {
+                "description": "isVerified != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "isVerified"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.isVerified is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            },
+            {
+              "invariant": {
+                "description": "isVerified is always false",
+                "target": "input",
+                "kind": {
+                  "kind": "always_false",
+                  "path": [
+                    "isVerified"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.isVerified is always false",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            },
+            {
+              "invariant": {
+                "description": "name != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "name"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.name is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            },
+            {
+              "invariant": {
+                "description": "role != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "role"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.role is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            },
+            {
+              "invariant": {
+                "description": " is always null",
+                "target": "output",
+                "kind": {
+                  "kind": "is_null",
+                  "path": []
+                }
+              },
+              "target": "output",
+              "label": "output is null",
+              "confidence": 1.0,
+              "satisfied_count": 6,
+              "total_count": 6
+            }
+          ]
+        },
+        {
+          "label": "Class 3 — returns \"teen\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            },
+            {
+              "branch_id": 2,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "SameType": {
+                "param_index": 0,
+                "type_name": "object"
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "teen"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                {
+                  "age": 13,
+                  "isVerified": false,
+                  "name": "age",
+                  "role": ""
+                }
+              ],
+              "return_value": "teen",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 5,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed",
+          "invariants": [
+            {
+              "invariant": {
+                "description": "age != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "age"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.age is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": "age == 13",
+                "target": "input",
+                "kind": {
+                  "kind": "numeric_constant",
+                  "path": [
+                    "age"
+                  ],
+                  "value": 13.0
+                }
+              },
+              "target": "input",
+              "label": "input.age == 13",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": "age > 0",
+                "target": "input",
+                "kind": {
+                  "kind": "numeric_comparison",
+                  "path": [
+                    "age"
+                  ],
+                  "op": "gt",
+                  "value": 0.0
+                }
+              },
+              "target": "input",
+              "label": "input.age > 0",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": "isVerified != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "isVerified"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.isVerified is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": "isVerified is always false",
+                "target": "input",
+                "kind": {
+                  "kind": "always_false",
+                  "path": [
+                    "isVerified"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.isVerified is always false",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": "name != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "name"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.name is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": "role != null",
+                "target": "input",
+                "kind": {
+                  "kind": "not_null",
+                  "path": [
+                    "role"
+                  ]
+                }
+              },
+              "target": "input",
+              "label": "input.role is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": " != null",
+                "target": "output",
+                "kind": {
+                  "kind": "not_null",
+                  "path": []
+                }
+              },
+              "target": "output",
+              "label": "output is non-null",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            },
+            {
+              "invariant": {
+                "description": " is non-empty",
+                "target": "output",
+                "kind": {
+                  "kind": "string_non_empty",
+                  "path": []
+                }
+              },
+              "target": "output",
+              "label": "output is non-empty string",
+              "confidence": 1.0,
+              "satisfied_count": 5,
+              "total_count": 5
+            }
+          ]
+        }
+      ],
+      "iterations": 30,
+      "lines_covered": 6,
+      "total_lines": 11,
+      "invariants": [
+        {
+          "invariant": {
+            "description": "age != null",
+            "target": "input",
+            "kind": {
+              "kind": "not_null",
+              "path": [
+                "age"
+              ]
+            }
+          },
+          "target": "input",
+          "label": "input.age is non-null",
+          "confidence": 1.0,
+          "satisfied_count": 30,
+          "total_count": 30
+        },
+        {
+          "invariant": {
+            "description": "isVerified != null",
+            "target": "input",
+            "kind": {
+              "kind": "not_null",
+              "path": [
+                "isVerified"
+              ]
+            }
+          },
+          "target": "input",
+          "label": "input.isVerified is non-null",
+          "confidence": 1.0,
+          "satisfied_count": 30,
+          "total_count": 30
+        },
+        {
+          "invariant": {
+            "description": "isVerified is always false",
+            "target": "input",
+            "kind": {
+              "kind": "always_false",
+              "path": [
+                "isVerified"
+              ]
+            }
+          },
+          "target": "input",
+          "label": "input.isVerified is always false",
+          "confidence": 1.0,
+          "satisfied_count": 30,
+          "total_count": 30
+        },
+        {
+          "invariant": {
+            "description": "name != null",
+            "target": "input",
+            "kind": {
+              "kind": "not_null",
+              "path": [
+                "name"
+              ]
+            }
+          },
+          "target": "input",
+          "label": "input.name is non-null",
+          "confidence": 1.0,
+          "satisfied_count": 30,
+          "total_count": 30
+        },
+        {
+          "invariant": {
+            "description": "role != null",
+            "target": "input",
+            "kind": {
+              "kind": "not_null",
+              "path": [
+                "role"
+              ]
+            }
+          },
+          "target": "input",
+          "label": "input.role is non-null",
+          "confidence": 1.0,
+          "satisfied_count": 30,
+          "total_count": 30
+        }
+      ],
+      "fingerprint": "3dfcdfd70cd715b65223ba198c87570b68b7ecb5f7ef80dcf7220cb76dadbc70"
+    }
+  ]
+}

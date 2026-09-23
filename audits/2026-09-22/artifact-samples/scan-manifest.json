@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "scan_id": "896e5a62592d8079450c94d8009d21fd99422db6e94e5637ec588092b00f6b2d",
+  "project_root": null,
+  "repo_root": null,
+  "cwd": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj",
+  "git_commit": null,
+  "git_dirty": null,
+  "scope_hash": "b8f68a09f5487a97bed435d8afc6a1286becea07386ec75b952967a4085d81d1",
+  "source_files": [
+    {
+      "path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic-copy.ts",
+      "size": 1186,
+      "mtime_ns": 1790098912924503713,
+      "content_hash": "f0496154a54c82c64e8064f4ca9c1e2f6710f8971ff5a040a1cf59b42d27c466",
+      "line_count": 45
+    },
+    {
+      "path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.go",
+      "size": 1181,
+      "mtime_ns": 1790098912915991779,
+      "content_hash": "7465e99cb7df4284fdff0a1baeac07ff988e566a512fba0482680a7c653facbd",
+      "line_count": 48
+    },
+    {
+      "path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/01-arithmetic.ts",
+      "size": 1186,
+      "mtime_ns": 1790098912912471356,
+      "content_hash": "f0496154a54c82c64e8064f4ca9c1e2f6710f8971ff5a040a1cf59b42d27c466",
+      "line_count": 45
+    },
+    {
+      "path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/02-strings.ts",
+      "size": 1632,
+      "mtime_ns": 1790098912913338410,
+      "content_hash": "54ba42c715cf9487fcf999d3ad7b365d2943c0fd9c37caa382cd74333a25e573",
+      "line_count": 62
+    },
+    {
+      "path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.go",
+      "size": 1428,
+      "mtime_ns": 1790098912917811123,
+      "content_hash": "652c251ee72cc4f1e4dbfc7ed44b51d2801bba6e0a90ec05b42061599cd1edf4",
+      "line_count": 50
+    },
+    {
+      "path": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/mix/04-errors.ts",
+      "size": 1899,
+      "mtime_ns": 1790098912913064606,
+      "content_hash": "14f0fd9a103ae26ff54f9577633773bf59535a3069a9e371851491fa81d755ac",
+      "line_count": 65
+    }
+  ],
+  "captured_at_ns": 1790099069611506535
+}

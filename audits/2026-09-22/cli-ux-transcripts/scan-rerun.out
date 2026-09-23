@@ -1,0 +1,120 @@
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::classifyNumber` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::computeStats` | 2 | 31% |
+
+---
+
+Scan complete: **2 completed**, **2 failed**, **0 unsupported**, **0 interrupted**, **0 expected skipped** (4 worker(s))
+
+**Errors:**
+- `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::compareMagnitudes`: timed out during task after 125s
+- `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::safeDivide`: timed out during task after 125s
+# Shatter Scan Report
+
+- **Functions discovered:** 4
+- **Functions attempted:** 4
+- **Functions completed:** 2
+  - **with observed behavior:** 1
+  - **error-only (all discovered inputs threw):** 1
+- **Functions failed:** 2
+
+## Source Set Summary
+
+| Bucket | Files | Lines |
+|--------|-------|-------|
+| `production_ish` | 2 | 110 |
+| `test_spec` | 0 | 0 |
+| `generated` | 0 | 0 |
+| `declaration_only` | 0 | 0 |
+| `fixture_sample` | 0 | 0 |
+| `policy_excluded` | 0 | 0 |
+| `unsupported` | 0 | 0 |
+
+- **Production-ish source lines:** 110 (whole-source denominator; see Coverage section below)
+
+## Coverage
+
+- **Attempted-function span:** 4 of 4 discovered functions attempted
+- **Total branches:** 8 (across completed functions)
+- **Branches covered:** 4
+- **Overall coverage (completed-functions subset):** 50.0%
+
+## Low-Coverage Buckets
+
+*Completing a function (running it without a crash) is not the same as achieving high source or branch coverage. These buckets classify why coverage stays shallow so the low numbers can be acted on directly.*
+
+Low-coverage cutoff: completed functions with coverage ≤ 10%.
+
+| Bucket | Count |
+|--------|-------|
+| Failed (attempted, did not complete) | 2 |
+| Skipped / unsupported | 0 |
+| Zero coverage with branches (needs setup/mocks) | 0 |
+| Zero coverage, no branches (accessors/getters) | 0 |
+| Positive but low coverage | 0 |
+
+## Function Summary
+
+| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |
+|--------|---------|----------|------|----------|----------|-------|------------|
+| PASS | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts | 100.0% | 3/3 | 7/7 | 68 |
+| LOW | error_only | `computeStats` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts | 31.2% | 1/5 | 5/16 | 3 |
+
+## Function Details
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 7/7
+- **Iterations:** 68
+- **Constraints collected:** 137
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 2)
+- Cluster 3: returns "positive-odd" (inputs: 1)
+
+### `computeStats`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts
+- **Coverage:** 31.2%
+- **Branches:** 1/5
+- **Lines:** 5/16
+- **Iterations:** 3
+- **Constraints collected:** 3
+
+**Behaviors:**
+
+- Cluster 0: throws Error: empty array (inputs: [])
+- Cluster 1: throws TypeError: items is not iterable (inputs: {"length":1})
+- Cluster 2: throws Error: empty array (inputs: {"length":0})
+
+## Uncovered Branches
+
+- `computeStats`: 4 uncovered branch(es) (31.2% coverage)
+
+## Interesting Inputs
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+
+### `computeStats`
+
+- [] -> **error:** Error: empty array
+- {"length":1} -> **error:** TypeError: items is not iterable
+- {"length":0} -> **error:** Error: empty array
+
+## Failed Functions
+
+- `compareMagnitudes` (/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts): timed out during task after 125s
+- `safeDivide` (/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts): timed out during task after 125s
+
