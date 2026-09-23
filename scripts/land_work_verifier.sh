@@ -30,8 +30,9 @@ fail() {
 candidate_tree="$(git rev-parse HEAD^{tree} 2>/dev/null)" \
     || fail "cannot resolve candidate tree (git rev-parse HEAD^{tree})"
 
-# A missing (or never-fetched, i.e. stale) origin/main must fail before the
-# gate ever runs -- there is no base to diff against otherwise.
+# A missing origin/main (never fetched) must fail before the gate ever runs
+# -- there is no base to diff against otherwise. This only checks that the
+# ref resolves locally; it does not detect a stale-but-present origin/main.
 git rev-parse --verify -q 'origin/main^{commit}' >/dev/null 2>&1 \
     || fail "origin/main is missing or not fetched; fetch origin main before verifying"
 
