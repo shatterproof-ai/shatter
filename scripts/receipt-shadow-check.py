@@ -249,6 +249,9 @@ def now_rfc3339() -> str:
 
 
 def is_normalized_abs_path(value: str) -> bool:
+    # Mirrors gate-event-log.py's identically-named helper. Not imported:
+    # gate-event-log.py is invoked as a subprocess (hyphenated filename, not
+    # a module) elsewhere in this file. Keep both copies in sync.
     if not value.startswith("/"):
         return False
     if value != "/" and value.endswith("/"):
@@ -381,11 +384,6 @@ def main(argv: list[str] | None = None) -> int:
     # the script still exits 0.
     try:
         worktree = os.path.normpath(os.path.abspath(args.worktree))
-        if not is_normalized_abs_path(worktree):
-            print(
-                f"[shatter-shadow] warning: worktree path is not normalized: {worktree}",
-                file=sys.stderr,
-            )
         raw_stdin = sys.stdin.read()
         try:
             updates = parse_ref_lines(raw_stdin)
