@@ -680,6 +680,19 @@ async fn main() -> ExitCode {
                 merged.defaults
             };
             let yaml_genetic = yaml_defaults.genetic.clone().unwrap_or_default();
+            // str-03mfx: scan-level budget allocation policy from
+            // `defaults.exploration`, with `--set` as the top YAML layer.
+            let scan_exploration = match crate::helpers::resolve_scan_exploration(
+                directory_for_resolution,
+                &cli.set_overrides,
+            ) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let budget = shatter_core::scan_orchestrator::BudgetSettings::from(&scan_exploration);
             let genetic_config = if genetic {
                 shatter_core::config::GeneticConfig {
                     enabled: true,
@@ -898,6 +911,7 @@ async fn main() -> ExitCode {
                 effective_capture,
                 workers_per_fn,
                 &genetic_config,
+                budget,
                 parallelism_bounds,
                 require_rust,
                 shatter_core::scan_orchestrator::ScanFailurePolicy::from_cli_flag(fail_on_failures),

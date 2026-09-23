@@ -205,12 +205,12 @@ exit 0
 
     def test_every_ts_e2e_test_is_in_the_integration_tier(self) -> None:
         source = (ROOT / "shatter-core/tests/e2e_concolic.rs").read_text()
-        self.assertEqual(source.count("#[tokio::test]"), 26)
+        self.assertEqual(source.count("#[tokio::test]"), 27)
         self.assertEqual(
             source.count(
                 '#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]'
             ),
-            26,
+            27,
         )
 
     def test_fast_check_overrides_cover_explicit_case_counts(self) -> None:

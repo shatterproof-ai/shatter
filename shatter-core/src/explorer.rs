@@ -104,6 +104,10 @@ pub struct ExploreConfig {
     /// Maximum number of iterations (execute calls) per function.
     /// `None` means unbounded — explore runs until timeout or interruption.
     pub max_iterations: Option<u32>,
+    /// Concolic-path execution cap set by static budget allocation
+    /// (str-03mfx). `None` derives the cap from `max_iterations` as before.
+    /// The random explorer ignores this field.
+    pub max_executions_override: Option<usize>,
     /// Number of observer frontend subprocesses to use for random exploration.
     ///
     /// `1` preserves the serial path. Values above 1 require
@@ -4990,6 +4994,7 @@ for line in sys.stdin:
                 .to_string_lossy()
                 .into_owned(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -5234,6 +5239,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(6),
+            max_executions_override: None,
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
             candidate_queue_capacity: None,
@@ -5312,6 +5318,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(1),
+            max_executions_override: None,
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
             candidate_queue_capacity: None,
@@ -5419,6 +5426,7 @@ for line in sys.stdin:
         ExploreConfig {
             file: "handlers.rs".into(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -5613,6 +5621,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(4),
+            max_executions_override: None,
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
             candidate_queue_capacity: None,
@@ -5673,6 +5682,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(10_000),
+            max_executions_override: None,
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
             candidate_queue_capacity: None,
@@ -5736,6 +5746,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(8),
+            max_executions_override: None,
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
             candidate_queue_capacity: None,
@@ -5806,6 +5817,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(6),
+            max_executions_override: None,
             observer_pool: 2,
             observer_frontend_config: Some(observer_frontend_config),
             candidate_queue_capacity: None,
@@ -5859,6 +5871,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(3),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -5913,6 +5926,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(10_000),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -5988,6 +6002,7 @@ for line in sys.stdin:
         let explore_config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(1),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6047,6 +6062,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(1),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6098,6 +6114,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6142,6 +6159,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6185,6 +6203,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6227,6 +6246,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6279,6 +6299,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.rs".into(),
             max_iterations: Some(1),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: Some(frontend_config),
             candidate_queue_capacity: None,
@@ -6338,6 +6359,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(3),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6380,6 +6402,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(5),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6440,6 +6463,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(10),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -6500,6 +6524,7 @@ for line in sys.stdin:
         let config = ExploreConfig {
             file: "test.ts".into(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,

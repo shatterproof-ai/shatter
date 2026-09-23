@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -49,111 +49,35 @@ use crate::types::TypeInfo;
 // build/execution timeout wording used for `SkipCategory::Error` rows.
 const TOTAL_SCAN_TIMEOUT_REASON: &str = "not attempted: total scan budget exceeded";
 
-/// Shared budget surplus within a topological layer.
-///
-/// Functions that terminate early (worklist exhausted, coverage plateau, full
-/// branch coverage) donate their unused execution budget here. Functions still
-/// discovering new paths can claim from the surplus when their initial budget
-/// runs out.
-///
-/// Each layer gets a fresh `BudgetSurplus` — budget from layer N does not carry
-/// over to layer N+1.
-#[derive(Debug)]
-pub struct BudgetSurplus {
-    /// Remaining surplus executions available for claiming.
-    available: AtomicU32,
+pub use crate::budget_alloc::{BudgetSurplus, ClaimPolicy};
+
+/// Scan-level budget policy resolved from `defaults.exploration` (str-03mfx).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetSettings {
+    pub allocation: crate::config::BudgetAllocation,
+    /// Minimum executions per function under `Static`.
+    pub floor: u32,
+    /// Per-function ceiling as a multiple of the flat per-function budget.
+    pub ceiling_factor: f64,
 }
 
-impl Default for BudgetSurplus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BudgetSurplus {
-    /// Create a new empty surplus (used at the start of each layer).
-    pub fn new() -> Self {
-        Self {
-            available: AtomicU32::new(0),
-        }
-    }
-
-    /// Donate unused budget to the shared surplus.
-    pub fn donate(&self, amount: u32) {
-        if amount > 0 {
-            self.available.fetch_add(amount, Ordering::Release);
-        }
-    }
-
-    /// Try to claim up to `requested` executions from the surplus.
-    ///
-    /// Returns the number actually claimed (may be less than requested if the
-    /// surplus is partially depleted, or 0 if less than `min_claim` is
-    /// available).
-    pub fn try_claim(&self, requested: u32, min_claim: u32) -> u32 {
-        let mut current = self.available.load(Ordering::Acquire);
-        loop {
-            if current < min_claim {
-                return 0;
-            }
-            let to_claim = current.min(requested);
-            match self.available.compare_exchange_weak(
-                current,
-                current - to_claim,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return to_claim,
-                Err(updated) => current = updated,
-            }
-        }
-    }
-
-    /// Current surplus available (for diagnostics/testing).
-    pub fn available(&self) -> u32 {
-        self.available.load(Ordering::Acquire)
-    }
-}
-
-/// Policy governing when a function may claim surplus budget.
-#[derive(Debug, Clone)]
-pub struct ClaimPolicy {
-    /// Minimum hit rate (new paths / last N executions) to qualify for claiming.
-    pub min_hit_rate: f64,
-    /// Window size for measuring recent hit rate.
-    pub window: u32,
-    /// Maximum fraction of total surplus a single function can claim at once.
-    pub max_claim_fraction: f64,
-}
-
-impl Default for ClaimPolicy {
+impl Default for BudgetSettings {
     fn default() -> Self {
         Self {
-            min_hit_rate: 0.1,
-            window: 10,
-            max_claim_fraction: 0.5,
+            allocation: crate::config::BudgetAllocation::Flat,
+            floor: crate::config::DEFAULT_BUDGET_FLOOR,
+            ceiling_factor: crate::config::DEFAULT_BUDGET_CEILING_FACTOR,
         }
     }
 }
 
-impl ClaimPolicy {
-    /// Determine whether a function should be allowed to claim surplus budget,
-    /// based on its recent exploration productivity.
-    ///
-    /// `recent_new_paths` is the number of new paths discovered in the last
-    /// `window` executions.
-    pub fn should_claim(&self, recent_new_paths: u32) -> bool {
-        if self.window == 0 {
-            return false;
+impl From<&crate::config::ExplorationConfig> for BudgetSettings {
+    fn from(e: &crate::config::ExplorationConfig) -> Self {
+        Self {
+            allocation: e.budget_allocation,
+            floor: e.budget_floor,
+            ceiling_factor: e.budget_ceiling_factor,
         }
-        let hit_rate = recent_new_paths as f64 / self.window as f64;
-        hit_rate >= self.min_hit_rate
-    }
-
-    /// Compute the maximum number of executions this function should claim,
-    /// given the current surplus.
-    pub fn max_claimable(&self, surplus_available: u32) -> u32 {
-        (surplus_available as f64 * self.max_claim_fraction).floor() as u32
     }
 }
 
@@ -234,6 +158,8 @@ pub struct ScanConfig {
     pub capabilities: crate::orchestrator::FrontendCapabilities,
     /// Configuration for the optional genetic algorithm follow-up phase.
     pub genetic_config: crate::config::GeneticConfig,
+    /// Execution-budget allocation policy (str-03mfx). Default: flat.
+    pub budget: BudgetSettings,
     /// When `Some`, explore each function in fixed-size iteration batches
     /// using round-robin scheduling within each layer. Functions are explored
     /// one at a time; non-exhausted functions are re-enqueued for another
@@ -1773,6 +1699,7 @@ pub async fn scan(
         let explore_config = ExploreConfig {
             file,
             max_iterations: Some(config.max_iterations_per_function),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -2713,6 +2640,11 @@ async fn run_layer_batched(
 
         // Adjust the explore config's iteration cap to the batch size.
         let mut batch_explore_config = task.explore_config.clone();
+        batch_explore_config.max_executions_override = batch_execution_override(
+            task.explore_config.max_executions_override,
+            task.explore_config.max_iterations,
+            batch_config.batch_size,
+        );
         batch_explore_config.max_iterations = Some(batch_config.batch_size);
 
         let result = run_phased(
@@ -3131,7 +3063,11 @@ pub async fn explore_with_scan_mode(
         .value_sources
         .iter()
         .any(|source| matches!(source, ValueSource::CustomGenerator { .. }));
-    let max_executions = concolic_scan_max_executions(max_iterations, has_custom_generators);
+    let max_executions = effective_concolic_max_executions(
+        max_iterations,
+        has_custom_generators,
+        explore_config.max_executions_override,
+    );
     let (generated_inputs, prefetch_failures) = prefetch_concolic_generator_inputs(
         frontend,
         analysis,
@@ -3208,6 +3144,17 @@ fn concolic_scan_user_inputs(
     user_inputs.extend(generated_inputs);
     user_inputs.extend(candidate_inputs);
     user_inputs
+}
+
+/// Execution cap for the concolic scan path: the static-allocation override
+/// when present, else the flat derivation (str-03mfx).
+fn effective_concolic_max_executions(
+    max_iterations: usize,
+    has_custom_generators: bool,
+    override_executions: Option<usize>,
+) -> usize {
+    override_executions
+        .unwrap_or_else(|| concolic_scan_max_executions(max_iterations, has_custom_generators))
 }
 
 fn concolic_scan_max_executions(max_iterations: usize, has_custom_generators: bool) -> usize {
@@ -3626,6 +3573,150 @@ fn estimate_nesting_depth(branches: &[BranchInfo], target_ids: &[u32]) -> u32 {
 /// Carries all per-function data needed to dispatch one worker. When
 /// `workers_per_fn > 1`, a function may appear in multiple `ExploreTask`s
 /// with different seeds so that parallel workers explore different paths.
+/// One function's static share, for logging and tests (str-03mfx).
+#[derive(Debug, Clone, PartialEq)]
+struct StaticShare {
+    pub func_name: String,
+    pub score: f64,
+    pub executions: u32,
+}
+
+fn task_has_custom_generators(task: &ExploreTask) -> bool {
+    task.explore_config
+        .value_sources
+        .iter()
+        .any(|s| matches!(s, ValueSource::CustomGenerator { .. }))
+}
+
+/// Under `Static`, split the layer's flat execution total across `tasks` by
+/// static score and write each share into the task's config
+/// (`max_executions_override` and a derived `max_iterations`). Under `Flat`
+/// this is a no-op and returns an empty vec.
+fn apply_static_allocation(
+    tasks: &mut [ExploreTask],
+    settings: &BudgetSettings,
+    default_max_iterations: u32,
+    concolic: bool,
+) -> Vec<StaticShare> {
+    use crate::budget_alloc::{Demand, allocate, features, score};
+    use crate::config::BudgetAllocation;
+    // `static` is a concolic-path policy: the random explorer reads
+    // `max_iterations` as its execution budget and must keep the flat value.
+    if !concolic || settings.allocation != BudgetAllocation::Static || tasks.is_empty() {
+        return Vec::new();
+    }
+    let flat: Vec<(u32, bool)> = tasks
+        .iter()
+        .map(|t| {
+            let custom = task_has_custom_generators(t);
+            (
+                concolic_scan_max_executions(default_max_iterations as usize, custom) as u32,
+                custom,
+            )
+        })
+        .collect();
+    let total: u32 = flat.iter().map(|(f, _)| *f).sum();
+    let scores: Vec<f64> = tasks.iter().map(|t| score(&features(&t.analysis))).collect();
+    let demands: Vec<Demand> = flat
+        .iter()
+        .zip(&scores)
+        .map(|((flat_execs, _), s)| Demand {
+            score: *s,
+            floor: settings.floor,
+            ceiling: (f64::from(*flat_execs) * settings.ceiling_factor).floor().max(1.0) as u32,
+        })
+        .collect();
+    let allocation = allocate(&demands, total);
+    if let Some(inf) = allocation.infeasible {
+        log::warn!("budget: layer allocation infeasible: {inf:?}");
+    }
+    let mut shares = Vec::with_capacity(tasks.len());
+    for ((task, share), ((_, custom), s)) in tasks
+        .iter_mut()
+        .zip(&allocation.per_function)
+        .zip(flat.iter().zip(&scores))
+    {
+        let execs = *share;
+        task.explore_config.max_executions_override = Some(execs as usize);
+        task.explore_config.max_iterations =
+            Some(if *custom { execs } else { (execs / 5).max(1) });
+        log::debug!(
+            "budget: {} score={:.1} executions={}",
+            task.func_name,
+            s,
+            execs
+        );
+        shares.push(StaticShare {
+            func_name: task.func_name.clone(),
+            score: *s,
+            executions: execs,
+        });
+    }
+    let mut sorted: Vec<u32> = shares.iter().map(|s| s.executions).collect();
+    sorted.sort_unstable();
+    log::info!(
+        "budget: layer: {} functions, total {}, share min/median/max {}/{}/{}",
+        shares.len(),
+        allocation.total,
+        sorted[0],
+        sorted[sorted.len() / 2],
+        sorted[sorted.len() - 1]
+    );
+    shares
+}
+
+/// Scale a static-allocation execution override to one batch: the share is
+/// spread across batches in the same proportion as `max_iterations` is
+/// (str-03mfx). `None` stays `None`.
+fn batch_execution_override(
+    override_executions: Option<usize>,
+    max_iterations: Option<u32>,
+    batch_size: u32,
+) -> Option<usize> {
+    override_executions.map(|total| {
+        let denom = u64::from(max_iterations.unwrap_or(batch_size).max(1));
+        ((total as u64 * u64::from(batch_size)) / denom).max(1) as usize
+    })
+}
+
+/// Expand one task into `wpf` replicas with derived seeds. `max_iterations`
+/// is split evenly (floor, min 1) as before; a static-allocation
+/// `max_executions_override` is split evenly with the remainder on the first
+/// replicas so the replicas' executions sum to the function's share (each
+/// replica keeps at least one execution, mirroring the `max_iterations` floor).
+fn split_task_across_replicas(task: ExploreTask, fn_idx: usize, wpf: usize) -> Vec<ExploreTask> {
+    let per_replica_iters = task
+        .explore_config
+        .max_iterations
+        .map(|m| (m / wpf as u32).max(1));
+    let exec_shares: Option<Vec<usize>> = task.explore_config.max_executions_override.map(|total| {
+        let base = total / wpf;
+        let rem = total % wpf;
+        (0..wpf)
+            .map(|r| (base + usize::from(r < rem)).max(1))
+            .collect()
+    });
+    let mut out = Vec::with_capacity(wpf);
+    for replica in 0..wpf {
+        let mut replica_config = task.explore_config.clone();
+        replica_config.seed = derive_replica_seed(task.explore_config.seed, fn_idx, replica);
+        replica_config.max_iterations = per_replica_iters;
+        replica_config.max_executions_override = exec_shares.as_ref().map(|v| v[replica]);
+        out.push(ExploreTask {
+            func_name: task.func_name.clone(),
+            analysis: task.analysis.clone(),
+            explore_config: replica_config,
+            file_path: task.file_path.clone(),
+            mocks_used: task.mocks_used.clone(),
+            callees: task.callees.clone(),
+            deep_fp: task.deep_fp.clone(),
+            progress_index: task.progress_index,
+            known_targets: task.known_targets.clone(),
+        });
+    }
+    out
+}
+
 struct ExploreTask {
     func_name: String,
     analysis: FunctionAnalysis,
@@ -4524,6 +4615,7 @@ pub async fn parallel_scan_with_progress(
             let explore_config = ExploreConfig {
                 file: file.clone(),
                 max_iterations: Some(config.max_iterations_per_function),
+                max_executions_override: None,
                 observer_pool: 1,
                 observer_frontend_config: Some((*fe_config_persistent).clone()),
                 candidate_queue_capacity: None,
@@ -4589,6 +4681,16 @@ pub async fn parallel_scan_with_progress(
         // The pool is created lazily on the first layer with work and persists
         // across subsequent layers, keeping frontend subprocesses warm.
         if !tasks.is_empty() {
+            // str-03mfx: static budget allocation over this layer's runnable
+            // tasks (no-op under the default `flat`).
+            let _shares =
+                apply_static_allocation(
+                    &mut tasks,
+                    &config.budget,
+                    config.max_iterations_per_function,
+                    config.concolic,
+                );
+
             // Build a map from function name to progress index for summary updates.
             let fn_progress_index: HashMap<String, usize> = tasks
                 .iter()
@@ -4668,27 +4770,7 @@ pub async fn parallel_scan_with_progress(
                     let wpf = config.workers_per_fn;
                     let mut out = Vec::with_capacity(tasks.len() * wpf);
                     for (fn_idx, task) in tasks.into_iter().enumerate() {
-                        let per_replica_iters = task
-                            .explore_config
-                            .max_iterations
-                            .map(|m| (m / wpf as u32).max(1));
-                        for replica in 0..wpf {
-                            let mut replica_config = task.explore_config.clone();
-                            replica_config.seed =
-                                derive_replica_seed(task.explore_config.seed, fn_idx, replica);
-                            replica_config.max_iterations = per_replica_iters;
-                            out.push(ExploreTask {
-                                func_name: task.func_name.clone(),
-                                analysis: task.analysis.clone(),
-                                explore_config: replica_config,
-                                file_path: task.file_path.clone(),
-                                mocks_used: task.mocks_used.clone(),
-                                callees: task.callees.clone(),
-                                deep_fp: task.deep_fp.clone(),
-                                progress_index: task.progress_index,
-                                known_targets: task.known_targets.clone(),
-                            });
-                        }
+                        out.extend(split_task_across_replicas(task, fn_idx, wpf));
                     }
                     out
                 };
@@ -7445,6 +7527,7 @@ for line in sys.stdin:
         let explore_config = ExploreConfig {
             file: "recorder.go".into(),
             max_iterations: Some(1),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -7833,6 +7916,7 @@ for line in sys.stdin:
 
     fn minimal_scan_config(file_map: HashMap<String, String>) -> ScanConfig {
         ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 1,
             concolic: false,
             seed: None,
@@ -8649,6 +8733,7 @@ for line in sys.stdin:
         file_map.insert("caller".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -8739,6 +8824,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -8822,6 +8908,7 @@ for line in sys.stdin:
             Arc::new(BehaviorMapCache::new(tmp_dir.path().to_path_buf()).expect("create cache"));
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -8925,6 +9012,7 @@ for line in sys.stdin:
         file_map.insert("fn_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9010,6 +9098,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -9098,6 +9187,7 @@ for line in sys.stdin:
         let mut skipped_file_map = HashMap::new();
         skipped_file_map.insert("solo".to_string(), "test.ts".to_string());
         let skipped_config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -9159,6 +9249,7 @@ for line in sys.stdin:
         let mut failed_file_map = HashMap::new();
         failed_file_map.insert("solo".to_string(), "test.ts".to_string());
         let failed_config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -9285,6 +9376,7 @@ for line in sys.stdin:
         file_map.insert("slow_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9386,6 +9478,7 @@ for line in sys.stdin:
         file_map.insert("slow_timeout_explore".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9493,6 +9586,7 @@ for line in sys.stdin:
         file_map.insert("slow_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9586,6 +9680,7 @@ for line in sys.stdin:
         file_map.insert("slow_function_mode".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9726,6 +9821,7 @@ for line in sys.stdin:
         file_map.insert("fn_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9857,6 +9953,7 @@ for line in sys.stdin:
         file_map.insert("fn_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 1,
             concolic: false,
             seed: Some(42),
@@ -9946,6 +10043,7 @@ for line in sys.stdin:
         file_map.insert("fn_retry".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 1,
             concolic: false,
             seed: Some(42),
@@ -10048,6 +10146,7 @@ for line in sys.stdin:
         file_map.insert("caller".to_string(), "src/app.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10125,6 +10224,7 @@ for line in sys.stdin:
         file_map.insert(format!("{FILE_B}::{FUNC_NAME}"), FILE_B.to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10208,6 +10308,7 @@ for line in sys.stdin:
         file_map.insert("fetchData".to_string(), "src/api.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10256,6 +10357,7 @@ for line in sys.stdin:
         }];
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10297,6 +10399,7 @@ for line in sys.stdin:
     #[test]
     fn dry_run_plan_empty_analyses() {
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10906,6 +11009,7 @@ for line in sys.stdin:
         let mut file_map = HashMap::new();
         file_map.insert("solo".to_string(), "test.ts".to_string());
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -11141,6 +11245,7 @@ defaults:
         let explore_config = ExploreConfig {
             file: "handlers/tags.rs".into(),
             max_iterations: Some(2),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
@@ -11333,6 +11438,7 @@ defaults:
         );
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -11914,6 +12020,7 @@ for line in sys.stdin:
         file_map.insert("stale_fn".to_string(), "nonexistent.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12005,6 +12112,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12097,6 +12205,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12205,6 +12314,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12363,6 +12473,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12498,6 +12609,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12633,6 +12745,7 @@ for line in sys.stdin:
         file_map.insert("beta".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12739,6 +12852,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(7),
@@ -12895,6 +13009,7 @@ for line in sys.stdin:
         file_map.insert("fn_two".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -13008,6 +13123,7 @@ for line in sys.stdin:
         file_map.insert("caller_fn".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -13514,6 +13630,179 @@ for line in sys.stdin:
         // Two distinct inputs → 2 behaviors in merged map.
         assert_eq!(merged.behavior_map.behaviors.len(), 2);
         assert_eq!(merged.exploration.iterations, 2);
+    }
+
+    // --- str-03mfx.1: static budget allocation ---
+
+    fn alloc_task(name: &str, branch_count: usize, loops: usize, custom_generators: bool) -> ExploreTask {
+        use crate::protocol::{BoundOp, BranchInfo, BranchType, FunctionAnalysis, InductionVar, InvocationModel, LoopInfo};
+        use crate::sym_expr::SymExpr;
+        use crate::types::{ParamInfo, TypeInfo};
+        let int = TypeInfo::Int { int_width: None, int_signed: None };
+        let analysis = FunctionAnalysis {
+            name: name.to_string(),
+            exported: true,
+            params: vec![ParamInfo { name: "x".into(), typ: int.clone(), type_name: None }],
+            branches: (0..branch_count)
+                .map(|i| BranchInfo { id: i as u32, line: i as u32 + 1, condition_text: String::new(), condition: None, branch_type: BranchType::If })
+                .collect(),
+            dependencies: vec![],
+            return_type: int,
+            start_line: 1,
+            end_line: 10,
+            literals: vec![],
+            crypto_boundaries: vec![],
+            loops: (0..loops)
+                .map(|i| LoopInfo {
+                    loop_id: i as u32,
+                    line: 5,
+                    induction_var: InductionVar { name: "i".into(), init_expr: SymExpr::Unknown, step_expr: SymExpr::Unknown, bound_expr: SymExpr::Unknown, bound_op: BoundOp::Lt },
+                })
+                .collect(),
+            source_file: None,
+            adapter_hints: vec![],
+            invocation_model: InvocationModel::Direct,
+        };
+        let mut explore_config = ExploreConfig {
+            file: "f.ts".into(),
+            max_iterations: Some(100),
+            max_executions_override: None,
+            observer_pool: 1,
+            observer_frontend_config: None,
+            candidate_queue_capacity: None,
+            seed: Some(7),
+            mocks: vec![],
+            mock_params: vec![],
+            setup_file: None,
+            setup_level: crate::protocol::SetupLevel::Function,
+            value_sources: vec![],
+            capabilities: crate::orchestrator::FrontendCapabilities { commands: Default::default(), complex_types: Default::default() },
+            user_seeds: vec![],
+            candidate_inputs: vec![],
+            pool_seeds: vec![],
+            project_root: None,
+            execution_profile: None,
+            loop_buckets: Default::default(),
+            timeout_explore: None,
+            meta_config: crate::strategy::MetaConfig::default(),
+            shrink_budget: 0,
+            isolation: IsolationMode::None,
+            capture_side_effects: false,
+            budget_surplus: None,
+            claim_policy: ClaimPolicy::default(),
+            planner: None,
+            default_execute_plan: None,
+            prepare_id_override: None,
+        };
+        if custom_generators {
+            explore_config.value_sources.push(ValueSource::CustomGenerator {
+                generator_name: "T".into(),
+                param_name: None,
+                generator_file: std::path::PathBuf::from("g"),
+                kind: crate::protocol::GeneratorKind::TypeName,
+            });
+        }
+        ExploreTask {
+            func_name: name.to_string(),
+            analysis,
+            explore_config,
+            file_path: "f.ts".into(),
+            mocks_used: vec![],
+            callees: Default::default(),
+            deep_fp: None,
+            progress_index: 0,
+            known_targets: KnownTargets { branch_ids: vec![], max_nesting_depth: 0 },
+        }
+    }
+
+    fn static_settings() -> BudgetSettings {
+        BudgetSettings { allocation: crate::config::BudgetAllocation::Static, floor: 20, ceiling_factor: 4.0 }
+    }
+
+    #[test]
+    fn static_allocation_conserves_layer_total_and_orders_by_score() {
+        let mut tasks = vec![alloc_task("trivial", 1, 0, false), alloc_task("loopy", 8, 3, false)];
+        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100, true);
+        let total: u32 = shares.iter().map(|s| s.executions).sum();
+        assert_eq!(total, 1000, "2 functions × 500 default executions");
+        assert!(shares[0].executions < shares[1].executions);
+        assert_eq!(tasks[0].explore_config.max_executions_override, Some(shares[0].executions as usize));
+        assert_eq!(tasks[0].explore_config.max_iterations, Some((shares[0].executions / 5).max(1)));
+        assert_eq!(tasks[1].explore_config.max_iterations, Some((shares[1].executions / 5).max(1)));
+        for s in &shares {
+            assert!(s.executions >= 20 && s.executions <= 2000, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn static_allocation_custom_generator_uses_one_to_one_ratio() {
+        let mut tasks = vec![alloc_task("gen", 3, 0, true), alloc_task("plain", 3, 0, false)];
+        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100, true);
+        assert_eq!(shares.iter().map(|s| s.executions).sum::<u32>(), 600, "100 + 500");
+        assert_eq!(tasks[0].explore_config.max_iterations, Some(shares[0].executions));
+        assert!(shares[0].executions <= 400, "ceiling 4 × 100: {}", shares[0].executions);
+    }
+
+    #[test]
+    fn flat_allocation_leaves_tasks_untouched() {
+        let mut tasks = vec![alloc_task("a", 1, 0, false), alloc_task("b", 9, 2, false)];
+        let before: Vec<_> = tasks.iter().map(|t| (t.explore_config.max_iterations, t.explore_config.max_executions_override)).collect();
+        let shares = apply_static_allocation(&mut tasks, &BudgetSettings::default(), 100, true);
+        assert!(shares.is_empty());
+        let after: Vec<_> = tasks.iter().map(|t| (t.explore_config.max_iterations, t.explore_config.max_executions_override)).collect();
+        assert_eq!(before, after);
+        assert!(after.iter().all(|(_, o)| o.is_none()));
+    }
+
+    #[test]
+    fn static_allocation_is_concolic_only() {
+        let mut tasks = vec![alloc_task("a", 1, 0, false), alloc_task("b", 9, 2, false)];
+        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100, false);
+        assert!(shares.is_empty(), "random explorer keeps flat max_iterations");
+        assert!(tasks.iter().all(|t| t.explore_config.max_iterations == Some(100)));
+        assert!(tasks.iter().all(|t| t.explore_config.max_executions_override.is_none()));
+    }
+
+    #[test]
+    fn batch_override_scales_with_batch_size() {
+        assert_eq!(batch_execution_override(None, Some(100), 10), None);
+        assert_eq!(batch_execution_override(Some(500), Some(100), 10), Some(50));
+        assert_eq!(batch_execution_override(Some(37), Some(7), 2), Some(10));
+        assert_eq!(batch_execution_override(Some(3), Some(100), 10), Some(1), "never zero");
+        assert_eq!(batch_execution_override(Some(500), None, 10), Some(500), "no cap: whole share per batch");
+    }
+
+    #[test]
+    fn replica_split_never_hands_out_zero_executions() {
+        let mut task = alloc_task("tiny", 1, 0, false);
+        task.explore_config.max_iterations = Some(1);
+        task.explore_config.max_executions_override = Some(2);
+        let replicas = split_task_across_replicas(task, 0, 4);
+        let execs: Vec<usize> = replicas.iter().map(|r| r.explore_config.max_executions_override.unwrap()).collect();
+        assert_eq!(execs, vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn concolic_scan_max_executions_honours_override() {
+        assert_eq!(effective_concolic_max_executions(100, false, None), 500);
+        assert_eq!(effective_concolic_max_executions(100, true, None), 100);
+        assert_eq!(effective_concolic_max_executions(100, false, Some(37)), 37);
+    }
+
+    #[test]
+    fn replica_split_divides_execution_override() {
+        let mut task = alloc_task("r", 4, 0, false);
+        task.explore_config.max_iterations = Some(10);
+        task.explore_config.max_executions_override = Some(53);
+        let replicas = split_task_across_replicas(task, 0, 4);
+        assert_eq!(replicas.len(), 4);
+        let iters: Vec<u32> = replicas.iter().map(|r| r.explore_config.max_iterations.unwrap()).collect();
+        assert_eq!(iters, vec![2, 2, 2, 2], "max_iterations split as today (floor, min 1)");
+        let execs: Vec<usize> = replicas.iter().map(|r| r.explore_config.max_executions_override.unwrap()).collect();
+        assert_eq!(execs.iter().sum::<usize>(), 53);
+        assert_eq!(execs, vec![14, 13, 13, 13], "remainder to the first replica");
+        let plain = alloc_task("p", 1, 0, false);
+        assert!(split_task_across_replicas(plain, 1, 2).iter().all(|r| r.explore_config.max_executions_override.is_none()));
     }
 
     // --- BudgetSurplus unit tests ---
@@ -15483,6 +15772,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(7),

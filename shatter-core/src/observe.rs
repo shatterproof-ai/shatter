@@ -929,6 +929,7 @@ for line in sys.stdin:
             file: "test.ts".to_string(),
             execution_profile: None,
             max_iterations: Some(100),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,

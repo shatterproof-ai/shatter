@@ -5042,6 +5042,7 @@ pub(crate) async fn run_explore(
             let explore_config = ExploreConfig {
                 file: file_str.to_string(),
                 max_iterations: resolved.max_iterations,
+                max_executions_override: None,
                 observer_pool: resolved_observer_pool,
                 observer_frontend_config,
                 candidate_queue_capacity,

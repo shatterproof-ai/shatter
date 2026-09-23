@@ -1312,6 +1312,7 @@ mod tests {
         let mut explore_config = crate::explorer::ExploreConfig {
             file: "test.go".into(),
             max_iterations: Some(5),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,

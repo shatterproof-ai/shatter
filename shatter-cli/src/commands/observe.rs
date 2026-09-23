@@ -213,6 +213,7 @@ pub(crate) async fn run_observe(
             file: file_str.clone(),
             execution_profile: None,
             max_iterations: Some(max_iterations),
+            max_executions_override: None,
             observer_pool: 1,
             observer_frontend_config: None,
             candidate_queue_capacity: None,
