@@ -1592,11 +1592,23 @@ pub(crate) fn resolve_llm_config(
 /// Resolve `defaults.exploration` for a scan: the hierarchical
 /// `.shatter/config.yaml` stack at `config_dir` with `--set` overrides as the
 /// highest-priority layer, validated for the budget settings (str-03mfx).
+///
+/// Discovery errors are tolerated the way the neighbouring scan resolution
+/// tolerates them (defaults, with a warning), so a broken ancestor config
+/// cannot newly abort a `flat` scan. Malformed `--set` pairs are errors, as
+/// they are for `explore`. Budget bounds are validated only when `static`
+/// is selected, since they are irrelevant under `flat`.
 pub(crate) fn resolve_scan_exploration(
     config_dir: &Path,
     set_overrides: &[String],
 ) -> Result<shatter_core::config::ExplorationConfig, shatter_core::config::ConfigError> {
-    let mut configs = shatter_core::config::discover_configs(config_dir)?;
+    let mut configs = match shatter_core::config::discover_configs(config_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("ignoring unreadable .shatter/config.yaml for scan exploration settings: {e}");
+            Vec::new()
+        }
+    };
     if !set_overrides.is_empty() {
         configs.insert(0, shatter_core::config::parse_set_overrides(set_overrides)?);
     }
@@ -1604,7 +1616,9 @@ pub(crate) fn resolve_scan_exploration(
         .defaults
         .exploration
         .unwrap_or_default();
-    exploration.validate_budget()?;
+    if exploration.budget_allocation == shatter_core::config::BudgetAllocation::Static {
+        exploration.validate_budget()?;
+    }
     Ok(exploration)
 }
 
@@ -1782,14 +1796,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_scan_exploration_rejects_bad_bounds() {
+    fn resolve_scan_exploration_rejects_bad_bounds_only_when_static() {
         let dir = tempfile::tempdir().unwrap();
+        let bad = "defaults.exploration.budget_ceiling_factor=0.5".to_string();
+        assert!(
+            resolve_scan_exploration(dir.path(), &[bad.clone()]).is_ok(),
+            "flat ignores budget bounds"
+        );
         let err = resolve_scan_exploration(
             dir.path(),
-            &["defaults.exploration.budget_ceiling_factor=0.5".to_string()],
+            &[bad, "defaults.exploration.budget_allocation=static".to_string()],
         )
         .unwrap_err();
         assert!(err.to_string().contains("budget_ceiling_factor"), "{err}");
+    }
+
+    #[test]
+    fn resolve_scan_exploration_tolerates_unreadable_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".shatter")).unwrap();
+        std::fs::write(dir.path().join(".shatter/config.yaml"), "defaults: [not: a: map\n").unwrap();
+        let exp = resolve_scan_exploration(dir.path(), &[]).unwrap();
+        assert_eq!(exp.budget_allocation, shatter_core::config::BudgetAllocation::Flat);
+        assert!(resolve_scan_exploration(dir.path(), &["no-equals-sign".to_string()]).is_err());
     }
 
     #[test]

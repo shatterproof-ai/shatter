@@ -2640,6 +2640,11 @@ async fn run_layer_batched(
 
         // Adjust the explore config's iteration cap to the batch size.
         let mut batch_explore_config = task.explore_config.clone();
+        batch_explore_config.max_executions_override = batch_execution_override(
+            task.explore_config.max_executions_override,
+            task.explore_config.max_iterations,
+            batch_config.batch_size,
+        );
         batch_explore_config.max_iterations = Some(batch_config.batch_size);
 
         let result = run_phased(
@@ -3591,10 +3596,13 @@ fn apply_static_allocation(
     tasks: &mut [ExploreTask],
     settings: &BudgetSettings,
     default_max_iterations: u32,
+    concolic: bool,
 ) -> Vec<StaticShare> {
     use crate::budget_alloc::{Demand, allocate, features, score};
     use crate::config::BudgetAllocation;
-    if settings.allocation != BudgetAllocation::Static || tasks.is_empty() {
+    // `static` is a concolic-path policy: the random explorer reads
+    // `max_iterations` as its execution budget and must keep the flat value.
+    if !concolic || settings.allocation != BudgetAllocation::Static || tasks.is_empty() {
         return Vec::new();
     }
     let flat: Vec<(u32, bool)> = tasks
@@ -3657,10 +3665,25 @@ fn apply_static_allocation(
     shares
 }
 
+/// Scale a static-allocation execution override to one batch: the share is
+/// spread across batches in the same proportion as `max_iterations` is
+/// (str-03mfx). `None` stays `None`.
+fn batch_execution_override(
+    override_executions: Option<usize>,
+    max_iterations: Option<u32>,
+    batch_size: u32,
+) -> Option<usize> {
+    override_executions.map(|total| {
+        let denom = u64::from(max_iterations.unwrap_or(batch_size).max(1));
+        ((total as u64 * u64::from(batch_size)) / denom).max(1) as usize
+    })
+}
+
 /// Expand one task into `wpf` replicas with derived seeds. `max_iterations`
 /// is split evenly (floor, min 1) as before; a static-allocation
 /// `max_executions_override` is split evenly with the remainder on the first
-/// replicas so the replicas' executions sum to the function's share.
+/// replicas so the replicas' executions sum to the function's share (each
+/// replica keeps at least one execution, mirroring the `max_iterations` floor).
 fn split_task_across_replicas(task: ExploreTask, fn_idx: usize, wpf: usize) -> Vec<ExploreTask> {
     let per_replica_iters = task
         .explore_config
@@ -3669,7 +3692,9 @@ fn split_task_across_replicas(task: ExploreTask, fn_idx: usize, wpf: usize) -> V
     let exec_shares: Option<Vec<usize>> = task.explore_config.max_executions_override.map(|total| {
         let base = total / wpf;
         let rem = total % wpf;
-        (0..wpf).map(|r| base + usize::from(r < rem)).collect()
+        (0..wpf)
+            .map(|r| (base + usize::from(r < rem)).max(1))
+            .collect()
     });
     let mut out = Vec::with_capacity(wpf);
     for replica in 0..wpf {
@@ -4659,7 +4684,12 @@ pub async fn parallel_scan_with_progress(
             // str-03mfx: static budget allocation over this layer's runnable
             // tasks (no-op under the default `flat`).
             let _shares =
-                apply_static_allocation(&mut tasks, &config.budget, config.max_iterations_per_function);
+                apply_static_allocation(
+                    &mut tasks,
+                    &config.budget,
+                    config.max_iterations_per_function,
+                    config.concolic,
+                );
 
             // Build a map from function name to progress index for summary updates.
             let fn_progress_index: HashMap<String, usize> = tasks
@@ -13692,7 +13722,7 @@ for line in sys.stdin:
     #[test]
     fn static_allocation_conserves_layer_total_and_orders_by_score() {
         let mut tasks = vec![alloc_task("trivial", 1, 0, false), alloc_task("loopy", 8, 3, false)];
-        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100);
+        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100, true);
         let total: u32 = shares.iter().map(|s| s.executions).sum();
         assert_eq!(total, 1000, "2 functions × 500 default executions");
         assert!(shares[0].executions < shares[1].executions);
@@ -13707,7 +13737,7 @@ for line in sys.stdin:
     #[test]
     fn static_allocation_custom_generator_uses_one_to_one_ratio() {
         let mut tasks = vec![alloc_task("gen", 3, 0, true), alloc_task("plain", 3, 0, false)];
-        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100);
+        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100, true);
         assert_eq!(shares.iter().map(|s| s.executions).sum::<u32>(), 600, "100 + 500");
         assert_eq!(tasks[0].explore_config.max_iterations, Some(shares[0].executions));
         assert!(shares[0].executions <= 400, "ceiling 4 × 100: {}", shares[0].executions);
@@ -13717,11 +13747,39 @@ for line in sys.stdin:
     fn flat_allocation_leaves_tasks_untouched() {
         let mut tasks = vec![alloc_task("a", 1, 0, false), alloc_task("b", 9, 2, false)];
         let before: Vec<_> = tasks.iter().map(|t| (t.explore_config.max_iterations, t.explore_config.max_executions_override)).collect();
-        let shares = apply_static_allocation(&mut tasks, &BudgetSettings::default(), 100);
+        let shares = apply_static_allocation(&mut tasks, &BudgetSettings::default(), 100, true);
         assert!(shares.is_empty());
         let after: Vec<_> = tasks.iter().map(|t| (t.explore_config.max_iterations, t.explore_config.max_executions_override)).collect();
         assert_eq!(before, after);
         assert!(after.iter().all(|(_, o)| o.is_none()));
+    }
+
+    #[test]
+    fn static_allocation_is_concolic_only() {
+        let mut tasks = vec![alloc_task("a", 1, 0, false), alloc_task("b", 9, 2, false)];
+        let shares = apply_static_allocation(&mut tasks, &static_settings(), 100, false);
+        assert!(shares.is_empty(), "random explorer keeps flat max_iterations");
+        assert!(tasks.iter().all(|t| t.explore_config.max_iterations == Some(100)));
+        assert!(tasks.iter().all(|t| t.explore_config.max_executions_override.is_none()));
+    }
+
+    #[test]
+    fn batch_override_scales_with_batch_size() {
+        assert_eq!(batch_execution_override(None, Some(100), 10), None);
+        assert_eq!(batch_execution_override(Some(500), Some(100), 10), Some(50));
+        assert_eq!(batch_execution_override(Some(37), Some(7), 2), Some(10));
+        assert_eq!(batch_execution_override(Some(3), Some(100), 10), Some(1), "never zero");
+        assert_eq!(batch_execution_override(Some(500), None, 10), Some(500), "no cap: whole share per batch");
+    }
+
+    #[test]
+    fn replica_split_never_hands_out_zero_executions() {
+        let mut task = alloc_task("tiny", 1, 0, false);
+        task.explore_config.max_iterations = Some(1);
+        task.explore_config.max_executions_override = Some(2);
+        let replicas = split_task_across_replicas(task, 0, 4);
+        let execs: Vec<usize> = replicas.iter().map(|r| r.explore_config.max_executions_override.unwrap()).collect();
+        assert_eq!(execs, vec![1, 1, 1, 1]);
     }
 
     #[test]
