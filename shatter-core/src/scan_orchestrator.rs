@@ -3891,6 +3891,8 @@ fn merge_replica_results(
         std::collections::HashMap::new();
     let mut merged_new_path_execs = Vec::new();
     let mut total_iterations: u32 = 0;
+    let mut total_budget_allocated: u32 = 0;
+    let mut total_budget_claimed: u32 = 0;
     let mut max_lines_covered: usize = 0;
     let mut mcdc_summary: Option<(usize, usize, usize)> = None;
 
@@ -3911,6 +3913,8 @@ fn merge_replica_results(
             merged_shrunk.entry(k).or_insert(v);
         }
         total_iterations += exp.iterations;
+        total_budget_allocated = total_budget_allocated.saturating_add(exp.budget_allocated);
+        total_budget_claimed = total_budget_claimed.saturating_add(exp.budget_claimed);
         max_lines_covered = max_lines_covered.max(exp.lines_covered);
         if mcdc_summary.is_none() {
             mcdc_summary = exp.mcdc_summary;
@@ -3925,6 +3929,8 @@ fn merge_replica_results(
     let merged_exploration = ObservationOutput {
         function_name: func_name.clone(),
         iterations: total_iterations,
+            budget_allocated: total_budget_allocated,
+            budget_claimed: total_budget_claimed,
         // unique_paths and lines_covered will be re-stated conservatively;
         // the definitive coverage data comes from BehaviorMap + CoverageMetrics.
         unique_paths: merged_new_path_execs.len(),

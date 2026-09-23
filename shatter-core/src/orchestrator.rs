@@ -3004,26 +3004,39 @@ pub async fn explore_with_oracle(
         }
         apply_live_first_overrides(&live_first_states, &mut entry.mock_values);
 
-        // str-03mfx.2: at either cap, claim surplus if still productive.
+        // str-03mfx.2: with a surplus attached, a productive function at its
+        // execution cap claims a chunk (base/4, like the random explorer) so
+        // one function cannot drain the pool in a single grab; at the path
+        // cap alone it extends the path cap from executions it already owns,
+        // without touching the surplus.
         if let Some(ref surplus) = config.budget_surplus {
             let at_exec_cap = effective_max_executions.is_some_and(|m| total_executions >= m);
             let at_path_cap = effective_max_iterations.is_some_and(|m| executions.len() >= m);
-            if at_exec_cap || at_path_cap {
-                let recent_new = recent_hits.iter().filter(|&&h| h).count() as u32;
-                if config.claim_policy.should_claim(recent_new) {
-                    let requested = config.claim_policy.max_claimable(surplus.available());
-                    let claimed = surplus.try_claim(requested, 1);
-                    if claimed > 0 {
-                        let c = claimed as usize;
-                        effective_max_executions = effective_max_executions.map(|m| m + c);
-                        effective_max_iterations = effective_max_iterations
-                            .map(|m| m + if custom_generators { c } else { (c / 5).max(1) });
-                        budget_claimed += claimed;
-                        log::debug!(
-                            "{function_name}: claimed {claimed} surplus executions (cap now {:?})",
-                            effective_max_executions
-                        );
-                    }
+            let recent_new = recent_hits.iter().filter(|&&h| h).count() as u32;
+            let productive = config.claim_policy.should_claim(recent_new);
+            if at_exec_cap && productive {
+                let base = config.max_executions.unwrap_or(0) as u32;
+                let chunk = (base / 4).max(1);
+                let requested = chunk.min(config.claim_policy.max_claimable(surplus.available()));
+                let claimed = surplus.try_claim(requested, 1);
+                if claimed > 0 {
+                    let c = claimed as usize;
+                    effective_max_executions = effective_max_executions.map(|m| m + c);
+                    effective_max_iterations = effective_max_iterations
+                        .map(|m| m + if custom_generators { c } else { (c / 5).max(1) });
+                    budget_claimed += claimed;
+                    log::debug!(
+                        "{function_name}: claimed {claimed} surplus executions (cap now {:?})",
+                        effective_max_executions
+                    );
+                }
+            } else if at_path_cap && !at_exec_cap && productive {
+                let remaining = effective_max_executions
+                    .map(|m| m.saturating_sub(total_executions))
+                    .unwrap_or(0);
+                if remaining > 0 {
+                    let extra = if custom_generators { remaining } else { (remaining / 5).max(1) };
+                    effective_max_iterations = effective_max_iterations.map(|m| m + extra);
                 }
             }
         }

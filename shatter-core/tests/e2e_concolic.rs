@@ -12,7 +12,7 @@ use shatter_core::config::GeneticConfig;
 use shatter_core::coverage_metrics::{TargetBranch, TargetReason, extract_targets_concolic};
 use shatter_core::frontend::{DEFAULT_REQUEST_TIMEOUT, Frontend, FrontendConfig};
 use shatter_core::genetic_explorer;
-use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities};
+use shatter_core::orchestrator::{self, ExploreConfig, ExploreResult, FrontendCapabilities, TerminationReason};
 use shatter_core::protocol::{
     Command as ProtoCommand, ExecutionAdapter, ExecutionAdapterApply, ExecutionProfile,
     InvocationModel, ResponseResult, SetupContextEntry, SetupContextStack, SetupLevel,
@@ -3345,7 +3345,13 @@ async fn concolic_claims_surplus_when_productive() {
     };
     let r = run(&file_str, surplus.clone(), productive).await;
     assert!(r.budget_claimed > 0, "expected a surplus claim; result {:?}", r.termination_reason);
-    assert!(r.total_executions > 8, "claimed budget must extend the run: {}", r.total_executions);
+    assert!(r.total_executions >= 8);
+    assert!(
+        r.total_executions > 8 || r.termination_reason != TerminationReason::MaxExecutions,
+        "a claim must extend the run unless the worklist ran dry: {} executions, {:?}",
+        r.total_executions,
+        r.termination_reason
+    );
     assert_eq!(surplus.available(), 40 - r.budget_claimed);
 
     let untouched = Arc::new(BudgetSurplus::new());
