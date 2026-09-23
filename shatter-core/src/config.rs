@@ -35,6 +35,10 @@ pub const DEFAULT_EXPLORATION_SCORE_WINDOW: usize = 100;
 pub const DEFAULT_EXPLORATION_COLD_START: u64 = 20;
 /// Default minimum allocation fraction per strategy (2%).
 pub const DEFAULT_EXPLORATION_STRATEGY_FLOOR: f64 = 0.02;
+/// Default minimum executions per function under static budget allocation (str-03mfx).
+pub const DEFAULT_BUDGET_FLOOR: u32 = 20;
+/// Default per-function ceiling as a multiple of the flat per-function budget (str-03mfx).
+pub const DEFAULT_BUDGET_CEILING_FACTOR: f64 = 4.0;
 
 /// Consecutive no-new-path executions before ending a fuzz phase.
 pub const DEFAULT_FUZZ_PLATEAU_THRESHOLD: u32 = 50;
@@ -97,6 +101,9 @@ pub enum ConfigError {
 
     #[error("invalid strategy weights: {0}")]
     InvalidStrategyWeights(String),
+
+    #[error("invalid budget setting {key}: {reason}")]
+    InvalidBudgetSetting { key: String, reason: String },
 
     #[error("invalid --set override '{pair}': {reason}")]
     InvalidSetOverride { pair: String, reason: String },
@@ -770,6 +777,19 @@ impl Default for FuzzConfig {
     }
 }
 
+/// How `shatter scan` splits execution budget across a layer's functions
+/// (str-03mfx).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BudgetAllocation {
+    /// Every function gets the same budget (today's behavior).
+    #[default]
+    Flat,
+    /// Split the layer's fixed total by a static score of each function's
+    /// analysis. Concolic scan path only.
+    Static,
+}
+
 /// Strategy meta-configuration for adaptive exploration.
 ///
 /// Controls how the [`MetaStrategy`](crate::strategy::MetaStrategy) selects
@@ -797,6 +817,19 @@ pub struct ExplorationConfig {
     /// When set, overrides adaptive scoring with fixed proportional selection.
     #[serde(default)]
     pub strategy_weights: Option<HashMap<String, f64>>,
+
+    /// Scan-level execution-budget allocation policy (str-03mfx). Default: `flat`.
+    #[serde(default)]
+    pub budget_allocation: BudgetAllocation,
+
+    /// Minimum executions any function receives under `static`. Default: 20.
+    #[serde(default = "ExplorationConfig::default_budget_floor")]
+    pub budget_floor: u32,
+
+    /// Per-function ceiling under `static`, as a multiple of the flat
+    /// per-function budget. Default: 4.0.
+    #[serde(default = "ExplorationConfig::default_budget_ceiling_factor")]
+    pub budget_ceiling_factor: f64,
 }
 
 impl ExplorationConfig {
@@ -811,6 +844,29 @@ impl ExplorationConfig {
     }
     fn default_strategy_floor() -> f64 {
         DEFAULT_EXPLORATION_STRATEGY_FLOOR
+    }
+    fn default_budget_floor() -> u32 {
+        DEFAULT_BUDGET_FLOOR
+    }
+    fn default_budget_ceiling_factor() -> f64 {
+        DEFAULT_BUDGET_CEILING_FACTOR
+    }
+
+    /// Reject budget settings that would make static allocation meaningless.
+    pub fn validate_budget(&self) -> Result<(), ConfigError> {
+        if self.budget_floor == 0 {
+            return Err(ConfigError::InvalidBudgetSetting {
+                key: "defaults.exploration.budget_floor".into(),
+                reason: "must be at least 1".into(),
+            });
+        }
+        if !(self.budget_ceiling_factor >= 1.0) {
+            return Err(ConfigError::InvalidBudgetSetting {
+                key: "defaults.exploration.budget_ceiling_factor".into(),
+                reason: format!("must be >= 1.0, got {}", self.budget_ceiling_factor),
+            });
+        }
+        Ok(())
     }
 
     /// Parse a `--strategy-weights` CLI string like `"literals=0.3,random=0.5"`.
@@ -871,6 +927,9 @@ impl Default for ExplorationConfig {
             cold_start: Self::default_cold_start(),
             strategy_floor: Self::default_strategy_floor(),
             strategy_weights: None,
+            budget_allocation: BudgetAllocation::Flat,
+            budget_floor: Self::default_budget_floor(),
+            budget_ceiling_factor: Self::default_budget_ceiling_factor(),
         }
     }
 }
@@ -3873,6 +3932,51 @@ defaults:
     }
 
     #[test]
+    fn budget_allocation_defaults_to_flat() {
+        let yaml = "defaults:\n  exploration:\n    adaptive: true\n";
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let exp = config.defaults.exploration.unwrap();
+        assert_eq!(exp.budget_allocation, BudgetAllocation::Flat);
+        assert_eq!(exp.budget_floor, DEFAULT_BUDGET_FLOOR);
+        assert!((exp.budget_ceiling_factor - DEFAULT_BUDGET_CEILING_FACTOR).abs() < f64::EPSILON);
+        assert_eq!(ExplorationConfig::default().budget_allocation, BudgetAllocation::Flat);
+    }
+
+    #[test]
+    fn budget_allocation_parses_static_and_bounds() {
+        let yaml = "defaults:\n  exploration:\n    budget_allocation: static\n    budget_floor: 5\n    budget_ceiling_factor: 2.5\n";
+        let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
+        let exp = config.defaults.exploration.unwrap();
+        assert_eq!(exp.budget_allocation, BudgetAllocation::Static);
+        assert_eq!(exp.budget_floor, 5);
+        assert!((exp.budget_ceiling_factor - 2.5).abs() < f64::EPSILON);
+        assert!(exp.validate_budget().is_ok());
+    }
+
+    #[test]
+    fn budget_allocation_reachable_via_set_override() {
+        let set = parse_set_overrides(&["defaults.exploration.budget_allocation=static".to_string()]).unwrap();
+        let merged = merge_configs(&[set]);
+        assert_eq!(merged.defaults.exploration.unwrap().budget_allocation, BudgetAllocation::Static);
+    }
+
+    #[test]
+    fn budget_allocation_rejects_bad_bounds() {
+        let bad_floor = ExplorationConfig { budget_floor: 0, ..ExplorationConfig::default() };
+        let err = bad_floor.validate_budget().unwrap_err().to_string();
+        assert!(err.contains("budget_floor"), "{err}");
+        let bad_factor = ExplorationConfig { budget_ceiling_factor: 0.5, ..ExplorationConfig::default() };
+        let err = bad_factor.validate_budget().unwrap_err().to_string();
+        assert!(err.contains("budget_ceiling_factor"), "{err}");
+    }
+
+    #[test]
+    fn budget_allocation_unknown_value_is_an_error() {
+        let yaml = "defaults:\n  exploration:\n    budget_allocation: magic\n";
+        assert!(serde_yaml::from_str::<ShatterConfig>(yaml).is_err());
+    }
+
+    #[test]
     fn exploration_config_absent_means_none() {
         let yaml = "defaults: {}\n";
         let config: ShatterConfig = serde_yaml::from_str(yaml).unwrap();
@@ -3889,6 +3993,7 @@ defaults:
                     cold_start: 30,
                     strategy_floor: 0.03,
                     strategy_weights: None,
+                    ..ExplorationConfig::default()
                 }),
                 ..DefaultsConfig::default()
             },
@@ -3905,6 +4010,7 @@ defaults:
                         ("boundary".to_string(), 0.75),
                         ("random".to_string(), 0.25),
                     ])),
+                    ..ExplorationConfig::default()
                 }),
                 ..DefaultsConfig::default()
             },
@@ -3940,6 +4046,7 @@ defaults:
             cold_start: 5,
             strategy_floor: 0.1,
             strategy_weights: Some(weights),
+            ..ExplorationConfig::default()
         };
         let meta = exp.to_meta_config();
         assert!(!meta.adaptive);
