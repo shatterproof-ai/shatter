@@ -79,6 +79,25 @@ What it is used for:
 - generator configuration for custom frontends
 - execution adapter selection for supported frontends
 - genetic algorithm settings
+- scan-level execution-budget allocation (`defaults.exploration.budget_*`)
+
+Budget allocation keys (off by default; concolic scan path only):
+
+```yaml
+defaults:
+  exploration:
+    budget_allocation: flat      # flat | static — split each scan layer's execution total by a static score of each function (str-03mfx)
+    budget_floor: 20             # static only: minimum executions per function
+    budget_ceiling_factor: 4.0   # static only: per-function ceiling as a multiple of the flat budget
+```
+
+`static` keeps the layer's total execution budget unchanged and redistributes
+it toward functions whose analysis shows more branches, loops, imports and
+complex parameters. Reachable from the command line as
+`--set defaults.exploration.budget_allocation=static`; note that `--set` on any
+`exploration` key replaces the whole `exploration` block (other keys fall back
+to their defaults unless also set). Design and benchmark:
+`docs/superpowers/specs/2026-09-23-static-budget-allocation-design.md`.
 
 Important behavior:
 
