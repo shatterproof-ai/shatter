@@ -325,6 +325,21 @@ pub enum TerminationReason {
     McdcComplete,
 }
 
+/// Domain-separation constant so the fuzz-phase RNG stream differs from the
+/// main exploration stream even though both derive from `ExploreConfig::seed`
+/// (str-03mfx.5).
+const FUZZ_DOMAIN: u64 = 0x5F75_7A7A_5048_4153; // "_uzzPHAS"
+
+/// RNG for the `phase`-th fuzz phase of one exploration run. Seeded runs
+/// are repeatable (`seed ^ FUZZ_DOMAIN ^ phase`); unseeded runs keep OS
+/// entropy, matching the main RNG's behavior.
+pub(crate) fn fuzz_phase_rng(seed: Option<u64>, phase: u64) -> StdRng {
+    match seed {
+        Some(seed) => StdRng::seed_from_u64(seed ^ FUZZ_DOMAIN ^ phase),
+        None => StdRng::from_os_rng(),
+    }
+}
+
 /// str-nqrz: Compute the per-fuzz-phase execution cap clamped by the
 /// remaining global execution budget.
 ///
@@ -2562,6 +2577,9 @@ pub async fn explore_with_oracle(
         Some(seed) => StdRng::seed_from_u64(seed),
         None => StdRng::from_os_rng(),
     };
+    // str-03mfx.5: each plateau-triggered fuzz phase gets its own RNG derived
+    // from the exploration seed, so seeded runs are repeatable end to end.
+    let mut fuzz_phase_counter: u64 = 0;
     let mut triage_state = TriageState::new(param_names.clone());
     let mut triage_skipped: usize = 0;
     let mut triage_mispredictions: usize = 0;
@@ -3057,7 +3075,8 @@ pub async fn explore_with_oracle(
                         let mut fuzz_executions: u32 = 0;
                         let mut fuzz_plateau: u32 = 0;
                         let mut fuzz_new_paths: u32 = 0;
-                        let mut fuzz_rng = StdRng::from_os_rng();
+                        let mut fuzz_rng = fuzz_phase_rng(config.seed, fuzz_phase_counter);
+                        fuzz_phase_counter += 1;
 
                         let fuzz_termination = loop {
                             if deadline_crossed() {
@@ -7692,6 +7711,30 @@ mod fuzz_trigger_tests {
             "indefinite mode should become eligible when coverage grows"
         );
     }
+    #[test]
+    fn fuzz_phase_rng_is_seeded_per_phase_and_distinct_from_main() {
+        use rand::RngCore;
+        let a: Vec<u64> = (0..4).map(|_| fuzz_phase_rng(Some(7), 0).next_u64()).collect();
+        assert!(a.iter().all(|v| *v == a[0]), "same seed and phase → same stream");
+        assert_ne!(
+            fuzz_phase_rng(Some(7), 0).next_u64(),
+            fuzz_phase_rng(Some(7), 1).next_u64(),
+            "phases differ"
+        );
+        assert_ne!(
+            fuzz_phase_rng(Some(7), 0).next_u64(),
+            fuzz_phase_rng(Some(8), 0).next_u64(),
+            "seeds differ"
+        );
+        assert_ne!(
+            fuzz_phase_rng(Some(7), 0).next_u64(),
+            StdRng::seed_from_u64(7).next_u64(),
+            "fuzz stream is domain-separated from the main stream"
+        );
+        // Unseeded: no panic, and two draws are (overwhelmingly) different.
+        let _ = fuzz_phase_rng(None, 0).next_u64();
+    }
+
     #[test]
     fn discovery_iterations_parallel_to_discoveries() {
         let result = ExploreResult {
