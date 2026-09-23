@@ -827,6 +827,8 @@ mod tests {
                 solver_guided_inputs: 0,
             },
             iterations: 4,
+            budget_allocated: 0,
+            budget_claimed: 0,
             lines_covered: 6,
             total_lines: 8,
             mocks_used: vec![],

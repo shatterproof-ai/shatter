@@ -461,8 +461,19 @@ pub enum StopReason {
 /// Captures everything produced by either random or concolic exploration:
 /// discovered paths, line coverage, raw execution results, and per-branch
 /// discovery attribution. Used as the input to the Analyze pipeline stage.
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ObservationOutput {
+    /// Executions allocated to this function by static budget allocation
+    /// (str-03mfx); zero under flat allocation and then omitted from JSON.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub budget_allocated: u32,
+    /// Executions claimed from the layer surplus (str-03mfx.2); omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub budget_claimed: u32,
     /// Name of the explored function.
     pub function_name: String,
     /// Total iterations attempted.

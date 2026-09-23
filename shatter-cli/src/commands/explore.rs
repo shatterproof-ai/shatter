@@ -5167,6 +5167,8 @@ pub(crate) async fn run_explore(
                     // Pin custom-generator/extractor slots through concolic (str-6cdp).
                     value_sources: explore_config.value_sources.clone(),
                     frontier_ranker: std::sync::Arc::new(shatter_core::frontier::HeuristicRanker),
+                    budget_surplus: None,
+                    claim_policy: shatter_core::budget_alloc::ClaimPolicy::default(),
                 };
                 (Some(cc), seeds, users)
             } else {
@@ -9640,6 +9642,8 @@ mod tests {
         shatter_core::explorer::ObservationOutput {
             function_name: name.to_string(),
             iterations: 1,
+            budget_allocated: 0,
+            budget_claimed: 0,
             unique_paths: 0,
             lines_covered: 0,
             total_lines: 0,

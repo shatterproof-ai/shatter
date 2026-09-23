@@ -337,6 +337,9 @@ impl ObservationAggregator {
         ObservationOutput {
             function_name,
             iterations: self.iterations,
+            // Batched runs do not carry budget telemetry (str-03mfx.2).
+            budget_allocated: 0,
+            budget_claimed: 0,
             unique_paths: self.state.seen_paths.len(),
             lines_covered: self.state.all_lines.len(),
             total_lines,
