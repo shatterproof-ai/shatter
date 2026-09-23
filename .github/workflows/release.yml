@@ -3,6 +3,10 @@ name: Build and Release
 on:
   push:
     branches: [main]
+    # str-35vtk.31: skip a main push whose entire diff is under .beads/**
+    # (beads' own tracker snapshot commits); see ci.yml for the rationale.
+    paths-ignore:
+      - ".beads/**"
   workflow_dispatch:
 
 permissions:
