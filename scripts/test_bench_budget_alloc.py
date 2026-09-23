@@ -42,6 +42,10 @@ class LoadAndTotals(unittest.TestCase):
         self.assertEqual(t["budget_allocated"], 300)
         self.assertEqual(t["outcomes"], {"completed": 2})
 
+    def test_ids_are_corpus_relative(self):
+        self.assertEqual(b.normalize_id("/tmp/bench-budget-abc/corpus/x/y.ts::f"), "x/y.ts::f")
+        self.assertEqual(b.normalize_id("plain::f"), "plain::f")
+
     def test_coverage_signature_ignores_iterations(self):
         r1 = [{"id": "a", "branches_covered": 1, "lines_covered": 2, "iterations": 5}]
         r2 = [{"id": "a", "branches_covered": 1, "lines_covered": 2, "iterations": 9}]

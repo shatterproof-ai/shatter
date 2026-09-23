@@ -32,13 +32,22 @@ from pathlib import Path
 ARMS = ("flat", "static")
 
 
+COPY_MARKER = "/corpus/"
+
+
+def normalize_id(qualified_id: str) -> str:
+    """Strip the per-run temp-copy prefix so ids match across arms and seeds."""
+    i = qualified_id.find(COPY_MARKER)
+    return qualified_id[i + len(COPY_MARKER):] if i >= 0 else qualified_id
+
+
 def load_report(path: Path) -> list[dict]:
-    """Per-function rows from a scan JSON report, sorted by qualified id."""
+    """Per-function rows from a scan JSON report, sorted by corpus-relative id."""
     value = json.loads(path.read_text(encoding="utf-8"))
     rows = []
     for f in value.get("functions", []):
         rows.append({
-            "id": f.get("qualified_id") or f.get("function_name"),
+            "id": normalize_id(str(f.get("qualified_id") or f.get("function_name") or "")),
             "branch_count": int(f.get("branch_count") or 0),
             "branches_covered": int(f.get("branches_covered") or 0),
             "lines_covered": int(f.get("lines_covered") or 0),
