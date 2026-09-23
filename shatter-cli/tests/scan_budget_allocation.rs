@@ -274,6 +274,8 @@ func ZigzagLadder(n int) int {
 
 fn scan_into(target: &Path, out: &Path, extra: &[&str]) {
     let mut command = Command::new(shatter_bin());
+    // Like the other CLI scan tests: allow target execution without a sandbox.
+    command.env("SHATTER_ALLOW_HOST_WRITES", "1");
     command
         .arg("scan")
         .arg(target)
@@ -333,6 +335,21 @@ fn rows(report: &Path) -> Vec<(String, u64, u64, u64, u64, u64)> {
     out
 }
 
+/// Coverage-only view for equality checks, deliberately excluding
+/// `iterations` (concolic execution counts can shift with solver timing).
+fn coverage_rows(report: &Path) -> Vec<(String, u64, u64, u64, u64)> {
+    rows(report).into_iter().map(|r| (r.0, r.2, r.3, r.4, r.5)).collect()
+}
+
+fn scan_order(report: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(report).expect("read report");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parse report");
+    value["test_order"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
 fn has_budget_keys(report: &Path) -> bool {
     let text = std::fs::read_to_string(report).expect("read report");
     text.contains("\"budget_allocated\"") || text.contains("\"budget_claimed\"")
@@ -374,8 +391,8 @@ fn flat_is_identical_to_knob_absent_and_carries_no_budget_fields() {
     );
     assert!(!has_budget_keys(&absent), "knob-absent output must not mention budget fields");
     assert!(!has_budget_keys(&flat), "flat output must not mention budget fields");
-    let a = rows(&absent);
-    let f = rows(&flat);
+    let a = coverage_rows(&absent);
+    let f = coverage_rows(&flat);
     assert!(!a.is_empty());
     assert_eq!(a, f, "flat must match a knob-absent run with the same seed");
 }
@@ -402,6 +419,17 @@ fn static_allocation_lets_a_capped_function_claim_surplus() {
             "--set",
             "defaults.exploration.budget_ceiling_factor=1.0",
         ],
+    );
+    // Claiming can only draw on donations made before the ladder reaches its
+    // cap, so this test depends on the ladder running last. With
+    // `--parallelism 1` the scan runs a layer's functions in source order;
+    // assert that here so a future scheduler change fails loudly instead of
+    // silently turning this into a test of an empty surplus.
+    let order = scan_order(&out);
+    assert_eq!(
+        order.last().map(|s| s.ends_with("ZigzagLadder")),
+        Some(true),
+        "the ladder must run last for donations to precede its claim: {order:?}"
     );
     let rows = rows(&out);
     let claimed: u64 = rows.iter().map(|r| r.5).sum();
