@@ -3219,3 +3219,75 @@ async fn budget_score_ranks_classify_number_below_parse_cron() {
         score(&fc)
     );
 }
+
+/// str-03mfx.5: two seeded explorations that go through a plateau-triggered
+/// fuzz phase must execute identical input sequences. Uses the email
+/// validator (opaque string branches) so the fuzz phase actually fires; the
+/// test asserts that, so it cannot pass vacuously.
+#[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
+async fn seeded_exploration_with_fuzz_phase_is_repeatable() {
+    let file = examples_dir().join("15-email-validator.ts");
+    let file_str = file.to_string_lossy().to_string();
+
+    async fn run(file_str: &str) -> ExploreResult {
+        let mut frontend = spawn_ts_frontend().await;
+        let analysis = analyze_function(&mut frontend, file_str, "validateEmail").await;
+        instrument_function(&mut frontend, file_str, "validateEmail").await;
+        let config = ExploreConfig {
+            max_iterations: None,
+            max_executions: Some(120),
+            plateau_threshold: 5,
+            seed: Some(3),
+            // A generous solver timeout: a string constraint near the default
+            // timeout boundary would otherwise flip between sat and timeout
+            // from run to run, which is nondeterminism this test is not about.
+            solver_timeout_ms: Some(120_000),
+            ..Default::default()
+        };
+        let (result, _) = orchestrator::explore(
+            &mut frontend,
+            "validateEmail",
+            vec![vec![serde_json::json!("a@b.co")], vec![serde_json::json!("")]],
+            vec![],
+            &analysis.params,
+            &config,
+            None,
+            None,
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .expect("exploration failed");
+        result
+    }
+
+    let first = run(&file_str).await;
+    let second = run(&file_str).await;
+    assert!(
+        first.fuzz_phases > 0,
+        "fixture must trigger a plateau fuzz phase for this test to mean anything"
+    );
+    let inputs = |r: &ExploreResult| -> Vec<Vec<serde_json::Value>> {
+        r.raw_results.iter().map(|(i, _, _)| i.clone()).collect()
+    };
+    assert_eq!(
+        inputs(&first),
+        inputs(&second),
+        "seeded runs must execute identical main-loop inputs \
+         (fuzz_phases {}/{}, digests {:#x}/{:#x}, executions {}/{}, fuzz_generated {}/{}, z3 {}/{}, termination {:?}/{:?})",
+        first.fuzz_phases, second.fuzz_phases,
+        first.fuzz_phase_inputs_digest, second.fuzz_phase_inputs_digest,
+        first.total_executions, second.total_executions,
+        first.fuzz_generated, second.fuzz_generated,
+        first.z3_generated, second.z3_generated,
+        first.termination_reason, second.termination_reason
+    );
+    assert_eq!(
+        first.fuzz_phase_inputs_digest, second.fuzz_phase_inputs_digest,
+        "seeded runs must execute identical fuzz-phase inputs"
+    );
+    assert_eq!(first.fuzz_phases, second.fuzz_phases);
+    assert_eq!(first.total_executions, second.total_executions);
+}
