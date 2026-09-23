@@ -51,6 +51,36 @@ const TOTAL_SCAN_TIMEOUT_REASON: &str = "not attempted: total scan budget exceed
 
 pub use crate::budget_alloc::{BudgetSurplus, ClaimPolicy};
 
+/// Scan-level budget policy resolved from `defaults.exploration` (str-03mfx).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetSettings {
+    pub allocation: crate::config::BudgetAllocation,
+    /// Minimum executions per function under `Static`.
+    pub floor: u32,
+    /// Per-function ceiling as a multiple of the flat per-function budget.
+    pub ceiling_factor: f64,
+}
+
+impl Default for BudgetSettings {
+    fn default() -> Self {
+        Self {
+            allocation: crate::config::BudgetAllocation::Flat,
+            floor: crate::config::DEFAULT_BUDGET_FLOOR,
+            ceiling_factor: crate::config::DEFAULT_BUDGET_CEILING_FACTOR,
+        }
+    }
+}
+
+impl From<&crate::config::ExplorationConfig> for BudgetSettings {
+    fn from(e: &crate::config::ExplorationConfig) -> Self {
+        Self {
+            allocation: e.budget_allocation,
+            floor: e.budget_floor,
+            ceiling_factor: e.budget_ceiling_factor,
+        }
+    }
+}
+
 /// Configuration for a scan run.
 #[derive(Debug, Clone)]
 pub struct ScanConfig {
@@ -128,6 +158,8 @@ pub struct ScanConfig {
     pub capabilities: crate::orchestrator::FrontendCapabilities,
     /// Configuration for the optional genetic algorithm follow-up phase.
     pub genetic_config: crate::config::GeneticConfig,
+    /// Execution-budget allocation policy (str-03mfx). Default: flat.
+    pub budget: BudgetSettings,
     /// When `Some`, explore each function in fixed-size iteration batches
     /// using round-robin scheduling within each layer. Functions are explored
     /// one at a time; non-exhausted functions are re-enqueued for another
@@ -7727,6 +7759,7 @@ for line in sys.stdin:
 
     fn minimal_scan_config(file_map: HashMap<String, String>) -> ScanConfig {
         ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 1,
             concolic: false,
             seed: None,
@@ -8543,6 +8576,7 @@ for line in sys.stdin:
         file_map.insert("caller".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -8633,6 +8667,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -8716,6 +8751,7 @@ for line in sys.stdin:
             Arc::new(BehaviorMapCache::new(tmp_dir.path().to_path_buf()).expect("create cache"));
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -8819,6 +8855,7 @@ for line in sys.stdin:
         file_map.insert("fn_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -8904,6 +8941,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -8992,6 +9030,7 @@ for line in sys.stdin:
         let mut skipped_file_map = HashMap::new();
         skipped_file_map.insert("solo".to_string(), "test.ts".to_string());
         let skipped_config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -9053,6 +9092,7 @@ for line in sys.stdin:
         let mut failed_file_map = HashMap::new();
         failed_file_map.insert("solo".to_string(), "test.ts".to_string());
         let failed_config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -9179,6 +9219,7 @@ for line in sys.stdin:
         file_map.insert("slow_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9280,6 +9321,7 @@ for line in sys.stdin:
         file_map.insert("slow_timeout_explore".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9387,6 +9429,7 @@ for line in sys.stdin:
         file_map.insert("slow_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9480,6 +9523,7 @@ for line in sys.stdin:
         file_map.insert("slow_function_mode".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9620,6 +9664,7 @@ for line in sys.stdin:
         file_map.insert("fn_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -9751,6 +9796,7 @@ for line in sys.stdin:
         file_map.insert("fn_b".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 1,
             concolic: false,
             seed: Some(42),
@@ -9840,6 +9886,7 @@ for line in sys.stdin:
         file_map.insert("fn_retry".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 1,
             concolic: false,
             seed: Some(42),
@@ -9942,6 +9989,7 @@ for line in sys.stdin:
         file_map.insert("caller".to_string(), "src/app.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10019,6 +10067,7 @@ for line in sys.stdin:
         file_map.insert(format!("{FILE_B}::{FUNC_NAME}"), FILE_B.to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10102,6 +10151,7 @@ for line in sys.stdin:
         file_map.insert("fetchData".to_string(), "src/api.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10150,6 +10200,7 @@ for line in sys.stdin:
         }];
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10191,6 +10242,7 @@ for line in sys.stdin:
     #[test]
     fn dry_run_plan_empty_analyses() {
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 100,
             concolic: false,
             seed: None,
@@ -10800,6 +10852,7 @@ for line in sys.stdin:
         let mut file_map = HashMap::new();
         file_map.insert("solo".to_string(), "test.ts".to_string());
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(99),
@@ -11227,6 +11280,7 @@ defaults:
         );
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 3,
             concolic: false,
             seed: Some(42),
@@ -11808,6 +11862,7 @@ for line in sys.stdin:
         file_map.insert("stale_fn".to_string(), "nonexistent.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -11899,6 +11954,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -11991,6 +12047,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12099,6 +12156,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12257,6 +12315,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12392,6 +12451,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12527,6 +12587,7 @@ for line in sys.stdin:
         file_map.insert("beta".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12633,6 +12694,7 @@ for line in sys.stdin:
         }
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(7),
@@ -12789,6 +12851,7 @@ for line in sys.stdin:
         file_map.insert("fn_two".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -12902,6 +12965,7 @@ for line in sys.stdin:
         file_map.insert("caller_fn".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(42),
@@ -15377,6 +15441,7 @@ for line in sys.stdin:
         file_map.insert("solo".to_string(), "test.ts".to_string());
 
         let config = ScanConfig {
+            budget: BudgetSettings::default(),
             max_iterations_per_function: 2,
             concolic: false,
             seed: Some(7),

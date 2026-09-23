@@ -1589,6 +1589,25 @@ pub(crate) fn resolve_llm_config(
     Ok(shatter_core::config::merge_configs(&configs).llm)
 }
 
+/// Resolve `defaults.exploration` for a scan: the hierarchical
+/// `.shatter/config.yaml` stack at `config_dir` with `--set` overrides as the
+/// highest-priority layer, validated for the budget settings (str-03mfx).
+pub(crate) fn resolve_scan_exploration(
+    config_dir: &Path,
+    set_overrides: &[String],
+) -> Result<shatter_core::config::ExplorationConfig, shatter_core::config::ConfigError> {
+    let mut configs = shatter_core::config::discover_configs(config_dir)?;
+    if !set_overrides.is_empty() {
+        configs.insert(0, shatter_core::config::parse_set_overrides(set_overrides)?);
+    }
+    let exploration = shatter_core::config::merge_configs(&configs)
+        .defaults
+        .exploration
+        .unwrap_or_default();
+    exploration.validate_budget()?;
+    Ok(exploration)
+}
+
 /// Construct an LLM adapter from config, wrapped with rate-limiting.
 ///
 /// Factored out of [`build_oracle_bundle`] so the match-on-adapter
@@ -1719,6 +1738,58 @@ mod tests {
         assert_eq!(resolve_candidate_queue_capacity(None, None), None);
         assert_eq!(resolve_candidate_queue_capacity(None, Some(16)), Some(16));
         assert_eq!(resolve_candidate_queue_capacity(Some(8), Some(16)), Some(8));
+    }
+
+    #[test]
+    fn resolve_scan_exploration_applies_set_override_over_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".shatter")).unwrap();
+        std::fs::write(
+            dir.path().join(".shatter/config.yaml"),
+            "defaults:\n  exploration:\n    budget_allocation: flat\n    budget_floor: 7\n",
+        )
+        .unwrap();
+        let exp = resolve_scan_exploration(dir.path(), &[]).unwrap();
+        assert_eq!(exp.budget_allocation, shatter_core::config::BudgetAllocation::Flat);
+        assert_eq!(exp.budget_floor, 7);
+
+        let exp = resolve_scan_exploration(
+            dir.path(),
+            &["defaults.exploration.budget_allocation=static".to_string()],
+        )
+        .unwrap();
+        assert_eq!(exp.budget_allocation, shatter_core::config::BudgetAllocation::Static);
+        // `merge_configs` merges `defaults.exploration` as one block: the
+        // nearest layer that sets it wins whole. A `--set` on any exploration
+        // key therefore yields defaults for the block's other keys (this is
+        // the pre-existing contract for e.g. `--set defaults.exploration.adaptive`).
+        assert_eq!(exp.budget_floor, shatter_core::config::DEFAULT_BUDGET_FLOOR);
+
+        let settings = shatter_core::scan_orchestrator::BudgetSettings::from(&exp);
+        assert_eq!(settings.allocation, shatter_core::config::BudgetAllocation::Static);
+        assert_eq!(settings.floor, shatter_core::config::DEFAULT_BUDGET_FLOOR);
+
+        // Setting both keys in one --set layer keeps both.
+        let exp = resolve_scan_exploration(
+            dir.path(),
+            &[
+                "defaults.exploration.budget_allocation=static".to_string(),
+                "defaults.exploration.budget_floor=9".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(exp.budget_floor, 9);
+    }
+
+    #[test]
+    fn resolve_scan_exploration_rejects_bad_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = resolve_scan_exploration(
+            dir.path(),
+            &["defaults.exploration.budget_ceiling_factor=0.5".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("budget_ceiling_factor"), "{err}");
     }
 
     #[test]
