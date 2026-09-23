@@ -3272,7 +3272,18 @@ async fn seeded_exploration_with_fuzz_phase_is_repeatable() {
     let inputs = |r: &ExploreResult| -> Vec<Vec<serde_json::Value>> {
         r.raw_results.iter().map(|(i, _, _)| i.clone()).collect()
     };
-    assert_eq!(inputs(&first), inputs(&second), "seeded runs must execute identical main-loop inputs");
+    assert_eq!(
+        inputs(&first),
+        inputs(&second),
+        "seeded runs must execute identical main-loop inputs \
+         (fuzz_phases {}/{}, digests {:#x}/{:#x}, executions {}/{}, fuzz_generated {}/{}, z3 {}/{}, termination {:?}/{:?})",
+        first.fuzz_phases, second.fuzz_phases,
+        first.fuzz_phase_inputs_digest, second.fuzz_phase_inputs_digest,
+        first.total_executions, second.total_executions,
+        first.fuzz_generated, second.fuzz_generated,
+        first.z3_generated, second.z3_generated,
+        first.termination_reason, second.termination_reason
+    );
     assert_eq!(
         first.fuzz_phase_inputs_digest, second.fuzz_phase_inputs_digest,
         "seeded runs must execute identical fuzz-phase inputs"

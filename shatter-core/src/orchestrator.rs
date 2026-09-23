@@ -1240,7 +1240,27 @@ pub(crate) fn overlay_solved_values(
 ) -> Vec<serde_json::Value> {
     let mut result = base_inputs.to_vec();
 
-    for (var_name, value) in solved {
+    // `solved` is a HashMap, whose iteration order differs per process. When
+    // two variables would write the same slot (e.g. a single-param function
+    // where both the parameter itself and an internal non-dotted solver
+    // variable exist), the last write won and seeded runs diverged
+    // (str-03mfx.5). Apply in a fixed order: name-sorted, and by precedence
+    // fallback < object path < exact parameter match, so the exact match is
+    // written last and wins regardless of hash order.
+    let mut entries: Vec<(&String, &ConcreteValue)> = solved.iter().collect();
+    entries.sort_by_key(|e| e.0);
+    let precedence = |var_name: &str| -> u8 {
+        if param_names.iter().any(|n| n == var_name) {
+            2
+        } else if solved_object_path(var_name).is_some() {
+            1
+        } else {
+            0
+        }
+    };
+    entries.sort_by_key(|(name, _)| precedence(name));
+
+    for (var_name, value) in entries {
         // Try to match variable name to a parameter by name.
         if let Some(idx) = param_names.iter().position(|n| n == var_name) {
             if idx < result.len() {
@@ -7759,6 +7779,29 @@ mod fuzz_trigger_tests {
         );
         // Unseeded: no panic, and two draws are (overwhelmingly) different.
         let _ = fuzz_phase_rng(None, 0).next_u64();
+    }
+
+    #[test]
+    fn overlay_solved_values_is_order_independent_and_exact_match_wins() {
+        use std::collections::HashMap;
+        let params = vec!["email".to_string()];
+        let types = vec![crate::types::TypeInfo::Str];
+        let base = vec![serde_json::json!("seed")];
+        let mut results = std::collections::HashSet::new();
+        for i in 0..32u64 {
+            // Fresh maps get fresh hasher keys, so insertion/iteration order varies.
+            let mut solved: HashMap<String, ConcreteValue> = HashMap::new();
+            if i % 2 == 0 {
+                solved.insert("email".into(), ConcreteValue::Str("x@y.z".into()));
+                solved.insert("tmp0".into(), ConcreteValue::Int(3));
+            } else {
+                solved.insert("tmp0".into(), ConcreteValue::Int(3));
+                solved.insert("email".into(), ConcreteValue::Str("x@y.z".into()));
+            }
+            results.insert(overlay_solved_values(&base, &solved, &params, &types));
+        }
+        assert_eq!(results.len(), 1, "overlay must not depend on map order: {results:?}");
+        assert_eq!(results.into_iter().next().unwrap(), vec![serde_json::json!("x@y.z")]);
     }
 
     #[test]
