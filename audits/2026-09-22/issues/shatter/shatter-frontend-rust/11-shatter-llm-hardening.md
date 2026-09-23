@@ -1,7 +1,7 @@
 ---
 slug: shatter-llm-hardening
 kind: new
-title: "shatter-llm hardening: Jev API key reachable via derived Debug; parser ignores int width/signedness and tries only the first '['; uncapped backoff; no PBT"
+title: "LLM API keys are reachable through derived Debug (JevConfig, adapter configs, ExploreConfig.frontier_ranker)"
 priority: P3
 type: bug
 labels: [llm, security, audit]
@@ -11,42 +11,33 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# shatter-llm hardening: Jev API key reachable via derived Debug; parser ignores int width/signedness and tries only the first '['; uncapped backoff; no PBT
+# LLM API keys are reachable through derived Debug (JevConfig, adapter configs, ExploreConfig.frontier_ranker)
 
 ## Problem
 
-There are latent defects in the LLM seed-oracle crate (`shatter-llm`). None has a known live trigger today, but each is one call site away from one:
-
-1. **Secret in Debug.** `JevConfig` holds `api_key: String` and derives `Debug`. The containing types (`JevAdapter`, `ReplayDecisionOracle`, `DecisionFrontierRanker`) also derive Debug, and `DecisionFrontierRanker` ends up as `ExploreConfig.frontier_ranker`, with `ExploreConfig` deriving Debug too. A future `{:?}` of the explore config would print the key. No current log site prints it.
-2. **Parser type checks.** `type_matches` accepts any integer for `TypeInfo::Int { .. }` regardless of `int_width` / `int_signed` (-1 passes for `u8`, 300 passes for `u8`). `extract_first_json_array` tries only the first `[` in the model output, so prose such as "[note] ... [{...}]" loses the real array.
-3. **Backoff.** Retry backoff is `Duration::from_millis(100u64 << attempt)` with no cap. That overflows at attempt 64 (a panic in debug builds) and grows to hours well before that. A server-provided Retry-After is also used uncapped.
-4. **Tests.** `parse.rs` parses untrusted model output but has only example tests (about 10) and no property tests.
+`JevConfig` holds `api_key: String` and derives `Debug`. The containing types (`JevAdapter`, `ReplayDecisionOracle`, `DecisionFrontierRanker`) also derive Debug, and `DecisionFrontierRanker` ends up as `ExploreConfig.frontier_ranker`, with `ExploreConfig` deriving Debug too. The other adapters (anthropic, openai, google) keep `api_key: String` in their structs, and `shatter-core/src/config.rs` holds `api_key: Option<String>` in `#[derive(Debug)]` LLM config sections. A future `{:?}` of the explore config, an adapter, or the loaded config would print the key. No current log site is known to print it.
 
 ## Evidence
 
-Re-verified against the audit worktree at commit 56c86168:
+Re-verified against the audit worktree (main 16794cef + audit files):
 
-- `shatter-llm/src/jev.rs:23` `#[derive(Debug, Clone)]` on `JevConfig`, with `api_key` at `:26`. `jev.rs:47` `#[derive(Debug)]` (JevAdapter). `shatter-llm/src/replay.rs:12` and `shatter-llm/src/decision_ranker.rs:18` `#[derive(Debug)]`.
+- `shatter-llm/src/jev.rs:23` `#[derive(Debug, Clone)]` on `JevConfig`, with `pub api_key: String` at `:26`. `jev.rs:47` `#[derive(Debug)]` (JevAdapter). `shatter-llm/src/replay.rs:12` and `shatter-llm/src/decision_ranker.rs:18` `#[derive(Debug)]`.
+- `shatter-llm/src/anthropic.rs:21`, `openai.rs:21`, `google.rs:19`: `api_key: String`.
+- `shatter-core/src/config.rs:325, 357, 388`: `pub api_key: Option<String>` in the anthropic/openai/google adapter config sections.
 - `shatter-core/src/orchestrator.rs:102` `#[derive(Debug, Clone)]` on `ExploreConfig`, with `frontier_ranker: Arc<dyn FrontierRanker>` at `:164`.
-- `shatter-llm/src/parse.rs:104` `TypeInfo::Int { .. } => v.is_i64() || v.is_u64(),`. `parse.rs:62` `fn extract_first_json_array`.
-- `shatter-llm/src/rate_limit.rs:61-62` `retry_after.unwrap_or_else(|| Duration::from_millis(100u64 << attempt))`, bounded only by `max_retries` (`:30`, `:58`). The verifier did not check the configured `max_retries`, so how reachable the overflow/hours case is remains unconfirmed.
+- Dependency direction: `shatter-llm/Cargo.toml:8` depends on `shatter-core`; core has `shatter-llm` only as a dev-dependency (`shatter-core/Cargo.toml:44`, itself slated for removal by str-qwua7.43). A shared secret type therefore cannot live in `shatter-llm` if `shatter-core::config` is to use it.
 
 ## Acceptance criteria
 
-- [ ] API keys in all LLM adapter configs (Jev, anthropic, openai, google, custom) are wrapped in a redacting newtype (e.g. `SecretString` with `Debug` printing `***`) or given a manual `Debug`. A unit test asserts `format!("{:?}", config)` does not contain the key.
-- [ ] Integer values are validated against `int_width` / `int_signed` (unsigned rejects negatives, width bounds enforced). Unit tests for u8 -1 / 256 and i8 -129 are rejected.
-- [ ] `extract_first_json_array` tries successive `[` candidates until one parses as the expected array shape. Unit test with a leading bracketed prose fragment.
-- [ ] Backoff is capped (e.g. `min(100ms · 2^n, 30s)` using `checked_shl`/saturating math), and Retry-After is capped at the same ceiling. Unit test at attempt 63/64 does not panic and returns the cap.
-- [ ] Proptest in `parse.rs`: for arbitrary strings and arbitrary `ParamInfo` type lists, `parse_response` never panics and returns only vectors whose values conform to the declared types (including width/sign).
-- [ ] `cargo test -p shatter-llm` passes, with the new tests shown failing on the old code where applicable.
-
-## Suggested approach
-
-Add a small `secret.rs` newtype in shatter-llm, reused by `shatter-core/src/config.rs`'s LLM sections if they hold keys too. Reuse core's integer range helper (the one that str-ddxe added for in-range generation) for the width check, rather than re-deriving bounds.
+- [ ] Every struct that holds an LLM API key (Jev, anthropic, openai, google, custom/local if they hold one, and the `shatter-core/src/config.rs` sections) prints a redacted value under `Debug`. Either a redacting newtype defined in `shatter-core` (or a new dependency-free crate both can use), or manual `Debug` impls. The type must not be defined in `shatter-llm` and imported into `shatter-core` (that would reverse the production dependency).
+- [ ] Serialization of config files is unchanged (keys still round-trip through serde where they did before); a round-trip test covers one config section.
+- [ ] Unit tests with a sentinel key (e.g. `sk-test-SENTINEL`) assert `format!("{:?}", x)` does not contain it for each config/adapter type above, for `DecisionFrontierRanker`, and for an `ExploreConfig` holding a ranker built from a keyed config. Show at least the `JevConfig` and `ExploreConfig` tests failing on main.
+- [ ] `cargo test -p shatter-llm -p shatter-core` passes.
 
 ## Out of scope
 
-- User documentation for the LLM oracle and the default-model policy (note on str-qwua7.21, slug `qwua7-21-llm-seed-oracle-docs`).
+- Parser type validation (`shatter-llm-parse-validation`) and retry backoff (`shatter-llm-backoff-cap`).
+- User documentation for the LLM oracle (note on str-qwua7.21, slug `qwua7-21-llm-seed-oracle-docs`).
 - The core→shatter-llm dev-dependency cycle (str-qwua7.43).
 
 ## Size
@@ -55,5 +46,5 @@ S
 
 ## References
 
-- Findings frontend-rust-16, frontend-rust-17 (audit 2026-09-22). Old draft: `drafts/shatter-code/66-shatter-llm-hardening.md`.
-- Related: str-qwua7.47 (PBT for core modules only), str-dcgk / str-m0ta (closed; built the crate).
+- Finding frontend-rust-16 (audit 2026-09-22). Old draft: `drafts/shatter-code/66-shatter-llm-hardening.md` (split after the Codex cross-check into this issue, `shatter-llm-parse-validation` and `shatter-llm-backoff-cap`).
+- Related: str-dcgk / str-m0ta (closed; built the crate).

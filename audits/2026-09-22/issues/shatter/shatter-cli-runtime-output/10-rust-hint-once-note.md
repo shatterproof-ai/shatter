@@ -23,8 +23,8 @@ Target: `str-qwua7.13` (open, P1, "scan and run must agree on a missing frontend
 > - The CLI integration tests this issue already requires also cover `explore` on a `.rs` target: exactly one hint occurrence on stderr.
 > - The hint is at most two lines: what is missing, and one install command or a pointer to `shatter doctor` (str-qwua7.40) for details. Source-checkout build instructions move to README "Build from source".
 >
-> Related new issue: **rust-runtime-path-and-doctor** (<filed id>), which covers the next failure a user hits after installing `shatter-rust` (the runtime crate).
+> Related new issue: **rust-runtime-path-and-doctor** (<id of rust-runtime-path-and-doctor>), which covers the next failure a user hits after installing `shatter-rust` (the runtime crate).
 
 ## Filing note
 
-The filer script must replace `<filed id>` with the id assigned to rust-runtime-path-and-doctor (05, this bucket).
+The filer script must replace each `<id of slug>` placeholder with the id assigned to rust-runtime-path-and-doctor (05, this bucket).

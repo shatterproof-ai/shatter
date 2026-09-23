@@ -537,7 +537,7 @@ Re-verified on dotfiles @ `81f35e1`:
 ## Out of scope
 
 - Editing Shatter memory files beyond the two still-stale ones named above.
-- Checking whether a referenced issue is closed. That needs per-tracker access. If wanted, file it separately.
+- Checking whether a referenced issue is closed. That needs per-tracker access; the maintainer decides whether it is wanted.
 
 ## Proof at close
 

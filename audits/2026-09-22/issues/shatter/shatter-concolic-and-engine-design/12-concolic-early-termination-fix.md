@@ -39,7 +39,7 @@ See concolic-early-termination for the per-function table from the audit run and
 
 ## Out of scope
 
-- Losses the diagnosis attributes to z3-mixed-int-real-sort-split, ts-switch-ternary-instrumentation or known-answer-ratchet-and-ts-discriminants. Those are fixed in their own issues.
+- Losses the diagnosis attributes to str-t854z, ts-switch-ternary-instrumentation or ts-union-discriminant-literals. Those are fixed in their own issues.
 - The benchmark and its post-fix run (concolic-vs-default-benchmark, concolic-benchmark-postfix-run).
 
 ## Metadata
@@ -50,6 +50,6 @@ See concolic-early-termination for the per-function table from the audit run and
 - Parent epic: Epic: Audit 2026-09-22 findings
 - Blocked by: concolic-early-termination
 - Blocks: concolic-benchmark-postfix-run
-- Related: explore-stop-reason-accounting, z3-mixed-int-real-sort-split, ts-switch-ternary-instrumentation
+- Related: explore-stop-reason-accounting, str-t854z, ts-switch-ternary-instrumentation
 - Source findings: goals-08
 - Decision refs: D3

@@ -17,7 +17,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 `scripts/validate-parity.py` compares only the capability lists that each frontend advertises in its handshake. `scripts/validate-protocol-registry.py` only *warns* when a command is missing. Neither script checks that each command is dispatched. During the audit, a scratch-copy mutation removed `prepare` dispatch from all three frontends and left the handshake advertising it. Both validators still exited 0 ("Parity check passed."). The golden handshake files compare only the advertised list. The only `prepare` conformance case runs only on Rust. No gate owns the end-to-end claim that a command marked implemented is actually dispatched.
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
 
 - `scripts/validate-parity.py:294-386` has three detectors. `detect_typescript` reads `SUPPORTED_CAPABILITIES` from `handlers.ts` (:305-316). `detect_go` reads `CommandCapabilities` and `handleHandshake` (:321-353). `detect_rust` reads `handle_handshake` (:355-386). None of them parse the dispatch arms.
 - `scripts/validate-protocol-registry.py:641-669` `validate()` skips empty source sets (`if not src_set: continue`, :647) and reports missing commands as `(may be unimplemented)` warnings (:664-666). The script exits 0: `python3 scripts/validate-protocol-registry.py` → `All checks passed (with informational warnings).`
@@ -28,23 +28,25 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ## Acceptance criteria
 
 - [ ] `validate-parity.py` extracts the dispatch arms for TS (`handlers.ts` switch), Go (`handler.go` switch) and Rust (`handler.rs` match). It hard-fails (non-zero exit) in both directions: (a) the matrix marks a command `implemented` for a frontend, or the handshake advertises it, but the command is not dispatched; (b) a command is dispatched but neither advertised nor listed in the matrix. The base-protocol commands `handshake` and `shutdown` are required for every frontend.
-- [ ] An extractor that finds zero dispatch arms for a frontend is a hard error, never a silent pass.
-- [ ] Every (frontend × command the matrix marks implemented) pair has at least one minimal runtime conformance case in `conformance_cases.yaml`, generated or hand-written. Hand-written cases need a test that fails when a pair has no case.
-- [ ] Proof at close: a scripted mutation test (unit test in `scripts/test_validate_parity.py` or equivalent, operating on fixture copies) removes one dispatch arm per frontend while keeping the advertisement, and asserts the gate exits non-zero. Paste the failing-then-passing output into the close note.
-- [ ] `task parity` and `task conformance` pass after being forced to execute (not checksum-cached); record the output.
+- [ ] An extractor that finds zero dispatch arms for a frontend is a hard error, never a silent pass. A unit test feeds each extractor an empty/renamed source file and asserts the non-zero exit.
+- [ ] Mutation tests in `scripts/test_validate_parity.py` (operating on fixture copies, not the live tree) cover, per frontend: (1) dispatch arm removed while the handshake still advertises it; (2) a dispatch arm added for a command that is neither advertised nor in the matrix. Each asserts a non-zero exit **and** names the frontend and command in the error.
+- [ ] Proof at close that the new check is what catches the mutation: run the **pre-change** `validate-parity.py` against mutation (1) and paste its exit 0 ("Parity check passed."), then run the post-change script against the same mutation and paste its non-zero exit. A canary that the old gate already rejects does not count.
+- [ ] Cache wiring: every file the new extractors read (`shatter-ts/src/handlers.ts`, `shatter-go/protocol/handler.go`, `shatter-rust/src/handler.rs`) and `scripts/validate-parity.py` itself are covered by `parity.sources` in `Taskfile.yml` (validate-parity.py is currently missing; task-sources-cover-real-inputs adds it. If that issue has not landed, add it here). Proof: after the change, `touch scripts/validate-parity.py && task parity` (ordinary invocation, no `--force`) executes the validator rather than printing `is up to date`; paste the output.
+- [ ] `task parity` passes on the unmutated tree; paste the output of a run that executed (not checksum-cached).
 
 ## Suggested approach
 
-Put the dispatch extractors in one shared helper module used by `validate-parity.py`. The TS/Go/Rust extractor work in validator-ts-extraction-empty can then reuse it rather than growing a second regex set. Prefer generating the per-command conformance cases from the matrix over hand-writing 3×N entries.
+Put the dispatch extractors in one shared helper module used by `validate-parity.py`. The TS/Go/Rust extractor work in validator-ts-extraction-empty can then reuse it rather than growing a second regex set.
 
 ## Out of scope
 
-- Fixing harness timeouts, known_drifts or the summary line (conformance-harness-correctness).
+- Runtime conformance coverage (a successful conformance case per implemented frontend × command pair). Split out to conformance-success-case-per-command, because a static dispatch check and runtime cases are separate deliverables.
+- Fixing harness timeouts, known_drifts or the summary line (conformance-harness-correctness, conformance-known-drifts-matching).
 - Deriving the matrix, registry and golden copies from one source (capability-single-source).
 
 ## Dependencies
 
 - Blocked by: none.
-- Related: validator-ts-extraction-empty (shared TS dispatch extractor), conformance-harness-correctness (new cases run through the harness), str-qwua7.7 (closed; its dispatch extractor lives in the registry validator and only warns), str-2fjn (option a: one conformance case per command).
+- Related: validator-ts-extraction-empty (shared TS dispatch extractor), conformance-success-case-per-command (runtime half of this gap), task-sources-cover-real-inputs (shatter-gates-integrity bucket; adds `validate-parity.py` and the matrix to `parity.sources`), str-qwua7.7 (closed; its dispatch extractor lives in the registry validator and only warns), str-2fjn (option a: one conformance case per command).
 
-Size: M. Priority: P2. Type: task. Labels: parity, protocol, quality-gates, audit. Parent: Epic: Audit 2026-09-22 findings.
+Size: S-M. Priority: P2. Type: task. Labels: parity, protocol, quality-gates, audit. Parent: Epic: Audit 2026-09-22 findings.

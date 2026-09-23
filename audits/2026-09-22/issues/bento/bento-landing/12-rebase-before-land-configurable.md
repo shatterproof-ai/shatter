@@ -21,7 +21,7 @@ Rebase-first is documented, deliberate policy: SKILL.md step 5 says "Rebase onto
 
 ## Evidence
 
-Re-verified 2026-09-23 at bento origin/main b1bb787 (unchanged since 1c0c1e6):
+Re-verified 2026-09-23 at bento origin/main 0b8d488 (land-work unchanged since 1c0c1e6):
 
 - `catalog/skills/land-work/scripts/land.py:274`: `prepare = self._run_script("prepare", PREPARE, ["--require-up-to-date"])`. The flag is unconditional.
 - `land.py:291`: the preview is created with `--base-ref <leased_sha>`, so verification runs on the merge with current main.

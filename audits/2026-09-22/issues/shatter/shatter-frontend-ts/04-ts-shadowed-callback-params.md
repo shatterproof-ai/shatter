@@ -32,7 +32,7 @@ Re-verified against the audit worktree at 56c86168 (2026-09-23).
 - [ ] The analyzer resolves identifiers through the TypeChecker: `checker.getSymbolAtLocation(id)` is compared with the symbol of the parameter declaration. A same-named inner binding is not a parameter; it becomes `unknown`, or a local, according to the builder's rules.
 - [ ] The instrumentor gets the same guarantee, through a scope stack of bound names or the same symbol check. This includes `buildSymExprWithFlow`'s `resolveName`, so a flow-map entry for the outer `x` is not used for an inner `x`.
 - [ ] Regression tests for the `shadow` repro in analyze, and in instrument if callbacks are instrumented. The analyze test fails on current `main` and passes after the fix. Add variants: arrow-parameter shadowing, a `const x` shadow in a nested block, and a destructured `({ x }) =>` shadow.
-- [ ] Record `task affected` `Gates selected` at close. Run `cargo test -p shatter-core --test e2e_concolic -- --ignored` directly if instrument output changes.
+- [ ] Record `task affected` `Gates selected` at close. If instrument output changes, run `task --force e2e-ts` (the governed task, not bare `cargo test`) and paste its `test result:` line with a non-zero passed count.
 
 ## Suggested approach
 
@@ -40,7 +40,7 @@ For the analyzer, the TypeChecker is already available (`analyzer.ts:362` `const
 
 ## Out of scope
 
-- Consolidating the builders (str-rf2v). If str-rf2v's shared builder lands first, do the fix there.
+- Consolidating the builders (ts-flow-analysis-consolidation, str-rf2v). If that shared builder lands first, do the fix there.
 - Instrumenting callback bodies as branch sites.
 
 ## Priority / type / size

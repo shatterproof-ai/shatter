@@ -25,7 +25,7 @@ These annotations appear only in the web UI, so no agent has seen them.
 
 ## Evidence
 
-Re-verified 2026-09-23 in the worktree at `56c86168`:
+Re-verified 2026-09-23 in the audit worktree (main 70465921 plus audit files):
 
 - Run 35756993223 (CI) annotations:
   - "Node.js 20 is deprecated ... actions/cache@v4, actions/checkout@v4, actions/setup-go@v5, actions/setup-node@v4, arduino/setup-task@v2"
@@ -38,9 +38,9 @@ Re-verified 2026-09-23 in the worktree at `56c86168`:
 ## Acceptance criteria
 
 - [ ] Every action whose major runs on Node 20 is bumped to a Node-24-based major. Check each action's releases for the current major; do not guess version numbers.
-- [ ] Linux runners are pinned to `ubuntu-24.04` until a trial run on Ubuntu 26 (`ubuntu-26.04` label, or `ubuntu-latest` after the migration) proves that `apt-get install libclang-dev z3` and `task check` work. Record that follow-up as an issue.
+- [ ] Linux runners are pinned to `ubuntu-24.04` until a trial run on Ubuntu 26 (`ubuntu-26.04` label, or `ubuntu-latest` after the migration) proves that `apt-get install libclang-dev z3` and `task check` work. That trial is tracked by `ubuntu-26-runner-trial`, drafted in this bundle and filed by the maintainer (D6). Add a comment next to each pin naming that issue.
 - [ ] Every `actions/setup-go` step sets `cache-dependency-path: shatter-go/go.sum`.
-- [ ] Proof at close: link one post-change run each of `ci.yml` and `release.yml` whose annotations show no Node-20 deprecation warning and no "Restore cache failed ... go.sum" warning.
+- [ ] Proof at close: link one post-change run each of `ci.yml` and `release.yml` whose annotations show no Node-20 deprecation warning and no "Restore cache failed ... go.sum" warning. `release.yml` may still fail on its Windows or aarch64 legs; only the annotations matter here. A structure test asserts that every `setup-go` step has `cache-dependency-path` and that no `runs-on` uses `ubuntu-latest`.
 
 ## Suggested approach
 
@@ -54,6 +54,7 @@ Make one mechanical PR across all workflow files. If `drift-patrol-workflow-go-m
 ## Dependencies
 
 - None blocking.
-- Related: `drift-patrol-workflow-go-mod`, `workflow-health-patrol`.
+- Blocks: `ubuntu-26-runner-trial`.
+- Related: `drift-patrol-workflow-go-mod`, `workflow-health-patrol`, `perf-ci-stable-scenarios-red` (its log shows the go.sum cache warning).
 
 Priority: P3 · Type: chore · Labels: ci, github-actions, maintenance, audit · Parent: Epic: Audit 2026-09-22 findings · Sources: shatter-code/77, tests-ci-18

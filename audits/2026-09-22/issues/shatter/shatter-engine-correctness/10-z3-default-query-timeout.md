@@ -21,26 +21,27 @@ Separately, `shatter scan` accepts `--solver-timeout` and throws it away, so sca
 
 ## Evidence
 
-Line numbers were re-checked against `56c86168`:
+Line numbers were re-checked on the audit branch, whose code is identical to `56c86168`:
 
 - `shatter-cli/src/args.rs:658`, `:1073` and `:1420`: the `--solver-timeout` help reads "Z3 solver timeout in seconds per query. Default: no limit."
 - `shatter-core/src/solver.rs:1214-1217`, `:1254-1257` and `:1343-1346`: all three solver entry points call `cfg.set_timeout_msec(ms)` only `if let Some(ms) = solver_timeout_ms`.
 - `shatter-cli/src/helpers.rs:893-897`: the only default, `Some(10)` when `mcdc && solver_timeout.is_none()`.
 - `shatter-cli/src/main.rs:593`: the `Scan` arm destructures `solver_timeout: _`, so the flag never reaches the scan solver config.
+- How a timeout surfaces today: `SatResult::Unknown` becomes `Err(SolverError::Unknown(reason))` (`shatter-core/src/solver.rs:1413`). `SolveResult` has only `Sat` and `Unsat` (`solver.rs:49-54`). The concolic orchestrator matches `Ok(SolveResult::Unsat) | Err(_)` together (`shatter-core/src/orchestrator.rs:2110`) and counts both as an unsolvable constraint. The Z3Solver strategy (`shatter-core/src/strategy.rs:1243-1272`) drops every non-`Sat` result in a `_ =>` arm, whose comment says "Stall tracking is the orchestrator's responsibility". So a timeout is indistinguishable from UNSAT in both places.
 - The 2026-09-04 audit's claim "Timeouts: cfg.set_timeout_msec on each query" holds only when a value is set.
 
 ## Acceptance criteria
 
 - [ ] A default per-query Z3 timeout (e.g. 2 s, configurable through the flag and `.shatter/config.yaml`) applies in all modes and commands. It is set in one place, at solver-config construction. The `--mcdc` 10 s default is either kept as a documented override or folded into the same mechanism.
 - [ ] The `--solver-timeout` help text and any docs state the new default.
-- [ ] A Z3 `Unknown`/timeout result is recorded as a frontier stall and is visible in artifact stats (a counter in the explore artifact), not silently treated as UNSAT.
+- [ ] `Err(SolverError::Unknown(..))` is handled separately from `Ok(SolveResult::Unsat)` at `orchestrator.rs:2110` and in the Z3Solver strategy's result match (`strategy.rs:1268`). Each Unknown/timeout increments a `solver_unknown` (or similarly named) counter that appears in the explore artifact's stats, for both engines, and it does not increment the unsat/`param_fail_counts` accounting.
 - [ ] `shatter scan --solver-timeout N` is honored. A CLI test asserts that the value reaches the solver config used by scan. At close, show the test failing on current `main` and passing after the fix.
-- [ ] A test with a deliberately hard query (for example nonlinear integer arithmetic) completes within the default timeout plus a small margin and records the stall.
+- [ ] A test with a deliberately hard query (for example nonlinear integer arithmetic) completes within the default timeout plus a small margin, returns `SolverError::Unknown`, and increments the new counter rather than the unsat accounting. At close, quote it failing on current `main` (no counter; or no timeout) and passing after the fix.
 - [ ] `task affected` (with `Gates selected` recorded) and `task e2e` pass. Run `task gauntlet` if help output snapshots change.
 
 ## Suggested approach
 
-Resolve the effective timeout once, where the budgets are resolved (`resolve_mcdc_budgets` in `helpers.rs` or its successor), and pass `Some(default)` down instead of `None`. Wire `solver_timeout` through the `Scan` arm in `main.rs` the same way as for explore. Add the stall counter where `SolveResult::Unknown` is handled in the orchestrator.
+Resolve the effective timeout once, where the budgets are resolved (`resolve_mcdc_budgets` in `helpers.rs` or its successor), and pass `Some(default)` down instead of `None`. Wire `solver_timeout` through the `Scan` arm in `main.rs` the same way as for explore. Add the counter by splitting the `Ok(SolveResult::Unsat) | Err(_)` arm at `orchestrator.rs:2110` into an Unsat arm and an `Err(SolverError::Unknown(_))` arm, and do the same in the strategy's `_ =>` arm at `strategy.rs:1268` (return or record the distinction so the orchestrator can count it; the strategy comment already assigns stall tracking to the orchestrator).
 
 ## Out of scope
 

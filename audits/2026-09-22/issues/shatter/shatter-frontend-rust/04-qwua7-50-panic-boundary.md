@@ -19,13 +19,14 @@ Target: **str-qwua7.50** (open). Action: post the comment below with `bd comment
 
 > **Audit 2026-09-22 note** (finding frontend-rust-05). This re-scopes the lock half of this issue.
 >
-> **Current code (re-verified at 56c86168):**
+> **Current code (re-verified at main 16794cef):**
 > - `shatter-rust/src/handler.rs:480` (`Handler::run`) and `:529` (`dispatch`) have no `catch_unwind`, and neither does `shatter-rust/src/main.rs`. The only `catch_unwind` calls are in generated harness code and the generators' native invoke path. A panic while handling a request therefore ends the frontend process (main exits non-zero). No later request in production ever sees a poisoned lock.
 > - The cache Mutexes (`executor.rs:406` `CrateHarnessCache`, `:526` `CrateBridgeHarnessCache`, `:733` `HarnessCache`) are only accessed from the dispatch thread. The threads spawned at `executor.rs` ~3055, ~3206, ~5475 only forward child stdout and never touch the caches.
 >
 > **Correction to the acceptance test as written.** A unit test *can* exercise poison recovery by wrapping a handler call in `catch_unwind` itself and then reusing the handler, so the test is not impossible. But it would pass without fixing anything real, because production cannot survive a panic without a handler-level boundary.
 >
 > **Proposed re-scope (replaces the poison-tolerant-lock acceptance item):**
-> - Add a panic boundary: wrap `dispatch` in `std::panic::catch_unwind(AssertUnwindSafe(..))`, turn a caught panic into an `internal_error` response naming the panic message, and clear or invalidate the harness caches the panicking request may have left inconsistent. Only after that is poison recovery (`lock().unwrap_or_else(PoisonError::into_inner)`) meaningful. **Or** replace the Mutexes with owned `HashMap`s on the handler, since access is single-threaded.
-> - Acceptance: an integration test that sends a request that forces a panic inside dispatch and then a normal request **over the stdio protocol to one frontend process**. The second request succeeds and the first gets `internal_error`. Show it failing before the change and passing after.
-> - Keep the module-docs half of this issue unchanged.
+> - **Required:** a panic boundary. Wrap `dispatch` in `std::panic::catch_unwind(AssertUnwindSafe(..))`, turn a caught panic into an `internal_error` response naming the panic message, and invalidate (clear) every harness cache the panicking request could have touched. Without this boundary the process dies on the first panic and nothing else in this issue matters.
+> - **Then, either** keep the Mutexes and route all 19 lock sites through the `lock_cache` recover-and-clear helper this issue already specifies, **or** replace the Mutexes with owned `HashMap`s on the handler (access is single-threaded). The owned-map option removes poisoning but does not by itself keep the process alive, so it is only acceptable together with the panic boundary above; its cache invalidation happens in the boundary's catch arm.
+> - Acceptance: an integration test that spawns **one** frontend process and, over the stdio protocol, sends a request that forces a panic inside dispatch (e.g. a test-only hook or a malformed input known to hit an `expect`), then a normal execute request. The first gets `internal_error` with the panic message, the second succeeds, and the process is still alive afterwards. Show it failing on main (process exits, second request gets no response) and passing on the branch; paste both into the close note.
+> - Keep the module-docs half of this issue and the Option::unwrap cleanup unchanged.

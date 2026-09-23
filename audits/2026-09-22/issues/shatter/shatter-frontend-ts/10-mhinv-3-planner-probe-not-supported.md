@@ -31,7 +31,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 > - The only `get_invocation_plan` conformance case (`protocol/conformance/conformance_cases.yaml:538`, `planner_runtime_value_go`) is `frontends: [go]`, so nothing checks the documented contract.
 >
 > **Acceptance item to add here:** TS (and Rust, if it has the same gap) and the docs agree on the planner-command probe response. One of two things happens:
-> - (a) behaviour changes: a command that is in generated `ALL_COMMANDS` but not in `SUPPORTED_CAPABILITIES` returns `not_supported`, and truly unknown commands keep `invalid_request`; or
+> - (a) behaviour changes: a command that is in generated `ALL_COMMANDS` but not in an explicit supported-**command** set returns `not_supported`, and truly unknown commands keep `invalid_request`. The supported-command set must be separate from `SUPPORTED_CAPABILITIES` (`handlers.ts:56-68`), which holds `complex_type:*` entries and omits the control commands `handshake` and `shutdown`; those two are always dispatched. Using `SUPPORTED_CAPABILITIES` as the dispatch set would reject handshake and shutdown; or
 > - (b) the contract changes: `shatter-ts/CLAUDE.md:155-157` and `protocol/parity-matrix.yaml` document `invalid_request`.
 >
 > Either way, a TS (and Rust) conformance case for a `get_invocation_plan` probe pins it, and `task conformance` shows the case running.

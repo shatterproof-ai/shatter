@@ -24,8 +24,8 @@ Target: `str-qwua7.40` (open, P2, "`shatter doctor`: report whether shatter-rust
 > - Severity follows this issue's existing rule: a missing runtime crate is a warning, and a failure only when Rust is required. The require-flag spelling must match whatever str-qwua7.13 settles on (it proposes `--require-frontend <lang>`, this issue proposes `--require-rust`); pick one before implementing.
 > - Test: a relocated `shatter-rust` with `SHATTER_RUNTIME_PATH` unset makes doctor report "runtime crate: not found"; with the variable set to the real crate it reports the path. The first case shows no runtime line (all green) on current main.
 >
-> The runtime error dedup, the `rust` failure-impact row and the env-var docs are tracked in the new issue **rust-runtime-path-and-doctor** (<filed id>). Toolchain and sandbox/host-write readiness in doctor are tracked in **doctor-execution-readiness** (<filed id>).
+> The runtime error dedup, the `rust` failure-impact row and the env-var docs are tracked in the new issue **rust-runtime-path-and-doctor** (<id of rust-runtime-path-and-doctor>). Toolchain and sandbox/host-write readiness in doctor are tracked in **doctor-execution-readiness** (<id of doctor-execution-readiness>).
 
 ## Filing note
 
-The filer script must replace each `<filed id>` with the ids assigned to rust-runtime-path-and-doctor (05) and doctor-execution-readiness (11), both in this bucket.
+The filer script must replace each `<id of slug>` placeholder with the ids assigned to rust-runtime-path-and-doctor (05) and doctor-execution-readiness (11), both in this bucket.

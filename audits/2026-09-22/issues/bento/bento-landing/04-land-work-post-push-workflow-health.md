@@ -69,7 +69,7 @@ Tests and proof:
 
 - Fixing shatter's workflows: drift-patrol `go-version-file` (`drift-patrol-workflow-go-mod`), the release.yml Windows Z3 and aarch64 openssl legs (`release-windows-z3-build` and `release-aarch64-openssl-cross`, which per maintainer decision D1 are fixed, not dropped), perf-ci, devcontainer and docker. Those are shatter issues.
 - Making CI a hard landing gate.
-- Filing tracker issues automatically for red workflows. That belongs to the shatter-side `workflow-health-patrol`.
+- Filing tracker issues automatically for red workflows. Nothing files them automatically: shatter's `workflow-health-patrol` is read-only, and the current red shatter workflows are pre-drafted as their own issues (`devcontainer-workflow-red`, `docker-publish-workflow-red`, `perf-ci-stable-scenarios-red`).
 
 ## Dependencies
 

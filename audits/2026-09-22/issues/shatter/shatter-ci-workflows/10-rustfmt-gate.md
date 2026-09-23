@@ -24,13 +24,13 @@ The fix has two separate parts, and they must not be mixed with any other change
 
 ## Evidence
 
-Re-verified 2026-09-23 in the worktree at `56c86168` with local `rustfmt 1.9.0-stable (ac68faa20c 2026-05-25)`:
+Re-verified 2026-09-23 in the audit worktree (main 70465921 plus audit files) with local `rustfmt 1.9.0-stable (ac68faa20c 2026-05-25)`:
 
 - `cargo fmt --all -- --check` (workspace) lists 97 files: shatter-core 61, shatter-cli 25, shatter-llm 11 (for example `shatter-cli/build.rs:37`, `shatter-cli/src/args.rs:361`).
 - `cd shatter-rust && cargo fmt --all -- --check` lists 9 files. `cd shatter-rust-runtime && cargo fmt --all -- --check` lists 1 file. These crates are excluded from the workspace (`Cargo.toml:3`), so the workspace command does not cover them.
 - A grep of `Taskfile.yml`, `taskfiles/`, `shatter-*/Taskfile.yml` and `.github/` finds no `fmt --check` / `fmt -- --check`.
 - There is no `rust-toolchain.toml`. CI uses `dtolnay/rust-toolchain@stable` (`ci.yml:38-41`), so the rustfmt version floats. That is how str-fr1v's "1.93 drift" happened.
-- Session c1689435 (2026-09-21T22:53): `cargo fmt -p shatter-core` → "58 files changed, 3068 insertions(+), 789 deletions(-)", then `... | xargs git checkout --` and `scratchpad/apply_child_a.py` (sessions-11).
+- Provenance only (not needed to do this work): session c1689435 (2026-09-21T22:53) ran `cargo fmt -p shatter-core`, which reported "58 files changed, 3068 insertions(+), 789 deletions(-)". The session then ran `... | xargs git checkout --` and a scratchpad re-apply script (sessions-11). The session transcript, the scratchpad script and the private memory file are not visible to an implementer. Everything this issue needs is reproducible with the `cargo fmt --check` commands above.
 - str-fr1v is closed with reason "Closed". Its acceptance was `cargo fmt --all -- --check` must pass.
 - `.claude/skills/rust-conventions/SKILL.md` has no formatting guidance.
 

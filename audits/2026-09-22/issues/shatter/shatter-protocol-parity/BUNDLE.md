@@ -3,8 +3,8 @@
 - Audit: 2026-09-22 Shatter audit, final issue drafts (nothing filed)
 - Bucket: shatter-protocol-parity: protocol contracts and parity machinery (dispatch checks, conformance harness, single-source capabilities, schemas, governance and protocol docs, validator liveness)
 - Repo: shatter. Tracker: bd in /home/ketan/project/shatter (prefix str). Parent epic: "Epic: Audit 2026-09-22 findings"
-- Evidence re-verified against the audit worktree at 56c86168 on 2026-09-23
-- Entries: 16 (13 new issues, 1 reopen-note, 1 note-to-existing, plus 1 split: capability-single-source was sized L, so the 13-registry-enum codegen (protocol-parity-19) is split out as protocol-codegen-all-registry-enums, P3)
+- Evidence re-verified against the audit worktree at 56c86168 on 2026-09-23; the cited files are unchanged at 793f2b0b (re-checked during the Codex-revision pass)
+- Entries: 20 (18 new issues, 1 reopen-note (comment-only on a closed issue; never reopens), 1 note-to-existing). Splits: capability-single-source was split into protocol-codegen-all-registry-enums (earlier) and parity-matrix-unenforced-sections; conformance-harness-correctness was split into conformance-known-drifts-matching and conformance-cross-frontend-execute-cases; parity-dispatch-reconciliation was split into conformance-success-case-per-command. See REVISION.md for the Codex cross-check disposition.
 
 ## Maintainer decisions (2026-09-23)
 
@@ -31,12 +31,16 @@ Decision touchpoints in this bucket: none of the entries carries a decision_ref.
 | 08-protocol-md-execute-fields.md | protocol-md-execute-fields | new | - | P2 | [] |
 | 09-divergence-tracking-issue-liveness.md | divergence-tracking-issue-liveness | new | - | P2 | [] |
 | 10-validator-ts-extraction-empty.md | validator-ts-extraction-empty | new | - | P2 | [validator-optional-command-warning] |
-| 11-validator-reopen-note.md | validator-reopen-note | reopen-note | str-qwua7.7 | P2 | [] |
+| 11-validator-reopen-note.md | validator-reopen-note | reopen-note | str-qwua7.7 | P2 | [validator-ts-extraction-empty, validator-optional-command-warning] |
 | 12-validator-optional-command-warning.md | validator-optional-command-warning | new | - | P3 | [] |
 | 13-protocol-rs-doc-comments.md | protocol-rs-doc-comments | new | - | P3 | [] |
 | 14-protocol-test-doubles-relocate.md | protocol-test-doubles-relocate | new | - | P3 | [] |
 | 15-parity-guidance-skill-and-template.md | parity-guidance-skill-and-template | new | - | P3 | [] |
 | 16-qwua7-37-premise.md | qwua7-37-premise | note-to-existing | str-qwua7.37 | P3 | [] |
+| 17-parity-matrix-unenforced-sections.md | parity-matrix-unenforced-sections | new | - | P2 | [] |
+| 18-conformance-success-case-per-command.md | conformance-success-case-per-command | new | - | P2 | [conformance-harness-correctness] |
+| 19-conformance-known-drifts-matching.md | conformance-known-drifts-matching | new | - | P2 | [] |
+| 20-conformance-cross-frontend-execute-cases.md | conformance-cross-frontend-execute-cases | new | - | P2 | [conformance-harness-correctness, conformance-known-drifts-matching] |
 
 ---
 
@@ -61,7 +65,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 `scripts/validate-parity.py` compares only the capability lists that each frontend advertises in its handshake. `scripts/validate-protocol-registry.py` only *warns* when a command is missing. Neither script checks that each command is dispatched. During the audit, a scratch-copy mutation removed `prepare` dispatch from all three frontends and left the handshake advertising it. Both validators still exited 0 ("Parity check passed."). The golden handshake files compare only the advertised list. The only `prepare` conformance case runs only on Rust. No gate owns the end-to-end claim that a command marked implemented is actually dispatched.
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
 
 - `scripts/validate-parity.py:294-386` has three detectors. `detect_typescript` reads `SUPPORTED_CAPABILITIES` from `handlers.ts` (:305-316). `detect_go` reads `CommandCapabilities` and `handleHandshake` (:321-353). `detect_rust` reads `handle_handshake` (:355-386). None of them parse the dispatch arms.
 - `scripts/validate-protocol-registry.py:641-669` `validate()` skips empty source sets (`if not src_set: continue`, :647) and reports missing commands as `(may be unimplemented)` warnings (:664-666). The script exits 0: `python3 scripts/validate-protocol-registry.py` → `All checks passed (with informational warnings).`
@@ -72,26 +76,28 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ## Acceptance criteria
 
 - [ ] `validate-parity.py` extracts the dispatch arms for TS (`handlers.ts` switch), Go (`handler.go` switch) and Rust (`handler.rs` match). It hard-fails (non-zero exit) in both directions: (a) the matrix marks a command `implemented` for a frontend, or the handshake advertises it, but the command is not dispatched; (b) a command is dispatched but neither advertised nor listed in the matrix. The base-protocol commands `handshake` and `shutdown` are required for every frontend.
-- [ ] An extractor that finds zero dispatch arms for a frontend is a hard error, never a silent pass.
-- [ ] Every (frontend × command the matrix marks implemented) pair has at least one minimal runtime conformance case in `conformance_cases.yaml`, generated or hand-written. Hand-written cases need a test that fails when a pair has no case.
-- [ ] Proof at close: a scripted mutation test (unit test in `scripts/test_validate_parity.py` or equivalent, operating on fixture copies) removes one dispatch arm per frontend while keeping the advertisement, and asserts the gate exits non-zero. Paste the failing-then-passing output into the close note.
-- [ ] `task parity` and `task conformance` pass after being forced to execute (not checksum-cached); record the output.
+- [ ] An extractor that finds zero dispatch arms for a frontend is a hard error, never a silent pass. A unit test feeds each extractor an empty/renamed source file and asserts the non-zero exit.
+- [ ] Mutation tests in `scripts/test_validate_parity.py` (operating on fixture copies, not the live tree) cover, per frontend: (1) dispatch arm removed while the handshake still advertises it; (2) a dispatch arm added for a command that is neither advertised nor in the matrix. Each asserts a non-zero exit **and** names the frontend and command in the error.
+- [ ] Proof at close that the new check is what catches the mutation: run the **pre-change** `validate-parity.py` against mutation (1) and paste its exit 0 ("Parity check passed."), then run the post-change script against the same mutation and paste its non-zero exit. A canary that the old gate already rejects does not count.
+- [ ] Cache wiring: every file the new extractors read (`shatter-ts/src/handlers.ts`, `shatter-go/protocol/handler.go`, `shatter-rust/src/handler.rs`) and `scripts/validate-parity.py` itself are covered by `parity.sources` in `Taskfile.yml` (validate-parity.py is currently missing; task-sources-cover-real-inputs adds it. If that issue has not landed, add it here). Proof: after the change, `touch scripts/validate-parity.py && task parity` (ordinary invocation, no `--force`) executes the validator rather than printing `is up to date`; paste the output.
+- [ ] `task parity` passes on the unmutated tree; paste the output of a run that executed (not checksum-cached).
 
 ## Suggested approach
 
-Put the dispatch extractors in one shared helper module used by `validate-parity.py`. The TS/Go/Rust extractor work in validator-ts-extraction-empty can then reuse it rather than growing a second regex set. Prefer generating the per-command conformance cases from the matrix over hand-writing 3×N entries.
+Put the dispatch extractors in one shared helper module used by `validate-parity.py`. The TS/Go/Rust extractor work in validator-ts-extraction-empty can then reuse it rather than growing a second regex set.
 
 ## Out of scope
 
-- Fixing harness timeouts, known_drifts or the summary line (conformance-harness-correctness).
+- Runtime conformance coverage (a successful conformance case per implemented frontend × command pair). Split out to conformance-success-case-per-command, because a static dispatch check and runtime cases are separate deliverables.
+- Fixing harness timeouts, known_drifts or the summary line (conformance-harness-correctness, conformance-known-drifts-matching).
 - Deriving the matrix, registry and golden copies from one source (capability-single-source).
 
 ## Dependencies
 
 - Blocked by: none.
-- Related: validator-ts-extraction-empty (shared TS dispatch extractor), conformance-harness-correctness (new cases run through the harness), str-qwua7.7 (closed; its dispatch extractor lives in the registry validator and only warns), str-2fjn (option a: one conformance case per command).
+- Related: validator-ts-extraction-empty (shared TS dispatch extractor), conformance-success-case-per-command (runtime half of this gap), task-sources-cover-real-inputs (shatter-gates-integrity bucket; adds `validate-parity.py` and the matrix to `parity.sources`), str-qwua7.7 (closed; its dispatch extractor lives in the registry validator and only warns), str-2fjn (option a: one conformance case per command).
 
-Size: M. Priority: P2. Type: task. Labels: parity, protocol, quality-gates, audit. Parent: Epic: Audit 2026-09-22 findings.
+Size: S-M. Priority: P2. Type: task. Labels: parity, protocol, quality-gates, audit. Parent: Epic: Audit 2026-09-22 findings.
 
 ---
 
@@ -100,7 +106,7 @@ Size: M. Priority: P2. Type: task. Labels: parity, protocol, quality-gates, audi
 ---
 slug: conformance-harness-correctness
 kind: new
-title: "Conformance harness: timeouts cascade into misattributed failures, known_drifts can never match, summary arithmetic is wrong, analyze/execute success cases never cross-check"
+title: "Conformance harness: a timeout leaves the frontend process in use, so late replies are misattributed to later cases, and the summary line multiplies unrelated counts"
 priority: P2
 type: bug
 labels: [conformance, protocol, parity, audit]
@@ -110,48 +116,54 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Conformance harness: timeouts cascade into misattributed failures, known_drifts can never match, summary arithmetic is wrong, analyze/execute success cases never cross-check
+# Conformance harness: a timeout leaves the frontend process in use, so late replies are misattributed to later cases, and the summary line multiplies unrelated counts
 
 ## Problem
 
-`protocol/conformance/conformance_harness.py` under-reports and mis-reports in four ways:
+`protocol/conformance/conformance_harness.py` mis-reports in two ways that make drift-patrol runs go red under load:
 
-1. After a timeout it keeps using the same frontend process, so a late reply is read as the answer to the next case.
-2. `known_drifts` patterns are regexes but are tested as substrings, so they never match.
-3. The summary line prints `frontends × cases = <executed checks>`, which is not a product.
-4. Every analyze/execute success case runs on a single frontend, so the structural cross-check never sees `side_effects` or conditions, which are the fields the drifts exist for.
+1. After a timeout it keeps using the same frontend process and reads one line per request with no id matching, so a late reply is read as the answer to the next case. One slow reply turns into a cascade of unrelated failures.
+2. The summary prints `frontends × cases = <executed checks>`, which is not a product, so a reader cannot tell how many checks ran, were skipped or were cross-checked.
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+Cases are not independent: some depend on state an earlier case left in the frontend process. For example, `planner_runtime_value_go` (`conformance_cases.yaml:538`) runs `get_invocation_plan`, which needs the analysis cached by the preceding `analyze_runtime_value_go` (`:520`); the Go handler says so at `shatter-go/protocol/handler.go:1960` and looks it up in `cachedAnalyses` at `:1981`. A naive "respawn and re-handshake after a timeout" therefore produces a second, misleading failure on the dependent case. The fix must handle prerequisites explicitly.
 
-- `conformance_harness.py:88-107` `send()` writes the request, calls `select` once with `COMMAND_TIMEOUT_S` (`:31`, 30 s), reads a single line, and does no id matching. When `resp is None`, the case loop (`:609-615`) records the failure and `continue`s on the same process. A drift-patrol run at load average 66/103/116 reported 4 Go timeouts and then `go / shutdown -- id: expected 99, got 20`. Reruns passed (`conformance_harness.py -f go` passed in 2.3 s; the full harness passed 42 checks).
-- `conformance_harness.py:675`: `if any(pat in d for pat in known_drift_patterns):`. The patterns in `conformance_cases.yaml:16-24` are `side_effects.*thrown_error`, `side_effects.*global_mutation` and `condition.*ite`. On a sample drift string, the substring test gives [False, False, False] and `re.search` gives [True, False, False]. The first entry cites `side-effect-thrown-error-placement`, which does not exist in `parity-matrix.yaml`.
+This issue covers transport recovery and the summary only. The known_drifts matcher and the missing cross-frontend execute cases were split into conformance-known-drifts-matching and conformance-cross-frontend-execute-cases.
+
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
+
+- `conformance_harness.py:88` `send()` writes the request, calls `select` once with `COMMAND_TIMEOUT_S` (`:31`, 30 s), reads a single line, and does no id matching. When the response is `None`, the case loop (around `:608-615`) records the failure and continues on the same process.
+- A drift-patrol run at load average 66/103/116 reported 4 Go timeouts and then `go / shutdown -- id: expected 99, got 20`. Reruns passed (`conformance_harness.py -f go` passed in 2.3 s; the full harness passed 42 checks).
 - `conformance_harness.py:682`: `print(f"Tested {n_frontends} frontends x {len(cases)} cases = {total_checks} checks")`. The drift-patrol log printed `Tested 4 frontends x 18 cases = 42 checks` (4×18 = 72) and contained 8 lines of `cross-check: SKIP only 1 frontend responded`.
-- Every analyze/execute success case in `conformance_cases.yaml` (roughly :300-563, e.g. `execute_outcome_shape_go/ts/rust`) lists a single frontend. Only error, handshake, setup, teardown, generate and shutdown cases run on more than one frontend.
-- Audit findings prior-05 (confirmed, P2), protocol-parity-02 (confirmed, P1 → P2), gates-10 (confirmed, P3; folded in here).
+- Case-order dependency: `analyze_runtime_value_go` (`conformance_cases.yaml:520`) → `planner_runtime_value_go` (`:538`); `handler.go:1960` ("get_invocation_plan must have previously issued analyze for the target's …").
+- Audit findings prior-05 (confirmed, P2), protocol-parity-02 (confirmed, P1 → P2; transport part), gates-10 (confirmed, P3; summary line).
 
 ## Acceptance criteria
 
-- [ ] `send()` reads lines until one arrives whose `id` equals the request id, discarding and logging stale lines. On a timeout, the frontend is killed, respawned and re-handshaken before the next case. One slow reply produces exactly one failure.
-- [ ] known_drifts matching uses `re.search`. Every entry carries a `divergence_id` that `validate-parity.py` resolves against `allowed_divergences`. A run reports any entry that matched nothing. Alternative: delete known_drifts entirely and point GOVERNANCE, PARITY.md and the frontend-parity skill at `allowed_divergences`. The close note must say which option was chosen, because governance-md-omits-matrix and parity-guidance-skill-and-template follow it.
-- [ ] The summary prints executed, skipped and cross-checked counts separately. No multiplication.
-- [ ] At least one analyze success case and one execute success case run on every language frontend against equivalent fixtures, so the structural comparison covers the execute response (`side_effects`, `path_constraints`/conditions).
-- [ ] Harness unit tests cover the id-mismatch/stale-line path, the respawn-after-timeout path and the regex-drift path, including an unmatched-drift report. Proof at close: each new test fails against the pre-fix harness and passes after the fix (paste both runs).
-- [ ] `task conformance` passes after being forced to execute (not checksum-cached).
+- [ ] `send()` reads lines until one arrives whose `id` equals the request id, discarding and logging stale lines (with their ids), bounded by the case timeout.
+- [ ] On a timeout, the frontend process is killed, respawned and re-handshaken before the next case.
+- [ ] Prerequisites are explicit. Each case that depends on earlier state declares it (for example `requires: [analyze_runtime_value_go]` in `conformance_cases.yaml`). After a respawn, the harness either replays the declared prerequisites on the new process before the dependent case, or reports the dependent case as `BLOCKED (prerequisite <name> failed)`. A blocked case counts as neither a pass nor an independent failure. A test fails when a case uses cross-case state without declaring it. At minimum, audit every get_invocation_plan, prepare and execute case for an implicit dependency, and record the list in the close note.
+- [ ] One slow reply produces exactly one failure. The cases that depend on it are reported as blocked or pass after replay, and the id-mismatch cascade is gone.
+- [ ] The summary prints executed, passed, failed, blocked, skipped (with reason counts) and cross-checked counts separately, with no multiplication. The exit status is non-zero when any case failed or was blocked.
+- [ ] Harness unit tests drive a stub frontend (a small script that speaks the protocol and can be told to delay one reply past the timeout, then send it late). They cover: (a) the stale-line discard; (b) respawn after timeout; (c) a dependent case after its prerequisite timed out (replayed or blocked, never misattributed); (d) the summary counts for a run with one timeout. Proof at close: each test fails against the pre-fix harness and passes after the fix; paste both runs.
+- [ ] `task conformance` passes on the unmutated tree; paste the output of a run that executed (not checksum-cached).
 
 ## Suggested approach
 
-Fix `send()` and respawn first; this is what makes drift-patrol runs go red under load. Then fix drift matching (or delete it), then add the cross-frontend cases. Consider scaling `COMMAND_TIMEOUT_S` with a load-aware factor, as `run-heavy` does.
+Fix `send()` first; id matching alone removes the cascade. Then add respawn with prerequisite replay. Replaying declared prerequisites is cheaper for readers than blocked cases, but blocking is acceptable when a prerequisite is itself slow. Consider scaling `COMMAND_TIMEOUT_S` with a load-aware factor, as `run-heavy` does.
 
 ## Out of scope
 
 - The Rust prepare timeout itself (str-qe9pp).
-- Per-command dispatch coverage cases (parity-dispatch-reconciliation).
+- known_drifts matching and the comparator (conformance-known-drifts-matching).
+- Cross-frontend analyze/execute cases (conformance-cross-frontend-execute-cases).
+- Per-command success cases (conformance-success-case-per-command).
 - Validating responses against JSON schemas (protocol-schemas-reject-real-output).
 
 ## Dependencies
 
 - Blocked by: none.
-- Related: str-qe9pp (open; Rust prepare timeout that triggers the id cascade), str-uoclg (closed; same cascade seen as a symptom), str-qwua7.34 (divergence-ID resolution), parity-guidance-skill-and-template, governance-md-omits-matrix.
+- Blocks: conformance-success-case-per-command and conformance-cross-frontend-execute-cases (both add cases that rely on the prerequisite mechanism).
+- Related: str-qe9pp (open; Rust prepare timeout that triggers the id cascade), str-uoclg (closed; same cascade seen as a symptom).
 
 Size: M. Priority: P2. Type: bug. Labels: conformance, protocol, parity, audit. Parent: Epic: Audit 2026-09-22 findings.
 
@@ -162,7 +174,7 @@ Size: M. Priority: P2. Type: bug. Labels: conformance, protocol, parity, audit. 
 ---
 slug: capability-single-source
 kind: new
-title: "Protocol capability facts are hand-copied in six places, and four parity-matrix sections are checked by no script"
+title: "The registry `frontends:` capability lists duplicate the parity matrix and are read by no gate"
 priority: P2
 type: task
 labels: [parity, protocol, architecture, audit]
@@ -172,11 +184,11 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Protocol capability facts are hand-copied in six places, and four parity-matrix sections are checked by no script
+# The registry `frontends:` capability lists duplicate the parity matrix and are read by no gate
 
 ## Problem
 
-Which commands and capabilities each frontend supports is maintained by hand in six places:
+Which commands and complex types each frontend supports is maintained by hand in six places:
 
 1. the frontend handshake arrays
 2. the `frontends:` block of `protocol/registry.yaml`
@@ -185,36 +197,43 @@ Which commands and capabilities each frontend supports is maintained by hand in 
 5. `protocol/PARITY.md`
 6. the crate `CLAUDE.md` files and the frontend-parity skill
 
-Only pairwise checks exist, so a fact can be correct in one copy and wrong in another (see protocol-parity-md-stale for live examples). Four matrix sections, `shared_wire_types`, `side_effect_capabilities`, `feature_capabilities` and `adapter_capabilities`, are read by no script. Agents still treat them as enforced; the frontend-parity skill calls the matrix "authoritative".
+Only pairwise checks exist. `validate-parity.py` compares the matrix with the handshake arrays, and `run_golden_tests.py` compares the golden handshake files with live handshakes, so copies 1, 3 and 4 are tied together transitively. No script reads the registry's `frontends.<fe>.command_capabilities` or `complex_type_capabilities`, so copy 2 can drift freely.
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+This issue owns copy 2: make the matrix the single source for the registry `frontends:` capability lists (or delete them). The other copies have their own owners:
 
-- The copies: TS `SUPPORTED_CAPABILITIES` in `shatter-ts/src/handlers.ts`; Go `CommandCapabilities` and `handleHandshake` in `shatter-go/protocol/handler.go`; Rust `handle_handshake` in `shatter-rust/src/handler.rs`; `protocol/registry.yaml:407` (`frontends:`); `protocol/parity-matrix.yaml:102` (`commands:`) and `:203` (`complex_type_capabilities:`); `protocol/conformance/golden/handshake/{typescript,go,rust,noop}.json`; the `protocol/PARITY.md` tables; `shatter-{ts,go,rust}/CLAUDE.md`; `.claude/skills/frontend-parity/SKILL.md`.
-- The unvalidated sections are at `parity-matrix.yaml:18` (`shared_wire_types`), `:482` (`side_effect_capabilities`), `:589` (`feature_capabilities`) and `:881` (`adapter_capabilities`). `git grep -lE 'side_effect_capabilities|feature_capabilities|adapter_capabilities|shared_wire_types' -- . ':!audits' ':!.beads'` returns only `parity-matrix.yaml`, `conformance_cases.yaml` (comments), the skill, three crate `CLAUDE.md` files and a prose mention in `shatter-cli/src/commands/explore.rs`. No file under `scripts/` reads them.
+- copy 5: protocol-parity-md-stale
+- copy 6: str-qwua7.24 (open; generates the crate `CLAUDE.md` and frontend-parity skill tables from the matrix)
+- the four matrix sections no script reads: parity-matrix-unenforced-sections (split out of this issue)
+- generating all registry enums: protocol-codegen-all-registry-enums (split out earlier)
+
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
+
+- The copies: TS `SUPPORTED_CAPABILITIES` in `shatter-ts/src/handlers.ts`; Go `CommandCapabilities` and `handleHandshake` in `shatter-go/protocol/handler.go`; Rust `handle_handshake` in `shatter-rust/src/handler.rs`; `protocol/registry.yaml:407` (`frontends:`, with `command_capabilities` and `complex_type_capabilities` per frontend); `protocol/parity-matrix.yaml:102` (`commands:`) and `:203` (`complex_type_capabilities:`); `protocol/conformance/golden/handshake/{typescript,go,rust,noop}.json`.
+- `/usr/bin/grep -n "command_capabilities\|complex_type_capabilities" scripts/*.py protocol/conformance/*.py` finds only `validate-parity.py`, which reads the matrix's `complex_type_capabilities` (`:233`, `:725-803`), and a test fixture. `validate-parity.py:649` and `:716` read `frontends` under matrix commands, not the registry block. Nothing reads `registry.yaml` `frontends.*.command_capabilities`.
 - Audit finding protocol-parity-08 (confirmed, P2).
 
 ## Acceptance criteria
 
-- [ ] `protocol/parity-matrix.yaml` is the single source of per-frontend capability status. The registry `frontends:` block and the golden handshake expectations are generated from it, or checked against it by a generator `--check` that runs in `task parity`. Handshake arrays in frontend source stay hand-written but are checked against the matrix. The existing detectors already do that; keep them.
-- [ ] Each of the four unvalidated sections either gets a detector that `task parity` runs (for example a source grep for each side-effect emitter, or a conformance execute case that asserts presence), or gets a header comment and a matrix-level `enforced: false` marker that `validate-parity.py` reads and prints, so readers can tell documentation-only sections from enforced ones.
-- [ ] Proof at close: a canary edit (flip one Rust complex-type capability in the matrix only) makes `task parity` fail when forced to execute. Paste the output. Then revert.
-- [ ] The frontend-parity skill and crate `CLAUDE.md` tables are generated or pointer-only (coordinate with str-qwua7.24; do not duplicate its generator).
-
-## Suggested approach
-
-Extend the str-qwua7.24 table generator rather than writing a second one. Its `--check` mode should also cover the registry `frontends:` block and the golden handshake expectations. protocol-parity-md-stale can reuse the same generator for PARITY.md.
+- [ ] `protocol/parity-matrix.yaml` is the single source of per-frontend command and complex-type status. The registry `frontends:` capability lists are either removed (with every reader updated) or generated from the matrix. A generator `--check` run in `task parity` fails when they differ.
+- [ ] The handshake arrays in frontend source stay hand-written. The existing `validate-parity.py` detectors already check them against the matrix; keep those detectors.
+- [ ] Proof at close that the new check is load-bearing. Mutation: remove `prepare` from `registry.yaml` `frontends.typescript.command_capabilities` only (or, if the lists are deleted, re-add a stale list and show the check rejects its presence). Paste the **pre-change** `task parity` exit 0 (run forced, so it executes), then the post-change non-zero exit naming the mismatch. A canary the old gate already rejects proves nothing (for example a matrix-only complex-type flip, which the existing handshake comparison already fails).
+- [ ] Cache wiring: every input the new check reads (`protocol/parity-matrix.yaml`, the generator script) is in `parity.sources`. The matrix is currently missing; task-sources-cover-real-inputs adds it, so add it here if that issue has not landed. Proof: `touch protocol/parity-matrix.yaml && task parity` (ordinary invocation) executes the check rather than printing `is up to date`; paste the output.
+- [ ] If the generator is shared with str-qwua7.24's table generator, extend that one rather than writing a second. This issue does not change the crate `CLAUDE.md` or skill tables.
 
 ## Out of scope
 
-- Generating the 13 registry enums for TS, Go and Rust (split out to protocol-codegen-all-registry-enums, because this issue is already L-sized).
+- Crate `CLAUDE.md` and frontend-parity skill capability tables (str-qwua7.24).
+- PARITY.md (protocol-parity-md-stale).
+- The four unvalidated matrix sections (parity-matrix-unenforced-sections).
+- Generating all 13 registry enums (protocol-codegen-all-registry-enums).
 - Dispatch-vs-advertisement reconciliation (parity-dispatch-reconciliation).
 
 ## Dependencies
 
 - Blocked by: none.
-- Related: str-qwua7.24 (generated doc tables), str-qwua7.21.3, str-2fjn, protocol-parity-md-stale, protocol-codegen-all-registry-enums, protocol-md-execute-fields.
+- Related: str-qwua7.24 (open; table generator, reuse it), str-qwua7.21.3, str-2fjn, protocol-parity-md-stale, parity-matrix-unenforced-sections, protocol-codegen-all-registry-enums, protocol-md-execute-fields, task-sources-cover-real-inputs (shatter-gates-integrity bucket).
 
-Size: L. Priority: P2. Type: task. Labels: parity, protocol, architecture, audit. Parent: Epic: Audit 2026-09-22 findings.
+Size: S. Priority: P2. Type: task. Labels: parity, protocol, architecture, audit. Parent: Epic: Audit 2026-09-22 findings.
 
 ---
 
@@ -223,7 +242,7 @@ Size: L. Priority: P2. Type: task. Labels: parity, protocol, architecture, audit
 ---
 slug: protocol-codegen-all-registry-enums
 kind: new
-title: "protocol-codegen emits 6 of the 13 registry enums; error_category already differs between TS and the registry"
+title: "protocol-codegen emits 3 of the 13 registry enums; the other 10 are hand-copied per language with no check, and error_category already differs in TS"
 priority: P3
 type: task
 labels: [protocol, codegen, parity, audit]
@@ -233,31 +252,39 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# protocol-codegen emits 6 of the 13 registry enums; error_category already differs between TS and the registry
+# protocol-codegen emits 3 of the 13 registry enums; the other 10 are hand-copied per language with no check, and error_category already differs in TS
 
-Split out of capability-single-source (manifest instruction: split codegen for the 13 registry enums when that issue exceeds about 2 days; it is sized L).
+Split out of capability-single-source (manifest instruction: split codegen for the 13 registry enums when that issue exceeds about 2 days).
 
 ## Problem
 
-`protocol/registry.yaml` declares 13 enums under `enums:`. `scripts/protocol-codegen.py` generates only the legacy vocabulary: commands, statuses, error codes, setup levels, generator kinds and branch types. The other enums are hand-copied in each language with no check, and one has already drifted.
+`protocol/registry.yaml` declares 13 enums under `enums:`. The TS, Go and Rust emitters in `scripts/protocol-codegen.py` render only three of them (`setup_level`, `generator_kind`, `branch_type`), plus three vocabularies that come from separate registry mappings rather than `enums:` (commands, response statuses, error codes). The other ten enums are hand-copied in each language, and nothing compares those hand-written definitions with the registry. One has already drifted.
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+The manifest (`protocol/generated/manifest.json`) does contain all 13 enums, so `protocol-codegen.py --check` already fails when a registry enum changes without regenerating. What it does not catch is a frontend's hand-written definition drifting from the registry. The generated Go and Rust artifacts are vocabulary arrays; the handwritten wire types (TS unions, Go constants/strings, Rust serde enums) stay separate. Emitting ten more unused arrays would therefore not close the gap.
+
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
 
 - Registry enums (`python3 -c "import yaml; print(list(yaml.safe_load(open('protocol/registry.yaml'))['enums']))"`): setup_level, generator_kind, branch_type, outcome_status, value_plan_kind, value_requirement_kind, runtime_requirement_kind, apply_policy, error_category, unsatisfied_requirement_kind, discovered_dependency_kind, trace_event_type, crypto_boundary_kind.
-- `shatter-ts/src/generated/protocol-enums.ts` exports only PROTOCOL_VERSION and ALL_COMMANDS, ALL_RESPONSE_STATUSES, ALL_ERROR_CODES, ALL_SETUP_LEVELS, ALL_GENERATOR_KINDS and ALL_BRANCH_TYPES (lines 11-89). The Go output (`shatter-go/protocol/protocol_enums_gen.go`) and the Rust FE parity test (`shatter-rust/tests/codegen_parity.rs`) cover the same subset.
-- Drift: the registry has `error_category: [validation, runtime, infrastructure]`, but `shatter-ts/src/protocol.ts:631-635` `ErrorCategory` adds `"unknown"`. Core carries `error_category` as a `String` (`shatter-core/src/protocol.rs`, e.g. :1821).
+- `scripts/protocol-codegen.py` calls `_ts_enum_values` only for `setup_level`, `generator_kind` and `branch_type` in each emitter (TS `:236-250`, Go `:341-355`, Rust `:446-460`). Commands, statuses and error codes come from `registry['commands']`/`['error_codes']`.
+- `shatter-ts/src/generated/protocol-enums.ts` exports only PROTOCOL_VERSION and ALL_COMMANDS, ALL_RESPONSE_STATUSES, ALL_ERROR_CODES, ALL_SETUP_LEVELS, ALL_GENERATOR_KINDS and ALL_BRANCH_TYPES. The Go output (`shatter-go/protocol/protocol_enums_gen.go`) and the Rust frontend output (`shatter-rust/src/generated/protocol_enums.rs:16-22`, checked by `shatter-rust/tests/codegen_parity.rs`) cover the same subset. The Rust emitter's own comment (`protocol-codegen.py:408`) says the serde enums in `shatter-rust/src/protocol.rs` own the wire shape.
+- `build_manifest()` (`protocol-codegen.py:72-96`) projects every `enums:` entry; `manifest.json` lists all 13.
+- Drift: the registry has `error_category: [validation, runtime, infrastructure]`, but `shatter-ts/src/protocol.ts:631-635` `ErrorCategory` adds `"unknown"`. Go carries it as `*string` (`shatter-go/protocol/types.go:570`) and core as a `String` (`shatter-core/src/protocol.rs`, e.g. :1821), so neither can drift-check it today.
 - Audit finding protocol-parity-19 (confirmed, P3).
 
 ## Acceptance criteria
 
-- [ ] `protocol-codegen.py` emits every `enums:` entry for TS, Go and the Rust frontend. `protocol-codegen.py --check` (already run in `task parity`) fails on drift for all 13.
-- [ ] A shatter-core test asserts that the serde spelling of every core enum that mirrors a registry enum equals the registry values.
+- [ ] `protocol-codegen.py` iterates `enums:` rather than naming the legacy three, and emits every entry for TS, Go and the Rust frontend.
+- [ ] Every newly covered enum is actually tied to each language's wire definition, not emitted as an unused array. For each of the ten enums and each of TS, Go, Rust frontend and shatter-core, one of the following holds, recorded in a table in the close note:
+  - the hand-written definition is replaced by (or derived from) the generated one, e.g. the TS union type becomes `(typeof ALL_X)[number]`; or
+  - a test in that language asserts that the hand-written definition's wire spellings equal the generated array (for Rust/core serde enums: serialize every variant and compare the set); or
+  - the language carries the field as an untyped string, and the table says so explicitly. For such fields, a conformance or unit check validates emitted values against the registry values.
 - [ ] The error_category mismatch is resolved: either the registry gains `unknown`, or TS drops it. The choice is recorded in the registry comment.
-- [ ] Proof at close: add a value to one non-legacy registry enum without regenerating, and show `task parity` (forced to execute) failing. Paste the output, then revert.
+- [ ] Proof at close, per language: add a value to one hand-written definition only (for example add `"bogus"` to TS `ErrorCategory`, a new variant to one Rust frontend serde enum mirroring a registry enum, a new Go constant), without touching the registry. Paste the **pre-change** gate exit 0 on that mutation (the current `--check` cannot see it), then the post-change failure. A registry-only edit does not count, because the manifest check already catches it.
+- [ ] `task parity` and the per-language test gates that host the new tests (`task ts:test`, `task go:test`, `task rust-fe:test`, core tests) pass; paste the output of runs that executed (not checksum-cached). If a new test lives outside an existing task's `sources:`, add it.
 
 ## Suggested approach
 
-Make the enum list data-driven: iterate `enums:` instead of naming the legacy six. Replace the hand-written TS/Go/Rust definitions of the new enums with imports of the generated ones.
+Make the enum list data-driven: iterate `enums:` instead of naming the legacy three. In TS, derive the union types from the generated arrays. In Rust and Go, where hand-written types own the wire shape, prefer a generated parity test over replacing the types.
 
 ## Out of scope
 
@@ -350,21 +377,25 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 `protocol/PARITY.md` hand-copies the capability tables and divergence blocks from `protocol/parity-matrix.yaml`. `validate-parity.py` checks only that the divergence heading IDs match, so content drift is invisible, and several statements are now false. Agents and contributors read PARITY.md as the human-facing parity contract.
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
 
 - `protocol/PARITY.md:76-78`, under "### Rust", says "No complex type capabilities are implemented yet." The registry, matrix and `protocol/conformance/golden/handshake/rust.json` all list Rust `uuid, url, date, date_time`.
 - The Go complex-type table (`PARITY.md:62-74`) omits `go_byte`, which the matrix marks `go: supported` (`parity-matrix.yaml:458`) and `golden/handshake/go.json` advertises. The prose at `:45` cites `rune` as an ecosystem-specific Go type, but the matrix marks `rune` `not_supported` for every frontend (`:449-456`). The command table (`:29-39`) omits `get_invocation_plan`, which is in the registry, the matrix (`parity-matrix.yaml:175`, Go implemented) and the Go handshake golden.
 - The `adapter-owned-instrumentation-coverage-partial` block says `**Affected frontends:** go, rust` (`PARITY.md:283`). The matrix entry (`parity-matrix.yaml:1118`) has `[rust]`, because Go was fixed by str-1qd5i.
 - `PARITY.md:139`: "All 11 error codes defined in `registry.yaml`". The validator reports `Registry: 10 commands, 11 statuses, 12 error codes`.
-- `scripts/validate-parity.py:419-445` `parity_md_divergence_ids` compares heading IDs only.
+- `scripts/validate-parity.py:419` `parity_md_divergence_ids` extracts heading IDs only, and `validate_divergence_metadata()` (`:445`, sync block `:577-596`) errors when the ID sets differ. Content under the headings is never compared.
+- `Taskfile.yml:252-261` `parity.sources` omits `protocol/PARITY.md`, `protocol/parity-matrix.yaml` and `scripts/validate-parity.py`, so an edit to PARITY.md alone is answered by a cached pass.
 - Audit finding protocol-parity-06 (confirmed, P2).
 
 ## Acceptance criteria
 
-- [ ] PARITY.md's capability tables and divergence blocks are generated from `protocol/parity-matrix.yaml` by a generator whose `--check` mode runs in `task parity`. Alternatively, the tables and the divergence mirror are deleted and PARITY.md links to the matrix. The close note records which.
-- [ ] All errors listed above are gone.
-- [ ] If generation is chosen, it reuses the str-qwua7.24 / capability-single-source generator rather than adding a new one.
-- [ ] Proof at close: a canary matrix edit makes `task parity` fail when forced to execute (generation option), or `git grep` shows no remaining hand-copied tables (deletion option). Paste the output.
+- [ ] The close note records which option was taken:
+  - **Generate:** PARITY.md's capability tables and divergence blocks are generated from `protocol/parity-matrix.yaml` into marked regions, by a generator whose `--check` mode runs in `task parity`. It reuses the str-qwua7.24 table generator (extend it; do not add a second one). The existing heading-ID sync in `validate_divergence_metadata()` may stay or be subsumed by the `--check`.
+  - **Delete:** the tables and the divergence mirror are deleted and PARITY.md links to the matrix. `validate_divergence_metadata()` (`scripts/validate-parity.py:445`, PARITY.md sync at `:577-596`) currently hard-fails when a matrix divergence ID has no `### <id>` heading in PARITY.md, so deletion must also remove or replace that check (for example, assert that PARITY.md contains the link and no `### ` divergence headings), and update `scripts/test_validate_parity.py` to match.
+- [ ] Every error listed under Evidence is gone.
+- [ ] Proof at close (generate): edit the matrix only (for example change the affected frontends of `adapter-owned-instrumentation-coverage-partial`), then paste the **pre-change** `task parity` exit 0 on that edit (today only heading IDs are compared) and the post-change failure. Revert.
+- [ ] Proof at close (delete): paste `task parity` passing with the mirror removed, the updated validator test run, and the output of `git grep -nE '^### .[a-z0-9-]+.$' protocol/PARITY.md` showing that no divergence headings remain.
+- [ ] Cache wiring: `protocol/PARITY.md`, `protocol/parity-matrix.yaml` and `scripts/validate-parity.py` are in `parity.sources` (task-sources-cover-real-inputs adds them; add them here if it has not landed). Proof: `touch protocol/PARITY.md && task parity` (ordinary invocation, no `--force`) executes the validator rather than printing `is up to date`; paste the output.
 
 ## Suggested approach
 
@@ -377,7 +408,7 @@ The root-level `PARITY.md` (str-qwua7.45) and the crate `CLAUDE.md` and skill ta
 ## Dependencies
 
 - Blocked by: none.
-- Related: capability-single-source, str-qwua7.24, str-qwua7.45, parity-guidance-skill-and-template.
+- Related: capability-single-source, str-qwua7.24 (open; the generator to extend), str-qwua7.45 (open; root-level PARITY.md), parity-guidance-skill-and-template, task-sources-cover-real-inputs (shatter-gates-integrity bucket).
 
 Size: S. Priority: P2. Type: bug. Labels: parity, protocol, docs, audit. Parent: Epic: Audit 2026-09-22 findings.
 
@@ -406,9 +437,9 @@ Root `CLAUDE.md` and the frontend-parity skill send agents to `protocol/GOVERNAN
 
 Following GOVERNANCE step by step therefore leaves the matrix, the generated enums and the divergence metadata out of date. The gaps show up later as `task parity` failures or as silent drift where no gate looks.
 
-The file also names two sources of truth, the registry and core `protocol.rs`. It tells agents to record drift in `known_drifts`, which cannot match anything (see conformance-harness-correctness). And it describes a "source-name parity layer" for every frontend that is silently empty for TS (see validator-ts-extraction-empty).
+The file also names two sources of truth, the registry and core `protocol.rs`. It tells agents to record drift in `known_drifts`, which cannot match anything (see conformance-known-drifts-matching). And it describes a "source-name parity layer" for every frontend that is silently empty for TS (see validator-ts-extraction-empty).
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
 
 - `/usr/bin/grep -cE 'parity-matrix|validate-parity|protocol-codegen|generated|PARITY.md|allowed_divergences' protocol/GOVERNANCE.md` → `0`.
 - Two authorities: `GOVERNANCE.md:7` says "`protocol/registry.yaml` is the **single source of truth**". `:55-57` ("4. Implement in shatter-core (authoritative)") says core `protocol.rs` "is the authoritative implementation — frontends must match it".
@@ -422,7 +453,8 @@ The file also names two sources of truth, the registry and core `protocol.rs`. I
 
 ## Acceptance criteria
 
-- [ ] GOVERNANCE.md names exactly one authority for vocabulary and field model: the registry. It states that core serde must match the registry and names the test that enforces this. No other sentence calls a different file authoritative.
+- [ ] GOVERNANCE.md names exactly one authority for vocabulary and field model: the registry. It states that core serde must match the registry. No other sentence calls a different file authoritative.
+- [ ] GOVERNANCE.md states honestly how that rule is enforced today. Vocabulary arrays are enforced by `protocol-codegen.py --check`. Core's `error_code_serialized_form_matches_registry` (`shatter-core/src/protocol.rs:2053`) compares serde spellings against a hand-written list, not against `registry.yaml`. **Nothing** compares the registry `field_model` with core serde types. That gap is owned by str-2fjn (open), and GOVERNANCE links it as a manual review step until str-2fjn lands. This issue does not build that check. If str-2fjn has closed by the time this lands, name its test instead.
 - [ ] The required steps form one ordered checklist, and every step a real protocol change needs is on it:
   1. registry
   2. `python3 scripts/protocol-codegen.py --write`
@@ -433,7 +465,7 @@ The file also names two sources of truth, the registry and core `protocol.rs`. I
   7. PARITY.md / PROTOCOL.md, per whatever protocol-parity-md-stale and protocol-md-execute-fields decide
   8. `task parity`, `task conformance` and `task schemas`
 - [ ] The Validation Checks section lists every check that `task parity`, `task conformance` and `task schemas` actually run. A test (e.g. in `scripts/`) parses the command lists of those Taskfile tasks and fails if GOVERNANCE omits one. That is the doc-to-Taskfile consistency check that was missing.
-- [ ] known_drifts guidance matches the outcome of conformance-harness-correctness (kept with `divergence_id`, or deleted). Either way, `allowed_divergences` is named as the registry of intended divergences.
+- [ ] known_drifts guidance matches the outcome of conformance-known-drifts-matching (kept with `divergence_id`, or deleted). If that issue is still open, GOVERNANCE says "do not add known_drifts entries; register intended differences in `allowed_divergences`". Either way, `allowed_divergences` is named as the registry of intended divergences.
 - [ ] The source-name parity layer description matches what validator-ts-extraction-empty decides. If that issue is still open, describe the layer as it actually behaves and link the issue.
 - [ ] Proof at close: the new consistency test fails against the pre-rewrite GOVERNANCE.md (paste the output) and passes after the rewrite.
 
@@ -443,12 +475,12 @@ Rewrite it as a short numbered checklist, and move the explanation into linked s
 
 ## Out of scope
 
-Changing the validators themselves. Their fixes live in parity-dispatch-reconciliation, validator-ts-extraction-empty and conformance-harness-correctness. This issue documents what they do.
+Changing the validators themselves, and building the registry ↔ core serde field-model check (str-2fjn). Validator fixes live in parity-dispatch-reconciliation, validator-ts-extraction-empty and conformance-known-drifts-matching. This issue documents what they do.
 
 ## Dependencies
 
-- Blocked by: none. It can land first and describe current behavior. If conformance-harness-correctness or validator-ts-extraction-empty land first, their close notes decide the known_drifts and source-name wording.
-- Related: str-2fjn and str-qwua7.7 (each asked for a one-sentence GOVERNANCE update), str-fpgb.9 (closed; created the original doc), conformance-harness-correctness, validator-ts-extraction-empty, protocol-schemas-reject-real-output, parity-guidance-skill-and-template.
+- Blocked by: none. It can land first and describe current behavior. If conformance-known-drifts-matching or validator-ts-extraction-empty land first, their close notes decide the known_drifts and source-name wording.
+- Related: str-2fjn and str-qwua7.7 (each asked for a one-sentence GOVERNANCE update), str-fpgb.9 (closed; created the original doc), conformance-known-drifts-matching, validator-ts-extraction-empty, protocol-schemas-reject-real-output, parity-guidance-skill-and-template.
 
 Size: S. Priority: P2. Type: task. Labels: protocol, parity, docs, governance, audit. Parent: Epic: Audit 2026-09-22 findings.
 
@@ -494,6 +526,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 - [ ] `field_model` entries gain a `description` where one is missing, so the generated table is useful.
 - [ ] The narrative JSON examples stay.
 - [ ] Proof at close: add a dummy field to `field_model` without touching PROTOCOL.md, run `task parity` forced to execute, and show it failing (paste the output). Then revert.
+- [ ] Cache wiring: `protocol/PROTOCOL.md` and the renderer/check script are in the `sources:` of the task that runs the check (`protocol/registry.yaml` already is). Proof: `touch protocol/PROTOCOL.md && task parity` (ordinary invocation, no `--force`) executes the check rather than printing `is up to date`; paste the output.
 
 ## Suggested approach
 
@@ -633,19 +666,19 @@ Size: S. Priority: P2. Type: bug. Labels: protocol, parity, quality-gates, audit
 ---
 slug: validator-reopen-note
 kind: reopen-note
-title: "Note on closed str-qwua7.7: the empty-extraction criterion is unmet for TS"
+title: "Comment on closed str-qwua7.7 (do not reopen): the empty-extraction criterion is unmet for TS"
 priority: P2
 type: note
 labels: [protocol, parity, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
-blocked_by: []
+blocked_by: [validator-ts-extraction-empty, validator-optional-command-warning]
 existing_id: str-qwua7.7
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Note on closed str-qwua7.7: the empty-extraction criterion is unmet for TS
+# Comment on closed str-qwua7.7 (do not reopen): the empty-extraction criterion is unmet for TS
 
-Target: str-qwua7.7 (CLOSED at 0655458b). Action: add a comment. Do not reopen. The follow-up work is tracked in the new issue validator-ts-extraction-empty; the filer substitutes its str- id for the slug below.
+Target: str-qwua7.7 (CLOSED at 0655458b; status re-checked with `bd show` on 2026-09-23). Action: add a comment only. Do not reopen, and do not change its status. `kind: reopen-note` is the filer's kind for "comment on a closed issue": `file-all.sh` posts it with `bd comments add` and only warns if the target is not closed. It never reopens. The follow-up work is tracked in the new issues validator-ts-extraction-empty and validator-optional-command-warning. `blocked_by` lists them only so that the filer creates them first and substitutes their str- ids for the placeholders below; no dependency edge is added to str-qwua7.7.
 
 ## Comment text
 
@@ -824,7 +857,7 @@ Size: S. Priority: P3. Type: chore. Labels: protocol, cleanup, tests, audit. Par
 ---
 slug: parity-guidance-skill-and-template
 kind: new
-title: "Rewrite the frontend-parity skill workflow and extend the frontend-issue-template parity checklist to the Go and Rust builders"
+title: "frontend-parity skill workflow steps point at dead known_drifts and never mention allowed_divergences or validate-parity; the frontend-issue-template parity checklist omits the Go and Rust builders"
 priority: P3
 type: task
 labels: [agents, skills, parity, audit]
@@ -834,18 +867,19 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Rewrite the frontend-parity skill workflow and extend the frontend-issue-template parity checklist to the Go and Rust builders
+# frontend-parity skill workflow steps point at dead known_drifts and never mention allowed_divergences or validate-parity; the frontend-issue-template parity checklist omits the Go and Rust builders
 
 ## Problem
 
-The parity guidance that agents load is stale. The `frontend-parity` skill's hand-copied capability tables contradict `protocol/parity-matrix.yaml`. Its "When you're about to..." steps send agents to `known_drifts`, a mechanism that cannot currently match anything (see conformance-harness-correctness), and they never mention `allowed_divergences` or `validate-parity.py`. The parity checklist in `protocol/frontend-issue-template.md` names only the TS SymExpr builders and the core explorer/orchestrator pair. It leaves out the Go and Rust dual-builder pairs, which is where str-qwua7.35 and str-qwua7.36 found drift.
+The parity guidance that agents load is stale. The `frontend-parity` skill's "When you're about to..." steps send agents to `known_drifts`, a mechanism that cannot currently match anything (see conformance-known-drifts-matching), and they never mention `allowed_divergences` or `validate-parity.py`. (The skill's hand-copied capability tables and its false capability prose are also stale, but those are owned by the open str-qwua7.24, which generates the tables from the matrix. This issue does not touch them.) The parity checklist in `protocol/frontend-issue-template.md` names only the TS SymExpr builders and the core explorer/orchestrator pair. It leaves out the Go and Rust dual-builder pairs, which is where str-qwua7.35 and str-qwua7.36 found drift.
 
-## Evidence (re-verified 2026-09-23 at 56c86168)
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
 
 - `.claude/skills/frontend-parity/SKILL.md` was last changed on 2026-05-05 (56ac9c81).
-  - `:37` shows Go `thrown_error` as ✗; the matrix has `go: captured`. The audit also found Go `file_write`, `network_request` and `environment_read` marked ✗ in the same table while the matrix says captured.
-  - `:59` says "TS is the only frontend that produces `ite` … Rust's analyze handler is a stub". Go produces ite (str-1hlk.17.3), and Rust analyze is implemented.
-  - `:69` says the Rust timeout is "stored, not yet applied — execute unimpl".
+  - Context only (owned by str-qwua7.24, not this issue):
+    - `:37` shows Go `thrown_error` as ✗; the matrix has `go: captured`. The audit also found Go `file_write`, `network_request` and `environment_read` marked ✗ in the same table while the matrix says captured.
+    - `:59` says "TS is the only frontend that produces `ite` … Rust's analyze handler is a stub". Go produces ite (str-1hlk.17.3), and Rust analyze is implemented.
+    - `:69` says the Rust timeout is "stored, not yet applied — execute unimpl".
   - `:23` and `:75` tell agents to "document the drift in `known_drifts`".
   - The file has no mention of `validate-parity.py` or the PARITY.md mirror rule. `allowed_divergences` appears only as a table description (`:22`), never as a workflow step.
 - `protocol/frontend-issue-template.md` "Parity Impact" (around lines 11-19) lists TS `buildSymExpr`/`buildSymExprWithFlow`, `explorer.rs`/`orchestrator.rs` and `main.rs` CLI wiring only. It is missing:
@@ -856,20 +890,21 @@ The parity guidance that agents load is stale. The `frontend-parity` skill's han
 
 ## Acceptance criteria
 
-- [ ] The skill's capability tables are removed in favour of a pointer to the matrix, or generated by the str-qwua7.24 generator. No hand-maintained ✓/✗ table remains.
-- [ ] The skill's workflow steps point at `allowed_divergences` in `parity-matrix.yaml`, `task parity` and `task conformance`. The `known_drifts` advice is removed, or kept only in the form conformance-harness-correctness chose (for example "known_drifts entries must carry a `divergence_id`").
-- [ ] The false statements at `:59` and `:69` are corrected or removed.
-- [ ] The issue template lists the Go and Rust builder pairs above and the matrix/divergence step.
-- [ ] Proof at close: `/usr/bin/grep -n "✗\|stub\|not yet applied" .claude/skills/frontend-parity/SKILL.md` shows no stale capability claims (paste the output), and the template diff shows the new checklist items.
+- [ ] The skill's workflow steps (the "When you're about to..." list, `:73` onward, and the file-table row at `:23`) point at `allowed_divergences` in `parity-matrix.yaml` as the place to register an intended gap, and name `task parity` (`validate-parity.py`) and `task conformance` as the checks to run.
+- [ ] The `known_drifts` advice at `:23` and `:75` is removed, or reworded to the form conformance-known-drifts-matching chose (for example "known_drifts entries must carry a `divergence_id`"). If that issue is still open, the wording is "do not add known_drifts entries; register the gap in `allowed_divergences`".
+- [ ] The file-table row at `:22` no longer calls the whole matrix "authoritative" without qualification. It says that only gate-enforced sections are contractual, and points at the `enforced:` markers added by parity-matrix-unenforced-sections (or, if that is still open, names the four unenforced sections).
+- [ ] The issue template's "Parity Impact" checklist lists the Go and Rust builder pairs above and a "protocol-visible? → matrix entry or `allowed_divergences` entry, then `task parity` + `task conformance`" item.
+- [ ] The skill's capability tables (`:37-41` and nearby) and the capability prose at `:59` and `:69` are left to str-qwua7.24. This issue does not edit them, so the two changes do not conflict. If str-qwua7.24 has already landed, confirm in the close note that its generated regions are untouched.
+- [ ] Proof at close: paste `/usr/bin/grep -n "known_drifts\|allowed_divergences\|validate-parity\|task parity" .claude/skills/frontend-parity/SKILL.md` before and after. After the change, every `known_drifts` hit matches the chosen policy, and `allowed_divergences` and `task parity` appear in the workflow steps. Also paste the template diff showing the new checklist items.
 
 ## Out of scope
 
-Fixing the conformance harness known_drifts matching (conformance-harness-correctness), and the table generator itself (str-qwua7.24 / capability-single-source).
+Fixing the conformance harness known_drifts matching (conformance-known-drifts-matching). The skill and crate `CLAUDE.md` capability tables and capability prose, and their generator (str-qwua7.24).
 
 ## Dependencies
 
-- Blocked by: none. If conformance-harness-correctness is still open, word the known_drifts guidance as "do not use; register in allowed_divergences".
-- Related: str-qwua7.24 (partially covers the tables), conformance-harness-correctness, governance-md-omits-matrix, protocol-parity-md-stale.
+- Blocked by: none. If conformance-known-drifts-matching is still open, word the known_drifts guidance as "do not use; register in allowed_divergences".
+- Related: str-qwua7.24 (open; owns the skill's capability tables and capability prose), conformance-known-drifts-matching, governance-md-omits-matrix, protocol-parity-md-stale, parity-matrix-unenforced-sections.
 
 Size: S. Priority: P3. Type: task. Labels: agents, skills, parity, audit. Parent: Epic: Audit 2026-09-22 findings.
 
@@ -907,3 +942,231 @@ Audit 2026-09-22 correction (finding protocol-parity-14; evidence in `audits/202
 - Add a regression test that Go `strings.*` constraints stay solvable after the change, and a test that a value-method call keeps its receiver param in `collect_param_names`.
 - Path fix: the file is `shatter-core/data/string-ops.yaml`, not `data/string-ops.yaml`.
 - The verifier rated this P3. The issue's acceptance text ("receiver = expr or null") already leaves room for the right answer, but the Step 0 wording would steer an implementer toward breaking free functions, so amend the body.
+
+---
+
+<!-- file: 17-parity-matrix-unenforced-sections.md -->
+
+---
+slug: parity-matrix-unenforced-sections
+kind: new
+title: "Four parity-matrix sections (shared_wire_types, side_effect_capabilities, feature_capabilities, adapter_capabilities) are read by no gate but are presented as authoritative"
+priority: P2
+type: task
+labels: [parity, protocol, quality-gates, audit]
+parent_epic: "Epic: Audit 2026-09-22 findings"
+blocked_by: []
+existing_id: ""
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Four parity-matrix sections (shared_wire_types, side_effect_capabilities, feature_capabilities, adapter_capabilities) are read by no gate but are presented as authoritative
+
+Split out of capability-single-source (Codex cross-check: that draft was still L-sized after the codegen split).
+
+## Problem
+
+`protocol/parity-matrix.yaml` has four sections that no script reads: `shared_wire_types`, `side_effect_capabilities`, `feature_capabilities` and `adapter_capabilities`. Agents still treat them as enforced. The frontend-parity skill calls the matrix "The authoritative matrix" and points at `side_effect_capabilities` specifically. A frontend can stop capturing a side effect, or drop a feature, and the matrix will go on claiming it with every gate green.
+
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
+
+- Section locations: `parity-matrix.yaml:18` (`shared_wire_types`), `:482` (`side_effect_capabilities`), `:589` (`feature_capabilities`), `:881` (`adapter_capabilities`).
+- `git grep -lE 'side_effect_capabilities|feature_capabilities|adapter_capabilities|shared_wire_types' -- . ':!audits' ':!.beads'` returns only `parity-matrix.yaml`, `conformance_cases.yaml` (comments), the frontend-parity skill, three crate `CLAUDE.md` files, and prose comments in `shatter-cli/src/commands/explore.rs` (e.g. `:1849`, `:1907`, `:2116`). No file under `scripts/` or `protocol/conformance/*.py` reads them.
+- `.claude/skills/frontend-parity/SKILL.md:22`: "`protocol/parity-matrix.yaml` | **The authoritative matrix.** `side_effect_capabilities` enumerates which frontend captures which side effect kinds."
+- Audit finding protocol-parity-08 (confirmed, P2; unvalidated-sections part).
+
+## Acceptance criteria
+
+- [ ] Each of the four sections is classified in the matrix itself as `enforced: true` or `enforced: false`, and `validate-parity.py` fails when a top-level section lacks the marker.
+- [ ] Every `enforced: true` section has a detector that `task parity` or `task conformance` runs. Examples: a source check for each side-effect emitter a frontend is marked `captured` for, or a conformance execute case asserting that the side-effect kind is present in the response. At minimum, `side_effect_capabilities` must be enforced, because the skill directs agents to it.
+- [ ] Every `enforced: false` section carries a header comment saying it is documentation only, and `validate-parity.py` prints the list of unenforced sections on every run.
+- [ ] Proof at close, for each enforced section: flip one frontend's entry in that section only (for example Go `thrown_error: captured` → `not_captured`, with no source change). Paste the **pre-change** gate exit 0 on that mutation, then the post-change non-zero exit naming the section and frontend. Revert.
+- [ ] Cache wiring: `protocol/parity-matrix.yaml`, `scripts/validate-parity.py` and any new detector input are in the `sources:` of the task that runs the detector (task-sources-cover-real-inputs adds the first two to `parity.sources`; add them here if it has not landed). Proof: `touch protocol/parity-matrix.yaml && task parity` (ordinary invocation) executes the validator rather than printing `is up to date`; paste the output.
+
+## Out of scope
+
+- The registry `frontends:` block (capability-single-source).
+- Skill and crate `CLAUDE.md` tables (str-qwua7.24) and the skill's "authoritative" wording (parity-guidance-skill-and-template).
+
+## Dependencies
+
+- Blocked by: none.
+- Related: capability-single-source, str-qwua7.24, conformance-cross-frontend-execute-cases (its execute case can double as the side-effect detector), task-sources-cover-real-inputs (shatter-gates-integrity bucket).
+
+Size: M. Priority: P2. Type: task. Labels: parity, protocol, quality-gates, audit. Parent: Epic: Audit 2026-09-22 findings.
+
+---
+
+<!-- file: 18-conformance-success-case-per-command.md -->
+
+---
+slug: conformance-success-case-per-command
+kind: new
+title: "Conformance: no executed success case exists for most (frontend, implemented command) pairs; existing cases accept error responses or are skipped by capability"
+priority: P2
+type: task
+labels: [conformance, parity, protocol, quality-gates, audit]
+parent_epic: "Epic: Audit 2026-09-22 findings"
+blocked_by: [conformance-harness-correctness]
+existing_id: ""
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Conformance: no executed success case exists for most (frontend, implemented command) pairs; existing cases accept error responses or are skipped by capability
+
+Split out of parity-dispatch-reconciliation (the runtime half of that gap). The static dispatch check stays there.
+
+## Problem
+
+`protocol/parity-matrix.yaml` marks each command `implemented` per frontend, but no runtime gate proves that each such pair works. Three loopholes let a conformance case "cover" a pair without showing a successful implementation:
+
+1. Cases such as `setup_session` and `generate_value` declare `status_oneof: [setup, error]` / `[generate, error]`, so an error response passes.
+2. The harness skips any command a frontend does not advertise in its handshake (`conformance_harness.py:594-599`), so dropping a command from the handshake turns its case into a SKIP rather than a failure.
+3. Many pairs have no case at all. The only `prepare` success case is `prepare_supported_rust` (`conformance_cases.yaml:167`, `frontends: [rust]`), although the matrix marks prepare implemented for all three frontends.
+
+Some commands also need prior state. TS `prepare` needs a prior `instrument` of the same function, and Go `get_invocation_plan` needs a prior `analyze` (`shatter-go/protocol/handler.go:1960`).
+
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
+
+- `conformance_cases.yaml:89-113` `setup_session`: `status_oneof: [setup, error]` ("Real frontends may return error for nonexistent file paths"). `:137-160` `generate_value`: `status_oneof: [generate, error]`.
+- `conformance_harness.py:594-599`: `if fp.capabilities and cmd not in ("handshake", "shutdown") and not ignore_capability_check: if cmd not in fp.capabilities: … _skip('(not in capabilities)')`.
+- `conformance_cases.yaml:167` `prepare_supported_rust`; `parity-matrix.yaml:127` prepare implemented for ts, go and rust.
+- Audit finding protocol-parity-01 (confirmed, P1 → P2; runtime part).
+
+## Acceptance criteria
+
+- [ ] For every (frontend, command) pair that `parity-matrix.yaml` marks `implemented`, at least one case: (a) runs on that frontend; (b) sends a valid request against a real fixture, after its declared prerequisites (conformance-harness-correctness mechanism); (c) asserts the command's success status only, with no `error` in `status_oneof`; (d) asserts at least one command-specific field of the success response (for example `setup_context` for setup, `value` for generate, the prepared handle for prepare).
+- [ ] A case for a matrix-implemented pair may not be skipped because the command is missing from the frontend's handshake. For such pairs the harness treats "not in capabilities" as a failure; `ignore_capability_check` is not a way around this.
+- [ ] A test (in `scripts/` or the harness's own test file) reads the matrix and `conformance_cases.yaml` and fails when an implemented pair has no qualifying success case, or when its only case accepts `error`. Existing error-tolerant cases may remain as separate error-path cases.
+- [ ] Proof at close: (1) run the coverage test against the pre-change `conformance_cases.yaml` and paste the list of uncovered pairs it reports; (2) remove the TS `prepare` dispatch arm in a scratch copy and paste the resulting conformance FAIL (not SKIP) for `ts / prepare`; (3) remove `prepare` from the TS handshake list only, and paste the FAIL it produces.
+- [ ] `task conformance` passes on the unmutated tree; paste the output of a run that executed (not checksum-cached).
+
+## Suggested approach
+
+Generate the per-pair cases from the matrix plus a small per-command request template, rather than hand-writing 3×N entries. If str-2fjn picks its option (a), a conformance case per command generated from the registry field list, share one generator: this issue owns the per-frontend success assertion, and str-2fjn owns populating every declared field.
+
+## Out of scope
+
+- The static dispatch-vs-advertisement check (parity-dispatch-reconciliation).
+- Cross-frontend structural comparison of analyze/execute (conformance-cross-frontend-execute-cases).
+
+## Dependencies
+
+- Blocked by: conformance-harness-correctness (prerequisite declaration/replay; without it, prepare and get_invocation_plan cases are order-dependent).
+- Related: parity-dispatch-reconciliation, str-2fjn (open; option (a) is a per-command generated case for field placement), str-qe9pp (open; Rust prepare timeout).
+
+Size: M. Priority: P2. Type: task. Labels: conformance, parity, protocol, quality-gates, audit. Parent: Epic: Audit 2026-09-22 findings.
+
+---
+
+<!-- file: 19-conformance-known-drifts-matching.md -->
+
+---
+slug: conformance-known-drifts-matching
+kind: new
+title: "Conformance known_drifts can never match: patterns are tested as substrings and the structural comparator erases the values they name"
+priority: P2
+type: bug
+labels: [conformance, protocol, parity, audit]
+parent_epic: "Epic: Audit 2026-09-22 findings"
+blocked_by: []
+existing_id: ""
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Conformance known_drifts can never match: patterns are tested as substrings and the structural comparator erases the values they name
+
+Split out of conformance-harness-correctness (Codex cross-check: that draft bundled transport recovery, divergence policy, summary reporting and cross-language fixtures).
+
+## Problem
+
+`protocol/conformance/conformance_cases.yaml` declares `known_drifts` patterns so that accepted cross-frontend differences are reported as warnings instead of failures. The mechanism cannot work, for two independent reasons:
+
+1. The patterns are regexes, but `conformance_harness.py` tests them as substrings, so a pattern such as `side_effects.*thrown_error` never matches.
+2. Even with `re.search`, the drift strings come from `extract_structure()`, which replaces every string value with `"string"` and inspects only the first array element. Discriminator values that the patterns name (`ite` in `condition.*ite`, the `thrown_error` kind of a side effect) are erased before comparison. Two frontends that differ only in those values produce identical skeletons and no drift string at all.
+
+Fixing only the regex would make the unit test pass while real drifts still go unreported. Agents are told (GOVERNANCE, the frontend-parity skill) to record accepted differences in `known_drifts`, so the dead mechanism also misdirects them away from `allowed_divergences` in `parity-matrix.yaml`.
+
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
+
+- `conformance_harness.py:675`: `if any(pat in d for pat in known_drift_patterns):` (substring test). Patterns are read at `:667-668`.
+- `conformance_cases.yaml:16-24` patterns: `side_effects.*thrown_error`, `side_effects.*global_mutation`, `condition.*ite`. On a sample drift string, the substring test gives [False, False, False] and `re.search` gives [True, False, False].
+- `conformance_harness.py:223-243` `extract_structure()`: `dict` → keys recursed; `list` → `array(<first element>)`; `str` → `"string"`. It is applied to each response at `:384` before comparison.
+- The first known_drifts entry cites `side-effect-thrown-error-placement`, which is not a matrix ID. That dangling citation is already owned by str-qwua7.34 (open); do not duplicate its fix here.
+- Audit finding protocol-parity-02 (confirmed, P1 → P2; drift-matching part).
+
+## Acceptance criteria
+
+- [ ] The close note records one of two options, because governance-md-omits-matrix and parity-guidance-skill-and-template word their guidance from it:
+  - **Keep:** matching uses `re.search`. Each entry carries a `divergence_id` that `validate-parity.py` resolves against `allowed_divergences`, so an unresolvable id fails `task parity`. Reuse str-qwua7.34's resolution check if it has landed. The comparator keeps the values of discriminator fields (at least `kind`, `status`, `type` and enumerated fields named in the registry) and compares every array element, or a per-kind multiset, rather than the first element only. A run lists each known_drifts entry that matched nothing.
+  - **Delete:** `known_drifts` and its matcher are removed. A cross-frontend drift then fails the case unless the difference is registered in `allowed_divergences`, and the harness reads that registry to downgrade the failure to a warning.
+- [ ] Tests use the real comparator on populated responses, not a hand-written drift string. Fixture pairs of real-shaped `execute`/`analyze` responses from two frontends cover: (a) same shape but a different side-effect `kind` in the second array element; (b) a condition whose node kind differs (`ite` vs a non-ite kind); (c) a difference registered as intended (keep: a known_drifts entry; delete: an `allowed_divergences` entry). The tests assert that (a) and (b) are reported as drift, and that (c) is downgraded to a warning with its divergence id.
+- [ ] Proof at close: tests (a) and (b) fail against the pre-fix harness (no drift reported) and pass after; paste both runs.
+- [ ] `task conformance` and `task parity` pass on the unmutated tree; paste the output of runs that executed (not checksum-cached).
+
+## Out of scope
+
+- Transport recovery and the summary line (conformance-harness-correctness).
+- Adding cross-frontend execute cases (conformance-cross-frontend-execute-cases, which depends on this).
+- Purging dangling divergence IDs elsewhere (str-qwua7.34).
+
+## Dependencies
+
+- Blocked by: none.
+- Blocks: conformance-cross-frontend-execute-cases.
+- Related: str-qwua7.34 (open; dangling divergence IDs, including the known_drifts citation), governance-md-omits-matrix, parity-guidance-skill-and-template.
+
+Size: M. Priority: P2. Type: bug. Labels: conformance, protocol, parity, audit. Parent: Epic: Audit 2026-09-22 findings.
+
+---
+
+<!-- file: 20-conformance-cross-frontend-execute-cases.md -->
+
+---
+slug: conformance-cross-frontend-execute-cases
+kind: new
+title: "Conformance: every analyze/execute success case runs on one frontend, so the cross-frontend comparison never sees side_effects or conditions"
+priority: P2
+type: task
+labels: [conformance, protocol, parity, audit]
+parent_epic: "Epic: Audit 2026-09-22 findings"
+blocked_by: [conformance-harness-correctness, conformance-known-drifts-matching]
+existing_id: ""
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Conformance: every analyze/execute success case runs on one frontend, so the cross-frontend comparison never sees side_effects or conditions
+
+Split out of conformance-harness-correctness (Codex cross-check: that draft bundled four deliverables).
+
+## Problem
+
+The conformance harness cross-checks a case's responses across frontends only when more than one frontend runs it. Every analyze and execute success case in `conformance_cases.yaml` is restricted to one frontend, so the fields where cross-frontend drift actually lives (`side_effects`, `path_constraints`/conditions, outcome shapes) are never compared. The cross-check only ever compares error, handshake, setup, teardown, generate and shutdown responses.
+
+## Evidence (re-verified 2026-09-23 at 56c86168; unchanged at 793f2b0b)
+
+- Every analyze/execute success case in `conformance_cases.yaml` (roughly `:300-563`, e.g. `execute_outcome_shape_go`/`_ts`/`_rust`, `analyze_runtime_value_go`) lists a single frontend. Multi-frontend cases are only error, handshake, setup, teardown, generate and shutdown cases.
+- The drift-patrol log contained 8 lines of `cross-check: SKIP only 1 frontend responded` (`conformance_harness.py:656`).
+- Audit finding protocol-parity-02 (confirmed, P1 → P2; coverage part).
+
+## Acceptance criteria
+
+- [ ] At least one analyze success case and one execute success case are expressed once and run on every language frontend (TS, Go, Rust) against equivalent fixtures: the same function semantics in each language, with a branch whose condition and at least one side effect differ by path. The cases are not split into per-frontend copies, so the structural comparison runs.
+- [ ] The execute case covers `side_effects` (at least one captured kind that the matrix marks captured for all three), `path_constraints`/conditions, and the outcome shape.
+- [ ] Each case asserts the success status only; `status_oneof` must not include `error`.
+- [ ] Prerequisites (analyze → instrument → prepare → execute, per frontend) are declared with the mechanism from conformance-harness-correctness.
+- [ ] Every cross-frontend difference the new cases surface is either fixed or registered through the policy chosen in conformance-known-drifts-matching, with a matrix `allowed_divergences` id. No difference is silenced by narrowing the case back to one frontend.
+- [ ] Proof at close: the run output shows `cross-check: structures match` (or a registered-divergence warning) for the new cases on all three frontends, with no `SKIP only 1 frontend responded` for them. Paste that section. Also show that the check is live: temporarily change one frontend's fixture so a side-effect kind differs, and paste the resulting DRIFT failure. Then revert.
+- [ ] `task conformance` passes on the unmutated tree; paste the output of a run that executed (not checksum-cached).
+
+## Out of scope
+
+- Per-command success coverage for every implemented command (conformance-success-case-per-command).
+- Schema validation of responses (protocol-schemas-reject-real-output).
+
+## Dependencies
+
+- Blocked by: conformance-harness-correctness (prerequisite declaration and replay), conformance-known-drifts-matching (a working way to register the drifts these cases will surface).
+- Related: str-qe9pp (open; Rust prepare timeout, which may surface on the Rust leg).
+
+Size: M. Priority: P2. Type: task. Labels: conformance, protocol, parity, audit. Parent: Epic: Audit 2026-09-22 findings.

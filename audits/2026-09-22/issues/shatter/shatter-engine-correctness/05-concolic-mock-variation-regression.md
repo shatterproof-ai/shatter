@@ -28,18 +28,22 @@ Line numbers were re-checked against `56c86168`:
 - Worklist entries built from strategies carry `mock_values: vec![]` (`orchestrator.rs:2223`, `:2259`, and also `:2894`, `:2915`), so they fall back to `config.mocks`.
 - `input_gen::mutate_mock_values` (`input_gen.rs:4241`) has only test callers (`input_gen.rs:8081`, `:8533`).
 - The random explorer regenerates mocks per iteration (`explorer.rs:1537`, `:2468`).
-- There is no parity test for mock variation between the engines.
+- There is no parity test for mock variation between the engines. The existing tests that look like one do not exercise the concolic engine: `concolic_mock_status_branches_discovered` (`shatter-core/tests/e2e_concolic.rs:1713`) and `concolic_mock_result_branches_discovered` (`:1809` area) use the fixture `standalone/ts/17-mock-branches.ts` from the external examples repo but call `shatter_core::explorer::explore_function`, the random explorer. Their doc comment says so: "Uses the random explorer (not orchestrator) because it regenerates mock values per iteration". The concolic name hides the regression.
 
 ## Acceptance criteria
 
-- [ ] Concolic worklist entries carry varied mock values (through `mutate_mock_values` or an equivalent), or concolic documents that mocks are fixed and warns at runtime when `mock_params` is non-empty. Record which option was taken in the close note. If the second is chosen, update `protocol/parity-matrix.yaml` / the relevant CLAUDE.md engine notes.
-- [ ] The dead `_initial_mocks` block is removed, and `_mock_params` is either used or removed from the signature.
-- [ ] A concolic E2E fixture whose branch depends on a mocked dependency's return value reaches both sides under `--concolic` (TS at minimum, in `shatter-core/tests/e2e_concolic.rs`). At close, show the test failing on current `main` and passing after the fix.
+Restoring per-entry mock variation in the concolic engine is the required outcome. Documenting fixed mocks and warning instead is not an acceptable resolution for this issue; if the maintainer decides against restoring it, close this issue as won't-fix and file that change separately.
+
+- [ ] Worklist entries produced by the concolic MetaStrategy loop carry varied mock values (through `input_gen::mutate_mock_values`, or the random explorer's `generate_mock_values` path) whenever `config.mock_params` is non-empty. `mock_values: vec![]` is no longer used for strategy-produced entries at `orchestrator.rs:2223`, `:2259`, `:2894` and `:2915` when mock params exist.
+- [ ] The dead `_initial_mocks` block (`orchestrator.rs:2640-2647`) is removed, and `_mock_params` in `solve_and_generate` (`:2147`) is used (the leading underscore is dropped) or removed from the signature.
+- [ ] A new concolic E2E test in `shatter-core/tests/e2e_concolic.rs` runs `classifyStatus` from `standalone/ts/17-mock-branches.ts` through `orchestrator::explore` (not `explorer::explore_function`) and asserts that all four returns ("empty", "short", "medium", "long") are reached. At close, quote the test output from current `main` (fails) and after the fix (passes). The test is `#[ignore]`d like its neighbours, so run it through `task e2e-ts` (or `cargo test --test e2e_concolic -- --include-ignored <name>`) and quote the line showing it ran.
+- [ ] The two existing random-explorer tests are renamed so their names do not say "concolic" (for example `random_mock_status_branches_discovered`).
+- [ ] A seeded determinism test: two concolic runs with the same seed and non-empty `mock_params` produce the same sequence of mock values.
 - [ ] `task affected` (with `Gates selected` recorded) and `task e2e` pass.
 
 ## Suggested approach
 
-Restore the variation in the MetaStrategy loop. When a strategy produces a worklist entry, attach `mutate_mock_values(...)` output, as the random explorer does with `generate_mock_values`. Reuse the random explorer's generation helper rather than adding a third one.
+Restore the variation in the MetaStrategy loop, drawing from the orchestrator's seeded RNG. When a strategy produces a worklist entry, attach `mutate_mock_values(...)` output, as the random explorer does with `generate_mock_values`. Reuse the random explorer's generation helper rather than adding a third one.
 
 ## Out of scope
 

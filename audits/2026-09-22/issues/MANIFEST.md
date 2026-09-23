@@ -996,3 +996,77 @@ Global agent guidance and hooks: loading the required rules, waiting behaviour, 
 - Land the audit reports (publish-audit-reports) before filing, or inline the evidence, because issue bodies cite `audits/2026-09-22/` paths that exist only on branch `audit-2026-09-22`.
 - The storystore tracker is write-blocked until the v32->v53 migration. Cross-repo links (for example bento git-hook-latency-visibility and shatter beads-retire-jsonl-import-dolt-remote) go in the body text, because bd cannot express them as dependencies.
 - Every draft had only a local-fallback readiness check. Run bento:issue-readiness-check with a fresh reviewer on the rewritten drafts (D1-D5) and on the NEW no-draft entries before filing.
+
+## Revisions after Codex cross-check
+
+Applied 2026-09-23 after every bucket got a Codex review (`crosscheck/<bucket>.codex.md`) and was revised (`<repo>/<bucket>/REVISION.md`). Draft count 245 -> 341 (new issues 188 -> 260). The rows above this section predate the revisions; where they disagree, this section and INDEX.md win.
+
+### Removed slugs
+
+| Old slug | Replaced by | Why |
+|---|---|---|
+| `z3-mixed-int-real-sort-split` (shatter-engine-correctness/01) | `t854z-sort-split-note` (note-to-existing str-t854z) | Codex/secondary BLOCKER: duplicate of open str-t854z. Other buckets' references were retargeted to str-t854z. |
+| `float-constant-rational-conversion` (shatter-engine-correctness/12) | `aureo-float-constant-note` (note-to-existing str-aureo, proposes P2->P1) | BLOCKER: duplicate of open str-aureo. |
+| `qwua7-12-rescope-note` (shatter-tracker-and-beads/16, created during revision) | `exit-codes-qwua7-12-note` (shatter-cli-flags-and-help/18, str-qwua7.12) | Two notes on str-qwua7.12 with one deliverable; merged into the cli-flags note during cross-bucket assembly. tracker-reconciliation-sweep and help-tracker-ids-lint point at exit-codes-qwua7-12-note. The tracker BUNDLE.md/REVISION.md still list the old 16. |
+
+### Converted from new issue to note (slug kept)
+
+| Slug | Now | Why |
+|---|---|---|
+| `landing-deletes-remote-branches` (bento-landing/07) | note-to-existing bento-73de | BLOCKER: duplicate of open bento-73de; `--superseded` is report-only. |
+| `closure-orphan-worktree-dirs` (bento-guards-doctor-tracker/09) | note-to-existing bento-nljv | Codex BLOCKER: deletion criteria unsafe; nljv already owns it. |
+| `env-doctor-decisions` (shatter-agent-guidance-and-repo-hygiene/07) | note-to-existing str-qwua7.53 | Overlap; storystore half -> `qwua7-52-storystore-interim-nudge`, orphan dirs -> `orphan-worktree-dirs-cleanup`. |
+
+### Rescoped slugs whose ownership moved (slug kept)
+
+- `git-guard-bypasses-and-false-positives`: residual bypasses only; false positives and wrappers stay with bento-l01v, switch/update-ref -> note on bento-i76i. BLOCKER hold lifted.
+- `concolic-early-termination`: diagnosis only; fix -> `concolic-early-termination-fix`.
+- `core-dead-code-removal`: deletions only; crate-wide dead-code check -> `core-reachability-gate`.
+- `engine-parity-e2e`: suite only; `_`-param lint -> `underscore-binding-lint`, checklist rule -> `pipeline-close-reason-rule`.
+- `known-answer-ratchet-and-ts-discriminants`: ratchet gate only; computeArea discriminant fix -> `ts-union-discriminant-literals`.
+- `collapse-test-tiers`: E2E double-run in pre-completion-e2e -> `e2e-once-in-pre-completion`.
+- `ts-handlers-test-timeouts`: diagnosis only; fix -> `ts-handlers-timeout-fix`.
+- `ci-executed-leaf-guard`: guard only; first-real-run triage -> `ci-first-real-run-triage`.
+- `verifier-per-language-evidence`: /pre-completion rows only; verifier items -> notes `qwua7-55-verifier-timeout-note`, `qwua7-2-scope-note`.
+- `publish-audit-reports`: 2026-09-22 report only; /audit skill rewrite stays with str-qwua7.22 (`qwua7-22-audit-land-before-file-note`).
+- `crate-claude-md-stale-facts`: str-qwua7.25 items (incl. docs-24) -> `qwua7-25-refresh-note`.
+- `fixture-corruption-incident-reverify`: re-verification of str-qwua7.14 -> `qwua7-14-reverify-on-main`.
+- `delegate-discovery-to-engine`: shatter-doctor only; run_targets.py half -> `sa-d8j-engine-discovery-note`.
+- `clap-cobra-extractors`: clap derive only; builder/cobra/coverage -> `clap-builder-extractor`, `go-cobra-extractor`, `coverage-unextracted-language-finding`.
+- `tracker-migration-and-agents-md`: AGENTS.md/CLAUDE.md + plan move; migration record -> `tracker-migration-verification`.
+- `first-party-plugin-autoupdate` / `global-guidance-actually-loads`: checker -> `first-party-plugin-staleness-check`; Codex delivery -> `codex-render-composes-core-rules`.
+- `merge-message-and-stale-branch-nudge`: merge message only; nudge -> `stale-pushed-branch-doctor-nudge`, rule -> `one-session-per-branch-guidance`; bare-SHA guard dropped (bento-rdtn.15).
+- `eth-swarm-lead-lands-from-teammate`: template text only; driver change -> `land-py-branch-flag`.
+- `installed-cache-bloat-investigation`: investigation only; fix -> `publish-staged-plugin-bundle`.
+
+### New slugs added by the revisions, per bucket
+
+- **bento-guards-doctor-tracker** (5): `cross-check-stop-hook-hijack` (new), `l01v-residual-bypasses-note` (note-to-existing, bento-l01v), `i76i-switch-update-ref-note` (note-to-existing, bento-i76i), `49pg-dolt-remote-section-note` (note-to-existing, bento-49pg), `wzbt-manual-close-note` (note-to-existing, bento-wzbt)
+- **bento-landing** (3): `land-py-branch-flag` (new), `stale-pushed-branch-doctor-nudge` (new), `one-session-per-branch-guidance` (new)
+- **bugshot-tracker-and-payload** (1): `publish-staged-plugin-bundle` (new)
+- **dotfiles-global-guidance** (2): `first-party-plugin-staleness-check` (new), `codex-render-composes-core-rules` (new)
+- **shatter-agents-plugin** (2): `skill-status-metadata` (new), `sa-d8j-engine-discovery-note` (note-to-existing, sa-d8j)
+- **shatter-agent-guidance-and-repo-hygiene** (4): `qwua7-14-reverify-on-main` (reopen-note, str-qwua7.14), `orphan-worktree-dirs-cleanup` (new), `u394l-4-skill-command-lint` (note-to-existing, str-u394l.4), `qwua7-52-storystore-interim-nudge` (note-to-existing, str-qwua7.52)
+- **shatter-artifacts-correctness** (1): `explore-spec-bundle-failed-functions` (new)
+- **shatter-ci-workflows** (7): `release-publish-guard-and-target` (new), `devcontainer-workflow-red` (new), `docker-publish-workflow-red` (new), `go-lint-qwua7-32-note` (reopen-note, str-qwua7.32), `ubuntu-26-runner-trial` (new), `perf-ci-stable-scenarios-red` (new), `parity-governed-stale-fallback` (new)
+- **shatter-cli-flags-and-help** (9): `analyze-only-sandbox-refusal` (new), `analyze-only-output-detail` (new), `explore-function-not-found-diagnostics` (new), `spec-flag-dropped-with-spec-out` (new), `html-source-non-executable-lines` (new), `failure-table-language-any` (new), `demo-complete-with-errors-green` (new), `exit-codes-qwua7-12-note` (note-to-existing, str-qwua7.12), `unfiled-0904-ui-items-reconcile` (new)
+- **shatter-cli-runtime-output** (7): `doctor-rust-runtime-note` (note-to-existing, str-qwua7.40), `rust-hint-once-note` (note-to-existing, str-qwua7.13), `doctor-execution-readiness` (new), `rust-main-default-exclusion` (new), `rust-mocks-to-string-diagnosis` (new), `run-validity-degraded-cause-diagnosis` (new), `coverage-headline-metric-unification` (new)
+- **shatter-concolic-and-engine-design** (11): `explore-stop-reason-accounting` (new), `concolic-early-termination-fix` (new), `explore-budget-semantics` (new), `concolic-fuzz-rng-unseeded` (new), `concolic-benchmark-postfix-run` (new), `holdout-disposition` (new), `effectiveness-repo-tracker-backlog` (new), `underscore-binding-lint` (new), `pipeline-close-reason-rule` (new), `core-reachability-gate` (new), `qwua7-6-2-scan-observe-config-literals` (note-to-existing, str-qwua7.6.2)
+- **shatter-docs** (1): `qwua7-25-refresh-note` (note-to-existing, str-qwua7.25)
+- **shatter-engine-correctness** (4): `t854z-sort-split-note` (note-to-existing, str-t854z), `aureo-float-constant-note` (note-to-existing, str-aureo), `concolic-refine-path-accounting` (new), `execute-request-builder` (new)
+- **shatter-frontend-go** (5): `go-release-relocation-smoke` (new), `go-concolic-escaped-string-miss` (new), `go-connection-failures-impl` (new), `go-line-zero-records` (new), `go-mock-codegen-json` (new)
+- **shatter-frontend-rust** (7): `qwua7-36-escaping-repro` (note-to-existing, str-qwua7.36), `rust-build-deadline-enforcement` (new), `rust-input-deserialize-classification` (new), `rust-axum-extractor-classifier-dedupe` (new), `shatter-llm-parse-validation` (new), `shatter-llm-backoff-cap` (new), `llm-model-rejection-diagnostic` (new)
+- **shatter-frontend-ts** (4): `ts-flow-analysis-consolidation` (new), `core-constraint-consistency-guard` (new), `ts-packaging-hygiene` (new), `ts-js-yaml-v4` (new)
+- **shatter-gates-integrity** (4): `qwua7-55-verifier-timeout-note` (note-to-existing, str-qwua7.55), `qwua7-2-scope-note` (note-to-existing, str-qwua7.2), `ci-first-real-run-triage` (new), `sccache-for-gate-runs` (new)
+- **shatter-protocol-parity** (4): `parity-matrix-unenforced-sections` (new), `conformance-success-case-per-command` (new), `conformance-known-drifts-matching` (new), `conformance-cross-frontend-execute-cases` (new)
+- **shatter-reports-and-specs** (4): `spec-diff-symbolic-region-verdicts` (new), `ts-union-discriminant-literals` (new), `qwua7-10-allowlist-issue-links-note` (note-to-existing, str-qwua7.10), `source-bucket-config-override` (new)
+- **shatter-test-hygiene** (3): `cli-output-snapshots` (new), `e2e-once-in-pre-completion` (new), `ts-handlers-timeout-fix` (new)
+- **shatter-tracker-and-beads** (6): `beads-hook-stall-diagnosis` (new), `audit-2026-09-04-report-recovery` (new), `qwua7-22-audit-land-before-file-note` (note-to-existing, str-qwua7.22), `audit-branch-deletion-cause` (new), `landed-not-closed-patrol-check` (new), `triage-drift-patrol-checks` (new)
+- **storystore-adoption-blockers** (4): `tracker-migration-verification` (new), `clap-builder-extractor` (new), `go-cobra-extractor` (new), `coverage-unextracted-language-finding` (new)
+
+### Assembly fixes (2026-09-23, this pass)
+
+- blocked_by: no reference to a removed slug remains. `execute-request-builder` now also lists the literal existing id `str-qwua7.5` (file-all.sh accepts literal tracker ids in blocked_by).
+- Ownership pointers corrected in bodies so no two drafts claim one deliverable: engine-correctness/07 (-> core-reachability-gate), frontend-ts/09 (-> underscore-binding-lint, pipeline-close-reason-rule), agent-guidance/06 (audit landing flow -> str-qwua7.22), shatter-docs/07 and gates-integrity/04 (E2E double-run -> e2e-once-in-pre-completion), bento-landing/04 (workflow-health-patrol files nothing; red workflows are pre-drafted).
+- file-all.sh: unreviewed-bucket hold is now computed from `crosscheck/<bucket>.codex.md` (all present); `cross-check-stop-hook-hijack` is checked against the bento-cross-check-bug review and filed once from bento-guards-doctor-tracker/15. `BLOCKER_SLUGS` emptied (all four resolved). New: `INCLUDE=` include-list, bootstrap hold under APPLY until `audits/2026-09-22/` is on shatter origin/main (`ALLOW_UNPUBLISHED=1` overrides), no epic for a repo whose drafts are all held.
+- The earlier 'File other/NN as is' rows (dotfiles), and rows describing env-doctor-decisions, landing-deletes-remote-branches and closure-orphan-worktree-dirs as new issues, are superseded by the tables above.

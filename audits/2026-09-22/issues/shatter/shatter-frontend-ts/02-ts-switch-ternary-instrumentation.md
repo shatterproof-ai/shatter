@@ -24,11 +24,12 @@ Closed str-wsg added the analyzer side only. Closed str-w0d.1 ("TS frontend: sym
 
 ## Evidence
 
-Re-verified against the audit worktree at 56c86168 (2026-09-23).
+Verified at 56c86168 and re-checked unchanged at 793f2b0b (2026-09-23).
 
-- `shatter-ts/src/analyzer.ts:1364-1471`: emits `branch_type: "switch"` (:1374), `"ternary"` (:1393), `"logical_and"`/`"logical_or"` (:1410-1411).
+- `shatter-ts/src/analyzer.ts:1364-1471`: emits `branch_type: "switch"` once per `case` clause and none for `default` (:1364-1381), `"ternary"` (:1384-1398), and one `"logical_and"`/`"logical_or"` per top-level `&&`/`||` chain whose condition is the **whole** expression (:1401-1424, no recursion into nested chains).
 - `shatter-ts/src/instrumentor.ts:1393-1411`: for `switch` it only inserts `__shatter_record(line)` per clause statement. There are no branch probes and no constraints.
 - The instrumentor has no `isConditionalExpression` handling. Its only `ConditionalExpression` is `factory.createConditionalExpression` at `:2260`, which builds mock wrappers.
+- There is no nullish branch type: generated `ALL_BRANCH_TYPES` (`shatter-ts/src/generated/protocol-enums.ts:78-88`) has no entry for `??`, and the analyzer emits nothing for it.
 - `shatter-core/src/coverage_metrics.rs:477` `extract_targets_inner(&analysis.branches, &result.discoveries, ...)` marks `analysis.branches[i]` covered when `discoveries` contains `branch.id`.
 - Probe `mixed(a, b)` (ternary on one line, `if` on the next):
   ```
@@ -44,28 +45,45 @@ Re-verified against the audit worktree at 56c86168 (2026-09-23).
 - The limitation is written down as prose, not tracked. `shatter-ts/CLAUDE.md:285-287` and `shatter-core/tests/e2e_concolic.rs:2947-2953` both say the enum E2E reads `raw_results` "because the TS instrumentor records switch-case *lines* but emits no `branch_path` decisions".
 - Audit sources: findings frontend-ts-02 and prior-17; `audits/2026-09-22/areas/frontend-ts.md` F2.
 
+## Decision semantics (normative for this issue)
+
+These definitions are part of the acceptance. If the implementer finds one unworkable, change it in this issue (comment) before implementing, and keep the analyzer and instrumentor in agreement.
+
+| Construct | Branch ids | Decision recorded at runtime | Constraint for `taken` / not taken |
+|---|---|---|---|
+| `switch (d)` `case E:` | one per `case` clause (unchanged from the analyzer today) | one decision **per case label that JS evaluates**, in source order, until one matches. Matching label: `taken = true`. Each earlier evaluated label: `taken = false`. Labels after the match are not evaluated and record nothing. | `eq(d, E)` / `not(eq(d, E))` |
+| `switch` `default:` | no id of its own | reaching `default` is the path where every evaluated case decision is `false`; no extra decision | n/a |
+| fallthrough from a matched case into later clauses | none | **no** decision: executing a later clause's body through fallthrough does not imply `d === E` for that clause | n/a |
+| ternary `c ? x : y` | one per ternary | `taken = truthy(c)` | truthiness of `c` / its negation |
+| value-position `a && b` chain (top level only, as the analyzer emits today) | one per chain | `taken = truthy(a)` for the **leftmost** operand, that is "right side evaluated" | truthiness of the leftmost operand / its negation |
+| value-position `a \|\| b` chain | one per chain | `taken = !truthy(a)`, "right side evaluated" | negated truthiness of `a` / truthiness of `a` |
+
+The analyzer's `condition` / `condition_text` for `logical_and`/`logical_or` changes from the whole expression to the leftmost operand to match. `d` and each `E` are evaluated **exactly once**, as JS does; the probe must not re-evaluate either.
+
 ## Acceptance criteria
 
-- [ ] The instrumentor emits a branch probe with a constraint for:
-  - each `switch` case: `eq(discriminant, case)` for the case taken; `default` is the conjunction of the negations;
-  - each ternary condition;
-  - value-position `&&`, `||` and `??` (short-circuit decisions).
-
-  The constraints are built through **both** `buildSymExpr` and `buildSymExprWithFlow`, with parity tests.
-- [ ] Analyze and instrument agree on branch identity. Either they share one branch enumerator (one traversal that assigns ids), or instrument returns its id -> (line, type) map and the core joins on (line, type) instead of id.
-- [ ] An alignment test over a fixture corpus asserts that analyze `(id, line)` == instrument `(id, line)` for every branch. It fails on current `main` (with `mixed`) and passes after the fix.
-- [ ] The per-BranchType known-answer E2E fixtures from ts-branchtype-known-answer-fixtures pass for `switch`, `ternary`, `logical_and` and `logical_or`, with their expected-fail markers removed. If that issue has not landed, add those fixtures here. Each fixture discovers both outcomes through `branch_path`.
+- [ ] The instrumentor emits branch probes with constraints for `switch` case labels, ternaries and value-position `&&`/`||` chains, exactly as in the table above. The constraints are built through **both** `buildSymExpr` and `buildSymExprWithFlow`, with parity tests.
+- [ ] **One branch identity.** A single shared enumerator (one traversal, used by both analyze and instrument) assigns every branch an id. For each id, analyze's `(line, branch_type)` equals what the instrumentor emits for that id. The "join on (line, type) in the core" alternative is not acceptable: two branches of the same type on one line must still get distinct ids.
+- [ ] **Alignment test** over a fixture corpus asserts analyze `(id, line)` == instrument `(id, line)` for every branch, where the instrument side is read from the `__shatter_branch(<id>, <line>, ...)` calls in the instrumented output. The corpus includes `mixed`, **two ternaries on one line**, **two `if` statements on one line**, and a ternary inside an `if` body. It fails on current `main` and passes after the fix.
+- [ ] **Semantics tests** (unit or E2E). The fallthrough and default cases are red on current `main` (no decisions are recorded today); the side-effect cases are regression guards and may already pass:
+  - fallthrough: `switch (a) { case 1: x++; case 2: return x; }` with `a = 1` records `taken = true` for case 1 and **no** decision for case 2;
+  - effectful labels: a `case f():` whose `f` increments a counter shows the counter incremented once per evaluation, same as the uninstrumented function;
+  - default: `a = 99` records `taken = false` for every case label and reaches `default`;
+  - a ternary and an `&&` chain whose operands have side effects run each side effect exactly as often as uninstrumented code.
+- [ ] The per-BranchType known-answer E2E fixtures from ts-branchtype-known-answer-fixtures pass for `switch`, `ternary`, `logical_and` and `logical_or`, with their expected-fail markers removed. If that issue has not landed, add those fixtures here.
 - [ ] The `raw_results` workaround is removed from the enum E2E: the test reads `result.executions`. The prose at `shatter-ts/CLAUDE.md:285-287` and the comment at `e2e_concolic.rs:2947-2953` are deleted.
-- [ ] `h(x) = x > 1 ? 1 : 0` reports `2/2` branch outcomes (or the equivalent in the report's branch metric) under both the default explorer and `--concolic`. Paste the CLI output in the close note.
-- [ ] If output changes, `PARITY.md:50` and the TS parity-matrix rows state what TS actually instruments. Run `task parity` and `task conformance`.
-- [ ] Close-time proof: run `cargo test -p shatter-core --test e2e_concolic -- --ignored` directly (not a possibly cached Task run) and paste the summary. Record `task affected` `Gates selected`.
+- [ ] `h(x) = x > 1 ? 1 : 0` reports `2/2` branch outcomes (or the equivalent in the report's branch metric) under both the default explorer and `--concolic`. Paste both CLI outputs in the close note.
+- [ ] If output changes, `PARITY.md:50`, the TS rows of `protocol/parity-matrix.yaml` and `shatter-ts/CLAUDE.md` state what TS actually instruments and the decision semantics above. Run `task parity` and `task conformance`.
+- [ ] Close-time proof: `task --force e2e-ts` (the governed task, not bare `cargo test`); paste the `test result:` line with a non-zero passed count and the lines for the enum and new branch-type tests. Record `task affected` `Gates selected`.
 
 ## Suggested approach
 
-Build the shared branch enumerator first, so ids cannot drift again, then add the probes. Keep the probe expressions side-effect-free and evaluated once: wrap the condition value, not a re-evaluation. The ternary and logical probes must not change short-circuit semantics.
+Build the shared branch enumerator first, so ids cannot drift again, then add the probes. For `switch`, hoist the discriminant into a temporary evaluated once, then wrap each case label so that the label is evaluated once and compared by `===` inside the probe (for example `case __shatter_case(id, line, tmp, <label>, ...)` returning the label value, or a rewrite into an equivalent `if` chain that preserves fallthrough). Ternary and logical probes wrap the condition value, not a re-evaluation, and must not change short-circuit behaviour.
 
 ## Out of scope
 
+- `??` as a branch. There is no nullish BranchType in `protocol/registry.yaml`, and the core has no sound null model for it (see ts-operators-collapse-to-unknown). Adding one is a separate registry change.
+- `&&`/`||` inside `if`/loop conditions (already covered by condition decomposition, str-6wmm.3).
 - The engine-level random-vs-concolic parity suite (engine-parity-e2e, another bucket).
 - Go/Rust instrumentor coverage of these branch types.
 - New SymExpr operators beyond what the constraints need (ts-operators-collapse-to-unknown).
@@ -74,6 +92,7 @@ Build the shared branch enumerator first, so ids cannot drift again, then add th
 
 - str-wsg (closed; analyzer-only extraction). A reopen-note in this bucket points here.
 - str-w0d.1 (closed; claimed switch/ternary/&&/|| constraint emission), str-ts3n (closed), str-jeen.81 (closed; expression-bodied arrows), str-6wmm.3 (closed; condition decomposition).
+- ts-branchtype-known-answer-fixtures (this bucket): the E2E gate whose expected-fail markers this issue flips.
 - concolic-early-termination (other bucket): some of the early stops on TS functions are downstream of this.
 
 ## Priority / type / size

@@ -1,7 +1,7 @@
 ---
 slug: ci-executed-leaf-guard
 kind: new
-title: "CI 'Full landing gate' has run no product tests since 2026-08-29: add an executed-leaf guard and triage what fails once tests really run"
+title: "CI 'Full landing gate' has run no product tests since 2026-08-29: require positive per-leaf execution evidence for an explicit expected leaf set"
 priority: P1
 type: bug
 labels: [ci, quality-gates, audit]
@@ -11,42 +11,48 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# CI 'Full landing gate' has run no product tests since 2026-08-29: add an executed-leaf guard and triage what fails once tests really run
+# CI 'Full landing gate' has run no product tests since 2026-08-29: require positive per-leaf execution evidence
 
 ## Problem
 
-The meta-stage checksum poisoning, whose root cause is recorded on str-qwua7.3 (see the `task-list-json-poisons-checksums` note), means the CI `task check` step has run no unit, integration, E2E, conformance or parity tests since about 2026-08-29. Every merge to `main` since then has passed on a hollow green. Once the str-qwua7.3 fix lands, real failures will appear and need triage. CI also needs a guard so a hollow pass cannot happen again silently. Until then, two CLAUDE.md claims are false: "Full = Landing, CI" in the Test Tiers table, and "Regression snapshots are ... verified in CI" in Code Quality Standards.
+Because of the meta-stage checksum poisoning (root cause recorded on str-qwua7.3; see the `task-list-json-poisons-checksums` note), the CI `task check` step has run no unit, integration, E2E, conformance or parity tests since about 2026-08-29. Every merge to `main` since then passed on a hollow green. Nothing in CI checks that the leaves it depends on actually ran, so the next caching bug, a renamed task, or a leaf dropped from the `check` graph would go unnoticed the same way.
 
-Related: str-qwua7.2 (open) covers the general executed-vs-skipped receipt system for the verifier, CI and pre-completion. This issue covers only the simple CI guard and the triage. str-35vtk.21 ("CI runs full landing gate") was closed on run 33277936601, and the guarantee it recorded no longer holds.
+A guard that only rejects `is up to date` lines is not enough. It still passes when a required leaf disappears from the task graph entirely, or when a leaf's command never started. The guard must require **positive evidence** that each leaf in an explicit expected set executed.
 
-## Evidence
+Ownership: str-qwua7.2 (open, P1) lists "`ci.yml:89` calls `task check-fresh`" and "a live run asserts no `Task "<leaf>" is up to date` line" among its acceptance checks. This issue takes over that CI item (a companion note on str-qwua7.2, `qwua7-2-scope-note`, records the transfer). str-qwua7.2 keeps the verifier and `/pre-completion` receipts. The parser built here is the shared one those parts, and `gate-telemetry-executed-vs-cached`, reuse.
 
-- `gh run view 35756993223 --log` shows `Task "go:test" is up to date`, and the same for `core:test-ignored`, `conformance`, `parity`, `cli:test`, `rust-fe:test`, `rust-rt:test`, `ts:test` and `go:vet`. All `test result:` lines come from the separate shatter-llm steps (`.github/workflows/ci.yml:99-103`).
+str-35vtk.21 ("CI runs full landing gate") was closed on run 33277936601, and the guarantee it recorded no longer holds.
+
+## Evidence (re-verified 2026-09-23 on main `70465921`)
+
+- `gh run view 35756993223 --log` shows `Task "go:test" is up to date`, and the same for `core:test-ignored`, `conformance`, `parity`, `cli:test`, `rust-fe:test`, `rust-rt:test`, `ts:test` and `go:vet`. All `test result:` lines come from the separate shatter-llm steps (`.github/workflows/ci.yml:91-103`).
 - CI job durations on main were 330-613 s from 2026-08-10 to 08-27, and 154-225 s from 2026-08-30 onward.
 - `.github/workflows/ci.yml:88-89` runs `task check`. Nothing inspects whether its leaves executed. `scripts/test_ci_workflow_structure.py` (run only in CI, `ci.yml:110`) checks workflow shape only.
-- Failures already known when the leaves are forced to run locally (audit 2026-09-22):
-  - str-k7czv: Go loader test. Root cause is filed as `go-config-discovery-unbounded` (shatter-frontend-go bucket).
-  - 10 TS handler timeouts under load: filed as `ts-handlers-test-timeouts` (shatter-test-hygiene bucket).
-  - bench_frontier_ranking timeout in `core:test-ignored`: str-6nul9 landed on main after the audit snapshot (20692b08, merged 70465921). It excludes the benchmark with a nextest `-E` filter and with `--skip bench_frontier_ranking` on the `cargo test` fallback (`shatter-core/Taskfile.yml:61-66` on main). CI has no cargo-nextest, so CI takes the fallback path. Confirm that the skip holds there.
+- Task prints a `task: [<leaf>] <command>` echo line for each command it runs (no leaf in `Taskfile.yml` or `*/Taskfile.yml` sets `silent:`), and `task: Task "<leaf>" is up to date` for a skipped one. Both forms appear in the audit's local `check.log` (gitignored, audit machine only).
 
 ## Acceptance criteria
 
-- [ ] CI fails when the `task check` output reports `is up to date` for any test leaf. Either grep the step log against an explicit list of test-leaf task names, or run `task check` with a fresh `TASK_TEMP_DIR=$(mktemp -d)` and grep as a backstop. A unit test (in `scripts/test_ci_workflow_structure.py` or a new module wired into `meta`) feeds the guard a sample log containing `Task "cli:test" is up to date` and asserts it exits non-zero.
-- [ ] Proof the guard works: link a CI run, on a branch or with the fix temporarily reverted, where the guard fails on a hollow check. Also link a green CI run on main after str-qwua7.3's fix in which every stage-2 and stage-3 leaf executed (non-zero `test result:` lines or jest/go test summaries for each leaf). Put both run URLs in the close reason.
-- [ ] Every failure the first real CI run surfaces is either fixed or filed, and the issue ids are listed in the close reason.
-- [ ] The CLAUDE.md "Test Tiers" and "Code Quality Standards" CI claims are re-checked against the green run and left true, or corrected.
+- [ ] A script, for example `scripts/task_leaf_evidence.py`, takes a Task output log and an explicit expected leaf list, and classifies each expected leaf as `executed` (at least one `task: [<leaf>]` echo line and no `is up to date` line for it), `cached` (an `is up to date` line), or `missing` (neither). It exits non-zero unless every expected leaf is `executed`. The expected list for CI lives in one checked-in file (for example `scripts/ci-required-leaves.txt`), not in YAML.
+- [ ] A unit test wired into `meta` feeds the script fixtures for each case and asserts the verdict: all executed → pass; one leaf cached → fail naming it; one expected leaf absent from the log → fail naming it; a mixed log where a dependency is cached but every required leaf executed → pass; a leaf that executed and then failed (non-zero Task exit) → the script reports `executed` and the CI step still fails on the Task exit code.
+- [ ] A meta test asserts that every leaf named in the expected-leaf file exists as a task (parsed from the Taskfiles as YAML, **not** via `task --list-all --json`) and is reachable from `check`. Removing a leaf from `check` without updating the file fails `meta`.
+- [ ] `.github/workflows/ci.yml` **replaces** the existing `task check` invocation (`:88-89`) with one step that runs `task check` once, tees the output to a log, preserves Task's exit code, and then runs the evidence script on the log. There is no second `task check` run. `scripts/test_ci_workflow_structure.py` asserts that shape.
+- [ ] Proof the guard fails on hollow work: link a CI run on a throwaway branch where the guard fails. Produce it either by reverting the str-qwua7.3 fix on that branch, or by pre-seeding `.task/checksum` before `task check`. Paste the guard's failure output (naming the cached or missing leaves) into the close reason.
+- [ ] Proof the guard passes on real work: link a CI run on main after the str-qwua7.3 fix where the guard reports every expected leaf `executed`. If that run is red because of real test failures, the guard proof still counts; getting it green is `ci-first-real-run-triage`.
 
 ## Suggested approach
 
 1. Wait for the str-qwua7.3 fix.
-2. Add a post-step to `.github/workflows/ci.yml` that runs `task check 2>&1 | tee check.log`, then fails if `grep -E 'Task "(cli:test|rust-fe:test|rust-rt:test|ts:test|go:test|go:vet|core:test-ignored|conformance|parity)" is up to date' check.log` matches. Keep the list in a script with a unit test, not inline YAML, so it can grow.
-3. Re-run CI on main and triage what fails.
+2. Write the evidence script and its fixtures. Keep the parser small and pure so the verifier (str-qwua7.2) and gate telemetry can import it.
+3. Change the CI step to `set -o pipefail; task check 2>&1 | tee check.log; rc=${PIPESTATUS[0]}; python3 scripts/task_leaf_evidence.py --expected scripts/ci-required-leaves.txt check.log; exit $(( rc != 0 ? rc : $? ))`, or an equivalent script.
+4. On CI, cargo-nextest is absent, so `core:test-ignored` runs its `cargo test` fallback (`shatter-core/Taskfile.yml:61-66` on main). The echo line is emitted on either path.
 
 ## Out of scope
 
-- The executed-vs-skipped receipt system (str-qwua7.2) beyond this CI grep guard.
+- Fixing the test failures that surface once leaves run (`ci-first-real-run-triage`).
+- The verifier and `/pre-completion` receipts (str-qwua7.2, str-35vtk.24).
 - Missing `sources:` globs (`task-sources-cover-real-inputs`). Gate telemetry (`gate-telemetry-executed-vs-cached`).
 - Adding cargo-nextest or a CI nextest profile (`nextest-ci-profile-and-stale-parity-fallback`, shatter-ci-workflows bucket).
+- Correcting the CLAUDE.md CI claims (`test-tier-docs-overstate-coverage`, shatter-docs bucket).
 
 ## Metadata
 
@@ -54,5 +60,5 @@ Related: str-qwua7.2 (open) covers the general executed-vs-skipped receipt syste
 - Labels: ci, quality-gates, audit.
 - Parent epic: Epic: Audit 2026-09-22 findings.
 - Blocked by: task-list-json-poisons-checksums (the str-qwua7.3 fix).
-- Related: str-qwua7.2, str-35vtk.21, str-6nul9, str-k7czv.
-- Source findings: gates-02 (audit 2026-09-22; evidence under `audits/2026-09-22/`).
+- Related: str-qwua7.2 (CI item transferred here), str-35vtk.21, str-6nul9.
+- Source findings: gates-02 (audit 2026-09-22).

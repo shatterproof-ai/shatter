@@ -19,7 +19,7 @@ go-task's checksum cache skips a leaf when none of its declared `sources:` has c
 
 Related: str-qwua7.2 (open) questions checksum caching in general and covers executed-vs-cached receipts. It does not list the missing globs or add a coverage test.
 
-## Evidence (re-verified 2026-09-23 against the audit snapshot; only shatter-core/Taskfile.yml has changed on main since)
+## Evidence (re-verified 2026-09-23; the cited Taskfiles other than `shatter-core/Taskfile.yml` are identical on main `70465921` and the audit snapshot `56c86168`, and the `shatter-core/Taskfile.yml` lines below were checked on main)
 
 - **cli:test**, at `shatter-cli/Taskfile.yml:16-24`, and **cli:test-fast** (`:35`ff) list only `src/**/*.rs`, `Cargo.toml`, `../Cargo.lock`, core `src/**/*.rs`, core `Cargo.toml` and `../.config/nextest.toml`. They miss:
   - `shatter-cli/tests/**` (30 entries)
@@ -27,7 +27,7 @@ Related: str-qwua7.2 (open) questions checksum caching in general and covers exe
   - `shatter-cli/build.rs`, which embeds shatter-ts (`build.rs:90`) and shatter-go (`build.rs:163`)
   - the embedded frontend trees `shatter-ts/src/**`, `shatter-go/**/*.go` and `shatter-core/build.rs`
 - **core:test-ignored**, at `shatter-core/Taskfile.yml:37-45`, runs the Go, TS and Rust E2E suites (`--run-ignored all` / `--include-ignored`), but lists no frontend source trees (`shatter-ts/src`, `shatter-go`, `shatter-rust/src`, `shatter-rust-runtime/src`). `test-ignored-fast` has the same gap.
-- **workspace-test** (test-standard), at `Taskfile.yml:115-128`, runs the Go and Rust E2E suites. It lists `shatter-cli/**/*.rs` and `shatter-llm/**/*.rs`, but no frontend sources and no `shatter-cli/templates/**`.
+- **workspace-test** (test-standard), at `Taskfile.yml:115-128`, runs plain `cargo test --workspace` (`:134`). Every test in `e2e_concolic.rs`, `e2e_concolic_go.rs` and `e2e_concolic_rust.rs` is `#[ignore]`d, so it does **not** run the E2E suites (the `test-standard` comment at `Taskfile.yml:105-108` saying the Rust and Go E2E suites remain in this tier is stale). It still builds `shatter-cli`, whose `build.rs` embeds the TS and Go frontends, and runs the CLI integration tests that render `shatter-cli/templates/**`. It lists `shatter-cli/**/*.rs` and `shatter-llm/**/*.rs`, but no frontend sources and no `shatter-cli/templates/**`.
 - **parity**, at `Taskfile.yml:245-263`: its sources (`:252-261`) omit `protocol/parity-matrix.yaml`, `protocol/PARITY.md`, `scripts/validate-parity.py` and `protocol/conformance/run_golden_tests.py`, although `parity-governed` (`:265-276`) runs `validate-parity.py` and `run_golden_tests.py` over them. `affected-gates.py` selects `parity` for any `protocol/` change, and Task then skips it as up to date when only those files changed.
 - **rust-fe:test**, at `shatter-rust/Taskfile.yml:13-19`, lists `src/**/*.rs`, `Cargo.toml`, `Cargo.lock` and `../.config/nextest-standalone.toml`. It omits `tests/**/*.rs` (`tests/codegen_parity.rs`) and `../shatter-rust-runtime/src/**`. The executor tests build harnesses against the runtime crate through `find_runtime_crate_path` (`shatter-rust/src/executor.rs`, around line 1198).
 - **ts:test**, at `shatter-ts/Taskfile.yml:38-49`, omits `jest.config.js`, which exists.
@@ -40,7 +40,11 @@ Related: str-qwua7.2 (open) questions checksum caching in general and covers exe
   1. For a declared table of test task → required input globs (crate `tests/`, `templates/`, `build.rs`, each executed or embedded frontend tree, the parity matrix, validator scripts and the runtime crate), each glob appears in that task's `sources:`.
   2. Every git-tracked file under a test task's crate or declared input roots (`git ls-files`) matches some `sources:` glob of a task that tests it. Files that do not feed a test go in an explicit allowlist with a reason.
 - [ ] Proof: the meta test fails on the current tree (paste the failing assertion into the close reason) and passes after the globs are added.
-- [ ] Forced-execution proof: after the fix, `touch shatter-cli/templates/scan.md && task cli:test` executes tests, and `touch protocol/parity-matrix.yaml && task parity` executes `validate-parity.py`. Neither prints `is up to date`. Record both in the close reason.
+- [ ] Cache-invalidation proof, without `--force` (Task's default checksum method hashes file contents, so `touch` alone does not and should not invalidate it). After the fix and after str-qwua7.3's fix, in a fresh worktree:
+  1. Prime: run `task cli:test` and `task parity` until each exits 0, then run each again and confirm it prints `Task "<leaf>" is up to date` (the cache is warm).
+  2. Change **contents**: append a blank line or comment to `shatter-cli/templates/scan.md`, and to `protocol/parity-matrix.yaml`.
+  3. Re-run `task cli:test` and `task parity`. Each shows its `task: [<leaf>]` command echo and no `is up to date` line.
+  Repeat step 2-3 for one file per newly added glob class (a `shatter-cli/tests/` file, `shatter-cli/build.rs`, a `shatter-ts/src/` file for cli:test and core:test-ignored, `shatter-rust/tests/codegen_parity.rs` and a `shatter-rust-runtime/src/` file for rust-fe:test, `shatter-ts/jest.config.js` for ts:test). Revert the edits afterwards. Record the command transcript (or a log path) in the close reason. Each of these must print `is up to date` on the current tree, which is the before-state to record.
 
 ## Suggested approach
 

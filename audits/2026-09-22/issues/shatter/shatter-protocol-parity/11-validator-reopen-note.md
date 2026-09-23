@@ -1,19 +1,19 @@
 ---
 slug: validator-reopen-note
 kind: reopen-note
-title: "Note on closed str-qwua7.7: the empty-extraction criterion is unmet for TS"
+title: "Comment on closed str-qwua7.7 (do not reopen): the empty-extraction criterion is unmet for TS"
 priority: P2
 type: note
 labels: [protocol, parity, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
-blocked_by: []
+blocked_by: [validator-ts-extraction-empty, validator-optional-command-warning]
 existing_id: str-qwua7.7
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Note on closed str-qwua7.7: the empty-extraction criterion is unmet for TS
+# Comment on closed str-qwua7.7 (do not reopen): the empty-extraction criterion is unmet for TS
 
-Target: str-qwua7.7 (CLOSED at 0655458b). Action: add a comment. Do not reopen. The follow-up work is tracked in the new issue validator-ts-extraction-empty; the filer substitutes its str- id for the slug below.
+Target: str-qwua7.7 (CLOSED at 0655458b; status re-checked with `bd show` on 2026-09-23). Action: add a comment only. Do not reopen, and do not change its status. `kind: reopen-note` is the filer's kind for "comment on a closed issue": `file-all.sh` posts it with `bd comments add` and only warns if the target is not closed. It never reopens. The follow-up work is tracked in the new issues validator-ts-extraction-empty and validator-optional-command-warning. `blocked_by` lists them only so that the filer creates them first and substitutes their str- ids for the placeholders below; no dependency edge is added to str-qwua7.7.
 
 ## Comment text
 

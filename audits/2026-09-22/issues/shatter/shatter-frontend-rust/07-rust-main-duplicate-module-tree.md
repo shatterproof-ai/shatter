@@ -32,7 +32,7 @@ Re-verified against the audit worktree at commit 56c86168:
 - [ ] The crate-wide `#![allow(dead_code)]` is removed. Real dead code it was hiding is deleted, or allowed item-by-item with a reason.
 - [ ] One `ENV_LOCK`.
 - [ ] Proof at close: `cargo nextest list -p shatter-rust` (or `cargo test -p shatter-rust -- --list`) before and after, showing the unit test count halved, and `task rust-fe:test` wall time before and after, forced to execute (not a checksum-cached no-op; see the project gate-cache note). Paste both into the close note.
-- [ ] `task rust-fe:test` and `cargo test --test e2e_concolic_rust` pass.
+- [ ] `task rust-fe:test` passes, and the Rust E2E suite passes with ignored cases included: `SHATTER_EXAMPLES_DIR="$(python3 scripts/examples_checkout.py --no-update)" cargo test --test e2e_concolic_rust -- --include-ignored` (plain `cargo test --test e2e_concolic_rust` runs nothing because every case is `#[ignore]`d). Paste the `test result:` line, which must show 0 ignored.
 
 ## Suggested approach
 

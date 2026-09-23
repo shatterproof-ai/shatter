@@ -19,7 +19,7 @@ tracker: "bd in /home/ketan/project/bento (prefix bento)"
 
 ## Evidence
 
-Re-verified 2026-09-23 at bento origin/main b1bb787 (unchanged since 1c0c1e6). File: `catalog/skills/land-work/scripts/land.py`.
+Re-verified 2026-09-23 at bento origin/main 0b8d488 (land-work unchanged since 1c0c1e6). File: `catalog/skills/land-work/scripts/land.py`.
 
 - `:309-313`: the whole `_merge_and_push()` call is timed as one `_record("merge_push", ...)`.
 - `_merge_in_primary` (`:166-214`) runs fast-forward sync, `git merge --no-ff`, a tree check and `git push`. `_push_from_preview` (`:216-~271`) runs `git commit`, `git push`, then `git fetch` and `git merge --ff-only` to sync the primary. Every call goes through `git(...)` with captured output. Push stderr, which carries the hook output, appears only inside a `StepFailure` message on failure and is never shown on success.

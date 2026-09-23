@@ -26,4 +26,4 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 > - Strategy worklist entries carry `mock_values: vec![]` (`orchestrator.rs:2223`, `:2259`) and fall back to the fixed `config.mocks`.
 > - `input_gen::mutate_mock_values` now has only test callers (`input_gen.rs:8081`, `:8533`).
 >
-> The random explorer still varies mocks on every iteration, so the two engines diverge. Restoring the variation (or explicitly documenting and warning about fixed mocks) is tracked in **<id of concolic-mock-variation-regression>**. Line numbers verified at `56c86168`.
+> The random explorer still varies mocks on every iteration, so the two engines diverge. The E2E tests named `concolic_mock_*_branches_discovered` (`shatter-core/tests/e2e_concolic.rs:1713` onward) run the random explorer, so they did not catch this. Restoring the variation, with a concolic E2E on `17-mock-branches.ts` that runs through `orchestrator::explore`, is tracked in **<id of concolic-mock-variation-regression>**. Line numbers verified on the audit branch (code identical to `56c86168`).

@@ -1,7 +1,7 @@
 ---
 slug: rapid-failfile-purge
 kind: new
-title: "Purge the still-tracked March rapid failfile and ignore rapid failfiles repo-wide (str-qwua7.4 left incomplete)"
+title: "Go rapid failfile still tracked"
 priority: P3
 type: chore
 labels: [go, testing, cleanup, audit]
@@ -11,9 +11,11 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Purge the still-tracked March rapid failfile and ignore rapid failfiles repo-wide (str-qwua7.4 left incomplete)
+# Go rapid failfile still tracked
 
 ## Problem
+
+Follow-up to str-qwua7.4 (closed), whose rapid-failfile purge was left incomplete.
 
 str-qwua7.4 (closed 2026-09-22) required that `testdata/rapid/**/*.fail` be removed from git and added to `shatter-go/.gitignore`. The fix only covered the `planner/` package named in that issue. A rapid failfile from March is still tracked under `instrument/`, and the ignore rule does not cover any other package. The next rapid failure in any package other than `planner/` will show up as an untracked file that is easy to commit by accident.
 

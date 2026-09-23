@@ -5,6 +5,7 @@
 - **Repo:** shatter
 - **Tracker:** bd in /home/ketan/project/shatter (prefix str)
 - **Parent epic (new issues):** "Epic: Audit 2026-09-22 findings"
+- **Revision:** revised 2026-09-23 after the Codex cross-check (`../../crosscheck/shatter-agent-guidance-and-repo-hygiene.codex.md`); see `REVISION.md`.
 - **Theme:** Repo-level agent guidance and git hygiene: identity (D5), git-state checks, fixture incident, skills, env-doctor decisions, AGENTS.md rtk/landing prose, completion and planning rules.
 
 ## Maintainer decisions (2026-09-23), which override the report and old drafts
@@ -22,15 +23,19 @@
 |---|---|---|---|---|---|
 | 01 | mailmap-and-fixture-config-snapshot | new | new | P1 | Map the leaked fixture identity (test@example.com) to the real author via .mailmap, and make test_git_fixture_isolation.py guard the real checkout's .git/config |
 | 02 | qwua7-1-git-state-check | note-to-existing | str-qwua7.1 | P1 | Note on str-qwua7.1: core.bare is repaired; re-scope to the git-state check (local identity override, *@example.com, core.bare, local hooksPath) |
-| 03 | qwua7-51-identity-root-cause | note-to-existing | str-qwua7.51 | P2 | Note on str-qwua7.51: 'Owner: Test' came from the leaked repo-local fixture identity (removed 2026-09-23), not a missing SessionStart identity |
-| 04 | fixture-corruption-incident-reverify | new | new | P2 | Record the 2026-09-07 fixture-corruption incident, review its recovery and contaminated branches, and re-verify str-qwua7.14 against an origin/main SHA |
+| 03 | qwua7-51-identity-root-cause | note-to-existing | str-qwua7.51 | P2 | Note on str-qwua7.51: 'Owner: Test' most likely came from the leaked repo-local fixture identity (removed 2026-09-23); bd's actor override is BEADS_ACTOR, not BD_ACTOR; close-reason SHAs must be labelled |
+| 04 | fixture-corruption-incident-reverify | new | new | P2 | Record the 2026-09-07 fixture-corruption incident and review its two recovery branches and four contaminated remote branches |
 | 05 | agent-config-gitignore | new | new | P2 | Make intended .claude/ and .codex/ agent config trackable: repo .gitignore negations plus a check-ignore meta test |
-| 06 | repo-skills-rot | new | new | P2 | Repair rotted repo skills: check-go/rust/ts and bugfix bare commands, superseded protocol-sync, audit skill paths/steps and memory-contradiction check, plus a skill-command lint |
-| 07 | env-doctor-decisions | new | new | P2 | Apply the 2026-09-06 storystore/bugshot decisions to .agent-mode.local and remove the doctor-flagged orphan worktree dirs |
+| 06 | repo-skills-rot | new | new | P2 | Repair rotted repo skills: delete check-go/rust/ts and protocol-sync, move audit and bugfix suite runs onto governed gates, fix audit skill paths/steps and add its memory-contradiction check |
+| 07 | env-doctor-decisions | note-to-existing | str-qwua7.53 | P2 | Note on str-qwua7.53: its interim step (agent_env_doctor_skip_plugin=bugshot) was never applied; do it now, independent of bgs-3tq |
 | 08 | qwua7-23-agents-md-rtk-and-landing | note-to-existing | str-qwua7.23 | P2 | Note on str-qwua7.23: etiquette rules inside the rtk-managed block, rtk 'always safe' text, landing prose contradicting land.py, merged remote branches (bd sync -> D4 Dolt remote) |
-| 09 | completion-checklist-spec-docs | new | new | P2 | Completion checklist and /pre-completion must require SPEC/QUICKSTART/changelog updates for CLI-visible changes |
-| 10 | planning-rules-location-and-open-decisions | new | new | P2 | Planning rules in CLAUDE.md: plan/spec location + Status banner, and check open tracker decisions before planning |
+| 09 | completion-checklist-spec-docs | new | new | P2 | Require SPEC section + changelog + Last-updated updates for CLI-visible changes (checked semantically by /pre-completion), and run stories-impact-check before behavioural edits |
+| 10 | planning-rules-location-and-open-decisions | new | new | P2 | Planning rules in CLAUDE.md: plans/specs go in docs/plans and docs/specs (overriding the superpowers default), and check open tracker decisions before planning |
 | 11 | 35vtk-9-swarm-config | note-to-existing | str-35vtk.9 | P3 | Note on str-35vtk.9: bento swarm no longer reads .claude/swarm-config.md; batch-landing claim in CLAUDE.md is unbacked |
+| 12 | qwua7-14-reverify-on-main | reopen-note | str-qwua7.14 | P1 | Reopen str-qwua7.14: its 'not reproducible' closure cited e50fc399, a stray fixture commit that is not on origin/main; re-verify on an origin/main build |
+| 13 | orphan-worktree-dirs-cleanup | new | new | P3 | Review the six orphan worktree directories (five doctor-flagged under ~/.local/share/worktrees/shatter plus .claude/worktrees/str-umw3) and remove or retain each with operator approval |
+| 14 | u394l-4-skill-command-lint | note-to-existing | str-u394l.4 | P2 | Note on str-u394l.4: skill-command lint requirements from the 2026-09-22 audit (subcommand resolution, not --help exit codes; governed suite runs; Taskfile parsing without task --list-all) |
+| 15 | qwua7-52-storystore-interim-nudge | note-to-existing | str-qwua7.52 | P2 | Note on str-qwua7.52: storystore adoption is blocked on the storystore clap extractor and stale plugin cache; set a dated remind_after meanwhile |
 
 ---
 
@@ -57,10 +62,11 @@ A test-fixture git identity leaked into the primary checkout's repo-local
 `.git/config` as a `[user]` section (`name = Test`, `email = test@example.com`).
 It was a side effect of the GIT_DIR fixture leak that str-jttrf and str-y0rcz
 fixed on 2026-09-12. Those fixes stopped the leak but never repaired the damage
-it had already done, so every commit made in the primary checkout from about
-2026-06-23 was authored `Test` or `Test User <test@example.com>`, and all were
-pushed to GitHub. The maintainer removed the leaked `[user]` section on
-2026-09-23 (decision D5). **That step is done and is not part of this issue.**
+it had already done, so nearly every commit made in the primary checkout from
+about 2026-06-23 was authored `Test` or `Test User <test@example.com>`, and
+all were pushed to GitHub. The maintainer removed the leaked `[user]` section
+on 2026-09-23 (decision D5). **That step is done and is not part of this
+issue.**
 
 Two things are still missing:
 
@@ -73,9 +79,15 @@ Two things are still missing:
    sentinel, and checks that the sentinel is unchanged. It never checks the
    repository the test runs in: the real checkout's
    `$(git rev-parse --git-common-dir)/config`. That file is what was damaged
-   in 2026-06..09. A fixture that bypasses the sanitizer, or a new fixture
-   missing from `ENTRYPOINTS`, could rewrite the real config and this test
-   would still pass.
+   in 2026-06..09. A fixture that bypasses the sanitizer could rewrite the
+   real config and this test would still pass.
+3. **Unregistered fixtures are invisible.** The test only runs what is listed
+   in `ENTRYPOINTS`. A fixture creator that nobody registered is never
+   executed, so no before/after snapshot, of the sentinel or of the real
+   config, can detect its leak. Several identity-writing fixtures are already
+   unregistered (see Evidence). Guarding the real config therefore needs a
+   **registration-completeness** check as well, or the protection claim must
+   be narrowed to registered entrypoints.
 
 The repo-state check (FAIL on local identity override, `*@example.com`,
 `core.bare=true`, local `core.hooksPath`) is **not** in this issue. It goes to
@@ -94,8 +106,9 @@ Re-verified 2026-09-23 in the audit worktree
   `git log --all --format='%an <%ae>%n%cn <%ce>' | grep example | sort | uniq -c`
   -> `285 Test <test@example.com>`, `961 Test User <test@example.com>` (author
   and committer lines). `git log -300 origin/main --format='%an <%ae>' | sort | uniq -c`
-  -> 177 `Test User`, 123 `Test`, 0 real. The first leaked commit is
-  `131ebe06` (2026-06-23, `Test User`).
+  -> 177 `Test User`, 123 `Test`, 0 real. Since 2026-06-24 origin/main has
+  about 6 real-identity commits against several hundred fixture-identity ones.
+  The first leaked commit is `131ebe06` (2026-06-23, `Test User`).
 - No `.mailmap` exists at the repo root.
 - Fixtures that write this identity (any one of them hits the real repo if
   GIT_DIR leaks in):
@@ -105,11 +118,21 @@ Re-verified 2026-09-23 in the audit worktree
   `scripts/test_git_sandbox_test_lib.py:93-94,134-135`,
   `scripts/test_walkthrough_examples_checkout.py:57,63` (`Test User`),
   `shatter-cli/tests/implicit_init_gitignore_test.rs:51-52` (`Test User`),
+  `shatter-cli/src/commands/init.rs:379-380` (unit test, `Test User`),
+  `shatter-cli/src/generated_paths.rs:750-752` (unit test, `Test`),
   `shatter-core/src/scm.rs:709` (`t@example.com`).
 - `scripts/test_git_fixture_isolation.py:19-31` (`ENTRYPOINTS`) lists only the
-  shell and Python fixtures. The Rust fixtures (`implicit_init_gitignore_test.rs`,
-  the `scm.rs` unit tests) are not covered. `:48-105` snapshots only the
-  temporary `caller` repo, never `ROOT`'s git common dir.
+  shell and Python fixtures. None of the four Rust fixture sites above is
+  registered, and nothing checks that a fixture creator is registered.
+  `:50-111` snapshots only the temporary `caller` repo, never `ROOT`'s git
+  common dir.
+- `git grep -l -E 'user\.(email|name)'` over `scripts/`, `*/tests/`, `*/src/`
+  also matches non-fixtures (for example `shatter-core/tests/e2e_concolic.rs:952`,
+  a JS `props.user.name` string), so a completeness check needs an explicit
+  allowlist, not a bare grep.
+- The shared `$(git rev-parse --git-common-dir)/config` is legitimately
+  rewritten by concurrent sessions (`branch.<name>.*` from `push -u`, remotes,
+  worktree config). A whole-file digest would fail spuriously during swarms.
 - The test runs under `task meta` (`Taskfile.yml:450`,
   `python3 -m unittest scripts.test_git_fixture_isolation`) and is already in
   `meta`'s `sources:` (`Taskfile.yml:418`).
@@ -129,33 +152,51 @@ Re-verified 2026-09-23 in the audit worktree
    prints the real identity twice, and
    `git log --use-mailmap --format='%aN <%aE>' origin/main | grep -c example.com`
    prints `0`.
-3. `scripts/test_git_fixture_isolation.py` hashes
-   `$(git -C ROOT rev-parse --git-common-dir)/config` before and after each
-   `ENTRYPOINTS` command, and before and after the whole run. It fails, naming
-   the entrypoint and the diff, if the file changed. The test only reads the
-   real config and never writes it.
-4. Failing-then-passing proof in the close reason: on a scratch branch, add a
-   throwaway entrypoint that runs `git -C "$ROOT" config user.email leak@example.com`
-   (against a *copy* of the repo, reached by pointing `ROOT` at a temporary
-   clone). Record the test failing, then remove it and record the pass. Do
-   not run the leaking probe against the real primary checkout.
-5. The Rust fixtures that set identities (`implicit_init_gitignore_test.rs`,
-   `scm.rs` tests) are either added as entrypoints (a focused
-   `cargo test -p <crate> <name>` invocation) or covered by the same
-   before/after config hash in a wrapper. The choice is recorded in the test
-   file's comment block above `ENTRYPOINTS`.
-6. `task meta` passes, and `task affected` passes with its `Gates selected`
+3. **Guarded key set, not a whole-file hash.** The test reads the real
+   config (`git config --file <common-dir>/config --list`, common dir resolved
+   with the test's `clean_env` so a leaked `GIT_DIR` cannot redirect it)
+   before and after each `ENTRYPOINTS` command and around the whole run. It
+   compares only the damage-class keys: `user.*`, `core.bare`,
+   `core.hooksPath`, `core.worktree`, plus any newly added key whose value
+   contains `example.com`, `example.invalid` or `example.org`. On a change it
+   fails, naming the entrypoint and the key diff. It only reads the real
+   config and never writes it. The guarded key list is a named constant in
+   the test file.
+4. **No false positive under concurrency.** A unit test adds a
+   `branch.<x>.remote` entry to a temp repo's config between the before and
+   after reads and asserts the guard passes. A second unit test adds
+   `user.email=leak@example.com` and asserts it fails.
+5. **The guard is a function that takes the repo root as a parameter**
+   (required form, so the proof exercises the same code path as the real
+   run). Failing-then-passing proof in the close reason: call it against a
+   temporary clone with a throwaway entrypoint that runs
+   `git -C "$root" config user.email leak@example.com`; record the failure,
+   remove the entrypoint, record the pass. Never run the leaking probe
+   against the real primary checkout.
+6. **Registration completeness.** A second test enumerates tracked files
+   under `scripts/`, `*/tests/` and `*/src/` that set a git identity
+   (`git config user.email|user.name`, `-c user.email=`, or equivalent) and
+   fails unless each is either reachable from an `ENTRYPOINTS` command or
+   listed in a `NOT_EXECUTED = {path: reason}` allowlist in the test file.
+   Close-time proof: the test fails on the current tree, listing at least the
+   four Rust sites above, and passes after they are registered or allowlisted.
+7. The four Rust fixture sites are either registered (a focused
+   `cargo test -p <crate> <name>` entrypoint each) or allowlisted with a
+   reason stating why they cannot reach a real repo. The choice is recorded
+   in the comment block above `ENTRYPOINTS`. If any are allowlisted, the
+   test file's docstring states that the real-config guard covers registered
+   entrypoints only.
+8. `task meta` passes, and `task affected` passes with its `Gates selected`
    output recorded.
 
 ## Suggested approach
 
-- Add a small `real_config_digest()` helper next to `snapshot()`. Call it
-  around the existing loop body so both contamination modes are covered. Use
-  `git rev-parse --git-common-dir` with a clean env (the same `clean_env` the
-  test builds), so a leaked `GIT_DIR` cannot redirect the probe.
-- For the proof in item 4, make `ROOT` overridable through an env var used
-  only by the test, or factor the check into a function that takes the root
-  as a parameter and unit-test that function against a temporary clone.
+- Add `guarded_config(root) -> dict[str, list[str]]` next to `snapshot()`,
+  and call it around the existing loop body so both contamination modes are
+  covered.
+- For the completeness test, prefer `git grep -n -E` over tracked files with
+  a pattern that targets git-config calls, and keep the allowlist small and
+  explained.
 
 ## Out of scope
 
@@ -205,31 +246,39 @@ with the text below. Do not close it and do not change its priority.
 >   audit (`git worktree list` shows none).
 > - The five dead dirs under `~/.local/share/worktrees/shatter/` and the
 >   `.claude/worktrees/str-umw3/` orphan still exist. Their operator-confirmed
->   removal is now tracked by the new audit issues `env-doctor-decisions`
->   (five dirs) and `agent-config-gitignore` (str-umw3). Drop them from this
->   issue's acceptance.
+>   removal (or documented retention) is now tracked by
+>   <orphan-worktree-dirs-cleanup>. Drop them from this issue's acceptance.
 > - A second instance of the same damage class was found: the fixture identity
 >   `[user] name = Test, email = test@example.com` had leaked into the primary's
 >   repo-local `.git/config` (str-jttrf leak). The maintainer removed it
->   2026-09-23. The `.mailmap` and fixture-side config snapshot are tracked in
->   the new audit issue `mailmap-and-fixture-config-snapshot`.
+>   2026-09-23. The `.mailmap` and fixture-side config guard are tracked in
+>   <mailmap-and-fixture-config-snapshot>.
 >
 > **Re-scoped acceptance for this issue (the check only):**
 > - A repo-state check (a new entry in `scripts/drift-patrol.py` `CHECKS`,
 >   `:757`, as this issue already chose; optionally surfaced by
->   `scripts/setup-hooks.sh --check`) FAILs when any of these holds in the
->   checkout it runs in:
+>   `scripts/setup-hooks.sh --check`) inspects **the checkout drift-patrol is
+>   invoked from** (its repo root, not an arbitrary cwd such as a fixture
+>   repo) and FAILs when any of these holds:
 >   1. a repo-local `user.name` or `user.email` override exists
 >      (`git config --local --get user.email` / `user.name` non-empty);
 >   2. the effective `user.email` (any scope) matches `*@example.com` (also
 >      `*.invalid` / `example.org`, if cheap);
 >   3. `core.bare=true`;
 >   4. a repo-local `core.hooksPath` override exists.
-> - It SKIPs (does not FAIL) in CI or when not in a git work tree, consistent
->   with this issue's existing SKIP rule for machine-specific roots.
+> - **Discovery precedence (this order, tested):** (a) locate the repository
+>   with `git rev-parse --git-dir` / `--git-common-dir`, which succeed even
+>   when `core.bare=true` makes `--is-inside-work-tree` return false; (b) read
+>   the common dir's `config` directly (`git config --file <common>/config`)
+>   and evaluate conditions 1-4; (c) only if no git directory can be
+>   discovered at all, or the run is in CI, report SKIP. A checkout whose
+>   config says `core.bare=true` must never be reported as "not a work tree ->
+>   SKIP".
 > - Unit tests in `scripts/test_drift_patrol.py` build a temporary repo per
->   condition and assert FAIL, plus one clean repo asserting PASS. Include a
->   failing-then-passing run in the close reason.
+>   condition and assert FAIL, plus one clean repo asserting PASS, plus one
+>   directory with no repository asserting SKIP. One test sets
+>   `core.bare=true` on a non-bare checkout and asserts **FAIL, not SKIP**.
+>   Include a failing-then-passing run in the close reason.
 > - `python3 scripts/drift-patrol.py` shows the check PASS on the primary
 >   checkout. Record the output in the close reason.
 > - The prunable-worktree / stale-preview / non-repo-dir detections from the
@@ -247,7 +296,7 @@ with the text below. Do not close it and do not change its priority.
 ---
 slug: qwua7-51-identity-root-cause
 kind: note-to-existing
-title: "Note on str-qwua7.51: 'Owner: Test' came from the leaked repo-local fixture identity (removed 2026-09-23), not a missing SessionStart identity"
+title: "Note on str-qwua7.51: 'Owner: Test' most likely came from the leaked repo-local fixture identity (removed 2026-09-23); bd's actor override is BEADS_ACTOR, not BD_ACTOR; close-reason SHAs must be labelled"
 priority: P2
 type: task
 labels: [agents, beads, git]
@@ -257,7 +306,7 @@ existing_id: str-qwua7.51
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Note on str-qwua7.51: real root cause of "Owner: Test"
+# Note on str-qwua7.51: probable root cause of "Owner: Test", actor variable, close-reason SHAs
 
 Target: **str-qwua7.51** (open, P2, "Configure bd identity in the SessionStart
 hook and require a close reason at landing"). Action: `bd comments add str-qwua7.51`
@@ -267,37 +316,69 @@ comment proposes. Do not close it: the close-reason half is still valid.
 ## Comment text
 
 > Audit 2026-09-22 root-cause correction (maintainer decision D5, 2026-09-23;
-> evidence `audits/2026-09-22/findings.json` agent-repo-01, prior-04).
+> evidence `audits/2026-09-22/findings.json` agent-repo-01, prior-04,
+> agent-repo-16).
 >
-> The "Test" / "Test User" owners and assignees are **not** caused by a
-> missing SessionStart bd identity. With no `BD_ACTOR` and no configured
-> actor, bd falls back to git `user.name`; the match between the bd owners
-> and the git authors below is consistent with that. The primary checkout's repo-local `.git/config` carried a leaked
-> test-fixture identity (`[user] name = Test, email = test@example.com`),
-> which the str-jttrf/str-y0rcz GIT_DIR fixture leak wrote there. It overrode
-> the global identity for every git commit and every bd write made from the
-> primary: all issues created since 2026-09-05 have `created_by: Test`. The
-> "Test User" variant comes from fixtures that set `user.name "Test User"`
+> **1. The environment variable in this issue is wrong.** This issue's body
+> plans to export `BD_ACTOR` from a SessionStart hook. Installed bd 1.1.0
+> does not read `BD_ACTOR`: `bd --help` documents
+> `--actor string  Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)`.
+> A hook that exports `BD_ACTOR` would change nothing.
+>
+> **2. Probable root cause (to be confirmed by the probe below).** The
+> primary checkout's repo-local `.git/config` carried a leaked test-fixture
+> identity (`[user] name = Test, email = test@example.com`), written there by
+> the str-jttrf/str-y0rcz GIT_DIR fixture leak. With no `--actor` and no
+> `BEADS_ACTOR`, bd's documented actor fallback is git `user.name`, so the
+> leak would explain "Test" as the actor for every bd write from the primary;
+> all issues created since 2026-09-05 show `Owner: Test`. The "Test User"
+> variant matches fixtures that set `user.name "Test User"`
 > (`scripts/test_walkthrough_examples_checkout.py:63`,
-> `shatter-cli/tests/implicit_init_gitignore_test.rs:52`).
+> `shatter-cli/tests/implicit_init_gitignore_test.rs:52`). This is inferred
+> from the documented fallback and the matching names; it was not traced
+> through bd's source.
 >
 > The maintainer removed the leaked `[user]` section on 2026-09-23. Now
 > `git -C /home/ketan/project/shatter config --show-origin user.name` resolves
 > to `~/.gitconfig` (Ketan Gangatirkar). Follow-ups: `.mailmap` and a fixture
-> config snapshot in the new audit issue `mailmap-and-fixture-config-snapshot`;
-> the recurrence check on str-qwua7.1.
+> config guard in <mailmap-and-fixture-config-snapshot>; the recurrence check
+> on str-qwua7.1.
 >
-> **Proposed re-scope of this issue:**
-> - Drop the `BD_ACTOR`-from-SessionStart requirement unless a fresh claim
->   still shows a wrong owner. First step: in a fresh session, run
->   `bd update <scratch-id> --claim` (or create and delete a scratch issue),
->   then `bd show` it. If the owner is the real name, record that and drop the
->   identity half.
-> - Keep the close-reason half (every landing close carries a SHA or a
->   duplicate/won't-do reason; drift-patrol warns on reasonless closes).
-> - Update the body's bd facts: the installed bd is now **1.1.0**, not
->   v0.63.3. Re-check the `bd close` reason flag against `bd close --help` on 1.1.0.
-> - Existing issues keep `created_by: Test` (historical). Do not bulk-edit them.
+> **3. Proposed re-scope of the identity half.** bd records three distinct
+> identities; check each separately before dropping anything:
+> - **actor** (audit trail / event author): `--actor` > `$BEADS_ACTOR` > git
+>   `user.name` > `$USER`, per `bd --help`;
+> - **assignee**: set by `bd update <id> --claim` ("sets assignee to you");
+> - **owner / created_by**: set at create time; its source is not
+>   documented in `bd create --help`.
+>
+> Probe, in a fresh session from the primary checkout with `BEADS_ACTOR`
+> unset: create a scratch issue, claim it, close it, then
+> `bd show <scratch-id> --json` and record owner, created_by, assignee and
+> the event actor, plus `echo "${BEADS_ACTOR-unset}"` and
+> `git config --show-origin user.name`. Delete the scratch issue afterwards.
+> If all four show the real name, record that and drop the SessionStart
+> identity requirement. If any is wrong, the fix sets **`BEADS_ACTOR`** (not
+> `BD_ACTOR`) or the documented config key, and the probe is re-run to show
+> the corrected value.
+>
+> **4. Keep the close-reason half, with one precision.** Every landing close
+> carries a SHA or a duplicate/won't-do reason, and drift-patrol warns on
+> reasonless closes. Add: a close reason (or diagnosis) that cites a commit
+> must say what that commit is. A claim that work **is landed** or that
+> behaviour was checked **on main** must cite a SHA for which
+> `git merge-base --is-ancestor <sha> origin/main` exits 0. Any other SHA
+> (an unmerged reproduction, a feature-branch fix, a bisect point) is allowed
+> but must be labelled as such, for example "tested on feature branch
+> `<branch>` at `<sha>` (not on main)". Motivating case: str-qwua7.14 was
+> closed "Not reproducible against current main (e50fc399)", but `e50fc399`
+> is a stray fixture commit that is not an ancestor of origin/main (see
+> <fixture-corruption-incident-reverify> and <qwua7-14-reverify-on-main>).
+>
+> **5. Housekeeping.** Update the body's bd facts: the installed bd is now
+> **1.1.0**, not v0.63.3. Re-check the `bd close` reason flag against
+> `bd close --help` on 1.1.0. Existing issues keep `created_by: Test`
+> (historical). Do not bulk-edit them.
 
 ---
 
@@ -306,7 +387,7 @@ comment proposes. Do not close it: the close-reason half is still valid.
 ---
 slug: fixture-corruption-incident-reverify
 kind: new
-title: "Record the 2026-09-07 fixture-corruption incident, review its recovery and contaminated branches, and re-verify str-qwua7.14 against an origin/main SHA"
+title: "Record the 2026-09-07 fixture-corruption incident and review its two recovery branches and four contaminated remote branches"
 priority: P2
 type: task
 labels: [agents, git, governance, audit-2026-09-22]
@@ -316,26 +397,30 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Record the 2026-09-07 fixture-corruption incident, review its recovery and contaminated branches, and re-verify str-qwua7.14 against an origin/main SHA
+# Record the 2026-09-07 fixture-corruption incident and review its two recovery branches and four contaminated remote branches
 
 ## Problem
 
 On 2026-09-07 the GIT_DIR fixture leak (fixed later by str-jttrf / str-y0rcz)
 created a stray commit `e50fc399` ("init", author `Test <test@example.com>`).
-The commit deletes 12,090 lines: it removes `shatter-vs/`, restores
-`.claude/agents` and rewrites `.beads/issues.jsonl`. The recovery was done
-ad hoc and never tracked:
+The commit deletes 12,090 lines: among other things it removes `shatter-vs/`,
+deletes all three `.claude/agents/*/AGENT.md` files and rewrites
+`.beads/issues.jsonl`. The recovery was done ad hoc and never tracked:
 
 - Two local `recovery/*` branches from 2026-09-12 have never been reviewed.
 - Four remote `str-qwua7.*` feature branches contain the stray commit.
   str-qwua7.4's close reason says the duplicates were "both deleted as
   superseded", but they still exist on origin.
-- **str-qwua7.14 (P1 bug) was closed as "Not reproducible against current main
-  (e50fc399)".** `e50fc399` is not on main, so the diagnosis ran against a
-  corrupted tree and the closure is unsound.
+- str-qwua7.14 (P1 bug) was closed as "Not reproducible against current main
+  (e50fc399)". `e50fc399` is not on main, so that diagnosis may have run
+  against a corrupted tree. Its re-verification is split out as
+  `qwua7-14-reverify-on-main`; the close-reason SHA-labelling rule is added
+  to str-qwua7.51 (note `qwua7-51-identity-root-cause`).
 
-Nothing requires a diagnosis or close reason to cite a commit that is actually
-on origin/main.
+This issue is the incident record plus a review of the six branches. It is
+complete when every branch has a recorded disposition. **Deleting a branch is
+optional and needs explicit operator approval; a declined deletion is a valid
+outcome, not a blocker.**
 
 ## Evidence
 
@@ -346,6 +431,9 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
 - `git show -s --format='%h %ad %an %s' --date=short e50fc399` ->
   `e50fc399 2026-09-07 Test init`. `git show --shortstat --format= e50fc399` ->
   `82 files changed, 620 insertions(+), 12090 deletions(-)`.
+- `git show --name-status --format= e50fc399 -- .claude/agents` ->
+  `D .claude/agents/go-dev/AGENT.md`, `D .claude/agents/rust-dev/AGENT.md`,
+  `D .claude/agents/ts-dev/AGENT.md` (deletions, not restorations).
 - `git branch --list 'recovery/*' -v` ->
   `recovery/shatter-index-20260912-11_4ty6m a6f4cbc0 recovery: preserve captured Shatter index`,
   `recovery/shatter-main-20260912-11_4ty6m e50fc399 init`.
@@ -364,35 +452,36 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
    timeline (2026-09-07 stray commit, 2026-09-12 recovery branches, str-jttrf /
    str-y0rcz fixes), the cause (fixture `git` calls under a leaked `GIT_DIR`),
    and the blast radius (the 4 remote branches, the 2 recovery branches, the
-   leaked repo-local identity handled in `mailmap-and-fixture-config-snapshot`).
-2. Each recovery branch is reviewed with
-   `git diff origin/main...<branch> --stat` plus a content check. The review
-   lists any content not already on origin/main; wanted content is filed or
-   landed. Branches are deleted **only after explicit operator confirmation**,
-   recorded in the issue.
-3. For each of the four contaminated remote branches, the issue records the
-   origin/main SHA where that issue's real work landed (or states it did not).
-   Remote deletion (`git push origin --delete <branch>`) happens **only after
-   explicit operator confirmation**. Afterwards,
-   `git ls-remote origin 'refs/heads/str-qwua7*'` no longer lists them.
-4. str-qwua7.14 is reopened and re-diagnosed on a build from an origin/main
-   SHA (`git merge-base --is-ancestor <sha> origin/main` exits 0). It is then
-   closed or kept open based on that result, with a reason that cites the SHA
-   and the command output.
-5. AGENTS.md gains one rule: diagnoses and close reasons that name a commit
-   must name one that is an ancestor of origin/main. Check it with
-   `git merge-base --is-ancestor <sha> origin/main` before citing it.
+   leaked repo-local identity handled in `mailmap-and-fixture-config-snapshot`,
+   and str-qwua7.14 handled in `qwua7-14-reverify-on-main`).
+2. Each of the six branches gets a disposition table row, recorded in this
+   issue, with: the command output of `git diff origin/main...<branch> --stat`;
+   a list of content not already on origin/main (or "none"); for the four
+   `str-qwua7.*` branches, the origin/main SHA where that issue's real work
+   landed (verified with `git merge-base --is-ancestor <sha> origin/main`) or
+   "did not land"; and a disposition: `salvage` (wanted content filed as a new
+   issue or landed, with its id/SHA), `delete` or `retain`.
+3. For each `delete` disposition, the operator's explicit approval is quoted
+   in the issue before deletion. After deletion,
+   `git ls-remote origin 'refs/heads/str-qwua7*'` (remote) or
+   `git branch --list 'recovery/*'` (local) no longer lists that branch.
+4. For each `retain` disposition (including a declined deletion), the issue
+   records the reason and marks the branch "known-contaminated: contains
+   e50fc399, do not merge". The issue can close with retained branches.
+5. The close reason links the incident record and the disposition table.
 
 ## Suggested approach
 
 - Do the review in a scratch linked worktree, never in the primary checkout.
-- For str-qwua7.14, rebuild the CLI and the Rust frontend at the chosen SHA
-  first (a stale binary produced a false audit finding before; see prior-09),
-  then re-run the walkthrough Rust step it names.
+- A content check beyond `--stat`: `git log --oneline origin/main..<branch>`
+  and `git diff origin/main...<branch> -- ':!.beads'` for anything that is not
+  part of the stray deletion.
 
 ## Out of scope
 
-- Enforcing the ancestor-SHA rule in bento land-work (bento tracker).
+- Re-verifying str-qwua7.14 (`qwua7-14-reverify-on-main`).
+- The close-reason SHA rule (str-qwua7.51, via `qwua7-51-identity-root-cause`).
+- Enforcing an ancestor-SHA rule in bento land-work (bento tracker).
 - The general merged-branch sweep (`scripts/cleanup-merged-remote-branches.sh`;
   see the str-qwua7.23 note).
 - Fixture-leak prevention (`mailmap-and-fixture-config-snapshot`, str-qwua7.1).
@@ -444,11 +533,9 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
 - Repo `.gitignore:130` `.claude/settings.local.json`, `:134` `.codex/`,
   `:165` `.claude/worktrees/`. There is no `!` negation.
 - `git ls-files .claude | wc -l` -> 17. `git ls-files .codex | wc -l` -> 0.
-  The primary checkout's `.codex/` holds untracked symlinks (`skills`,
-  `swarm-config.md`) and a `worktrees/` dir.
-- An orphan checkout `/home/ketan/project/shatter/.claude/worktrees/str-umw3/`
-  (9.0 MB; issue str-umw3 closed 2026-04-11) still exists. It is not
-  registered in `git worktree list`, and greps still match it.
+  The primary checkout's `.codex/` holds untracked symlinks (`skills` ->
+  `../.claude/skills`, `swarm-config.md`) and a `worktrees/` dir. Un-ignoring
+  `.codex/` wholesale would surface these as untracked.
 - `task meta` (`Taskfile.yml:396`) is the home for repo meta tests; its
   `sources:` list must include any new test file, or the checksum cache will
   skip it.
@@ -459,25 +546,25 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
 
 1. Repo `.gitignore` un-ignores `/.claude/` (`!/.claude/`) and re-ignores
    `/.claude/settings.local.json` and `/.claude/worktrees/`. It replaces the
-   blanket `.codex/` ignore with rules that track `/.codex/AGENTS.md` (and any
-   other codex files the project intends to track) and keep machine-local
-   codex state ignored.
+   blanket `.codex/` ignore with exactly: ignore `/.codex/*`, un-ignore
+   `!/.codex/AGENTS.md`. Everything else under `.codex/` (the `skills` and
+   `swarm-config.md` symlinks, `worktrees/`, session state) stays ignored.
+   Tracking any further `.codex/` file needs its own `!` line and test case.
 2. A meta test (for example `scripts/test_agent_config_trackable.py`) is wired
    into `task meta` `cmds:` and `sources:`. It asserts that
    `git check-ignore -q --no-index` **fails** (not ignored) for
    `.claude/skills/x/SKILL.md` and `.codex/AGENTS.md`, and **succeeds**
-   (ignored) for `.claude/settings.local.json` and `.claude/worktrees/x`. It
+   (ignored) for `.claude/settings.local.json`, `.claude/worktrees/x`,
+   `.codex/skills`, `.codex/swarm-config.md` and `.codex/worktrees/x`. It
    runs with the maintainer's real global excludes, and also with
    `core.excludesFile` pointing at a temp file containing `.claude/` and
    `.codex/`, so it holds on CI where the global file is absent.
 3. Failing-then-passing proof in the close reason: the test run before the
    `.gitignore` change (fails) and after (passes).
-4. `git status` in a worktree shows a newly created `.claude/skills/probe/SKILL.md`
-   as untracked (recorded, then the probe is deleted).
-5. The `.claude/worktrees/str-umw3/` orphan is removed **only after explicit
-   operator confirmation**, with its size recorded. (This item moves here from
-   str-qwua7.1.)
-6. `task affected` passes, with `Gates selected` recorded.
+4. `git status --porcelain` in a scratch worktree shows a newly created
+   `.claude/skills/probe/SKILL.md` as `??` and shows nothing under `.codex/`
+   in the primary checkout (recorded, then the probe is deleted).
+5. `task affected` passes, with `Gates selected` recorded.
 
 ## Suggested approach
 
@@ -496,6 +583,8 @@ on each developer's global config.
 ## Out of scope
 
 - Writing `.codex/AGENTS.md` itself (str-qwua7.54).
+- Removing the `.claude/worktrees/str-umw3/` orphan (moved to
+  `orphan-worktree-dirs-cleanup`).
 - Changing the dotfiles global gitignore (see the alternative above; no
   dotfiles issue is filed from this audit).
 
@@ -510,7 +599,7 @@ None.
 ---
 slug: repo-skills-rot
 kind: new
-title: "Repair rotted repo skills: check-go/rust/ts and bugfix bare commands, superseded protocol-sync, audit skill paths/steps and memory-contradiction check, plus a skill-command lint"
+title: "Repair rotted repo skills: delete check-go/rust/ts and protocol-sync, move audit and bugfix suite runs onto governed gates, fix audit skill paths/steps and add its memory-contradiction check"
 priority: P2
 type: task
 labels: [agents, skills, docs, audit-2026-09-22]
@@ -520,32 +609,41 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Repair rotted repo skills: check-go/rust/ts and bugfix bare commands, superseded protocol-sync, audit skill paths/steps and memory-contradiction check, plus a skill-command lint
+# Repair rotted repo skills: delete check-go/rust/ts and protocol-sync, move audit and bugfix suite runs onto governed gates, fix audit skill paths/steps and add its memory-contradiction check
 
 ## Problem
 
 Several repo skills under `.claude/skills/` tell agents to do things the
-project forbids, or things that no longer work, and nothing lints skill content
-against the Taskfile:
+project forbids, or things that no longer work:
 
 - `check-go`, `check-rust` and `check-ts` run bare `go test ./...`,
-  `cargo test` and `npm test`. CLAUDE.md and `check-all` require the `task`
-  facade (bare commands skip the heavyweight-slot wrapper, gate caching and
-  parallelism budgets). Nothing references these three skills.
+  `cargo test` and `npm test`. Nothing references these three skills.
 - `protocol-sync` hand-compares three protocol files. It ignores
   `protocol/registry.yaml`, the generated bindings and shatter-rust, all of
   which `task parity` and `scripts/protocol-codegen.py --check` already check
   mechanically.
-- The `audit` skill uses bare commands in Phase 1. It names a root
-  `GLOSSARY.md` that does not exist, samples only the last 20 commits in
-  Phase 7, and in its post-audit step defers beads changes to `bd sync`, a
-  command that no longer exists in bd 1.1.0. Under maintainer decision D4
-  (2026-09-23), the JSONL import and `bd sync` are retired and tracker sync
-  moves to a Dolt remote. Phase 7 also points at the wrong memory path and
-  never checks memory against repo facts. Stale project memory that told
-  agents to bypass hooks with `--no-verify` / `core.hooksPath=/dev/null` went
-  undetected through the 2026-09-04 audit.
-- The `bugfix` skill uses bare test commands.
+- The `audit` skill runs bare suites in Phase 1, names a root `GLOSSARY.md`
+  that does not exist, uses the invalid `bd epic list`, samples only the last
+  20 commits in Phase 7, and in its post-audit step defers beads changes to
+  `bd sync`, a command that no longer exists in bd 1.1.0. Under maintainer
+  decision D4 (2026-09-23) the JSONL import and `bd sync` are retired and
+  tracker sync moves to a Dolt remote. Phase 7 also points at the wrong
+  memory path and never checks memory against repo facts. Stale project
+  memory that told agents to bypass hooks with `--no-verify` /
+  `core.hooksPath=/dev/null` went undetected through the 2026-09-04 audit.
+- The `bugfix` skill runs bare module suites for its regression step.
+
+**Why the fix is not simply "use `task <ns>:test`".** The project's
+machine-wide heavyweight-slot governance (str-35vtk.5) lives in
+`scripts/gate-wrapper.sh`, and only some tasks call it. `task core:test`
+(`shatter-core/Taskfile.yml:14-30`) runs `cargo nextest` / `cargo test`
+directly, so invoking it alone skips the slot semaphore, nice/ionice and the
+timing CSV exactly as a bare `cargo test` does. Suite runs in skills must use
+a **governed** invocation.
+
+The skill-content lint that would catch this class of rot is owned by
+str-u394l.4; this audit's requirements for it are in the note
+`u394l-4-skill-command-lint`, not here.
 
 ## Evidence
 
@@ -559,71 +657,88 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
 - `.claude/skills/protocol-sync/SKILL.md:10-14` reads only
   `shatter-core/src/protocol.rs`, `shatter-ts/src/protocol.ts`,
   `shatter-go/protocol/types.go` and optional `protocol/schemas/`.
-- `.claude/skills/audit/SKILL.md`: `:17-21` bare `cargo test`, `npm test`,
-  `go test ./...`; `:72` lists `GLOSSARY.md` (only `docs/GLOSSARY.md` exists);
-  `:151` "Memory files in `.claude/projects/*/memory/`" (the real location is
+- `.claude/skills/audit/SKILL.md`: `:17-22` bare `cargo test`, `cargo clippy`,
+  `npm test`, `go test ./...`; `:72` lists `GLOSSARY.md` (only
+  `docs/GLOSSARY.md` exists); `:115` `bd epic list` (bd 1.1.0 `bd epic` has
+  only `close-eligible` and `status`); `:151` "Memory files in
+  `.claude/projects/*/memory/`" (the real location is
   `~/.claude/projects/-home-ketan-project-shatter/memory/`); `:153`
   "Recent git log (last 20 commits)"; `:385` "Do NOT commit beads issue
   changes — those are handled by `bd sync`".
-- `.claude/skills/bugfix/SKILL.md:29-31`, `:60-62`, `:67-70`: bare
-  `cargo test`, `npm test`, `go test`, `cd shatter-rust && cargo test`.
-- Task equivalents exist: namespaces `core`, `cli`, `ts`, `go`, `rust-fe`
-  (`Taskfile.yml:12-30`), each with a `test` target, plus root `parity`
-  (`:245`) and `conformance` (`:225`).
+- `.claude/skills/bugfix/SKILL.md:26-31` and `:60-62` (single-test red/green
+  commands), `:65-70` (module suites: `cargo test`, `cd shatter-ts && npm test`,
+  `cd shatter-go && go test ./...`, `cd shatter-rust && cargo test`).
+- Governed entry points: `task affected` (`Taskfile.yml:511-514`,
+  `bash scripts/gate-wrapper.sh affected task affected-governed`),
+  `task check`, `task parity`, `task conformance`, `task e2e*`. Namespace
+  test tasks (`core:test`, `go:test`, `ts:test`, ...) are **not** wrapped.
+  `gate-wrapper.sh` appends a row per governed run to
+  `~/.cache/shatter/gate-times.csv` (`timestamp,worktree,label,...`).
 - `bd sync --help` on bd 1.1.0 -> `Error: unknown command "sync"`.
 - Audit sources: agent-repo-14, plus the audit-skill part of sessions-03 /
   agent-repo-08 (drafts `shatter-agent/14`, `shatter-agent/07`).
 
 ## Acceptance criteria
 
-1. `check-go`, `check-rust`, `check-ts` and `protocol-sync` are deleted, or
-   rewritten as thin wrappers over `task go:test`, `task core:test` /
-   `task cli:test`, `task ts:test` and `task parity`. The choice is recorded
+1. `check-go`, `check-rust`, `check-ts` and `protocol-sync` are deleted
+   (preferred: nothing references them). If any is kept instead, it invokes
+   only a governed gate (`task parity`, `task affected`, or
+   `bash scripts/gate-wrapper.sh <label> task <ns>:test`) and the reason is
    in the close reason.
-2. `audit` and `bugfix` skills use the task facade (`task <ns>:test`) for
-   suite runs. For the single-test red/green loop in `bugfix`, no crate
-   Taskfile accepts pass-through args today (`CLI_ARGS` appears in none of
-   them). Either add `{{.CLI_ARGS}}` to the `test` tasks, or keep the
-   targeted bare command with a one-line note saying why it is allowed
-   there. The lint in item 6 must accept whichever form is chosen.
-3. Audit skill fixes: `:72` -> `docs/GLOSSARY.md`; Phase 7 covers commits
-   since the previous audit's SHA (fallback: last ~150); `:151` names the
-   real memory path.
-4. The audit skill's Phase 7 gains a **memory-contradiction step**: grep the
+2. Suite-level runs in the `audit` and `bugfix` skills use a governed
+   invocation: `task affected` for "run the affected suites", `task check`
+   for the full gate, or `bash scripts/gate-wrapper.sh <label> task <ns>:test`
+   for one namespace. No skill prescribes an unwrapped `task <ns>:test` or a
+   bare suite command for a suite-level run.
+3. The single-test red/green commands in `bugfix` may stay targeted
+   (`cargo test -p <crate> <name>`, `go test -run <Name> ./<pkg>`,
+   `npx jest -t <pattern>`), each preceded by a one-line allowlist comment
+   saying why a focused single test is exempt from gate governance. Use the
+   comment form that str-u394l.4's lint accepts (see
+   `u394l-4-skill-command-lint`).
+4. Audit skill fixes: `:72` -> `docs/GLOSSARY.md`; `:115` -> `bd epic status`;
+   Phase 7 covers commits since the previous audit's SHA (fallback: last
+   ~150); `:151` names the real memory path.
+5. The audit skill's Phase 7 gains a **memory-contradiction step**: grep the
    project memory dir for hook-bypass advice
    (`grep -rnE -- '--no-verify|hooksPath' <memory dir>`, where an explanatory
    "do not" mention is allowed) and for claims that contradict AGENTS.md or
    current repo state (for example `core.bare`, the installed `bd version`,
    commands AGENTS.md no longer names). The findings are listed in the report.
-5. The audit skill's `:385` `bd sync` reference is replaced by the D4
-   procedure that `beads-retire-jsonl-import-dolt-remote` records in AGENTS.md.
-   That means: do not hand-commit `.beads/` files; tracker state lives in the
-   local Dolt DB and reaches other machines via the Dolt remote
-   (`bd dolt push` / `bd dolt pull`). No `bd sync` and no JSONL-export commit
-   remain. The rest of the post-audit landing restructure belongs to
-   `publish-audit-reports`. Whichever of the two lands second rebases onto
-   the other.
-6. A meta test (folded into str-u394l.4 if that lands first) is wired into
-   `task meta` `cmds:` and `sources:`. It fails when a `.claude/skills/**/SKILL.md`
-   names a bare `cargo test` / `go test` / `npm test` / `jest` invocation
-   where an equivalent task exists, or names `task <x>` for a target that
-   is not defined. Resolve targets by parsing the Taskfile YAML (root plus
-   `includes:`), **not** `task --list-all --json`, which writes checksums.
-   It also fails on `bd <subcommand>` names that `bd <subcommand> --help`
-   rejects (skip if `bd` is absent).
-7. Failing-then-passing proof for the lint: run it on the current tree (fails,
-   listing the skills above), then after the fixes (passes). Record both in
-   the close reason. `task affected` passes, with `Gates selected` recorded.
+6. The audit skill's `:385` `bd sync` reference is replaced by the D4
+   procedure that `beads-retire-jsonl-import-dolt-remote` records in AGENTS.md:
+   do not hand-commit `.beads/` files; tracker state lives in the local Dolt
+   DB and reaches other machines via the Dolt remote. No `bd sync`, no
+   JSONL-export commit, no hook-timeout variable and no hook-bypass
+   instruction remains. The rest of the post-audit landing restructure
+   belongs to `publish-audit-reports`; whichever of the two lands second
+   rebases onto the other.
+7. **Close-time proof (all recorded in the close reason):**
+   - `grep -rnE 'cargo test|go test|npm test|bd sync|bd epic list|task [a-z-]+:test' .claude/skills/`
+     before the change (24 matches on 2026-09-23) and after. After the
+     change no match remains in the deleted skills, in audit Phase 1
+     (`:17-22`), at audit `:115`/`:385`, or in bugfix's module-suite step;
+     every remaining match is listed in the close reason with its class:
+     allowlisted single test (item 3, with its comment), prose mention (for
+     example audit `:172`, optimize-tokens `:74`), or a command CLAUDE.md
+     itself prescribes (frontend-parity `:86`, the E2E suites);
+   - one run of each governed invocation the skills now name, with the
+     matching `gate-times.csv` row (label and exit code) showing it went
+     through `gate-wrapper.sh`;
+   - `task affected` passes, with `Gates selected` recorded.
 
 ## Suggested approach
 
-Do the deletions first (smallest diff), then the audit and bugfix edits, then
-the lint, so the lint lands green. Check for skill symlinks under `.codex/skills`
-in the primary checkout (it links to `../.claude/skills/`), so deletions also
-disappear there.
+Do the deletions first (smallest diff), then the audit and bugfix edits.
+`.codex/skills` in the primary checkout is a symlink to `../.claude/skills/`,
+so deletions also disappear there.
 
 ## Out of scope
 
+- The skill-command lint itself (str-u394l.4; requirements in
+  `u394l-4-skill-command-lint`).
+- Making every namespace test task governed (a Taskfile change; if wanted,
+  file separately).
 - The audit skill's post-audit landing flow (report via launch-work/land-work
   before filing): `publish-audit-reports`.
 - AGENTS.md and `.beads/PRIME.md` `bd sync` removal: `beads-jsonl-consumers-drop-bd-sync`.
@@ -633,8 +748,8 @@ disappear there.
 ## Dependencies
 
 - Blocked by `beads-retire-jsonl-import-dolt-remote` (bucket
-  shatter-tracker-and-beads), for acceptance item 5 only: the skill must cite
-  the sync procedure that issue records. Items 1-4 and 6 can start at once.
+  shatter-tracker-and-beads), for acceptance item 6 only: the skill must cite
+  the sync procedure that issue records. Items 1-5 can start at once.
 - Related: str-u394l.4 (agent-rules drift lint), str-qwua7.22 (audit Phase-10
   rewrite), str-qwua7.26.
 
@@ -644,104 +759,64 @@ disappear there.
 
 ---
 slug: env-doctor-decisions
-kind: new
-title: "Apply the 2026-09-06 storystore/bugshot decisions to .agent-mode.local and remove the doctor-flagged orphan worktree dirs"
+kind: note-to-existing
+title: "Note on str-qwua7.53: its interim step (agent_env_doctor_skip_plugin=bugshot) was never applied; do it now, independent of bgs-3tq"
 priority: P2
 type: chore
-labels: [agents, stories, tooling, audit-2026-09-22]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+labels: [agents, tooling]
+parent_epic: "(existing issue; parent str-qwua7)"
 blocked_by: []
-existing_id: ""
+existing_id: str-qwua7.53
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Apply the 2026-09-06 storystore/bugshot decisions to .agent-mode.local and remove the doctor-flagged orphan worktree dirs
+# Note on str-qwua7.53: apply the bugshot interim step now
 
-## Problem
+Target: **str-qwua7.53** (open, P2, "Wire bugshot for walkthrough output once
+bugshot supports CLI capture (bgs-3tq)"). Action: `bd comments add str-qwua7.53`
+with the text below. Do not change its priority.
 
-The bento agent-env-doctor (a SessionStart hook) prints the same warnings every
-session, and every session ignores them:
+This draft was a new issue in the first revision. The cross-check found that
+str-qwua7.53 and str-qwua7.52 already own these decisions and their
+"no SessionStart nudge" acceptance, so it is now a note here plus a sibling
+note on str-qwua7.52 (`qwua7-52-storystore-interim-nudge`). The orphan
+worktree directories that the old draft also covered moved to
+`orphan-worktree-dirs-cleanup`.
 
-- "storystore dormant — decision pending"
-- "bugshot dormant — decision pending"
-- five orphan worktree directories
+## Comment text
 
-The maintainer decided both plugin questions on 2026-09-06:
-
-- adopt storystore (str-qwua7.52);
-- silence bugshot until bugshot's CLI capture (bgs-3tq) lands. str-qwua7.53
-  says: "Until then set agent_env_doctor_skip_plugin=bugshot".
-
-Neither decision was ever written into `.agent-mode.local`, the file that
-encodes them. Warnings that repeat unchanged teach agents to skip
-SessionStart output, which also hides new, real warnings.
-
-## Evidence
-
-Re-verified 2026-09-23:
-
-- `cat /home/ketan/project/shatter/.agent-mode.local` ->
-  `dangerous`, `agent_env_doctor_seen=bugshot,storystore`,
-  `agent_env_doctor_superpowers_pointer_seen=true`. There is no
-  `agent_env_doctor_skip_plugin` or `agent_env_doctor_remind_after` key.
-- The doctor recognises both keys:
-  `/home/ketan/project/bento/plugins/claude/bento/hooks/scripts/agent-env-doctor.py:69,72`
-  (`RECOGNIZED_AGENT_MODE_KEYS`). `remind_after` takes
-  `<plugin>:<YYYY-MM-DD>[,...]` (`:997-999`), and the pending text is built at `:537`.
-- Orphan dirs, none of them a git repo any more:
-  `~/.local/share/worktrees/shatter/str-6q1i` (109 MB),
-  `str-hszo-tmpfix` (573 MB), `str-k6e61-scm-followups` (16 KB),
-  `str-mambd-enum-variant-gen` (16 KB), `str-yhsp-concolic-run` (16 KB).
-- `/home/ketan/project/shatter/docs/stories` does not exist. str-qwua7.52 and
-  str-qwua7.53 are open and unclaimed (created 2026-09-07).
-- Storystore today cannot see shatter's CLI: its inventory finds 0 clap
-  surfaces (storystore extractor gap), and the installed plugin cache is stale
-  (audit area `plugins-guidance.md`).
-- Linked worktrees get their own `.agent-mode.local`, so they show the full
-  nudges even after the primary is fixed. That is a bento bug, tracked in the
-  bento audit bucket.
-- Audit sources: agent-repo-15, plugins-08 (`audits/2026-09-22/findings.json`).
-
-## Acceptance criteria
-
-1. `agent_env_doctor_skip_plugin=bugshot` is present in
-   `/home/ketan/project/shatter/.agent-mode.local`. Proof: run the doctor
-   with a SessionStart payload from the primary checkout; its output no longer
-   mentions bugshot (paste the output in the close reason).
-2. Storystore: pick one and record it in this issue:
-   (a) run `storystore:stories-init` under str-qwua7.52 once the storystore
-   clap extractor and stale-cache problems are fixed; or
-   (b) set `agent_env_doctor_remind_after=storystore:<YYYY-MM-DD>` with the
-   reason "blocked on storystore clap extractor and stale plugin cache",
-   linking the storystore issues in the comment.
-   With (b), the doctor output no longer shows storystore as pending before
-   that date (paste the output).
-3. The five orphan dirs are removed **only after explicit operator
-   confirmation**, with sizes recorded in the issue. Afterwards
-   `ls ~/.local/share/worktrees/shatter/` no longer lists them, and the doctor
-   stops reporting them.
-4. A comment on str-qwua7.53 records the cross-repo dependency on bgs-3tq.
-   (The bgs-3tq priority raise is filed in the bugshot bucket, not here.)
-
-## Suggested approach
-
-`.agent-mode.local` is untracked, per-checkout state, so the edit is an
-operator/agent action recorded in the close reason, not a commit. Test the
-doctor with the same invocation its SessionStart hook uses (see bento
-`hooks.json`).
-
-## Out of scope
-
-- The bento doctor's per-worktree state location and escalation behaviour
-  (bento tracker).
-- Storystore extractor or plugin-cache fixes (storystore tracker).
-- Raising bgs-3tq's priority (bugshot bucket).
-- The `.claude/worktrees/str-umw3` orphan (`agent-config-gitignore`).
-
-## Dependencies
-
-None. Cross-repo relations (bd cannot express them): bgs-3tq (bugshot) and the
-storystore clap-extractor issue.
+> Audit 2026-09-22 (findings agent-repo-15, plugins-08;
+> `audits/2026-09-22/findings.json`).
+>
+> This issue's decision says "Until then set
+> `agent_env_doctor_skip_plugin=bugshot` in `.agent-mode.local` so the nudge
+> stops". That interim step was never applied, so every SessionStart still
+> prints "bugshot dormant — decision pending", and agents learn to skip
+> SessionStart output (hiding new warnings).
+>
+> Evidence, re-verified 2026-09-23:
+> - `cat /home/ketan/project/shatter/.agent-mode.local` -> `dangerous`,
+>   `agent_env_doctor_seen=bugshot,storystore`,
+>   `agent_env_doctor_superpowers_pointer_seen=true`. No
+>   `agent_env_doctor_skip_plugin` key.
+> - The doctor recognises the key:
+>   `/home/ketan/project/bento/plugins/claude/bento/hooks/scripts/agent-env-doctor.py:69,72`
+>   (`RECOGNIZED_AGENT_MODE_KEYS`).
+> - Cross-repo dependency: the permanent wiring waits on bugshot **bgs-3tq**
+>   (CLI capture template). Its priority raise is proposed separately in
+>   the bugshot tracker.
+>
+> **Proposed checkpoint inside this issue (do it now; it does not wait on
+> bgs-3tq, and this issue stays open for the real wiring):**
+> 1. Add `agent_env_doctor_skip_plugin=bugshot` to
+>    `/home/ketan/project/shatter/.agent-mode.local` (untracked per-checkout
+>    state; record the action, there is no commit).
+> 2. Proof: run the doctor with the same invocation its SessionStart hook
+>    uses (bento `hooks.json`) from the primary checkout, before and after,
+>    and paste both outputs: bugshot appears before and not after.
+> 3. Known limit: linked worktrees get their own `.agent-mode.local`, so
+>    they still show the nudge. That is a bento-side bug tracked in the bento
+>    audit bucket; note it, do not work around it here.
 
 ---
 
@@ -834,7 +909,9 @@ old drafts `shatter-agent/17` and `shatter-docs-ui/30`.
 > `task check` gates, the Dolt-remote sync step).
 >
 > **4. Merged remote branches pile up.** `git for-each-ref --merged origin/main refs/remotes/origin`
-> -> 35 merged branches, of 66 remote branches, per the local fetch state.
+> -> 37 merged refs of 64 remote-tracking refs on 2026-09-23 (both counts
+> include `origin/HEAD`; they drift daily, so re-run the command before
+> acting).
 > AGENTS.md calls cleanup "mandatory", but nothing runs it. Four unmerged
 > branches (`origin/str-qwua7.4-testplan-http-body-fix`,
 > `.7-protocol-registry-validate`, `.16-restore-bd-dolt`,
@@ -858,7 +935,7 @@ old drafts `shatter-agent/17` and `shatter-docs-ui/30`.
 ---
 slug: completion-checklist-spec-docs
 kind: new
-title: "Completion checklist and /pre-completion must require SPEC/QUICKSTART/changelog updates for CLI-visible changes"
+title: "Require SPEC section + changelog + Last-updated updates for CLI-visible changes (checked semantically by /pre-completion), and run stories-impact-check before behavioural edits"
 priority: P2
 type: task
 labels: [agents, docs, skills, audit-2026-09-22]
@@ -868,7 +945,7 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Completion checklist and /pre-completion must require SPEC/QUICKSTART/changelog updates for CLI-visible changes
+# Require SPEC section + changelog + Last-updated updates for CLI-visible changes (checked semantically by /pre-completion), and run stories-impact-check before behavioural edits
 
 ## Problem
 
@@ -882,6 +959,16 @@ never reads. This audit found the results:
 - `--failure-threshold` still documented after it was removed;
 - a stale "Last updated" header.
 
+A check that only asks "did `SPEC.md` change?" would not have caught the
+first item (a row was added, the section was not), and a check that only
+watches `args.rs` misses exit-code and output-shape changes made in
+`main.rs`, `helpers.rs`, the renderers or `commands/`.
+
+Separately, `storystore:stories-impact-check` is a hard-trigger skill that
+must run **before** behavioural edits to user-facing surfaces. Listing it
+only in a completion checklist would surface protected intent after the
+change is already written.
+
 ## Evidence
 
 Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22`:
@@ -893,49 +980,88 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
   build/run/config procedures change."
 - `SPEC.md:7` holds the rule: "Any CLI-visible change (new command,
   new/renamed/removed flag, changed default, changed output shape) should add
-  a row to the changelog". The changelog is `SPEC.md:1173` (`## 8. Changelog`),
-  and CLI commands are `## 2.` at `:68`.
+  a row to the changelog". The changelog is `SPEC.md:1173` (`## 8. Changelog`,
+  a `| Date | Change | Section |` table, newest row first), and CLI commands
+  are `## 2.` at `:68` with `### 2.N` subsections.
 - `SPEC.md:3` "Last updated: 2026-09-09", but
   `git log --format='%h %ad' --date=short -- SPEC.md` shows edits on
   2026-09-14 (21981b1d) and 2026-09-19 (2de05fd9).
-- `storystore:stories-impact-check` (a hard-trigger skill) is not referenced
-  in CLAUDE.md, AGENTS.md or `.claude/`.
-- The flag source of truth is `shatter-cli/src/args.rs`.
+- CLI-visible code lives in more than `args.rs`: exit codes are set in
+  `shatter-cli/src/main.rs`, `shatter-cli/src/helpers.rs` and
+  `shatter-cli/src/commands/build_frontend.rs` (`process::exit` /
+  `ExitCode`); output is rendered in `shatter-cli/src/render.rs`,
+  `shatter-cli/src/commands/*.rs`, `shatter-core/src/report.rs` and
+  `shatter-core/src/reporter.rs`.
+- `storystore:stories-impact-check` is not referenced in CLAUDE.md, AGENTS.md
+  or `.claude/`. Its skill description makes it a hard trigger "before any
+  behavioral change to user-facing surfaces", and it keys on
+  `docs/stories/INDEX.md`, which does not exist yet (adoption is
+  str-qwua7.52).
+- `/pre-completion` already emits a summary table
+  (`.claude/skills/pre-completion/SKILL.md:110-129`).
 - Audit source: docs-10 (`audits/2026-09-22/findings.json`,
   `audits/2026-09-22/areas/docs.md`).
 
 ## Acceptance criteria
 
-1. The CLAUDE.md Completion Checklist gains item 8: "**CLI-visible change**
-   (`shatter-cli/src/args.rs`, output format, exit codes) → matching SPEC §2
-   section + §8 changelog row + `Last updated` bump; QUICKSTART/README if
-   first-run behaviour is affected; run `storystore:stories-impact-check` once
-   `docs/stories/` exists."
-2. `/pre-completion` (`.claude/skills/pre-completion/SKILL.md`) adds a
-   diff-based check. If the branch diff against `origin/main` touches
-   `shatter-cli/src/args.rs` or the report/output renderers (list the paths in
-   the skill) and does not touch `SPEC.md`, the check reports FAIL, unless the
-   completion message carries an explicit waiver line with a reason.
-3. Demonstration in the close reason: on a scratch branch, a trivial
-   `args.rs` help-text change without a SPEC edit makes the check FAIL; adding
-   a SPEC changelog row (or a waiver) makes it PASS.
-4. `task affected` passes, with `Gates selected` recorded.
+1. **Pre-edit rule.** CLAUDE.md's Agent Workflow section states: before
+   editing a user-facing CLI surface (the path list in item 3), if
+   `docs/stories/INDEX.md` exists, run `storystore:stories-impact-check` for
+   the planned change and resolve any locked/accepted-story conflict before
+   editing. The completion step (item 4) verifies it happened; it does not
+   replace it.
+2. **Completion checklist item 8** in CLAUDE.md: "CLI-visible change → the
+   matching SPEC §2 subsection, a §8 changelog row naming that subsection, a
+   `Last updated` bump, QUICKSTART/README if first-run behaviour changes.
+   Checked by `/pre-completion` (Spec docs row)." The path list lives only in
+   the skill; CLAUDE.md points to it.
+3. **Trigger paths** are listed once in `.claude/skills/pre-completion/SKILL.md`
+   and include at least: `shatter-cli/src/args.rs`, `shatter-cli/src/main.rs`,
+   `shatter-cli/src/helpers.rs`, `shatter-cli/src/render.rs`,
+   `shatter-cli/src/commands/**`, `shatter-core/src/report.rs`,
+   `shatter-core/src/reporter.rs`. Changes limited to `#[cfg(test)]` modules
+   or test files do not trigger.
+4. **Semantic Spec-docs check** in `/pre-completion` (a script, for example
+   `scripts/spec-docs-check.py`, invoked by the skill and adding one "Spec
+   docs" row to its table). When the branch diff against `origin/main`
+   touches a trigger path, it reports PASS only if the `SPEC.md` diff:
+   (a) adds at least one row to the `## 8. Changelog` table dated on or after
+   the branch's first commit; (b) changes the `Last updated:` line to that
+   row's date or later; and (c) has at least one hunk inside each `§2.N`
+   subsection that the new row's Section column names. It also reports the
+   stories-impact-check result recorded for the branch (item 1) or `N/A`
+   when `docs/stories/INDEX.md` does not exist. Otherwise it reports FAIL,
+   naming which of (a)-(c) is missing.
+5. **Waiver** is machine-readable: a `Spec-Waiver: <reason>` trailer in any
+   commit on the branch turns FAIL into `WAIVED (<reason>)`. No free-text
+   waiver in a completion message counts.
+6. **Unit tests** for the script (wired into `task meta` `cmds:` and
+   `sources:`) cover: trigger path touched with no SPEC change -> FAIL;
+   changelog row added but no §2 hunk -> FAIL (c); row and §2 hunk but stale
+   `Last updated` -> FAIL (b); all three -> PASS; `main.rs` exit-code change
+   alone -> FAIL; test-only change -> not triggered; `Spec-Waiver` trailer ->
+   WAIVED.
+7. **Demonstration in the close reason** on a scratch branch: a help-text
+   change in `args.rs` with no SPEC edit -> FAIL; adding only a changelog row
+   -> still FAIL; adding the §2 edit and the `Last updated` bump -> PASS.
+8. `task affected` passes, with `Gates selected` recorded.
 
 ## Suggested approach
 
-Keep the check in the skill's existing summary table (one row, "Spec docs"),
-so teammates' completion messages carry it automatically. Put the exact
-path list in one place, the skill, and have CLAUDE.md point to it.
+Parse `git diff -U0 origin/main...HEAD -- SPEC.md` hunks against the section
+line ranges of the base and head `SPEC.md`. Keep the check a small,
+dependency-free Python script so `task meta` can test it.
 
 ## Out of scope
 
 - The mechanical CLI-surface drift gate that compares SPEC flag tables with
   clap (str-wurp).
 - Fixing the existing SPEC drift (other audit docs issues).
+- Adopting storystore (str-qwua7.52).
 
 ## Dependencies
 
-None. Related: str-wurp, str-u394l.4, str-qwua7.2.
+None. Related: str-wurp, str-u394l.4, str-qwua7.2, str-qwua7.52.
 
 ---
 
@@ -944,7 +1070,7 @@ None. Related: str-wurp, str-u394l.4, str-qwua7.2.
 ---
 slug: planning-rules-location-and-open-decisions
 kind: new
-title: "Planning rules in CLAUDE.md: plan/spec location + Status banner, and check open tracker decisions before planning"
+title: "Planning rules in CLAUDE.md: plans/specs go in docs/plans and docs/specs (overriding the superpowers default), and check open tracker decisions before planning"
 priority: P2
 type: task
 labels: [agents, docs, governance, audit-2026-09-22]
@@ -954,7 +1080,7 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Planning rules in CLAUDE.md: plan/spec location + Status banner, and check open tracker decisions before planning
+# Planning rules in CLAUDE.md: plans/specs go in docs/plans and docs/specs (overriding the superpowers default), and check open tracker decisions before planning
 
 ## Problem
 
@@ -965,12 +1091,30 @@ Two planning failures trace back to rules the repo never states:
    override this default". Shatter states no preference, so the duplicate
    plan tree keeps growing. On 2026-09-21 a 1,694-line plan landed there with
    no Status banner. Its epic has since closed, it still has 43 unticked
-   boxes, and nothing links to it.
-2. **Open decisions.** That plan told the implementer to "add shatter-llm
-   under shatter-core [dev-dependencies]". This directly contradicts the open,
-   decided issue str-qwua7.43, which removes the core→shatter-llm dev-dependency
-   cycle. No planning step checks open tracker decisions that touch the files
-   or dependency edges a plan changes.
+   boxes, and nothing links to it. str-qwua7.44 will merge the existing trees
+   and define the Status-banner convention, but it does not add the rule that
+   stops the default path from recreating the tree.
+2. **Open decisions.** The core -> shatter-llm dev-dependency already existed
+   (added 2026-05-25 in 4db63be3 for `e2e_llm_oracle.rs`), and str-qwua7.43
+   (open, decided) removes that edge. The 2026-09-21 plan nevertheless told
+   the implementer to rely on it for a **second** consumer,
+   `bench_frontier_ranking.rs` (plan `:1037`: "add `shatter-llm` ... under
+   `[dev-dependencies]`"), deepening an edge a decided issue is removing. No
+   planning step checks open tracker decisions that touch the files or
+   dependency edges a plan changes.
+
+## Ownership (one owner per deliverable)
+
+- **This issue:** the two CLAUDE.md rules (location override; open-decision
+  check).
+- **str-qwua7.44:** the Status-banner convention and its value set, moving
+  `docs/superpowers/{plans,specs}`, banners on existing files (including the
+  2026-09-21 plan), and the orphan check. This issue references that
+  convention and does not define its own. The companion comment below adds
+  the 2026-09-21 plan to .44's banner list.
+- **str-qwua7.43:** moving `bench_frontier_ranking.rs` out of core and
+  dropping the edge; already covered by the audit note
+  `qwua7-43-bench-dev-dep-cycle` (bucket shatter-concolic-and-engine-design).
 
 ## Evidence
 
@@ -981,51 +1125,67 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
   "Modify: `shatter-core/Cargo.toml` — add `shatter-llm = { path = "../shatter-llm" }` under `[dev-dependencies]`".
   Its issue str-hjrnp.4 is closed.
 - `shatter-core/Cargo.toml:44` `shatter-llm = { path = "../shatter-llm" }`
-  (dev-dep). Two test files use it: `shatter-core/tests/bench_frontier_ranking.rs`
-  and `shatter-core/tests/e2e_llm_oracle.rs`.
+  (dev-dep, first added in 4db63be3, 2026-05-25). Two test files use it:
+  `shatter-core/tests/e2e_llm_oracle.rs` and
+  `shatter-core/tests/bench_frontier_ranking.rs`.
 - `grep -nE 'superpowers|docs/plans|docs/specs' CLAUDE.md AGENTS.md` -> no
   matches.
 - Both `docs/plans/` and `docs/specs/` exist, alongside `docs/superpowers/`.
-- str-qwua7.44 (open) will merge `docs/superpowers/{plans,specs}` into
-  `docs/{plans,specs}` and add Status banners plus an orphan check. It does not
-  add the CLAUDE.md rule that stops the default path from recreating the tree.
+- `bd show str-qwua7.44` (open): acceptance requires "docs carry
+  `Status: current | draft | approved | implemented (str-xxxx) | deferred |
+  superseded-by <path>`; every existing orphan gets one" and merging
+  `docs/superpowers/{plans,specs}` into `docs/{plans,specs}`. It has no
+  CLAUDE.md location rule.
 - Audit sources: docs-12, frontend-rust-09 (process part)
   (`audits/2026-09-22/findings.json`, `audits/2026-09-22/areas/docs.md`).
 
 ## Acceptance criteria
 
-1. CLAUDE.md states: plans go in `docs/plans/`, design specs in `docs/specs/`,
-   and each starts with
-   `Status: draft | approved | implemented (str-x) | superseded-by <path>`.
-   It says explicitly that this overrides the superpowers default location.
-2. CLAUDE.md (or AGENTS.md) gains a planning rule: before writing a plan, run
-   `bd search` for each file, crate and dependency edge the plan modifies,
-   and list any open issue or recorded decision it contradicts in the plan
-   header (or "none found", with the searches run).
-3. `docs/superpowers/plans/2026-09-21-jev-frontier-ranking-benchmark.md`
-   gets `Status: implemented (str-hjrnp)`. If str-qwua7.44 has landed first,
-   the banner goes on the file at its moved path.
-4. A comment is appended to str-qwua7.43: add
-   `shatter-core/tests/bench_frontier_ranking.rs` (introduced by the
-   2026-09-21 plan) to the move-out-of-core scope, next to `e2e_llm_oracle.rs`.
-5. Proof in the close reason: `grep -n 'docs/plans' CLAUDE.md` shows the rule,
-   and the str-qwua7.43 comment id is cited.
+1. CLAUDE.md states, in two or three lines: new plans go in `docs/plans/`,
+   design specs in `docs/specs/`; this overrides the superpowers default
+   location; each new plan/spec starts with a `Status:` line using the
+   convention defined by str-qwua7.44 (link the issue, or the doc that .44
+   lands, rather than restating the value list).
+2. CLAUDE.md (or AGENTS.md, if str-qwua7.23's byte budget allows) gains a
+   planning rule: before writing a plan, run `bd search` for each file,
+   crate and dependency edge the plan modifies, and list in the plan header
+   any open issue or recorded decision it contradicts (or "none found",
+   with the searches run).
+3. **Rule-effect proof in the close reason:** in a scratch session, invoke
+   the superpowers `writing-plans` skill for a throwaway plan and record the
+   path it writes to (`docs/plans/...`, not `docs/superpowers/plans/...`) and
+   that the plan header contains the open-decisions line. Delete the
+   throwaway plan afterwards.
+4. `grep -nE 'docs/plans|superpowers' CLAUDE.md` shows the rule (output in
+   the close reason); `task affected` passes, with `Gates selected` recorded.
 
 ## Suggested approach
 
-Keep both rules to two or three lines each in CLAUDE.md's Code Quality or
-Agent Workflow section. str-qwua7.23 is cutting AGENTS.md, so do not grow it.
+Put both rules in CLAUDE.md's Agent Workflow section. str-qwua7.23 is cutting
+AGENTS.md, so do not grow it.
 
 ## Out of scope
 
-- Moving the existing `docs/superpowers/` tree and adding the orphan check
-  (str-qwua7.44).
-- Removing the core→shatter-llm dev-dependency (str-qwua7.43).
+- The Status-banner convention, moving the existing `docs/superpowers/` tree,
+  banners on existing plans, and the orphan check (str-qwua7.44).
+- Removing the core->shatter-llm dev-dependency (str-qwua7.43, via
+  `qwua7-43-bench-dev-dep-cycle`).
 - A dotfiles-level default plan location for all repos.
 
 ## Dependencies
 
-None. Related: str-qwua7.44, str-qwua7.43.
+None. Related: str-qwua7.44, str-qwua7.43, str-qwua7.23.
+
+## Comment for `str-qwua7.44`
+
+> Audit 2026-09-22 (finding docs-12): please include
+> `docs/superpowers/plans/2026-09-21-jev-frontier-ranking-benchmark.md`
+> (1,694 lines, 43 unticked boxes, no `Status:` line; its issue str-hjrnp.4
+> is closed) in this issue's banner pass, as
+> `Status: implemented (str-hjrnp)`, at its moved path. The CLAUDE.md rule
+> that stops the superpowers default from recreating `docs/superpowers/` is
+> filed separately as <planning-rules-location-and-open-decisions>; it
+> references this issue's banner convention instead of defining one.
 
 ---
 
@@ -1076,14 +1236,296 @@ is no old draft for this note; it comes from finding agent-repo-19 (report §15.
 > - `CLAUDE.md:57` states "The lead runs one full `task check` at batch
 >   landing", but nothing configured implements batch landing today.
 >
-> **Proposed scope update:** replace the "`.claude/swarm-config.md`
-> quality-gates rewrite" with: write `.claude/swarm-config.json` with a
-> `landing` block (`gate_scope: task affected`, `full_gate: task check`, and
-> `mode` / `max_batch_size` matching this issue's protocol); delete the `.md`
-> (or keep it only for Epic-mode prose that bento does not read); verify
-> with `swarm-discover.py`'s output that the landing block is accepted with no
-> warnings. Re-check whether the manual batch-land skill this issue plans is
-> still needed, given bento swarm's built-in batch mode, and whether step (4)'s
-> "push once with --no-verify" survives. Audit decision D4 and the 08-24 note
-> already rule out blanket hook bypass. Until then, soften `CLAUDE.md:57` to
-> say batch landing is planned (str-35vtk.9), not current.
+> **Proposed scope update:**
+> - Write the config at the repo root as `swarm-config.json`, so both
+>   runtimes read it: `swarm-discover.py:18-22,257-270` checks the
+>   runtime-specific file (`.claude/` or `.codex/swarm-config.json`) and then
+>   the root file, and Codex never falls back to `.claude/swarm-config.json`.
+>   Delete `.claude/swarm-config.md` and the primary's untracked
+>   `.codex/swarm-config.md` symlink (or keep the `.md` only for Epic-mode
+>   prose that bento does not read).
+> - `landing` block: `full_gate: task check`, and `mode` / `max_batch_size`
+>   matching this issue's protocol.
+> - **`gate_scope` needs an adapter; `task affected` does not fit the
+>   contract.** bento's `landing-config.md` defines `gate_scope` as a
+>   "command that emits scoped gate commands for a diff", and teammates run
+>   the emitted commands. `task affected` (`Taskfile.yml:511-514`)
+>   *executes* the selected gates and prints status and logs; it emits no
+>   commands. Add a small executable (for example `scripts/gate-scope.sh`)
+>   that calls `python3 scripts/affected-gates.py --base <base> --head <head>`
+>   and prints one runnable command per selected gate (`task <gate>`,
+>   nothing for `(none)`), with no other stdout.
+> - **Behavioural validation, not just warning-free discovery.** A
+>   `gate_scope` string whose first word resolves on `PATH` passes
+>   `swarm-discover.py` validation whatever it prints. Acceptance: (1)
+>   `swarm-discover.py --runtime claude` and `--runtime codex` both report
+>   the same non-null `landing` block with `mode` as configured and no
+>   warnings; (2) a test runs the adapter on a fixture diff touching one
+>   crate and asserts stdout is exactly the expected `task <gate>` lines,
+>   and on a docs-only diff asserts it prints only the docs gates (or
+>   nothing); (3) every emitted line runs successfully when executed as a
+>   command in a scratch worktree (record the output in the close reason).
+> - Re-check whether the manual batch-land skill this issue plans is still
+>   needed, given bento swarm's built-in batch mode, and whether step (4)'s
+>   "push once with --no-verify" survives. Audit decision D4 and the 08-24
+>   note already rule out hook bypass, so drop it.
+> - Until batch landing is configured and validated, soften `CLAUDE.md:57`
+>   to say batch landing is planned (str-35vtk.9), not current.
+
+---
+
+<!-- file: 12-qwua7-14-reverify-on-main.md -->
+
+---
+slug: qwua7-14-reverify-on-main
+kind: reopen-note
+title: "Reopen str-qwua7.14: its 'not reproducible' closure cited e50fc399, a stray fixture commit that is not on origin/main; re-verify on an origin/main build"
+priority: P1
+type: bug
+labels: [agents, git, frontend-rust, audit-2026-09-22]
+parent_epic: "(existing issue; parent str-qwua7)"
+blocked_by: []
+existing_id: str-qwua7.14
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Reopen str-qwua7.14: re-verify on an origin/main build
+
+Target: **str-qwua7.14** (CLOSED, P1 bug, "Rust frontend: walkthrough
+examples 0% covered — analyzer/harness param-type disagreement
+(hypothesis)"). Action: `bd reopen str-qwua7.14`, then
+`bd comments add str-qwua7.14` with the text below. Keep its priority. Split
+out of `fixture-corruption-incident-reverify` so the re-diagnosis has its own
+owner and proof. Filer note: `file-all.sh` only posts the comment;
+`bd reopen str-qwua7.14` is a manual step for the maintainer.
+
+## Comment text
+
+> Audit 2026-09-22 (findings agent-repo-16, prior-06, prior-09;
+> `audits/2026-09-22/findings.json`). Reopened because the closure's
+> reference point is not on main.
+>
+> - The close reason says "Not reproducible against current main
+>   (e50fc399)" and "rebuilt shatter-cli/shatter-rust from HEAD".
+>   `git merge-base --is-ancestor e50fc399 origin/main` exits **1**:
+>   `e50fc399` ("init", author `Test <test@example.com>`, 2026-09-07,
+>   82 files, -12,090 lines) is a stray commit made by the GIT_DIR fixture
+>   leak (str-jttrf / str-y0rcz). The diagnosis therefore **may** have run on a
+>   corrupted tree; the "not reproducible" result is unproven, not refuted.
+>   Incident record: <fixture-corruption-incident-reverify>.
+> - The close reason's other points (the cited walkthrough evidence was
+>   mis-cited; `negotiate_language`'s 5% is a separate tractability gap) are
+>   not disputed.
+>
+> **Acceptance for the re-verification:**
+> 1. Choose a SHA `S` with `git merge-base --is-ancestor S origin/main` exit
+>    0 (record the command and exit code). Work in a scratch linked
+>    worktree, never the primary checkout.
+> 2. Rebuild the CLI and the Rust frontend at `S` before running anything
+>    (a stale binary produced a false audit finding before; prior-09), and
+>    record `shatter --version` or the binary's build SHA.
+> 3. Run the walkthrough's Rust step for `classify_number` and `safe_divide`
+>    through the same harness mode the walkthrough uses (standalone-file vs
+>    crate), and record the command, the coverage numbers and any
+>    `deserialization failed` errors.
+> 4. Decide from that output: if the 0%-coverage / deserialization error
+>    reproduces, keep the issue open as a confirmed bug with the repro
+>    command; if not, close it with a reason citing `S`, the commands and
+>    their output. Either way the reason follows the SHA-labelling rule
+>    proposed on str-qwua7.51 (<qwua7-51-identity-root-cause>).
+
+---
+
+<!-- file: 13-orphan-worktree-dirs-cleanup.md -->
+
+---
+slug: orphan-worktree-dirs-cleanup
+kind: new
+title: "Review the six orphan worktree directories (five doctor-flagged under ~/.local/share/worktrees/shatter plus .claude/worktrees/str-umw3) and remove or retain each with operator approval"
+priority: P3
+type: chore
+labels: [agents, git, tooling, audit-2026-09-22]
+parent_epic: "Epic: Audit 2026-09-22 findings"
+blocked_by: []
+existing_id: ""
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Review the six orphan worktree directories and remove or retain each with operator approval
+
+## Problem
+
+Six directories look like worktrees but are no longer registered with git:
+
+- five under `~/.local/share/worktrees/shatter/`, which the bento
+  agent-env-doctor reports as orphan worktree dirs at every SessionStart;
+- `/home/ketan/project/shatter/.claude/worktrees/str-umw3/` (issue str-umw3
+  closed 2026-04-11), which recursive greps from the primary still match.
+
+Removing them is destructive, so it needs explicit operator approval. This
+cleanup was previously bundled into three other issues (str-qwua7.1's repair
+half, and the audit drafts `env-doctor-decisions` and `agent-config-gitignore`),
+where a declined deletion left those issues without a defined outcome. It now
+lives here alone, and **retaining a directory is a valid, documented outcome.**
+
+## Evidence
+
+Re-verified 2026-09-23:
+
+- `~/.local/share/worktrees/shatter/str-6q1i` (109 MB),
+  `str-hszo-tmpfix` (573 MB), `str-k6e61-scm-followups` (16 KB),
+  `str-mambd-enum-variant-gen` (16 KB), `str-yhsp-concolic-run` (16 KB). None
+  is a git repo any more, and none appears in `git worktree list`.
+- `/home/ketan/project/shatter/.claude/worktrees/str-umw3/` (9.0 MB), not in
+  `git worktree list`.
+- Audit sources: agent-repo-10, agent-repo-15, prior-04
+  (`audits/2026-09-22/findings.json`).
+
+## Acceptance criteria
+
+1. For each of the six directories the issue records: size (`du -sh`),
+   `git worktree list` showing it unregistered, whether it contains a `.git`
+   file or dir, and whether it holds any file not present on origin/main that
+   someone might want (a quick listing of top-level contents and any
+   uncommitted-looking source files).
+2. Each directory gets a disposition: `delete` or `retain`. For `delete`, the
+   operator's explicit approval is quoted in the issue before removal; after
+   removal `ls` no longer lists it. For `retain`, the reason is recorded.
+3. The close reason includes the agent-env-doctor output from a SessionStart
+   run in the primary checkout: deleted dirs are no longer reported; any
+   retained dir that the doctor still reports is named with its retain
+   reason. The issue can close with retained directories.
+
+## Out of scope
+
+- The bento doctor's detection logic or a way to silence a retained dir
+  (bento tracker).
+- The git-state check in str-qwua7.1.
+
+## Dependencies
+
+None. The re-scope comment on str-qwua7.1 (note `qwua7-1-git-state-check`)
+points here.
+
+---
+
+<!-- file: 14-u394l-4-skill-command-lint.md -->
+
+---
+slug: u394l-4-skill-command-lint
+kind: note-to-existing
+title: "Note on str-u394l.4: skill-command lint requirements from the 2026-09-22 audit (subcommand resolution, not --help exit codes; governed suite runs; Taskfile parsing without task --list-all)"
+priority: P2
+type: task
+labels: [agents, skills, lint]
+parent_epic: "(existing issue; parent str-u394l)"
+blocked_by: []
+existing_id: str-u394l.4
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Note on str-u394l.4: skill-command lint requirements
+
+Target: **str-u394l.4** (open, P2, "Agent rules drift lint"). Action:
+`bd comments add str-u394l.4` with the text below. This transfers the lint
+half of the earlier audit draft `repo-skills-rot` to its existing owner, so
+there is one implementation; `repo-skills-rot` now only fixes the skills.
+
+## Comment text
+
+> Audit 2026-09-22 (finding agent-repo-14; `audits/2026-09-22/findings.json`).
+> This issue stays the single owner of the agent-rules / skill-command lint.
+> The audit adds these requirements and corrects two of the checks already
+> listed in this issue's notes.
+>
+> **1. Resolve subcommands; do not trust `--help` exit codes.** Check (f)
+> ("every `bd <verb> --flag` ... is accepted by `bd <verb> --help`") and this
+> issue's own regression case would both miss `bd epic list`: on bd 1.1.0
+> `bd epic list --help` **exits 0** and prints the parent `bd epic` help,
+> whose "Available Commands" are only `close-eligible` and `status`.
+> Validate a documented `bd a b c ...` by walking the command tree: at each
+> level, the next word must appear in that level's "Available Commands"
+> list (parse `bd <prefix> --help`), then check flags against the leaf's
+> help. Same approach for any other CLI the lint covers. Regression tests:
+> `bd epic list` FAILs, `bd epic status` and `bd update <id> --claim` PASS.
+> Skip with a warning when `bd` is absent.
+>
+> **2. Cover skill bodies, and check governance, not just existence.**
+> Scan `.claude/skills/**/SKILL.md` as well as CLAUDE.md/AGENTS.md. Fail on a
+> bare suite command (`cargo test`, `go test ./...`, `npm test`, `jest`)
+> **and** on an unwrapped namespace test task (`task core:test`,
+> `task go:test`, ...): these tasks run cargo/go/npm directly and skip
+> `scripts/gate-wrapper.sh`, the heavyweight-slot governance of
+> str-35vtk.5. Accepted forms: governed gates (`task affected`, `task check`,
+> `task parity`, `task conformance`, `task e2e*`, or
+> `bash scripts/gate-wrapper.sh <label> task <ns>:test`), and targeted single
+> tests preceded by a documented allowlist comment (define its exact form
+> here; `repo-skills-rot` uses it in the bugfix skill). Derive the governed
+> set from the Taskfiles (a task counts as governed if its `cmds` invoke
+> `gate-wrapper.sh`), not from a hard-coded list.
+>
+> **3. Resolve `task <x>` names by parsing Taskfile YAML** (root plus
+> `includes:` namespaces), **not** `task --list-all` / `--json`, which writes
+> checksum state (see str-qwua7.3). This amends check (a) in the notes.
+>
+> **4. Close-time proof:** the lint run on the pre-fix tree (before
+> <repo-skills-rot> lands) FAILs and lists at least audit `SKILL.md:115`
+> (`bd epic list`), audit `:17-22` and bugfix `:65-70` (bare suites), and the
+> check-go/check-rust/check-ts skills; after the skill fixes it PASSes. Record
+> both outputs. The lint is wired into `task meta` `cmds:` and `sources:`
+> and into drift-patrol, as this issue already requires.
+
+---
+
+<!-- file: 15-qwua7-52-storystore-interim-nudge.md -->
+
+---
+slug: qwua7-52-storystore-interim-nudge
+kind: note-to-existing
+title: "Note on str-qwua7.52: storystore adoption is blocked on the storystore clap extractor and stale plugin cache; set a dated remind_after meanwhile"
+priority: P2
+type: chore
+labels: [agents, stories, tooling]
+parent_epic: "(existing issue; parent str-qwua7)"
+blocked_by: []
+existing_id: str-qwua7.52
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Note on str-qwua7.52: interim storystore nudge
+
+Target: **str-qwua7.52** (open, P2, "Adopt storystore: initialise
+docs/stories, seed CLI stories, land str-u394l.3"). Action:
+`bd comments add str-qwua7.52` with the text below. Do not change its
+priority. Sibling of the str-qwua7.53 note (`env-doctor-decisions`); split
+from the first-revision draft of that slug.
+
+## Comment text
+
+> Audit 2026-09-22 (findings agent-repo-15, plugins-08;
+> `audits/2026-09-22/findings.json`, `audits/2026-09-22/areas/plugins-guidance.md`).
+>
+> - Still dormant: `/home/ketan/project/shatter/docs/stories` does not exist,
+>   and every SessionStart prints "storystore dormant — decision pending".
+> - Adoption as decided cannot produce useful stories yet: storystore's
+>   inventory finds **0 clap surfaces** in shatter (storystore extractor gap),
+>   and the installed storystore plugin cache is stale. Both are storystore
+>   tracker items.
+> - The bento doctor supports a dated reminder:
+>   `agent_env_doctor_remind_after=<plugin>:<YYYY-MM-DD>[,...]`
+>   (`/home/ketan/project/bento/plugins/claude/bento/hooks/scripts/agent-env-doctor.py:69,72`
+>   recognised keys; value format at `:997-999`).
+>
+> **Proposed interim checkpoint (this issue stays open for adoption):**
+> 1. Record in this issue which way adoption goes first: (a) run
+>    `storystore:stories-init` now and accept observed-mode stories without
+>    CLI surfaces, or (b) wait for the storystore extractor and cache fixes
+>    (link those storystore issues here).
+> 2. With (b), add `agent_env_doctor_remind_after=storystore:<date>` to
+>    `/home/ketan/project/shatter/.agent-mode.local` (untracked; record the
+>    action) with a date no more than 60 days out, and paste the doctor's
+>    SessionStart output before (storystore pending) and after (not shown).
+> 3. Adoption (this issue's own acceptance) is unchanged. Note for the
+>    ordering: <completion-checklist-spec-docs> makes
+>    `storystore:stories-impact-check` a pre-edit step once
+>    `docs/stories/INDEX.md` exists, so adoption also switches that on.

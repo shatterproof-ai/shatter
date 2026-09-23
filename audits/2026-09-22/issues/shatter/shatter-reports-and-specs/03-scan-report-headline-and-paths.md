@@ -1,7 +1,7 @@
 ---
 slug: scan-report-headline-and-paths
 kind: new
-title: "Scan HTML report: headline shows 100% for 1 of 12 functions and 'Paths Found' counts branches; absolute temp paths, all-zero rows, undefined 'Interesting Inputs'"
+title: "Scan HTML report: headline shows 100% for 1 of 12 functions and 'Paths Found' counts branches; absolute temp paths in rendered tables, all-zero rows, undefined 'Interesting Inputs'"
 priority: P2
 type: bug
 labels: [report, scan, html, ux, audit-2026-09-22]
@@ -11,7 +11,7 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Scan HTML report: headline shows 100% for 1 of 12 functions and "Paths Found" counts branches; absolute temp paths, all-zero rows, undefined "Interesting Inputs"
+# Scan HTML report: headline shows 100% for 1 of 12 functions and "Paths Found" counts branches; absolute temp paths in rendered tables, all-zero rows, undefined "Interesting Inputs"
 
 ## Problem
 
@@ -19,41 +19,43 @@ A mixed TS+Go scan discovered 12 functions, attempted 5, completed 1 and failed 
 
 1. **HTML headline misleads.** The HTML tiles read "Functions 1" (completed only), "Paths Found 3" and an unqualified "Coverage 100%". There is no discovered, attempted or failed count. The markdown report is correct: it leads with discovered/attempted/completed/failed and labels the 100% as "(completed-functions subset)". Only the HTML misleads.
 2. **HTML "Paths" is really branches.** The HTML "Paths Found" tile and per-function "Paths" column show `branches_covered`. The markdown and stdout of the same run show 4 paths; the HTML shows 3. (Finding artifacts-13, folded in here.)
-3. **Absolute temp paths everywhere.** Every table, the JSON `file_path` and `qualified_id`, and the artifact names contain absolute `/tmp/...` paths: 6 in the markdown, 29 in the JSON.
+3. **Absolute temp paths everywhere.** Every table, the JSON `file_path` and `qualified_id`, and the artifact names contain absolute `/tmp/...` paths: 6 in the markdown, 29 in the JSON. This issue fixes the rendered tables only; the JSON identity fields stay as they are (see Out of scope).
 4. **All-zero rows.** The Source Set Summary prints seven buckets, six of them `0 | 0`.
 5. **"Interesting Inputs" has no rule.** It lists 2 of the 4 inputs (`0 -> "zero"`, `-1 -> "negative"`) with no stated selection rule.
 6. **Two different summaries.** With `-o`, the stdout `# Scan Results` table uses a single `/abs/path::fn` column while the written file uses separate Function/File columns.
 
 ## Evidence
 
-Re-checked on 2026-09-23 in the audit worktree (HEAD 56c86168):
+Re-checked on 2026-09-23 in the audit worktree (HEAD 793f2b0b; code identical to 56c86168):
 
 - `shatter-core/templates/scan_report.html:13-18`: the stat row has only Functions (`total_fn`), Paths Found (`total_paths`), Coverage (`overall_cov_bar_html`) and Skipped.
 - `shatter-core/src/html_templates.rs:382`: `let total_paths: usize = report.functions.iter().map(|f| f.branches_covered).sum();` and `:428`: `paths_count: f.branches_covered,`.
 - Captured run (on branch `audit-2026-09-22` until the audit reports land): `audits/2026-09-22/artifact-samples/scan-mix.{md,html,json,stdout}`. `scan-mix.md:3-9` has the correct discovered/attempted/completed/failed header; `scan-mix.md:14-22` has six all-zero Source Set rows; `scan-mix.md:71-76` is the Interesting Inputs block; `scan-mix.stdout` shows the `/tmp/...::classifyNumber | 4 | 100%` table.
 - Interesting Inputs selection: `shatter-core/src/report.rs:2465-2468` keeps discovered inputs that threw or that `is_boundary_value` accepts. The rule exists in code but the report never states it.
-- Existing HTML insta snapshot (`shatter-core/tests/html_snapshots.rs`, `shatter-core/tests/snapshots/`) renders a synthetic report and pins the current Paths=branches output, so it does not catch this.
+- Existing HTML snapshot test (`shatter-core/tests/html_snapshots.rs` with files under `shatter-core/tests/snapshots/`; a hand-written file-comparison helper, not the insta crate) renders a synthetic report and pins the current Paths=branches output, so it does not catch this.
+- `shatter-core/src/report.rs:448-460`: `qualified_id` is documented as the stable function identifier (`"<source_file>::<bare_name>"`), the same ID the call graph emits as `function_id` and the scan orchestrator uses to key `analysis_map`, `file_map` and `behavior_maps`. It is an identity key, not a display string, so this issue must not change it.
 - Coverage gap in the audit: the HTML was read as text only, never rendered in a browser.
 
 ## Acceptance criteria
 
 - [ ] The HTML headline leads with "N of M functions completed" and shows discovered, attempted, failed and skipped counts. Coverage is labelled with its basis (completed subset or all discovered), matching the markdown wording.
 - [ ] The HTML "Paths" tile and column show path counts, not `branches_covered`. If branch coverage is also shown, it is labelled as branches.
-- [ ] Reports use project-relative paths. The JSON stores `project_root` once, and `file_path`/`qualified_id` are relative to it.
+- [ ] Rendered text uses project-relative display paths: every path shown in the markdown, HTML and stdout tables is relative to the project root (falling back to the absolute path only for files outside it). The JSON identity fields `file_path` and `qualified_id` keep their current values and meaning; the JSON may add a `project_root` field and a separate display field, but no existing field changes. A test asserts that the markdown and HTML for a scan under a temp directory contain no occurrence of the temp directory prefix, and that `qualified_id` values are unchanged from the pre-fix JSON.
 - [ ] Zero rows and empty sections are omitted from markdown and HTML.
 - [ ] "Interesting Inputs" either states its selection rule in the report (for example "one per distinct outcome") or is removed.
 - [ ] The stdout summary and the written file summary share one table shape.
-- [ ] A new test builds one `ScanReport` (from a real scan of known-answer examples, not a synthetic struct) and asserts that the HTML, markdown and JSON agree on discovered/attempted/completed/failed counts and path counts. It fails on current code; record the failing and passing runs in the close comment. The HTML insta snapshot is updated.
+- [ ] A new test builds one `ScanReport` (from a real scan of known-answer examples, not a synthetic struct) and asserts that the HTML, markdown and JSON agree on discovered/attempted/completed/failed counts and path counts. It fails on current code; record the failing and passing runs in the close comment. The HTML snapshot file is regenerated in the same commit, and the diff of that snapshot is shown in the close comment.
 - [ ] The rendered HTML is reviewed visually: a screenshot (or a bugshot gallery) of the before and after report for the mixed scan is attached to the close comment.
 
 ## Suggested approach
 
-Pass the discovered/attempted/failed counts that `report.rs` already computes for markdown into the HTML template context. Fix `total_paths`/`paths_count` to use the path count field. Relativize paths once in the report model, not in each renderer. Reproduce the mixed scan with a small TS+Go directory that includes at least one Go function that fails or times out.
+Pass the discovered/attempted/failed counts that `report.rs` already computes for markdown into the HTML template context. Fix `total_paths`/`paths_count` to use the path count field. Compute display paths once (a helper that takes the report's project root and a `file_path`) and call it from each renderer; do not rewrite the stored identity fields. Reproduce the mixed scan with a small TS+Go directory that includes at least one Go function that fails or times out.
 
 ## Out of scope
 
 - The artifact filename scheme and ENAMETOOLONG (separate finding cli-ux-07).
 - Why the Go functions timed out.
+- Making `qualified_id` or JSON `file_path` project-relative. That changes a stable identity key used by the call graph, the scan orchestrator and downstream consumers (`report.rs:448-460`), and needs its own migration issue with a schema bump and consumer inventory. File it separately if wanted.
 
 ## Related
 

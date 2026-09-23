@@ -18,7 +18,8 @@ examples 0% covered — analyzer/harness param-type disagreement
 (hypothesis)"). Action: `bd reopen str-qwua7.14`, then
 `bd comments add str-qwua7.14` with the text below. Keep its priority. Split
 out of `fixture-corruption-incident-reverify` so the re-diagnosis has its own
-owner and proof.
+owner and proof. Filer note: `file-all.sh` only posts the comment;
+`bd reopen str-qwua7.14` is a manual step for the maintainer.
 
 ## Comment text
 

@@ -85,7 +85,9 @@ old drafts `shatter-agent/17` and `shatter-docs-ui/30`.
 > `task check` gates, the Dolt-remote sync step).
 >
 > **4. Merged remote branches pile up.** `git for-each-ref --merged origin/main refs/remotes/origin`
-> -> 35 merged branches, of 66 remote branches, per the local fetch state.
+> -> 37 merged refs of 64 remote-tracking refs on 2026-09-23 (both counts
+> include `origin/HEAD`; they drift daily, so re-run the command before
+> acting).
 > AGENTS.md calls cleanup "mandatory", but nothing runs it. Four unmerged
 > branches (`origin/str-qwua7.4-testplan-http-body-fix`,
 > `.7-protocol-registry-validate`, `.16-restore-bd-dolt`,

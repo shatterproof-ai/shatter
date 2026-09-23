@@ -1,17 +1,17 @@
 ---
 slug: triage-policy-and-audit-epic-waves
 kind: new
-title: "Define P1, cap open P1s, and split and wave-order the stalled str-qwua7 audit epic"
+title: "Define P1, cap open P1s, fix priority inversions, and split and wave-order the stalled str-qwua7 audit epic"
 priority: P2
 type: task
-labels: [agents, governance, audit, drift, audit-2026-09-22]
+labels: [agents, governance, audit, audit-2026-09-22]
 parent_epic: "Epic: Audit 2026-09-22 findings"
 blocked_by: []
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Define P1, cap open P1s, and split and wave-order the stalled str-qwua7 audit epic
+# Define P1, cap open P1s, fix priority inversions, and split and wave-order the stalled str-qwua7 audit epic
 
 ## Problem
 
@@ -63,11 +63,11 @@ Re-counted 2026-09-23 from `bd list --all --json --limit 0` unless noted.
       refactor, agent/gates, docs), either wave-ordered with `bd swarm` or
       given explicit blocked-by edges. Obsolete children are closed by
       tracker-reconciliation-sweep.
-- [ ] New drift-patrol checks, each with unit tests over canned bd data:
-      - WARN when the open P1 count is over the cap.
-      - FAIL on a blocked-by-lower-priority inversion.
-      - WARN when an audit epic has more than half of its children untouched
-        for 14 days.
+- [ ] Known priority inversions are resolved: str-35vtk.10 (P1) blocked by
+      str-35vtk.29/.31 (P2) is fixed by raising the blockers, lowering .10, or
+      removing a stale edge, and any other inversion found by a one-off
+      query (command and output in the close reason) is fixed the same way.
+      This lets triage-drift-patrol-checks land green.
 - [ ] AGENTS.md WIP rule: new feature epics at P2 or lower wait while audit P1
       bugs are ready, unless the maintainer overrides.
 
@@ -81,10 +81,12 @@ on the demotions before running `bd update`. Apply the same waves to the
 
 - Implementing the child issues themselves.
 - Closing obsolete issues (tracker-reconciliation-sweep).
+- The drift-patrol checks that keep this policy enforced
+  (triage-drift-patrol-checks).
 
 ## Priority / type / labels
 
-P2, task. Labels: agents, governance, audit, drift, audit-2026-09-22.
+P2, task. Labels: agents, governance, audit, audit-2026-09-22.
 
 ## Parent epic
 
@@ -93,4 +95,5 @@ Epic: Audit 2026-09-22 findings (shatter).
 ## Dependencies
 
 - Blocked by: none.
+- Blocks: triage-drift-patrol-checks.
 - Related: tracker-reconciliation-sweep, str-qwua7, str-qwua7.62.

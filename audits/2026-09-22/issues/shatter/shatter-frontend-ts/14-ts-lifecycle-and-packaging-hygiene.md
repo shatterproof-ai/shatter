@@ -1,64 +1,60 @@
 ---
 slug: ts-lifecycle-and-packaging-hygiene
 kind: new
-title: "shatter-ts hygiene: async timeout timer leak hidden by jest forceExit, stdin EOF drops in-flight responses, dual lockfiles, tests emitted to dist, standalone bundle worker name, js-yaml v3"
+title: "shatter-ts lifecycle: async timeout timer never cleared (hidden by jest forceExit); shutdown and stdin EOF drop in-flight responses"
 priority: P3
-type: chore
-labels: [typescript, cleanup, audit]
+type: bug
+labels: [typescript, lifecycle, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
 blocked_by: []
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# shatter-ts hygiene: async timeout timer leak hidden by jest forceExit, stdin EOF drops in-flight responses, dual lockfiles, tests emitted to dist, standalone bundle worker name, js-yaml v3
+# shatter-ts lifecycle: async timeout timer never cleared (hidden by jest forceExit); shutdown and stdin EOF drop in-flight responses
+
+Scope note: the slug is kept from the earlier combined draft. The packaging items (dual lockfiles, tests emitted to `dist/`, standalone bundle worker name) moved to ts-packaging-hygiene, and the js-yaml major upgrade moved to ts-js-yaml-v4. This issue is only process-lifecycle correctness.
 
 ## Problem
 
-These are small robustness and packaging defects in `shatter-ts`, each independently fixable. None is user-visible today, but some of them hide real problems from the test suite: `forceExit` masks leaked handles.
+1. **Timer leak.** Every async `execute` starts a `setTimeout` for the harness timeout and never clears it, so each call leaves a pending timer of up to `timeoutMs`. Jest's `forceExit: true` hides leaked handles like this one from the test suite.
+2. **Shutdown and EOF drop in-flight work.** Requests are handled concurrently (each stdin line starts its own `handleRequest` promise). The `shutdown` handler terminates the instrumentation worker immediately, so an `instrument` still running in that worker fails with `Worker terminated`. On stdin `close`, the process calls `process.exit(0)` without waiting for pending promises, so responses in flight are lost, including the `shutdown_ack`.
+
+Impact today is low, because the core waits for each response before sending the next request. It becomes real for any pipelined client, and the leaked handles weaken the test suite.
 
 ## Evidence
 
-Re-verified against the audit worktree at 56c86168 (2026-09-23).
+Verified at 56c86168 and re-checked unchanged at 793f2b0b (2026-09-23).
 
-1. **Timer leak (frontend-ts-06; verifier P3).**
-   - `shatter-ts/src/executor.ts:1274-1281`: `Promise.race([syncResult, new Promise((_, reject) => setTimeout(() => reject(new Error("async execution timed out")), timeoutMs))])`. The timer is never cleared or `unref`'d, so every async execute leaves a pending timer of up to `timeoutMs`.
-   - `shatter-ts/jest.config.js:6`: `forceExit: true` ("avoid hanging on worker threads that outlive tests") hides leaked handles like this one.
-   - Practical impact is minor, because the frontend is long-lived and each timer is bounded.
-2. **Stdin EOF / shutdown drop in-flight responses (frontend-ts-17).**
-   - `shatter-ts/src/main.ts:76-79`: `rl.on("close", () => { ...; process.exit(0); })` exits without awaiting in-flight `handleRequest` promises.
-   - Audit probes (not re-run by the verifier): piping `handshake, shutdown` then EOF produced no `shutdown_ack`; `shutdown` during an in-flight `instrument` produced `internal_error "Unhandled error: Worker terminated"`.
-   - `main.ts:23` hard-codes `"Starting TypeScript frontend (protocol 0.1.0)"`, although `PROTOCOL_VERSION` is imported at `main.ts:13`.
-   - Low impact today, because the core waits for each response.
-3. **Packaging (frontend-ts-16).**
-   - Both `shatter-ts/package-lock.json` and `shatter-ts/pnpm-lock.yaml` exist. The Taskfile installs with npm; `pnpm-lock.yaml` was last touched incidentally in aca09d8b.
-   - `shatter-ts/tsconfig.json:16-17` includes `src` and excludes only `src/__fixtures__`, so `tsc` emits all 21 `*.test.ts` into `dist/`.
-   - `shatter-ts/package.json:11` `bundle` emits `dist/bundle.js` and `dist/worker-bundle.js`, but `shatter-ts/src/instrumentation-worker.ts:49` resolves `path.join(__dirname, "worker.js")`.
-     - *Verifier correction:* `node dist/bundle.js` works in a normal `dist/`, because `tsc` also emits `dist/worker.js`, which the bundle falls back to. Only a standalone bundle (without the tsc output) fails with `Cannot find module .../worker.js` on the first instrument. The CLI's embedded path renames the file correctly (`shatter-cli/build.rs:93`, `embedded_frontend.rs:42`).
-   - `package.json` `main`/`bin` point at the unbundled `dist/main.js`.
-   - `js-yaml` is `^3.14.2`, with a hand-written `shatter-ts/src/js-yaml.d.ts`.
-- Audit sources: findings frontend-ts-06, frontend-ts-16, frontend-ts-17; `audits/2026-09-22/areas/frontend-ts.md` F6/F16/F17.
+- `shatter-ts/src/executor.ts:1272-1282`: `Promise.race([syncResult, new Promise((_, reject) => setTimeout(() => reject(new Error("async execution timed out")), timeoutMs))])`. The timer id is not kept, so it can never be cleared.
+- `shatter-ts/jest.config.js:7`: `forceExit: true` ("avoid hanging on worker threads that outlive tests").
+- `shatter-ts/src/handlers.ts:1046-1069`: the `shutdown` case clears caches and runs `await _worker.terminate()` (`:1058-1061`) before returning `shutdown_ack`, without waiting for requests still using the worker.
+- `shatter-ts/src/main.ts:76-79`: `rl.on("close", () => { ...; process.exit(0); })` exits without awaiting in-flight `handleRequest` promises.
+- Audit probes (not re-run by the verifier): piping `handshake, shutdown` then EOF produced no `shutdown_ack`; `shutdown` during an in-flight `instrument` produced `internal_error "Unhandled error: Worker terminated"`.
+- `shatter-ts/src/main.ts:23` hard-codes `"Starting TypeScript frontend (protocol 0.1.0)"`, although `PROTOCOL_VERSION` is imported at `main.ts:13`.
+- Audit sources: findings frontend-ts-06 and frontend-ts-17; `audits/2026-09-22/areas/frontend-ts.md` F6/F17.
 
 ## Acceptance criteria
 
-- [ ] The async race clears its timer in `finally`, or `unref`s it. `forceExit` is removed from `jest.config.js` after one `npx jest --detectOpenHandles` run whose findings are fixed. The close note pastes that run's summary showing no open handles.
-- [ ] On stdin `close` and on `shutdown`, the frontend awaits pending request promises, bounded by a timeout, before exiting. A test pipes `handshake, shutdown`, then EOF, and asserts that `shutdown_ack` is received; it fails on current `main`. The startup banner uses `PROTOCOL_VERSION`.
-- [ ] `pnpm-lock.yaml` is deleted (npm is the one package manager).
-- [ ] A `tsconfig.build.json` (used by `build`) excludes `**/*.test.ts`. After `task ts:build` there are no `*.test.js` files in `dist/`, while ts-jest typechecking of tests still works.
-- [ ] The bundle and worker names agree: the bundle emits `worker.js`, or the worker path is passed explicitly. A standalone bundle (bundle output alone, in an empty directory) completes an `instrument` request. `shatter-cli/build.rs` / `embedded_frontend.rs` are updated if the file name changes.
-- [ ] `js-yaml` is 4.x with `@types/js-yaml`, and the hand-written `js-yaml.d.ts` is removed.
-- [ ] Record `task affected` `Gates selected`. Because the embedded frontend is touched, also run the walkthrough (`task walkthrough`) and paste its pass line.
+- [ ] The async race keeps its timer id and calls `clearTimeout` when the race settles either way (for example in `finally`). `unref()` alone does **not** satisfy this: the timer would still stay allocated until it fires. A unit test with jest fake timers asserts that no timer is pending after a fast async execute resolves, and after one that rejects.
+- [ ] `forceExit` is removed from `jest.config.js`. The close note pastes the summary of an `npx jest --detectOpenHandles` run in `shatter-ts` showing no open handles; any other leaks it finds are fixed in this issue or filed with ids in the close note.
+- [ ] The frontend tracks in-flight request promises. On `shutdown` it stops accepting new work, awaits in-flight requests (bounded by a timeout), and only then terminates the worker and sends `shutdown_ack`. On stdin `close` it awaits in-flight requests (same bound) before exiting.
+- [ ] Regression tests that spawn `node dist/main.js`, each red on current `main`:
+  - pipe `handshake`, `shutdown`, then EOF; assert `shutdown_ack` is received;
+  - send `instrument` for a real fixture and then `shutdown` immediately without waiting; assert the `instrument` response is a success (not `internal_error ... Worker terminated`) and is written **before** `shutdown_ack`.
+- [ ] The startup banner uses `PROTOCOL_VERSION`.
+- [ ] Record `task affected` `Gates selected`. If the shutdown response ordering is protocol-visible, update `shatter-ts/CLAUDE.md` and run `task conformance`.
 
 ## Suggested approach
 
-Make independent small commits, one per item. The timer fix touches the same race as ts-timeout-classification, which adds a dedicated timeout error class. If both are picked up together, do them in one change.
+Keep a `Set<Promise>` of in-flight handlers in `main.ts`. Move the worker termination out of the `shutdown` handler into a drain step that `main.ts` runs after the in-flight set is empty. The timer fix touches the same race as ts-timeout-classification, which adds a dedicated timeout error class; if both are picked up together, do them in one change.
 
 ## Out of scope
 
 - Outcome classification (ts-timeout-classification).
+- Packaging (ts-packaging-hygiene) and the js-yaml upgrade (ts-js-yaml-v4).
 - ESLint adoption (str-qwua7.31).
-- Changing how the CLI embeds the frontend beyond the worker file name.
 
 ## Priority / type / size
 
-P3 · chore · size M
+P3 · bug · size S-M

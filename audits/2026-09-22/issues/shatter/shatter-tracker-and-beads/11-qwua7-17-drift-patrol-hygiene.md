@@ -19,8 +19,8 @@ flagged by drift-patrol").
 **Filer caution:** str-qwua7.17 has been **closed** since 2026-09-08
 (re-checked 2026-09-23). The source finding's dedupe called it open, but it
 is not. Post this as a comment only; **do not reopen it**. The action items
-are carried by tracker-reconciliation-sweep (orphans, landed-not-closed
-check) and mpgg1-close.
+are carried by tracker-reconciliation-sweep (orphans), mpgg1-close, and
+landed-not-closed-patrol-check (the recurrence check).
 
 ## Comment text
 
@@ -41,5 +41,7 @@ Drift-patrol tracker-hygiene failed on main on 2026-09-22
   Consider running drift-patrol with `--strict-pending` once both land.
 
 This is the second time stale claims have accumulated after a one-time sweep.
-The recurrence fix is the landed-not-closed and stale-claim patrol check in
-<tracker-reconciliation-sweep>. A one-time sweep does not fix it.
+A one-time sweep does not fix it. The recurrence fix is a new drift-patrol
+check that FAILs when an issue is still open or in_progress although a
+landing merge for it is on origin/main: <landed-not-closed-patrol-check>.
+The existing 14-day stale-claim FAIL stays as it is.

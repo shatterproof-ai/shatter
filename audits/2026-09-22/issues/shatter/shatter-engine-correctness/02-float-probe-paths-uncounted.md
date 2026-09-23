@@ -23,7 +23,7 @@ With `--concolic`, the report agrees with the progress line.
 
 ## Evidence
 
-Code (line numbers re-checked against `56c86168`):
+Code (line numbers re-checked on the audit branch, whose code is identical to `56c86168`):
 
 - `shatter-core/src/explorer.rs:1212-1319` is the float probe. At `:1279-1283` it computes `path_hash` for the float and floor executions and calls `obs_state.seen_paths.insert(...)` directly. At `:1297-1301` it calls only `aggregator.push_raw_result(...)`, so probe paths never enter `unique_paths` / `new_path_executions`.
 - The probe runs whenever `n_float * PROBE_COUNT * 2 < max_iterations` (`:1214-1216`).
@@ -43,8 +43,11 @@ Observed during the audit (`--clean`, and `--no-cache` where noted, fresh direct
 ## Acceptance criteria
 
 - [ ] Float-probe executions go through the aggregator's normal observe/new-path accounting. No code path inserts into `seen_paths` without also recording the path as discovered.
-- [ ] A regression test asserts rendered report path count == progress-line path count == `--spec` class count, in both random and concolic modes. It covers these known-answer fixtures: TS `01-arithmetic.ts` (classifyNumber, compareMagnitudes), TS safeDivide, a trivial 2-branch fixture, the fall-through-throw `fmt2` shape, a float-param fixture (Go `Classify`-shaped), and Rust `safe_divide`. At close, show the test failing on current `main` and passing after the fix, with the output quoted in the close note.
-- [ ] The behavior-map cache for these fixtures has one behavior per discovered path. A test asserts it, including the two-same-named-functions case.
+- [ ] A regression test asserts rendered report path count == progress-line path count == `--spec` class count, in both random and concolic modes, on these known-answer fixtures:
+  - From the external examples repo (`github.com/shatterproof-ai/examples`, resolved through `SHATTER_EXAMPLES_DIR` or `<tmp>/shatter-examples-main/standalone/` via `scripts/examples_checkout.py`): `standalone/ts/01-arithmetic.ts` (`classifyNumber`, `compareMagnitudes`), `standalone/ts/04-errors.ts` (`safeDivide`), and `standalone/rust/04_errors.rs` (`safe_divide`).
+  - Self-contained, written as inline source strings to a tempdir by the test (no examples-repo change): a trivial 2-branch TS function (`g(x){ if (x>1) return 1; return 0 }`), the fall-through-throw TS `fmt2` shape (`n>10` returns 'big', `n<0` returns 'neg', otherwise throws), and a Go `Classify(x float64)` with nested `x > 0.5` / `x < 1`.
+  - At close, quote the test output showing each fixture failing on current `main` and passing after the fix. If the test is `#[ignore]`d because it spawns frontends, run it with `-- --include-ignored` (or through the `task e2e-*` target) and quote the lines listing the test names as run; a run that skips it does not count.
+- [ ] The behavior-map cache for these fixtures has one behavior per discovered path. A test asserts it, including the two-same-named-functions case (two self-contained TS files `a.ts` and `b.ts` that each define `classify`).
 - [ ] `e2e_float_probe.rs` also asserts `unique_paths` / `new_path_executions` for a float-param fixture in random mode.
 - [ ] The concolic path counts on the same fixtures do not change.
 - [ ] `task affected` passes with its `Gates selected` output recorded, and `task e2e` passes (explorer change).

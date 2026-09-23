@@ -1,52 +1,49 @@
 ---
 slug: rust-frontend-design-dedupe
 kind: new
-title: "shatter-rust: crate type registry rebuilt on every analyze (O(N^2) parses per crate scan), and two independent Axum extractor classifiers"
+title: "shatter-rust rebuilds the crate type registry on every analyze (about N² file parses per crate scan)"
 priority: P3
 type: refactor
-labels: [rust-frontend, performance, axum, audit]
+labels: [rust-frontend, performance, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
 blocked_by: []
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# shatter-rust: crate type registry rebuilt on every analyze (O(N^2) parses per crate scan), and two independent Axum extractor classifiers
+# shatter-rust rebuilds the crate type registry on every analyze (about N² file parses per crate scan)
 
 ## Problem
 
-Two design inefficiencies in shatter-rust:
-
-1. **Registry rebuilt per analyze.** Every analyze call rebuilds the crate type registry. It walks the crate's `src/` and `syn`-parses every `.rs` file, with no cache on the `Handler`. Scanning N files of one crate costs about N×N file parses (inferred, not measured).
-2. **Two Axum extractor classifiers.** `adapters.rs` classifies Axum extractors (12 kinds, keyed by `ParamInfo.type_name`) for the adapter path. `executor.rs` has a separate 5-kind classifier (Path/Query/Json/State/Multipart) that re-parses type strings with `syn` for the generic wrappers. They can disagree, and support added to one is missing from the other.
+Every analyze call rebuilds the crate type registry. It walks the crate's `src/` and `syn`-parses every `.rs` file, with no cache on the `Handler`. Scanning N files of one crate costs about N×N file parses (inferred, not measured).
 
 ## Evidence
 
-Re-verified against the audit worktree at commit 56c86168:
+Re-verified against the audit worktree at commit 56c86168 (no change in `shatter-rust/` at main 16794cef):
 
 - `shatter-rust/src/analyzer.rs:83` and `:201` both call `build_crate_type_registry(file_path)`, defined at `analyzer.rs:907`.
-- `shatter-rust/src/adapters.rs:389` `pub enum AxumExtractorKind`. `shatter-rust/src/executor.rs:1796` `enum AxumExtractor`, used around `executor.rs:2167, 2195, 2222, 2452, 2776, 4989, 6571, 6693` (per the audit; re-check exact sites when implementing).
 
 ## Acceptance criteria
 
-- [ ] The crate type registry is cached on the `Handler`, keyed by crate root plus a cheap fingerprint (e.g. max mtime + file count of `src/**/*.rs`), and invalidated on teardown/shutdown or fingerprint change. A test shows a second analyze in the same crate does not re-parse, and that editing a file invalidates the cache.
-- [ ] Record `shatter scan` wall time on a multi-file Rust crate (e.g. the pickpackit or an examples crate) before and after in the close note.
-- [ ] One extractor classifier in `adapters.rs` returns kind + inner type, and `executor.rs` consumes it (the `executor.rs` enum is deleted). A test asserts classification for every type in `AXUM_EXTRACTOR_TYPES`.
-- [ ] Existing Axum tests and `cargo test --test e2e_concolic_rust` pass. The protocol output is unchanged, so no parity-contract update is needed; if output does change, update `protocol/parity-matrix.yaml` and run `task parity` + `task conformance`.
+- [ ] Before changing code, measure: `shatter scan` wall time and the number of `build_crate_type_registry` file parses (temporary counter or `--timing` phase) on a multi-file Rust crate (name the crate and commit, e.g. an examples crate). Record in the close note.
+- [ ] The crate type registry is cached on the `Handler`, keyed by crate root. Invalidation uses per-file change detection: the cache stores, for every `.rs` file it parsed, the path plus (size, mtime) or a content hash, and is rebuilt when any stored file changed, was removed or replaced, or when a new `.rs` file appears under the crate's source roots. An aggregate fingerprint such as max-mtime + file count is not acceptable: it misses an edit to an older file while a newer file keeps the max, and a replace that keeps the count.
+- [ ] Tests: (1) a second analyze in the same crate does not re-parse (parse counter unchanged); (2) editing a file that is not the newest invalidates; (3) replacing a file with same-size different content invalidates (use a content hash or ensure mtime moves); (4) adding a file invalidates; (5) removing a file invalidates.
+- [ ] The same scan re-measured after the change, with parse count and wall time in the close note.
+- [ ] `task rust-fe:test` passes and the Rust E2E suite passes with ignored cases included: `SHATTER_EXAMPLES_DIR="$(python3 scripts/examples_checkout.py --no-update)" cargo test --test e2e_concolic_rust -- --include-ignored` (plain `cargo test --test e2e_concolic_rust` runs nothing; every case is `#[ignore]`d). Paste the `test result:` line with 0 ignored. Protocol output is unchanged, so no parity-contract update is expected.
 
 ## Suggested approach
 
-Keep the registry cache in a `HashMap<PathBuf, (Fingerprint, Arc<CrateTypeRegistry>)>` on the handler and pass the `Arc` into the analyze functions. For the classifier, extend `AxumExtractorKind` with a method that yields the inner type from a `syn::Type`, and delete the executor copy.
+Keep a `HashMap<PathBuf, (Vec<(PathBuf, u64, SystemTime, u64 /*hash*/)>, Arc<CrateTypeRegistry>)>` on the handler and pass the `Arc` into the analyze functions. Re-stat the file list on each lookup (cheap compared with re-parsing).
 
 ## Out of scope
 
-- Adding support for new extractor kinds (str-la75, str-62pj, str-38in cover individual extractors).
-- Cross-crate / multi-file analysis beyond caching (see project memory on single-file analysis).
+- Unifying the two Axum extractor classifiers (`rust-axum-extractor-classifier-dedupe`).
+- Cross-crate / multi-file analysis beyond caching.
 
 ## Size
 
-M
+S
 
 ## References
 
-- Findings frontend-rust-12, frontend-rust-14 (audit 2026-09-22). Old draft: `drafts/shatter-code/64-rust-frontend-design-dedupe.md`.
+- Finding frontend-rust-12 (audit 2026-09-22). Old draft: `drafts/shatter-code/64-rust-frontend-design-dedupe.md` (split: the extractor half is `rust-axum-extractor-classifier-dedupe`).

@@ -15,7 +15,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 ## Problem
 
-`deadcode ./...` reports 57 unreachable production functions in shatter-go, including the entire `reconstruct` package, which has no importers. Nothing gates new dead code. Meanwhile open str-qwua7.48 asks for new rapid property tests *for* `reconstruct` (dead) while the live code generators that build Go source by string concatenation (wrapper, launcher) and the config matcher have no property tests, and `setup/` has no tests at all.
+`deadcode ./...` reports ~57 unreachable production functions (57 at 56c86168; the count moves with every commit) in shatter-go, including the entire `reconstruct` package, which has no importers. Nothing gates new dead code. Meanwhile open str-qwua7.48 asks for new rapid property tests *for* `reconstruct` (dead) while the live code generators that build Go source by string concatenation (wrapper, launcher) and the config matcher have no property tests, and `setup/` has no tests at all.
 
 ## Evidence
 
@@ -33,11 +33,11 @@ Re-verified against the audit worktree at commit 56c86168:
 
 ## Acceptance criteria
 
-- [ ] Each function in the deadcode report is deleted, or moved to `_test.go` / `internal/testutil` if tests need it, case by case. `reconstruct/` is deleted. `shatter-go/CLAUDE.md` claims about removed code (e.g. `ResolveMockSpecs` at :273, reconstruct) are corrected.
+- [ ] Each function in the deadcode report taken at branch start (paste that report, with its commit SHA, into the issue) is deleted, or moved to `_test.go` / `internal/testutil` if tests need it, case by case. `reconstruct/` is deleted. `shatter-go/CLAUDE.md` claims about removed code (e.g. `ResolveMockSpecs` at :273, reconstruct) are corrected.
 - [ ] Exceptions: `instrument/flow*.go` stays until str-qwua7.35 removes it; `planner/classify.go Classify` is not deleted until `go-cgo-refusal-covers-bodies` decides whether cgo refusal is wired through it. Both are listed in the allowlist with the owning issue id.
 - [ ] A `deadcode` check with a checked-in allowlist runs in `task meta` (or `check-static`) and fails on new unreachable production functions. Proof at close: the gate output from a forced (non-cached) run, and a demonstration that adding an unused exported function makes it fail.
 - [ ] str-qwua7.48 is re-scoped by the comment below (filer posts it; the implementer of str-qwua7.48 does the tests, not this issue).
-- [ ] `go test ./...` in shatter-go, `cargo test --test e2e_concolic_go`, and `task affected` pass (`Gates selected` recorded).
+- [ ] `go test ./...` in shatter-go passes. `task e2e-go` passes (it runs `cargo test --test e2e_concolic_go -- --include-ignored`; plain `cargo test --test e2e_concolic_go` skips every case because all are `#[ignore]`); paste the cargo summary line showing `0 ignored`, or run the cargo command directly if the gate reports a cache hit. `task affected` passes (`Gates selected` recorded).
 
 ## Comment for str-qwua7.48 (post with `bd comments add str-qwua7.48`)
 

@@ -113,8 +113,8 @@ Re-verified 2026-09-23 in `/home/ketan/.local/share/worktrees/shatter/audit-2026
    DB and reaches other machines via the Dolt remote. No `bd sync`, no
    JSONL-export commit, no hook-timeout variable and no hook-bypass
    instruction remains. The rest of the post-audit landing restructure
-   belongs to `publish-audit-reports`; whichever of the two lands second
-   rebases onto the other.
+   belongs to str-qwua7.22 (note `qwua7-22-audit-land-before-file-note`);
+   whichever of the two lands second rebases onto the other.
 7. **Close-time proof (all recorded in the close reason):**
    - `grep -rnE 'cargo test|go test|npm test|bd sync|bd epic list|task [a-z-]+:test' .claude/skills/`
      before the change (24 matches on 2026-09-23) and after. After the
@@ -142,7 +142,7 @@ so deletions also disappear there.
 - Making every namespace test task governed (a Taskfile change; if wanted,
   file separately).
 - The audit skill's post-audit landing flow (report via launch-work/land-work
-  before filing): `publish-audit-reports`.
+  before filing): str-qwua7.22 (note `qwua7-22-audit-land-before-file-note`).
 - AGENTS.md and `.beads/PRIME.md` `bd sync` removal: `beads-jsonl-consumers-drop-bd-sync`.
 - Editing the memory files themselves: corrected by the maintainer on 2026-09-23.
 - The frontend-parity skill (separate audit issue).

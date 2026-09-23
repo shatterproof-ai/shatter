@@ -1,7 +1,7 @@
 ---
 slug: fuzz-policy-vs-reality
 kind: new
-title: "formal-methods-policy prescribes cargo-fuzz and Go native fuzzing; reality is proptest byte-fuzz and seed-corpus-only Go Fuzz targets that nothing mutates"
+title: "Fuzzing policy vs reality drift"
 priority: P3
 type: task
 labels: [testing, fuzzing, docs, formal-methods, audit]
@@ -11,7 +11,7 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# formal-methods-policy prescribes cargo-fuzz and Go native fuzzing; reality is proptest byte-fuzz and seed-corpus-only Go Fuzz targets that nothing mutates
+# Fuzzing policy vs reality drift
 
 ## Problem
 
@@ -40,24 +40,30 @@ Checked against `origin/main` 70465921 (2026-09-23).
 
 ## Acceptance criteria
 
-The maintainer picks option A or B, and the choice is recorded in the issue before implementation.
+The maintainer picks exactly one of the three policies below, and the choice is recorded as an issue comment before implementation. Each option is internally consistent: what the policy says is run is exactly what a gate or scheduled job runs.
 
-**Option A: make reality match the policy**
-- [ ] A scheduled (weekly) workflow, or a drift-patrol step, runs each Go `Fuzz*` target with a bounded `-fuzztime` (e.g. 60 s per target). New crashers are committed as `testdata/fuzz/<Target>/` seed files, so they become regression seeds.
-- [ ] Either a `cargo-fuzz` crate covering at least the protocol `Request`/`Response` and `SymExpr`/`TypeInfo` deserializers runs in the same scheduled job (nightly toolchain pinned for that job only), or the policy states that proptest byte-fuzzing is the Rust standard (see B).
-- [ ] Proof at close: the URL of a green scheduled or `workflow_dispatch` run showing each target's fuzz duration.
+**Option A: coverage-guided fuzzing for Go and Rust**
+- [ ] A scheduled (weekly) workflow, or a drift-patrol step, runs each Go `Fuzz*` target with a bounded `-fuzztime` (e.g. 60 s per target), and a `cargo-fuzz` crate covering at least the protocol `Request`/`Response` and `SymExpr`/`TypeInfo` deserializers (nightly toolchain pinned for that job only).
+- [ ] New crashers are committed as `testdata/fuzz/<Target>/` (Go) or corpus/regression files (Rust), so they become regression seeds.
+- [ ] The policy docs say Go and Rust coverage-guided fuzzing run on that schedule, and name the job.
 
-**Option B: make the policy match reality**
-- [ ] The SKILL.md table and the "Native Fuzzing" section, `shatter-core/CLAUDE.md` and `shatter-go/CLAUDE.md` describe what exists: Go `testing.F` targets in `fuzz_test.go` run as seed-corpus regression tests in `go test`, and Rust byte-level fuzzing is proptest in `tests/fuzz_deserialization.rs` driven by `SHATTER_FUZZ_CASES`. Coverage-guided fuzzing is named as not currently run.
+**Option B: coverage-guided fuzzing for Go only**
+- [ ] A scheduled (weekly) workflow, or a drift-patrol step, runs each Go `Fuzz*` target with a bounded `-fuzztime`; crashers are committed as `testdata/fuzz/<Target>/` seeds.
+- [ ] The policy docs say: Go uses `testing.F` targets, run as seed-corpus regression tests in `go test` and as coverage-guided fuzzers in the named scheduled job; Rust byte-level fuzzing is proptest in `tests/fuzz_deserialization.rs` driven by `SHATTER_FUZZ_CASES`, and `cargo-fuzz` is explicitly not used.
+
+**Option C: no coverage-guided fuzzing**
+- [ ] The policy docs say: Go `testing.F` targets run only as seed-corpus regression tests in `go test`; Rust byte-level fuzzing is proptest in `tests/fuzz_deserialization.rs`; coverage-guided fuzzing (`go test -fuzz`, `cargo-fuzz`) is explicitly not run.
+
+**For every option**
+- [ ] `.claude/skills/formal-methods-policy/SKILL.md` (table at :14, "Native Fuzzing" at :34-38, :63), `shatter-core/CLAUDE.md` (:28, :50-54) and `shatter-go/CLAUDE.md` (:34) state the chosen policy and nothing contradicting it.
 - [ ] The `*_fuzz_test.go` naming claim is corrected to `fuzz_test.go`, or the files are renamed to match.
-
-**Either option**
-- [ ] A cheap drift check (for example in `scripts/drift-patrol.py`) fails when the policy names a fuzz mechanism (cargo-fuzz, `-fuzz`) that no Task or workflow invokes.
+- [ ] A drift check (e.g. in `scripts/drift-patrol.py`) validates affirmative execution claims: for each fuzz mechanism the policy says is run (`-fuzz`/`-fuzztime`, `cargo fuzz`), it fails unless some Task, script or workflow invokes it. Mechanisms the policy explicitly describes as not used are allowed to be named. The check has a unit test with a fixture policy that claims an un-invoked mechanism (fails) and one that names it as not used (passes).
+- [ ] For options A and B, proof at close: the URL of a green scheduled or `workflow_dispatch` run showing each target's fuzz duration. For option C, proof at close: the drift check output on the final branch.
 - [ ] `task affected` passes, and its `Gates selected` output is recorded.
 
 ## Suggested approach
 
-Option B plus a bounded Go `-fuzztime` step in the existing weekly drift-patrol workflow costs the least, and turns the 22 existing Go targets into real fuzzers. Add cargo-fuzz only if the maintainer wants coverage-guided Rust fuzzing enough to accept a nightly toolchain in one scheduled job.
+Option B is likely the best cost/benefit: it turns the 22 existing Go targets into real fuzzers with a small weekly job and avoids a nightly Rust toolchain. Choose A only if coverage-guided Rust fuzzing is worth a nightly toolchain in one scheduled job.
 
 ## Out of scope
 
@@ -66,7 +72,7 @@ Option B plus a bounded Go `-fuzztime` step in the existing weekly drift-patrol 
 
 ## Priority / type / labels
 
-P3 · task · testing, fuzzing, docs, formal-methods, audit · Size S (B) / M (A)
+P3 · task · testing, fuzzing, docs, formal-methods, audit · Size S (C) / M (A, B)
 
 ## Parent epic
 

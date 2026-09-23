@@ -17,15 +17,15 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 The diff-scoped selector `scripts/affected-gates.py` (built under str-35vtk.8) leaves out validators for several classes of path. `task affected` is the pre-completion gate and runs on pre-push, so it can pass without running the checks that cover a change. The selector's tests pin historical merge selections rather than the dependency graph.
 
-## Evidence (re-verified 2026-09-23 by calling `select_gates` directly on the audit snapshot, which is unchanged on main)
+## Evidence (re-verified 2026-09-23 by calling `select_gates` directly; `scripts/affected-gates.py` is identical on main `70465921` and the audit snapshot)
 
 | Path | `select_gates([path])` today | Missing |
 |---|---|---|
 | `shatter-cli/templates/scan.md` | `['docs']` | cli:test, cli:clippy, gauntlet |
 | `README.md` | `['docs']` | docs-smoke |
 | `shatter-ts/CLAUDE.md` (parity contract) | `['docs']` | parity, conformance |
-| `shatter-core/src/report/html.rs` | `['smoke','core:clippy','core:test']` | cli:test |
-| `shatter-ts/src/index.ts` | `[..., 'ts:test', 'e2e-ts', 'parity', 'conformance']` | cli:test (build.rs embeds the TS frontend) |
+| `shatter-core/src/report.rs` | `['smoke','core:clippy','core:test']` | cli:test |
+| `shatter-ts/src/analyzer.ts` | `['smoke','ts:typecheck','ts:test','e2e-ts','parity','conformance']` | cli:test (build.rs embeds the TS frontend) |
 | `shatter-go/main.go` | `[..., 'go:test', 'e2e-go', 'parity', 'conformance']` | cli:test (build.rs embeds the Go frontend) |
 | `shatter-rust-runtime/src/lib.rs` | `['smoke','rust-rt:clippy','rust-rt:test','e2e-rust']` | rust-fe:test (executor tests build against the runtime) |
 | `shatter-llm/src/jev.rs` | `['smoke','check']` | shatter-llm clippy and tests (`check` runs neither) |
@@ -41,7 +41,7 @@ The diff-scoped selector `scripts/affected-gates.py` (built under str-35vtk.8) l
 - [ ] `README.md`, `QUICKSTART.md`, `SPEC.md`, `docs/INDEX.md` and `scripts/docs-smoke*` select `docs-smoke`, and `docs-smoke` is added to `GATE_ORDER`.
 - [ ] `shatter-core/`, `shatter-ts/` and `shatter-go/` paths also select `cli:test`. `shatter-rust-runtime/` also selects `rust-fe:test`.
 - [ ] `shatter-llm/` has an explicit rule selecting shatter-llm clippy and test tasks. Create `llm:clippy` and `llm:test` if str-35vtk.36 has not yet. It no longer falls through to `check`.
-- [ ] Table-driven cases in `scripts/test_affected_gates.py` cover every row of the table above. They fail on today's tree (record this in the close reason) and pass after the fix. Any new task-name lookup in those tests must not run `task --list-all --json` against the live tree (str-qwua7.3).
+- [ ] Table-driven cases in `scripts/test_affected_gates.py` cover every row of the table above, using paths that exist in the tree (a test asserts each case path exists, so the table cannot drift to phantom files). They fail on today's tree (record this in the close reason) and pass after the fix. Any new task-name lookup in those tests must not run `task --list-all --json` against the live tree (str-qwua7.3).
 
 ## Suggested approach
 
@@ -52,7 +52,7 @@ Reorder `_classify` so crate prefixes win. Add the mappings and the `docs-smoke`
 - Installing or enforcing the doc linters (str-qwua7.46).
 - Folding shatter-llm into `task check` (str-35vtk.36).
 - Missing Task `sources:` globs (`task-sources-cover-real-inputs`).
-- `e2e` running twice in `pre-completion-e2e`, which is filed in `collapse-test-tiers` (shatter-test-hygiene bucket).
+- `e2e` running twice in `pre-completion-e2e`, which is filed in `e2e-once-in-pre-completion` (shatter-test-hygiene bucket; split from `collapse-test-tiers`).
 
 ## Metadata
 

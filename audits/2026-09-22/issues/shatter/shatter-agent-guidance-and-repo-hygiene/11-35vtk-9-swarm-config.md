@@ -43,14 +43,38 @@ is no old draft for this note; it comes from finding agent-repo-19 (report §15.
 > - `CLAUDE.md:57` states "The lead runs one full `task check` at batch
 >   landing", but nothing configured implements batch landing today.
 >
-> **Proposed scope update:** replace the "`.claude/swarm-config.md`
-> quality-gates rewrite" with: write `.claude/swarm-config.json` with a
-> `landing` block (`gate_scope: task affected`, `full_gate: task check`, and
-> `mode` / `max_batch_size` matching this issue's protocol); delete the `.md`
-> (or keep it only for Epic-mode prose that bento does not read); verify
-> with `swarm-discover.py`'s output that the landing block is accepted with no
-> warnings. Re-check whether the manual batch-land skill this issue plans is
-> still needed, given bento swarm's built-in batch mode, and whether step (4)'s
-> "push once with --no-verify" survives. Audit decision D4 and the 08-24 note
-> already rule out blanket hook bypass. Until then, soften `CLAUDE.md:57` to
-> say batch landing is planned (str-35vtk.9), not current.
+> **Proposed scope update:**
+> - Write the config at the repo root as `swarm-config.json`, so both
+>   runtimes read it: `swarm-discover.py:18-22,257-270` checks the
+>   runtime-specific file (`.claude/` or `.codex/swarm-config.json`) and then
+>   the root file, and Codex never falls back to `.claude/swarm-config.json`.
+>   Delete `.claude/swarm-config.md` and the primary's untracked
+>   `.codex/swarm-config.md` symlink (or keep the `.md` only for Epic-mode
+>   prose that bento does not read).
+> - `landing` block: `full_gate: task check`, and `mode` / `max_batch_size`
+>   matching this issue's protocol.
+> - **`gate_scope` needs an adapter; `task affected` does not fit the
+>   contract.** bento's `landing-config.md` defines `gate_scope` as a
+>   "command that emits scoped gate commands for a diff", and teammates run
+>   the emitted commands. `task affected` (`Taskfile.yml:511-514`)
+>   *executes* the selected gates and prints status and logs; it emits no
+>   commands. Add a small executable (for example `scripts/gate-scope.sh`)
+>   that calls `python3 scripts/affected-gates.py --base <base> --head <head>`
+>   and prints one runnable command per selected gate (`task <gate>`,
+>   nothing for `(none)`), with no other stdout.
+> - **Behavioural validation, not just warning-free discovery.** A
+>   `gate_scope` string whose first word resolves on `PATH` passes
+>   `swarm-discover.py` validation whatever it prints. Acceptance: (1)
+>   `swarm-discover.py --runtime claude` and `--runtime codex` both report
+>   the same non-null `landing` block with `mode` as configured and no
+>   warnings; (2) a test runs the adapter on a fixture diff touching one
+>   crate and asserts stdout is exactly the expected `task <gate>` lines,
+>   and on a docs-only diff asserts it prints only the docs gates (or
+>   nothing); (3) every emitted line runs successfully when executed as a
+>   command in a scratch worktree (record the output in the close reason).
+> - Re-check whether the manual batch-land skill this issue plans is still
+>   needed, given bento swarm's built-in batch mode, and whether step (4)'s
+>   "push once with --no-verify" survives. Audit decision D4 and the 08-24
+>   note already rule out hook bypass, so drop it.
+> - Until batch landing is configured and validated, soften `CLAUDE.md:57`
+>   to say batch landing is planned (str-35vtk.9), not current.

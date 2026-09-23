@@ -1,58 +1,34 @@
 ---
 slug: closure-orphan-worktree-dirs
-kind: new
-title: 'closure: add an apply mode for orphan worktree directories the doctor flags as "safe to remove"'
+kind: note-to-existing
+title: "Note on bento-nljv: audit 2026-09-22 confirms the five shatter orphan dirs persist; add a build-output-only classification so non-empty orphans get a reviewable, per-path cleanup"
 priority: P2
-type: feature
+type: note
 labels: [audit, closure, hygiene]
 parent_epic: "Epic: Audit 2026-09-22 findings (bento)"
 blocked_by: []
-existing_id: ""
+existing_id: bento-nljv
 tracker: "bd in /home/ketan/project/bento (prefix bento)"
 ---
 
-# closure: add an apply mode for orphan worktree directories the doctor flags as "safe to remove"
+# Note on bento-nljv
 
-Related: bento-rdtn.1. Source finding: bento-10 (shatter audit 2026-09-22).
+Target: bento-nljv (open, P3, "closure: report orphan directories under the dedicated worktree root, and safely remove the empty ones"). Action: add a comment. Do not file a new issue.
 
-## Problem
+Why this is a note and not a new issue: the audit draft asked for a closure apply mode that deletes orphan worktree directories. bento-nljv already specifies the orphan report, the shared orphan rule with bento-8oj0 (which also removes the doctor's wrong "safe to remove" wording), and a safe empty-only removal. The draft's deletion rule ("not a registered worktree and no process cwd inside") was unsafe: it would delete a slash-branch parent holding a live worktree (bento-8oj0), and it treated an unregistered directory as disposable even though it may hold the only copy of uncommitted work. nljv's rule, "non-empty orphans are never deleted automatically", is the correct one and is kept.
 
-bento-rdtn.1 made the doctor detect worktree directories that are no longer registered git worktrees, and explicitly left removal to closure. No closure mode was added. In shatter the doctor has flagged the same five directories every session since the 2026-09-04 audit, and they are still there:
+Source finding: bento-10 (shatter audit 2026-09-22).
 
-- `~/.local/share/worktrees/shatter/str-6q1i`
-- `~/.local/share/worktrees/shatter/str-hszo-tmpfix`
-- `~/.local/share/worktrees/shatter/str-k6e61-scm-followups`
-- `~/.local/share/worktrees/shatter/str-mambd-enum-variant-gen`
-- `~/.local/share/worktrees/shatter/str-yhsp-concolic-run`
+## Comment text
 
-Together they hold about 700 MB (109M, 573M and 3 x 16K), dated June to July 2026. Shatter's AGENTS.md forbids agents from deleting worktree dirs themselves, so nobody acts on the warning.
+Audit 2026-09-22 (shatter; finding bento-10), re-checked 2026-09-23:
 
-## Current code facts (bento origin/main @ b1bb787, re-verified 2026-09-23)
+- The five shatter orphans this issue cites are still present and the doctor has flagged them at every session start since the 2026-09-04 audit: `str-6q1i` (109M, a partial source checkout: `.beads/`, `Cargo.toml`, `PROTOCOL.md`, ...), `str-hszo-tmpfix` (573M), and `str-k6e61-scm-followups`, `str-mambd-enum-variant-gen`, `str-yhsp-concolic-run` (16K each). Shatter's AGENTS.md forbids agents from deleting worktree dirs, so nobody acts on the warning; about 700 MB has sat there since June to July 2026.
+- Of these, the empty-only apply mode here would remove none of the space: all five are non-empty.
 
-- `catalog/hooks/bento/claude/scripts/agent-env-doctor.py` lines 851-887 (`check_worktree_root_orphans`): orphan detection with the message "... worktree — dead directory left behind, safe to remove".
-- `catalog/skills/closure/scripts/closure-scan.py` line 1660: the only apply modes are delete-local-merged and delete-local-patch-equivalent.
+Suggested addition, keeping this issue's "never delete non-empty automatically" rule:
 
-## Acceptance criteria
-
-- `closure --apply remove-orphan-worktree-dirs`:
-  - is dry-run by default, listing each path with its size and newest mtime;
-  - on confirmation, removes only directories that are not registered worktrees of any repo and have no process with cwd inside them;
-  - has tests covering a registered worktree (kept), an orphan (removed), and an orphan with a live process cwd inside (kept).
-- The doctor message names this exact command.
-- Proof at close: the close note names the tests with failing-then-passing runs and includes a dry-run listing from a real repo.
-
-## Out of scope
-
-- Changing shatter's AGENTS.md rule (shatter str-qwua7.23).
-
-## Priority / Type / Labels
-
-P2 / feature / audit, closure, hygiene
-
-## Parent epic
-
-Epic: Audit 2026-09-22 findings (bento)
-
-## Dependencies
-
-None.
+1. Add `content_class` to each `orphan_worktree_dirs` entry: `empty`, `build-output-only` (every file lies under a top-level `target/`, `node_modules/`, `dist/`, `build/` or `.venv/`), or `other`. For `other`, include up to 10 sample relative paths outside those directories so a reviewer can see what would be lost.
+2. Keep deletion of non-empty orphans behind explicit per-path confirmation. If a mode is added (for example `--apply remove-build-output-orphans --path <p>`), it accepts only paths listed in the latest scan with `content_class: build-output-only`, reuses this issue's no-follow, snapshot and `registered-now` checks, and removes only the build-output subtrees plus the then-empty directory. `other` orphans are report-only, with "inspect before deleting" wording.
+3. Tests: a `build-output-only` orphan is removed only when its path is passed; an `other` orphan (for example one with a modified tracked-looking file such as `src/lib.rs`) is never removed by any mode; a slash-branch parent containing a registered worktree at any depth is never an orphan (the shared fixture table with bento-8oj0).
+4. Close-time proof for that addition: the scan JSON from the maintainer's machine showing the five shatter entries classified (expected: `str-6q1i` is `other`, the rest `build-output-only` if they hold only `target/`).

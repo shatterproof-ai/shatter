@@ -1,29 +1,30 @@
 ---
 slug: ss-yoa-reopen-note
 kind: reopen-note
-title: "Comment on closed ss-yoa: extractors are still TS/JS-only for cli-command; follow-up is clap-cobra-extractors"
+title: "Comment on closed ss-yoa: extractors are still TS/JS-only for cli-command; follow-ups are clap-cobra-extractors, go-cobra-extractor and coverage-unextracted-language-finding"
 priority: P2
 type: task
 labels: [inventory, audit-2026-09-22]
 parent_epic: "Epic: Audit 2026-09-22 findings (storystore)"
-blocked_by: [clap-cobra-extractors]
+blocked_by: [clap-cobra-extractors, go-cobra-extractor, coverage-unextracted-language-finding]
 existing_id: ss-yoa
 tracker: "bd in /home/ketan/project/storystore (prefix ss)"
-filer_precondition: "Same as tracker-migration-and-agents-md (comments are writes). File clap-cobra-extractors first so its real id can replace the placeholder."
+filer_precondition: "Same as tracker-migration-and-agents-md (comments are writes). File clap-cobra-extractors, go-cobra-extractor and coverage-unextracted-language-finding first so their real ids replace the placeholders. blocked_by here is a filing-order dependency for placeholder substitution only; do not add it as a tracker dependency on the closed ss-yoa."
 ---
 
-# Comment on closed ss-yoa: extractors are still TS/JS-only for cli-command; follow-up is clap-cobra-extractors
+# Comment on closed ss-yoa: extractors are still TS/JS-only for cli-command; follow-ups are clap-cobra-extractors, go-cobra-extractor and coverage-unextracted-language-finding
 
 **Target:** `ss-yoa` (CLOSED, P2, feature, "Support skill/markdown repos: a
 skill: surface prefix or doc-directory extractor (current extractors are
-TS/JS-only)". Close reason: "4083924b... landed on main (skill: prefix +
-skill-dir extractor + audit resolution + generator ref guard + markdown-only
-round-trip test)").
+TS/JS-only)". Close reason: "4083924b42050d1d7cd882a5966b56b778e25d09 landed
+on main (skill: prefix + skill-dir extractor + audit resolution + generator
+ref guard + markdown-only round-trip test)"). Re-verified with
+`bd show ss-yoa` on 2026-09-23.
 
 **Action:** add the comment below with `bd comments add ss-yoa ...`. **Do
 not reopen ss-yoa.** Its stated scope (skill/markdown repos) was delivered.
-The remaining gap is tracked in the new issue. The filer replaces
-`<clap-cobra-extractors>` with the real id.
+The remaining gap is tracked in the new issues. The filer replaces each
+`<slug>` placeholder with the real id.
 
 ## Comment text
 
@@ -41,10 +42,13 @@ python3 shared/inventory.py --repo-root <shatter checkout>
 ```
 
 The only CLI extractor is the commander.js regex at
-`shared/inventory.py:140` (`_CLI_COMMAND_RE`). Shatter's ~25 top-level clap
+`shared/inventory.py:140` (`_CLI_COMMAND_RE`). Shatter's clap derive
 subcommands (`shatter-cli/src/args.rs:1165`) are not found, so
 `stories-coverage` reports no uncovered CLI surfaces on shatter.
 
-Follow-up: <clap-cobra-extractors> adds Rust clap and Go cobra extraction
-and puts a detected-but-unextracted language into the coverage findings. This
-issue stays closed.
+Follow-ups (this issue stays closed):
+- <clap-cobra-extractors>: Rust clap derive extraction, nested commands,
+  per-kind language metadata, spec.md contract update.
+- <go-cobra-extractor>: Go cobra extraction.
+- <coverage-unextracted-language-finding>: report a detected language with
+  no CLI extractor as a counted coverage finding.

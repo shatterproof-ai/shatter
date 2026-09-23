@@ -48,7 +48,7 @@ Extend the existing wiring test to parse `Taskfile.yml` and the included per-cra
 
 ## Out of scope
 
-- E2E running twice in `pre-completion-e2e`. That belongs to collapse-test-tiers (report §15.1).
+- E2E running twice in `pre-completion-e2e`. That belongs to e2e-once-in-pre-completion (split from collapse-test-tiers; report §15.1).
 - Collapsing or renaming tiers (collapse-test-tiers). If that lands first, write the "Covers" column for the new tier set.
 - Fixing the checksum poisoning itself (str-qwua7.3) and the CI executed-leaf guard (ci-executed-leaf-guard).
 

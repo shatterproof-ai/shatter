@@ -51,7 +51,7 @@ Port the three fixes (optional-only field removal, range-aware ints, positional 
 
 - The enum_values shrink work itself (str-v0yjq). This issue only retargets it.
 - Extracting a shared shrink phase between the engines (str-qwua7.6.1).
-- A crate-wide dead-code check (core-dead-code-removal, bucket shatter-concolic-and-engine-design).
+- A crate-wide dead-code check (core-reachability-gate, bucket shatter-concolic-and-engine-design; split from core-dead-code-removal).
 
 ## Priority
 

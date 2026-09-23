@@ -66,9 +66,9 @@ shatter explore --concolic -w 4 --max-iterations 100 <the 9 files>
 
 ### Likely contributors (link, do not duplicate)
 
-- z3-mixed-int-real-sort-split (bucket shatter-engine-correctness): one parameter becomes two unrelated Z3 variables, so SAT models can produce unusable inputs.
+- str-t854z (existing issue; audit note t854z-sort-split-note): one parameter becomes two unrelated Z3 variables, so SAT models can produce unusable inputs.
 - ts-switch-ternary-instrumentation (bucket shatter-frontend-ts): switch, ternary and value-position `&&`/`||` emit no `branch_path` decisions, so there is nothing to negate.
-- known-answer-ratchet-and-ts-discriminants: computeArea's discriminant literal is widened to `str`, and the generated `{"kind":"true",...}` matches no case.
+- ts-union-discriminant-literals: computeArea's discriminant literal is widened to `str`, and the generated `{"kind":"true",...}` matches no case.
 
 ## Acceptance criteria
 
@@ -78,7 +78,7 @@ shatter explore --concolic -w 4 --max-iterations 100 <the 9 files>
   - for each uncovered branch, why no solver-guided input reached it. The reason is one of: no `SymExpr` path constraint emitted; Z3 unsat, unknown or error (quoted); model extraction dropped or mis-sorted values; or the input was generated and executed but took the same path.
 - [ ] The close note explains the `iterations` > `len(raw_results)` gap: which phase consumes executions without recording them, and whether that is intended.
 - [ ] The close note ends with a verdict of **defect** or **expected**, with the reasoning. For **defect**, it names the code sites and a minimal fixture (function body plus expected branch) for concolic-early-termination-fix to use as its known-answer test. For **expected**, it lists the linked issues that account for each loss, and concolic-early-termination-fix is closed with a link to this note.
-- [ ] Every loss attributed to z3-mixed-int-real-sort-split, ts-switch-ternary-instrumentation or known-answer-ratchet-and-ts-discriminants is added as a comment on that issue, with the function name and evidence.
+- [ ] Every loss attributed to str-t854z, ts-switch-ternary-instrumentation or ts-union-discriminant-literals is added as a comment on that issue, with the function name and evidence.
 
 ## Suggested approach
 
@@ -99,6 +99,6 @@ shatter explore --concolic -w 4 --max-iterations 100 <the 9 files>
 - Parent epic: Epic: Audit 2026-09-22 findings
 - Blocked by: explore-stop-reason-accounting
 - Blocks: concolic-early-termination-fix
-- Related: z3-mixed-int-real-sort-split, ts-switch-ternary-instrumentation, known-answer-ratchet-and-ts-discriminants, concolic-vs-default-benchmark
+- Related: str-t854z, ts-switch-ternary-instrumentation, ts-union-discriminant-literals, concolic-vs-default-benchmark
 - Source findings: goals-08 (split from draft shatter-code/80)
 - Decision refs: D3

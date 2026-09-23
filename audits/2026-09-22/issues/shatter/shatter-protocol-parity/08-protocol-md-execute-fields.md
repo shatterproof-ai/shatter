@@ -36,6 +36,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 - [ ] `field_model` entries gain a `description` where one is missing, so the generated table is useful.
 - [ ] The narrative JSON examples stay.
 - [ ] Proof at close: add a dummy field to `field_model` without touching PROTOCOL.md, run `task parity` forced to execute, and show it failing (paste the output). Then revert.
+- [ ] Cache wiring: `protocol/PROTOCOL.md` and the renderer/check script are in the `sources:` of the task that runs the check (`protocol/registry.yaml` already is). Proof: `touch protocol/PROTOCOL.md && task parity` (ordinary invocation, no `--force`) executes the check rather than printing `is up to date`; paste the output.
 
 ## Suggested approach
 

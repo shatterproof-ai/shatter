@@ -24,6 +24,7 @@ Action: add the comment below with `bd comments add str-fl9g.2`. Leave str-fl9g.
 > - `shatter-go-tool/go.mod:1` declares `module github.com/shatterproof-ai/shatter/go-tool`, but the module lives in `shatter-go-tool/`; there is no `go-tool/` directory and no root `go.mod`, so the Go toolchain looks for `go-tool/` at the repo root.
 > - `docs/distribution.md:64` (and the Renovate regex at :110) document `go get -tool github.com/shatterproof-ai/shatter/go-tool/cmd/shatter@...`.
 > - Running it in a fresh temp module with `GOPROXY=direct` gives: `module github.com/shatterproof-ai/shatter@main found (v0.0.0-20260922164214-16794cef9e10), but does not contain package github.com/shatterproof-ai/shatter/go-tool/cmd/shatter`.
-> - `release.yml` also pushes no `go-tool/<tag>` tags, which a nested module needs for `@continuous-...` to resolve.
 >
-> The fix (module path/directory alignment, nested-module tags, and a CI job that runs the documented command) is tracked in **<id of go-tool-module-path>**. Evidence: `audits/2026-09-22/areas/frontend-go.md` go-02.
+> The `continuous-*` tags themselves are fine: they are revision queries, which Go resolves to pseudo-versions for a nested module without directory-prefixed tags. Only the path is wrong.
+>
+> The fix (module path/directory alignment, a pre-merge local-resolution check, and a post-merge job that runs the documented command) is tracked in **<id of go-tool-module-path>**. Evidence: `audits/2026-09-22/areas/frontend-go.md` go-02.

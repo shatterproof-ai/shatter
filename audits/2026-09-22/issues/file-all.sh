@@ -18,11 +18,16 @@
 #               APPLY=1 together with an explicit DRY_RUN=1 stays a dry run.
 #   ONLY=shatter,bento   restrict to these repo sections
 #               (shatter bento shatter-agents storystore bugshot dotfiles).
-#   ALLOW_UNREVIEWED=1   also file buckets whose cross-check produced no verdict
-#               (held by default, see UNREVIEWED_BUCKETS below).
-#   INCLUDE_BLOCKERS=1   also file slugs with a BLOCKER cross-check finding
-#               (held by default, see BLOCKER_SLUGS below).
+#   ALLOW_UNREVIEWED=1   also file drafts whose bucket has no Codex review
+#               (a bucket counts as reviewed when crosscheck/<bucket>.codex.md exists).
+#   INCLUDE_BLOCKERS=1   also file slugs listed in BLOCKER_SLUGS (unresolved
+#               BLOCKER findings; empty after the 2026-09-23 revisions).
+#   ALLOW_UNPUBLISHED=1  file everything even though audits/2026-09-22/ is not yet
+#               on shatter origin/main (see the bootstrap hold below).
 #   HOLD="slug another-slug"   extra slugs to hold back this run.
+#   INCLUDE="slug ..."   file ONLY these slugs (plus their repo epic); everything
+#               else is held for this run. Used for the filing bootstrap:
+#               APPLY=1 ONLY=shatter INCLUDE=publish-audit-reports.
 #   BD_VALIDATE=0        in dry-run, skip the per-draft `bd create --dry-run` probe.
 #   LEDGER=path          ledger file (default: issues/filed-ledger.tsv).
 #   KEEP_TMP=1           keep the generated body/comment files and print their dir.
@@ -39,6 +44,8 @@
 #   - bd bodies go in via --body-file (never `bd create --file`, which splits on H2).
 #   - blocked_by naming a note-to-existing slug resolves to that note's
 #     existing_id (e.g. task-list-json-poisons-checksums -> str-qwua7.3).
+#   - blocked_by may also name an existing tracker id literally (e.g. str-qwua7.5);
+#     it becomes a dep edge on that id.
 #   - blocked_by on note/reopen-note drafts is an ordering constraint only
 #     (the comment needs the new id); no dep edge is added on existing issues.
 #   - storystore's bd is write-blocked until the v32->v53 migration; the
@@ -70,7 +77,9 @@ APPLY = os.environ["FILER_MODE"] == "apply"
 ONLY = [s.strip() for s in os.environ.get("ONLY", "").split(",") if s.strip()]
 ALLOW_UNREVIEWED = os.environ.get("ALLOW_UNREVIEWED") == "1"
 INCLUDE_BLOCKERS = os.environ.get("INCLUDE_BLOCKERS") == "1"
+ALLOW_UNPUBLISHED = os.environ.get("ALLOW_UNPUBLISHED") == "1"
 EXTRA_HOLD = set(os.environ.get("HOLD", "").split())
+INCLUDE = set(os.environ.get("INCLUDE", "").split())
 BD_VALIDATE = os.environ.get("BD_VALIDATE", "1") == "1" and not APPLY
 TAG = "audit-2026-09-22"
 SINCE = "2026-09-23"
@@ -83,22 +92,28 @@ REPOS = [  # order matters: epics/issues of each repo are filed in this order
     ("bugshot", "bd", "/home/ketan/project/bugshot", "Epic: Audit 2026-09-22 findings (bugshot)"),
     ("dotfiles", "gh", "ketang/dotfiles", "Epic: Audit 2026-09-22 findings (global agent guidance and hooks)"),
 ]
-# Cross-check results (issues/crosscheck/*.md, 2026-09-23). Buckets with no
-# usable verdict are held unless ALLOW_UNREVIEWED=1.
-UNREVIEWED_BUCKETS = {
-    "shatter-reports-and-specs": "cross-check pending (no review file)",
-    "shatter-frontend-ts": "cross-check incomplete (no review file)",
-    "shatter-frontend-rust": "cross-check produced no usable review (stop-hook takeover)",
-    "shatter-protocol-parity": "cross-check skipped/incomplete (no review file)",
-    "storystore-adoption-blockers": "cross-check pending (no review file)",
-}
-# Slugs with a BLOCKER finding: held unless INCLUDE_BLOCKERS=1.
-BLOCKER_SLUGS = {
-    "z3-mixed-int-real-sort-split": "duplicates open str-t854z; convert to a note",
-    "float-constant-rational-conversion": "duplicates open str-aureo; convert to a note",
-    "landing-deletes-remote-branches": "duplicates open bento-73de; convert to a note",
-    "git-guard-bypasses-and-false-positives": "duplicates bento-l01v/i76i; rescope first",
-}
+# Cross-check hold: a draft's bucket counts as reviewed when
+# crosscheck/<bucket>.codex.md exists (all 23 buckets as of 2026-09-23; every
+# bucket was then revised against its review, see <bucket>/REVISION.md).
+# The cross-check-stop-hook-hijack draft lives in bento-guards-doctor-tracker
+# but was reviewed as its own bucket, bento-cross-check-bug (whose dir holds
+# only BUNDLE.md, so it is filed once, from bento-guards-doctor-tracker/15).
+REVIEW_BUCKET_OVERRIDE = {"cross-check-stop-hook-hijack": "bento-cross-check-bug"}
+def review_file(d):
+    b = REVIEW_BUCKET_OVERRIDE.get(d["slug"], d["_bucket"])
+    return os.path.join(ISSUES, "crosscheck", b + ".codex.md")
+# Slugs with an unresolved BLOCKER finding: held unless INCLUDE_BLOCKERS=1.
+# The four 2026-09-23 BLOCKER holds were resolved by the revisions:
+#   z3-mixed-int-real-sort-split -> note t854z-sort-split-note (str-t854z)
+#   float-constant-rational-conversion -> note aureo-float-constant-note (str-aureo)
+#   landing-deletes-remote-branches -> note-to-existing on bento-73de (slug kept)
+#   git-guard-bypasses-and-false-positives -> rescoped to residual bypasses,
+#     blocked by bento-l01v / bento-i76i via notes 16 and 17
+BLOCKER_SLUGS = {}
+# Filing bootstrap (shatter-tracker-and-beads REVISION, Codex BLOCKER 1): issue
+# bodies cite audits/2026-09-22/ paths, which must be on shatter origin/main
+# first. Until then only the shatter epic and publish-audit-reports are filed.
+BOOTSTRAP_SLUGS = {"publish-audit-reports"}
 TYPE_MAP = {"bug": "bug", "feature": "feature", "task": "task", "epic": "epic",
             "chore": "chore", "decision": "decision", "enhancement": "feature",
             "refactor": "task"}
@@ -132,6 +147,7 @@ def record(key, ident, repo):
 
 # ---------------------------------------------------------------- drafts
 FM = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+LITERAL_ID = re.compile(r"(?:str|bento|sa|ss|bgs)-[a-z0-9]+(?:\.[0-9]+)*")
 drafts = []
 for path in sorted(glob.glob(os.path.join(ISSUES, "*", "*", "[0-9]*.md"))):
     rel = os.path.relpath(path, ISSUES)
@@ -157,14 +173,20 @@ for d in drafts:
     if d["kind"] != "new" and not str(d["existing_id"]).strip(): err(f"{d['_rel']}: note without existing_id")
     if not re.fullmatch(r"P[0-4]", str(d["priority"])): err(f"{d['_rel']}: bad priority {d['priority']}")
     for b in d["blocked_by"]:
-        if b not in by_slug: err(f"{d['_rel']}: blocked_by unknown slug {b}")
+        if b not in by_slug and not LITERAL_ID.fullmatch(b): err(f"{d['_rel']}: blocked_by unknown slug {b}")
+for s in INCLUDE | EXTRA_HOLD:
+    if s not in by_slug: err(f"INCLUDE/HOLD: unknown slug {s}")
 
+PUBLISHED = True   # set in main from the origin/main probe
 def held_reason(d):
-    if d["_bucket"] in UNREVIEWED_BUCKETS and not ALLOW_UNREVIEWED:
-        return "HOLD-UNREVIEWED: " + UNREVIEWED_BUCKETS[d["_bucket"]]
+    if INCLUDE and d["slug"] not in INCLUDE: return "HOLD: not in $INCLUDE"
+    if not os.path.exists(review_file(d)) and not ALLOW_UNREVIEWED:
+        return "HOLD-UNREVIEWED: no " + os.path.relpath(review_file(d), ISSUES)
     if d["slug"] in BLOCKER_SLUGS and not INCLUDE_BLOCKERS:
         return "HOLD-BLOCKER: " + BLOCKER_SLUGS[d["slug"]]
     if d["slug"] in EXTRA_HOLD: return "HOLD: listed in $HOLD"
+    if APPLY and not PUBLISHED and not ALLOW_UNPUBLISHED and d["slug"] not in BOOTSTRAP_SLUGS:
+        return "HOLD-BOOTSTRAP: audits/2026-09-22/ not on shatter origin/main; land publish-audit-reports first"
     return None
 
 # ---------------------------------------------------------------- text helpers
@@ -213,7 +235,7 @@ def extract_comment(d):
 def ident_of(slug, fake):
     """Tracker id for a slug: filed id, note's existing id, or None."""
     d = by_slug.get(slug)
-    if d is None: return None
+    if d is None: return slug if LITERAL_ID.fullmatch(slug) else None
     if d["kind"] != "new": return str(d["existing_id"]).strip()
     if slug in ledger: return ledger[slug]
     return fake.get(slug)
@@ -365,6 +387,8 @@ def process(repo, kind, where, epic_title):
 
     held = {d["slug"]: held_reason(d) for d in items if held_reason(d)}
     for s, r in held.items(): log(f"{r} -> {s}")
+    if items and len(held) == len(items):
+        log(f"HOLD {repo}: every draft held this run; epic not created"); return "held"
 
     try:
         # ---- 1. epic
@@ -393,7 +417,7 @@ def process(repo, kind, where, epic_title):
                 key = f"dep:{d['slug']}>{b}"
                 if key in ledger: log(f"skip {key}: already added"); continue
                 me, dep = ident_of(d["slug"], fake), ident_of(b, fake)
-                if by_slug[b]["_repo"] != repo:
+                if b in by_slug and by_slug[b]["_repo"] != repo:
                     manual.append(f"{d['_rel']}: cross-repo blocker {b} ({dep}); mention in body, bd cannot link it"); continue
                 if not dep:
                     log(f"DEFER {key}: blocker {b} not filed ({held.get(b) or 'not yet filed'})"); continue
@@ -441,11 +465,17 @@ known = [r[0] for r in REPOS]
 for o in ONLY:
     if o not in known: err(f"ONLY: unknown repo {o} (known: {' '.join(known)})")
 log(f"mode={'APPLY' if APPLY else 'DRY_RUN'} ledger={LEDGER} ({len(ledger)} rows) drafts={len(drafts)} "
-    f"ONLY={','.join(ONLY) or 'all'} ALLOW_UNREVIEWED={int(ALLOW_UNREVIEWED)} INCLUDE_BLOCKERS={int(INCLUDE_BLOCKERS)}")
+    f"ONLY={','.join(ONLY) or 'all'} INCLUDE={','.join(sorted(INCLUDE)) or '-'} ALLOW_UNREVIEWED={int(ALLOW_UNREVIEWED)} "
+    f"INCLUDE_BLOCKERS={int(INCLUDE_BLOCKERS)} ALLOW_UNPUBLISHED={int(ALLOW_UNPUBLISHED)}")
+unrev = sorted({d["_bucket"] for d in drafts if not os.path.exists(review_file(d))})
+log("cross-check: " + (f"no Codex review for bucket(s) {', '.join(unrev)}" if unrev else "every bucket has a Codex review"))
 # Evidence paths cite audits/2026-09-22/, which must be on shatter main first (MANIFEST filing notes).
 p = run(["/usr/bin/git", "-C", "/home/ketan/project/shatter", "cat-file", "-e", "origin/main:audits/2026-09-22/findings.json"], check=False)
 if p.returncode != 0:
-    warn("audits/2026-09-22/ is not on shatter origin/main yet; land the audit reports (publish-audit-reports) before APPLY, or bodies cite unreachable paths")
+    PUBLISHED = False
+    warn("audits/2026-09-22/ is not on shatter origin/main yet: under APPLY only the shatter epic and publish-audit-reports "
+         "are filed (bootstrap hold; ALLOW_UNPUBLISHED=1 overrides; this dry run shows the full post-bootstrap plan). "
+         "Land publish-audit-reports, then re-run.")
 status = {}
 if not errors:
     for repo, kind, where, title in REPOS:
