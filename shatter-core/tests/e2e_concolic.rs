@@ -3218,6 +3218,8 @@ async fn budget_score_ranks_classify_number_below_parse_cron() {
         score(&fs),
         score(&fc)
     );
+}
+
 /// str-03mfx.5: two seeded explorations that go through a plateau-triggered
 /// fuzz phase must execute identical input sequences. Uses the email
 /// validator (opaque string branches) so the fuzz phase actually fires; the
