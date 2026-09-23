@@ -3197,3 +3197,25 @@ async fn e2e_ts_opaque_param_stub_registry_explores_both_branches() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+/// str-03mfx.1: the static budget score must rank a trivial fixture below a
+/// parser-shaped one on real TS analyses. Pins the ordering child C's e2e
+/// test relies on; if it fails, adjust `budget_alloc::WEIGHTS` here, not in C.
+#[tokio::test]
+#[ignore = "subprocess E2E; run via task e2e-ts or core:test-ignored"]
+async fn budget_score_ranks_classify_number_below_parse_cron() {
+    use shatter_core::budget_alloc::{features, score};
+    let dir = examples_dir();
+    let mut frontend = spawn_ts_frontend().await;
+    let simple_file = dir.join("01-arithmetic.ts").to_string_lossy().to_string();
+    let complex_file = dir.join("16-cron-parser.ts").to_string_lossy().to_string();
+    let simple = analyze_function(&mut frontend, &simple_file, "classifyNumber").await;
+    let complex = analyze_function(&mut frontend, &complex_file, "parseCron").await;
+    let (fs, fc) = (features(&simple), features(&complex));
+    assert!(
+        score(&fs) < score(&fc),
+        "classifyNumber {fs:?} scored {:.1}, parseCron {fc:?} scored {:.1}",
+        score(&fs),
+        score(&fc)
+    );
+}
