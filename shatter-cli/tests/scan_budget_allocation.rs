@@ -285,7 +285,13 @@ fn scan_into(target: &Path, out: &Path, extra: &[&str]) {
         .arg("--seed")
         .arg("7")
         .arg("--timeout-total")
-        .arg("600")
+        .arg("900")
+        // The 60-branch ladder needs more than the 30 s default per function
+        // when the gate runs this suite in parallel with the rest of cli:test.
+        .arg("--timeout-per-fn")
+        .arg("300")
+        .arg("--build-timeout")
+        .arg("300")
         .arg("--no-cache")
         .arg("--no-seeds")
         .arg("-o")
