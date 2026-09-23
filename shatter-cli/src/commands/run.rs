@@ -569,6 +569,7 @@ pub(crate) async fn run_run(
                 file: entry.file_path.to_string_lossy().into_owned(),
                 execution_profile: None,
                 max_iterations: Some(max_iterations),
+                max_executions_override: None,
                 observer_pool: 1,
                 observer_frontend_config: None,
                 candidate_queue_capacity: None,

@@ -790,6 +790,7 @@ async fn e2e_go_random_explorer_threads_default_execute_plan() {
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str,
         max_iterations: Some(3),
+        max_executions_override: None,
         observer_pool: 1,
         observer_frontend_config: None,
         candidate_queue_capacity: None,
@@ -2230,6 +2231,7 @@ async fn e2e_go_enum_value_domain_random_explorer_reaches_valid_arms() {
     let config = shatter_core::explorer::ExploreConfig {
         file: file_str,
         max_iterations: Some(40),
+        max_executions_override: None,
         observer_pool: 1,
         observer_frontend_config: None,
         candidate_queue_capacity: None,

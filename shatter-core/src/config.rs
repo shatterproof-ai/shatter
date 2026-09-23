@@ -860,7 +860,7 @@ impl ExplorationConfig {
                 reason: "must be at least 1".into(),
             });
         }
-        if !(self.budget_ceiling_factor >= 1.0) {
+        if self.budget_ceiling_factor.is_nan() || self.budget_ceiling_factor < 1.0 {
             return Err(ConfigError::InvalidBudgetSetting {
                 key: "defaults.exploration.budget_ceiling_factor".into(),
                 reason: format!("must be >= 1.0, got {}", self.budget_ceiling_factor),

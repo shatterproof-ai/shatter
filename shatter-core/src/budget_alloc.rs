@@ -505,7 +505,8 @@ mod tests {
     fn score_is_at_least_one_and_monotone_in_each_feature() {
         let base = BudgetFeatures::default();
         assert!((score(&base) - 1.0).abs() < 1e-9);
-        let bumps: Vec<Box<dyn Fn(&mut BudgetFeatures)>> = vec![
+        type Bump = Box<dyn Fn(&mut BudgetFeatures)>;
+        let bumps: Vec<Bump> = vec![
             Box::new(|f| f.branches += 1),
             Box::new(|f| f.opaque_branches += 1),
             Box::new(|f| f.loops += 1),
