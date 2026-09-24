@@ -252,7 +252,12 @@ class GitStateTest(unittest.TestCase):
     """Tests for check_git_state (str-qwua7.1).
 
     Every path is injected so no test touches the real filesystem outside
-    its own tempdir, and no test shells out to git.
+    its own tempdir. `prune_output` is always passed explicitly so no test
+    shells out to `git worktree prune`. Core-config parsing does shell out
+    to the real `git config --file <path>` (str-qwua7.1 review: this is
+    correct-by-construction and unaffected by a bare-checkout regression,
+    unlike a hand-rolled parser), so these tests depend on `git` being on
+    PATH -- already a hard requirement for this repo's own tooling.
     """
 
     def _write_config(self, git_dir: Path, lines: list[str]) -> None:
@@ -378,6 +383,29 @@ class GitStateTest(unittest.TestCase):
         self.assertTrue(any(str(dead) in line for line in result.details))
         self.assertFalse(any("live-one" in line for line in result.details))
 
+    def test_long_dead_dir_list_is_truncated_with_a_count_notice(self) -> None:
+        # Regression: unlike check_tracker_hygiene's pre-existing "... and N
+        # more" pattern, the new git-state lists were sliced to
+        # MAX_ITEMS_REPORTED with no notice that anything was omitted.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            worktrees_root = tmp / "worktrees"
+            for n in range(drift_patrol.MAX_ITEMS_REPORTED + 5):
+                self._dead_dir(worktrees_root, f"dead-{n}")
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=worktrees_root,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any("and 5 more" in line for line in result.details))
+
     def test_gitdir_pointer_file_with_missing_target_is_dead(self) -> None:
         # str-umw3's exact shape: `.git` file still present, but the gitdir
         # it points to (git worktree remove/prune's target) is gone. A
@@ -452,6 +480,33 @@ class GitStateTest(unittest.TestCase):
         self.assertEqual(result.status, drift_patrol.FAIL)
         self.assertTrue(any("land-work-preview-abc123" in line for line in result.details))
         self.assertFalse(any("land-work-preview-def456" in line for line in result.details))
+
+    def test_stray_file_matching_preview_prefix_is_not_treated_as_a_dir(self) -> None:
+        # Regression: the preview glob must filter to directories only, the
+        # same way _dead_subdirs already does for worktree roots. A stray
+        # non-directory file (e.g. a leftover lock/log) matching the prefix
+        # must not be reported as a stale preview dir.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            preview_root = tmp / "tmp-root"
+            preview_root.mkdir()
+            stray_file = preview_root / "land-work-preview-abc123.log"
+            stray_file.write_text("not a directory\n")
+            old_mtime = (NOW - timedelta(hours=26)).timestamp()
+            os.utime(stray_file, (old_mtime, old_mtime))
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=preview_root,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.PASS)
+        self.assertFalse(any("land-work-preview-abc123.log" in line for line in result.details))
 
     def test_preview_max_age_hours_is_honored(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp:

@@ -772,35 +772,33 @@ PREVIEW_DIR_PREFIX = "land-work-preview-"
 
 
 def _read_git_core_config(git_dir: Path) -> dict[str, str]:
-    """Parse `[core]` section key/values out of a `.git/config` file directly.
+    """Read `[core]` section key/values out of a `.git/config` file.
 
-    Deliberately does not shell out to `git config` here: this check exists
-    specifically to catch a `core.bare=true` regression, and git refuses
-    several operations against a checkout in that state (str-qwua7.1's
-    "must be run in a work tree" failures) — invoking git would make the
-    detector inherit the exact bug it is meant to catch. Plain text parsing
-    sidesteps that and keeps the check truthful even on a broken checkout.
+    Uses `git config --file <path> --get-regexp` rather than `git config`
+    against the repo itself: `--file` parses the named file directly without
+    opening/detecting the repo at all, so it is correct and unaffected by a
+    `core.bare=true` regression (this check exists specifically to catch
+    that) -- confirmed: `git config --file` exits 0 and reports `core.bare
+    true` correctly even against such a config. This also gets git's own
+    quoting/continuation-line handling for free instead of a hand-rolled INI
+    parser reimplementing it (possibly incorrectly).
     """
     config_path = git_dir / "config"
     if not config_path.is_file():
         return {}
-    values: dict[str, str] = {}
-    section: str | None = None
-    try:
-        text = config_path.read_text(errors="replace")
-    except OSError:
+    exit_code, output = run_command(
+        ["git", "config", "--file", str(config_path), "--get-regexp", r"^core\."],
+        cwd=git_dir,
+    )
+    if exit_code != 0:
         return {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith(";"):
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        if not line.strip():
             continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip().split(" ", 1)[0].lower()
-            continue
-        if section != "core" or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        values[key.strip().lower()] = value.strip()
+        key, _, value = line.partition(" ")
+        if key.startswith("core."):
+            values[key[len("core."):].lower()] = value
     return values
 
 
@@ -929,6 +927,8 @@ def check_git_state(
     if prune_lines:
         findings.append(f"-- git worktree prune --dry-run ({len(prune_lines)}) --")
         findings.extend(prune_lines[:MAX_ITEMS_REPORTED])
+        if len(prune_lines) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(prune_lines) - MAX_ITEMS_REPORTED} more")
 
     if worktrees_root is _UNSET:
         worktrees_root = DEFAULT_WORKTREES_ROOT
@@ -942,6 +942,8 @@ def check_git_state(
             f"-- dead dirs under {worktrees_root} ({len(dead_worktree_dirs)}) --"
         )
         findings.extend(dead_worktree_dirs[:MAX_ITEMS_REPORTED])
+        if len(dead_worktree_dirs) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(dead_worktree_dirs) - MAX_ITEMS_REPORTED} more")
 
     if claude_worktrees_root is _UNSET:
         claude_worktrees_root = primary_checkout / ".claude" / "worktrees"
@@ -958,6 +960,8 @@ def check_git_state(
             f"({len(dead_claude_dirs)}) --"
         )
         findings.extend(dead_claude_dirs[:MAX_ITEMS_REPORTED])
+        if len(dead_claude_dirs) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(dead_claude_dirs) - MAX_ITEMS_REPORTED} more")
 
     if preview_root is _UNSET:
         preview_root = DEFAULT_PREVIEW_ROOT
@@ -967,7 +971,9 @@ def check_git_state(
         checked_anything = True
         cutoff = now - timedelta(hours=preview_max_age_hours)
         try:
-            entries = sorted(preview_root.glob(f"{PREVIEW_DIR_PREFIX}*"))
+            entries = sorted(
+                p for p in preview_root.glob(f"{PREVIEW_DIR_PREFIX}*") if p.is_dir()
+            )
         except OSError:
             entries = []
         for entry in entries:
@@ -984,6 +990,8 @@ def check_git_state(
             f"{preview_max_age_hours}h ({len(stale_previews)}) --"
         )
         findings.extend(stale_previews[:MAX_ITEMS_REPORTED])
+        if len(stale_previews) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(stale_previews) - MAX_ITEMS_REPORTED} more")
 
     remediation = (
         "Repair: `git config core.bare false` (and unset core.hooksPath if not "
