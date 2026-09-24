@@ -374,18 +374,13 @@ pub(crate) fn print_markdown(md: &str, use_color: bool) {
 pub(crate) fn print_stderr(s: &str) {
     let stderr = io::stderr();
     let mut lock = stderr.lock();
-    match write_all_resilient(&mut lock, s.as_bytes()) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-            std::process::exit(0);
-        }
-        Err(e) => {
-            // Stderr itself is broken; there is no lower-priority channel
-            // left to report through, so exit without a diagnostic.
-            let _ = e;
-            std::process::exit(1);
-        }
-    }
+    // Unlike print_stdout, a broken or otherwise failing stderr must never
+    // abort the process: this report is a secondary, best-effort channel,
+    // and stdout may still be mid-stream on the JSON/markdown payload this
+    // routing exists to keep pure (str-qwua7.11 review). Drop the write and
+    // keep going -- there is no lower-priority channel to report the
+    // failure through, and exiting here would silently truncate stdout.
+    let _ = write_all_resilient(&mut lock, s.as_bytes());
 }
 
 /// Print Markdown to stderr, rendered with termimad formatting when

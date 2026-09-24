@@ -3791,6 +3791,22 @@ fn stage_persistence_dir(
         .join(format!("{:05}_{function_component}", func.start_line))
 }
 
+/// True when a spec (JSON or markdown) is going to be printed to stdout by
+/// this run (no `--spec-out` file given). When true, the header/per-function
+/// report/footer must be routed to stderr instead of stdout so stdout stays
+/// a single parseable document (str-qwua7.11). Shared by `finalize_explore`
+/// and `run_explore` so the eligibility rule cannot drift between the two
+/// explore entry paths -- see this repo's "parallel parity" convention.
+///
+/// Computed from the raw (pre-override) flags: `show_spec` at each call
+/// site is separately widened to include `output_path.is_some()` so the
+/// spec gets collected into `acc.file_specs`, but that widened form must
+/// not be used here or a `--spec-out` run would wrongly redirect its report
+/// to stderr even though the spec is going to a file, not stdout.
+fn spec_targets_stdout(show_spec: bool, detect_invariants: bool, output_path: Option<&Path>) -> bool {
+    (show_spec || detect_invariants) && output_path.is_none()
+}
+
 /// Finalize an explore run from saved artifacts on disk. Reads per-function
 /// artifacts, reconstructs reports and specs, and writes output files.
 #[allow(clippy::too_many_arguments)]
@@ -3842,12 +3858,7 @@ fn finalize_explore(
         shatter_core::report_style::ReportStyle::default()
     };
 
-    // str-qwua7.11: computed from the raw (pre-override) flags — `show_spec`
-    // below is widened to include `output_path.is_some()` so the spec gets
-    // collected into `acc.file_specs`, but that widened form must not be
-    // used here or a `--spec-out` run would wrongly redirect its report to
-    // stderr even though the spec is going to a file, not stdout.
-    let spec_to_stdout = (show_spec || detect_invariants) && output_path.is_none();
+    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, output_path);
 
     let empty_fingerprints: HashMap<String, String> = HashMap::new();
     let opts = AssemblyOpts {
@@ -4318,12 +4329,7 @@ pub(crate) async fn run_explore(
             use_concolic,
         );
     }
-    // str-qwua7.11: true when a spec (JSON or markdown) is going to be
-    // printed to stdout by this run (no `--spec-out` file given). When
-    // true, the header/per-function report/footer must be routed to
-    // stderr instead of stdout so stdout stays a single parseable
-    // document. Mirrors the equivalent computation in `finalize_explore`.
-    let spec_to_stdout = (show_spec || detect_invariants) && output_path.is_none();
+    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, output_path);
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds {
         None
@@ -6648,41 +6654,40 @@ pub(crate) async fn run_explore(
                 print_markdown(&footer_md, use_color);
             }
         } else {
-            let footer = explorer::format_explore_footer(
+            let mut footer = explorer::format_explore_footer(
                 total_paths,
                 total_function_count,
                 total_covered,
                 total_lines,
                 &report_style,
             );
+            // Built as one string and written with a single print/eprint
+            // call below so the spec_to_stdout branches (str-qwua7.11)
+            // cannot drift out of sync with each other -- see the review
+            // note on this function's twin block for finalize_explore.
+            if let Some(line) = breakdown.as_deref() {
+                footer.push_str(line);
+                footer.push('\n');
+            }
+            if let Some(s) = go_md.as_deref() {
+                footer.push('\n');
+                footer.push_str(s);
+                footer.push('\n');
+            }
+            if let Some(s) = ts_md.as_deref() {
+                footer.push('\n');
+                footer.push_str(s);
+                footer.push('\n');
+            }
+            if let Some(s) = failure_impact_md.as_deref() {
+                footer.push('\n');
+                footer.push_str(s);
+                footer.push('\n');
+            }
             if spec_to_stdout {
                 eprint!("{footer}");
-                if let Some(line) = breakdown.as_deref() {
-                    eprintln!("{line}");
-                }
-                if let Some(s) = go_md.as_deref() {
-                    eprintln!("\n{s}");
-                }
-                if let Some(s) = ts_md.as_deref() {
-                    eprintln!("\n{s}");
-                }
-                if let Some(s) = failure_impact_md.as_deref() {
-                    eprintln!("\n{s}");
-                }
             } else {
                 print!("{footer}");
-                if let Some(line) = breakdown.as_deref() {
-                    println!("{line}");
-                }
-                if let Some(s) = go_md.as_deref() {
-                    println!("\n{s}");
-                }
-                if let Some(s) = ts_md.as_deref() {
-                    println!("\n{s}");
-                }
-                if let Some(s) = failure_impact_md.as_deref() {
-                    println!("\n{s}");
-                }
             }
         }
     }
