@@ -15,12 +15,18 @@ SCRIPT = REPO_ROOT / "demo" / "gauntlet_check_output.py"
 ALLOWLIST = REPO_ROOT / "demo" / "gauntlet-scan-allowlist.yaml"
 
 
+# Pinned so these tests don't turn red purely by date rollover once the live
+# allowlist's entries pass their `expires` date. The real gate (walkthrough.sh
+# / gauntlet.sh) never passes --today, so a stale entry still fails it.
+PINNED_TODAY = "2026-09-24"
+
+
 def run_helper(output_text: str, allowlist: Path = ALLOWLIST) -> subprocess.CompletedProcess:
     with TemporaryDirectory() as td:
         out = Path(td) / "out.txt"
         out.write_text(output_text)
         return subprocess.run(
-            [sys.executable, str(SCRIPT), "--allowlist", str(allowlist), "--output", str(out), "--step", "test"],
+            [sys.executable, str(SCRIPT), "--allowlist", str(allowlist), "--output", str(out), "--step", "test", "--today", PINNED_TODAY],
             capture_output=True,
             text=True,
             check=False,
@@ -320,6 +326,36 @@ class GauntletCheckOutputLiveRegressionTest(unittest.TestCase):
     def test_live_excerpt_passes_with_current_allowlist(self) -> None:
         result = run_helper(LIVE_STEP7_EXCERPT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_crash_marker_after_allowlisted_block_is_still_flagged(self) -> None:
+        # Review regression: a single-function explore never emits a closing
+        # "---", so the allowlisted function's block stays "open" and used to
+        # swallow a real crash line (interleaved stderr) that followed it.
+        text = LIVE_STEP7_EXCERPT + "\nthread 'main' panicked: boom\n[error] frontend died\nSIGSEGV\n"
+        result = run_helper(text)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("panicked", result.stdout)
+        self.assertIn("[error] frontend died", result.stdout)
+        self.assertIn("SIGSEGV", result.stdout)
+        # ...while the allowlisted function's own deserialization rows stay
+        # excused.
+        self.assertNotIn("deserialization failed", result.stdout)
+
+    def test_interleaved_log_line_does_not_hide_a_zero_percent_summary(self) -> None:
+        # Review regression: stdout+stderr are tee'd into one capture, so an
+        # "[info]" log line can land between a heading and its summary line;
+        # it used to consume the one-shot summary check.
+        text = textwrap.dedent(
+            """\
+            ## `brand_new_fn` *(/tmp/x/standalone/rust/99_new.rs:1-9)*
+            [info] Wrote explore artifact /tmp/x/artifact.json
+
+            **2 path(s)** · **0%** coverage (0/9 lines)
+            """
+        )
+        result = run_helper(text)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("brand_new_fn: 0% coverage", result.stdout)
 
     def test_live_excerpt_fails_without_the_rust_entries(self) -> None:
         with TemporaryDirectory() as td:

@@ -15,7 +15,16 @@ nor tripped the coverage-threshold FAIL-row check:
 
 Checks performed, each already reported (unconditionally) or allowlist-aware:
   * Process-level error indicators ([error], panic, SIGSEGV, a deserialization
-    failure, ...) are always reported.
+    failure, ...) are reported. Crash-class markers ([error], panic, SIGSEGV,
+    "error: exploration error") are ALWAYS reported; a deserialization-
+    failure row is excused only inside the explore block of an allowlisted
+    function.
+  * Known limitation: the markdown-shape checks (explore headings/summaries,
+    scan-table rows, `| FAIL |` rows) match RAW markdown. When a demo is run
+    from a TTY the scripts pass `--color always`, shatter renders markdown
+    through termimad, and those checks cannot see the rendered output; only
+    the plain-text process-error markers still apply. The authoritative
+    non-TTY runs (git hooks, CI, agents) are unaffected.
   * `| FAIL |` scan-report rows are reported only when (basename(file),
     function) is not in the allowlist.
   * A function block (explore markdown, or a scan summary-table row) at 0%
@@ -50,11 +59,27 @@ from typing import Iterable
 
 import yaml
 
-PROCESS_ERROR_RE = re.compile(
-    r"\[error\]|failed to deserialize|deserialization failed|panic|SIGSEGV"
-    r"|error: exploration error",
+# Crash-class markers: always reported, even inside an allowlisted
+# function's explore block (an allowlist entry excuses a function's known
+# thrown-error *rows*, never a real panic/SIGSEGV/[error] that happens to
+# follow it in the interleaved stdout+stderr capture).
+HARD_ERROR_RE = re.compile(
+    r"\[error\]|panic|SIGSEGV|error: exploration error",
     re.IGNORECASE,
 )
+# A function's own input-deserialization failure rows: the one process-level
+# marker an allowlisted function's block may suppress.
+DESERIALIZE_ERROR_RE = re.compile(
+    r"failed to deserialize|deserialization failed",
+    re.IGNORECASE,
+)
+PROCESS_ERROR_RE = re.compile(
+    HARD_ERROR_RE.pattern + "|" + DESERIALIZE_ERROR_RE.pattern,
+    re.IGNORECASE,
+)
+# Interleaved stderr log lines ("[info] ...") that can land between a
+# function heading and its summary line in the combined capture.
+LOG_LINE_RE = re.compile(r"^\s*\[(?:info|warn|warning|debug|trace)\]", re.IGNORECASE)
 SCAN_ERROR_SUMMARY_RE = re.compile(
     r"Scan complete:.*?\*?\*?(\d+)\*?\*? error\(s\)",
 )
@@ -176,7 +201,17 @@ def check(
             awaiting_summary = False
 
         if PROCESS_ERROR_RE.search(line):
-            if current_function is None or not current_function[2]:
+            # Only an allowlisted function's own deserialization-failure
+            # rows are excusable; crash-class markers (HARD_ERROR_RE) are
+            # always reported. The block also never closes for single-
+            # function output (no trailing "---"), so trailing stderr lines
+            # must not inherit the suppression.
+            excused = (
+                current_function is not None
+                and current_function[2]
+                and not HARD_ERROR_RE.search(line)
+            )
+            if not excused:
                 flagged.append(line)
             continue
 
@@ -206,7 +241,7 @@ def check(
             continue
 
         if awaiting_summary and current_function is not None:
-            if line.strip() == "":
+            if line.strip() == "" or LOG_LINE_RE.match(line):
                 continue
             m = EXPLORE_SUMMARY_RE.search(line)
             if m:
@@ -240,13 +275,21 @@ def main() -> int:
     parser.add_argument("--allowlist", required=True)
     parser.add_argument("--output", required=True, help="Captured step output file")
     parser.add_argument("--step", default="", help="Step label included in error log")
+    parser.add_argument(
+        "--today",
+        default=None,
+        help="YYYY-MM-DD override for the current date when evaluating "
+        "allowlist expiry (test seam; unit tests pin it so they don't rot on "
+        "date rollover -- the real gate always uses the real date)",
+    )
     args = parser.parse_args()
+    today = date.fromisoformat(args.today) if args.today else None
 
     label = f"Step {args.step}" if args.step else "Step"
 
     try:
         allowlist, expected_errors, lifecycle_allowlist, expired = load_allowlist(
-            args.allowlist
+            args.allowlist, today=today
         )
     except AllowlistError as exc:
         print(f"  {label}: allowlist error: {exc}")
