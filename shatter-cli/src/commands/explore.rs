@@ -3524,6 +3524,12 @@ struct AssemblyOpts<'a> {
     output_path_set: bool,
     stdout: bool,
     report_outputs_empty: bool,
+    /// str-qwua7.11: true when a spec (JSON or markdown) is going to be
+    /// printed to stdout by this same run (i.e. `show_spec`/`detect_invariants`
+    /// requested and no `--spec-out` file was given). When true, the
+    /// per-function report must be routed to stderr instead of stdout so
+    /// stdout stays a single parseable document.
+    spec_to_stdout: bool,
 }
 
 /// Accumulator for per-function assembly results.
@@ -3608,13 +3614,19 @@ fn assemble_function_result(
     // gated on the info log level — `--quiet` suppresses progress/info
     // logging but must still emit the requested result.
     let should_print_report = opts.report_outputs_empty || opts.stdout;
+    // str-qwua7.11: when the spec is also headed for stdout, print the
+    // human-readable report to stderr instead so stdout carries only the
+    // spec document. A human running interactively still sees the report.
+    let report_to_stderr = should_print_report && opts.spec_to_stdout;
     if log::log_enabled!(log::Level::Trace) {
         let report = {
             let _report_span = tracing::info_span!("report.render").entered();
             explorer::format_exploration_report_verbose(result)
         };
         acc.md_fragments.push((func.name.clone(), report.clone()));
-        if should_print_report {
+        if report_to_stderr {
+            eprint!("{report}");
+        } else if should_print_report {
             print!("{report}");
         }
     } else if opts.output_format == crate::args::OutputFormat::Md {
@@ -3631,7 +3643,9 @@ fn assemble_function_result(
             crate::render::render_explore_fn(&view)
         };
         acc.md_fragments.push((func.name.clone(), md.clone()));
-        if should_print_report {
+        if report_to_stderr {
+            eprint_markdown(&md, opts.use_color);
+        } else if should_print_report {
             print_markdown(&md, opts.use_color);
         }
     } else {
@@ -3648,7 +3662,15 @@ fn assemble_function_result(
             explorer::format_exploration_report(result, &report_opts)
         };
         acc.md_fragments.push((func.name.clone(), report.clone()));
-        if should_print_report {
+        if report_to_stderr {
+            eprint!("{report}");
+            if !mock_symbols.is_empty() {
+                eprintln!("  Mocks used: {}", mock_symbols.join(", "));
+            }
+            if opts.use_concolic {
+                eprintln!("  Explorer: concolic (Z3-backed)");
+            }
+        } else if should_print_report {
             print!("{report}");
             if !mock_symbols.is_empty() {
                 println!("  Mocks used: {}", mock_symbols.join(", "));
@@ -3658,7 +3680,9 @@ fn assemble_function_result(
             }
         }
     }
-    if should_print_report {
+    if report_to_stderr {
+        eprintln!();
+    } else if should_print_report {
         println!();
     }
 
@@ -3767,6 +3791,22 @@ fn stage_persistence_dir(
         .join(format!("{:05}_{function_component}", func.start_line))
 }
 
+/// True when a spec (JSON or markdown) is going to be printed to stdout by
+/// this run (no `--spec-out` file given). When true, the header/per-function
+/// report/footer must be routed to stderr instead of stdout so stdout stays
+/// a single parseable document (str-qwua7.11). Shared by `finalize_explore`
+/// and `run_explore` so the eligibility rule cannot drift between the two
+/// explore entry paths -- see this repo's "parallel parity" convention.
+///
+/// Computed from the raw (pre-override) flags: `show_spec` at each call
+/// site is separately widened to include `output_path.is_some()` so the
+/// spec gets collected into `acc.file_specs`, but that widened form must
+/// not be used here or a `--spec-out` run would wrongly redirect its report
+/// to stderr even though the spec is going to a file, not stdout.
+fn spec_targets_stdout(show_spec: bool, detect_invariants: bool, output_path: Option<&Path>) -> bool {
+    (show_spec || detect_invariants) && output_path.is_none()
+}
+
 /// Finalize an explore run from saved artifacts on disk. Reads per-function
 /// artifacts, reconstructs reports and specs, and writes output files.
 #[allow(clippy::too_many_arguments)]
@@ -3818,6 +3858,8 @@ fn finalize_explore(
         shatter_core::report_style::ReportStyle::default()
     };
 
+    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, output_path);
+
     let empty_fingerprints: HashMap<String, String> = HashMap::new();
     let opts = AssemblyOpts {
         show_spec: show_spec || detect_invariants || output_path.is_some(),
@@ -3835,6 +3877,7 @@ fn finalize_explore(
         output_path_set: output_path.is_some(),
         stdout,
         report_outputs_empty: report_outputs.is_empty(),
+        spec_to_stdout,
     };
 
     let mut acc = AssemblyAccumulator::new();
@@ -3850,11 +3893,26 @@ fn finalize_explore(
     // Print header.
     // str-6c6p: header is part of the requested report output. Do not gate
     // on info log level — quiet suppresses info/progress logs, not results.
+    // str-qwua7.11: routed to stderr when the spec targets stdout, matching
+    // the per-function report (see `spec_to_stdout` / `report_to_stderr`).
     {
         if output_format == crate::args::OutputFormat::Md {
-            print_markdown(
-                "# Shatter Explore (finalized from artifacts)\n\n",
-                use_color,
+            if spec_to_stdout {
+                eprint_markdown(
+                    "# Shatter Explore (finalized from artifacts)\n\n",
+                    use_color,
+                );
+            } else {
+                print_markdown(
+                    "# Shatter Explore (finalized from artifacts)\n\n",
+                    use_color,
+                );
+            }
+        } else if spec_to_stdout {
+            eprint!(
+                "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore (finalized) \u{2550}\u{2550}\u{2550}{reset}\n\n",
+                bold = report_style.bold,
+                reset = report_style.reset,
             );
         } else {
             print!(
@@ -3916,6 +3974,7 @@ fn finalize_explore(
     // Print summary footer.
     // str-6c6p: footer is part of the requested report output. Do not gate
     // on info log level — quiet suppresses info/progress logs, not results.
+    // str-qwua7.11: routed to stderr when the spec targets stdout.
     if report_outputs.is_empty() || stdout {
         if output_format == crate::args::OutputFormat::Md {
             let coverage_suffix = if acc.total_lines > 0 {
@@ -3929,25 +3988,29 @@ fn finalize_explore(
             } else {
                 String::new()
             };
-            print_markdown(
-                &format!(
-                    "\n---\n\n**Summary:** {} path(s) across \
-                     {total_function_count} function(s){coverage_suffix}\n",
-                    acc.total_paths
-                ),
-                use_color,
+            let footer_md = format!(
+                "\n---\n\n**Summary:** {} path(s) across \
+                 {total_function_count} function(s){coverage_suffix}\n",
+                acc.total_paths
             );
+            if spec_to_stdout {
+                eprint_markdown(&footer_md, use_color);
+            } else {
+                print_markdown(&footer_md, use_color);
+            }
         } else {
-            print!(
-                "{}",
-                explorer::format_explore_footer(
-                    acc.total_paths,
-                    total_function_count,
-                    acc.total_covered,
-                    acc.total_lines,
-                    &report_style,
-                )
+            let footer = explorer::format_explore_footer(
+                acc.total_paths,
+                total_function_count,
+                acc.total_covered,
+                acc.total_lines,
+                &report_style,
             );
+            if spec_to_stdout {
+                eprint!("{footer}");
+            } else {
+                print!("{footer}");
+            }
         }
     }
 
@@ -4026,14 +4089,24 @@ fn finalize_explore(
     }
 
     // Replay to stdout if report files were also written.
+    // str-qwua7.11: routed to stderr when the spec also targets stdout.
     if !report_outputs.is_empty() && stdout {
         let combined = combine_explore_markdown(&acc.md_fragments, &summaries);
         match format {
             crate::args::StdoutFormat::Text => {
-                print!("{}", shatter_core::report::strip_markdown_text(&combined));
+                let text = shatter_core::report::strip_markdown_text(&combined);
+                if spec_to_stdout {
+                    eprint!("{text}");
+                } else {
+                    print!("{text}");
+                }
             }
             _ => {
-                print_markdown(&combined, use_color);
+                if spec_to_stdout {
+                    eprint_markdown(&combined, use_color);
+                } else {
+                    print_markdown(&combined, use_color);
+                }
             }
         }
     }
@@ -4256,6 +4329,7 @@ pub(crate) async fn run_explore(
             use_concolic,
         );
     }
+    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, output_path);
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds {
         None
@@ -4779,9 +4853,20 @@ pub(crate) async fn run_explore(
         // Print header on first non-analyze-only target.
         // str-6c6p: header is part of the report output, not an info log;
         // emit regardless of log level so `--quiet` still prints the report.
+        // str-qwua7.11: routed to stderr when the spec targets stdout.
         if !analyze_only && !header_printed {
             if output_format == crate::args::OutputFormat::Md {
-                print_markdown("# Shatter Explore\n\n", use_color);
+                if spec_to_stdout {
+                    eprint_markdown("# Shatter Explore\n\n", use_color);
+                } else {
+                    print_markdown("# Shatter Explore\n\n", use_color);
+                }
+            } else if spec_to_stdout {
+                eprint!(
+                    "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore \u{2550}\u{2550}\u{2550}{reset}\n\n",
+                    bold = report_style.bold,
+                    reset = report_style.reset,
+                );
             } else {
                 print!(
                     "\n{bold}\u{2550}\u{2550}\u{2550} Shatter Explore \u{2550}\u{2550}\u{2550}{reset}\n\n",
@@ -6354,6 +6439,7 @@ pub(crate) async fn run_explore(
                         output_path_set: output_path.is_some(),
                         stdout,
                         report_outputs_empty: report_outputs.is_empty(),
+                        spec_to_stdout,
                     };
                     let mut func_acc = AssemblyAccumulator::new();
                     assemble_function_result(
@@ -6558,35 +6644,50 @@ pub(crate) async fn run_explore(
                 .as_deref()
                 .map(|s| format!("\n\n{s}"))
                 .unwrap_or_default();
-            print_markdown(
-                &format!(
-                    "\n---\n\n**Summary:** {total_paths} path(s) across \
-                     {total_function_count} function(s){coverage_suffix}{breakdown_suffix}{go_suffix}{ts_suffix}{impact_suffix}\n"
-                ),
-                use_color,
+            let footer_md = format!(
+                "\n---\n\n**Summary:** {total_paths} path(s) across \
+                 {total_function_count} function(s){coverage_suffix}{breakdown_suffix}{go_suffix}{ts_suffix}{impact_suffix}\n"
             );
+            if spec_to_stdout {
+                eprint_markdown(&footer_md, use_color);
+            } else {
+                print_markdown(&footer_md, use_color);
+            }
         } else {
-            print!(
-                "{}",
-                explorer::format_explore_footer(
-                    total_paths,
-                    total_function_count,
-                    total_covered,
-                    total_lines,
-                    &report_style,
-                )
+            let mut footer = explorer::format_explore_footer(
+                total_paths,
+                total_function_count,
+                total_covered,
+                total_lines,
+                &report_style,
             );
+            // Built as one string and written with a single print/eprint
+            // call below so the spec_to_stdout branches (str-qwua7.11)
+            // cannot drift out of sync with each other -- see the review
+            // note on this function's twin block for finalize_explore.
             if let Some(line) = breakdown.as_deref() {
-                println!("{line}");
+                footer.push_str(line);
+                footer.push('\n');
             }
             if let Some(s) = go_md.as_deref() {
-                println!("\n{s}");
+                footer.push('\n');
+                footer.push_str(s);
+                footer.push('\n');
             }
             if let Some(s) = ts_md.as_deref() {
-                println!("\n{s}");
+                footer.push('\n');
+                footer.push_str(s);
+                footer.push('\n');
             }
             if let Some(s) = failure_impact_md.as_deref() {
-                println!("\n{s}");
+                footer.push('\n');
+                footer.push_str(s);
+                footer.push('\n');
+            }
+            if spec_to_stdout {
+                eprint!("{footer}");
+            } else {
+                print!("{footer}");
             }
         }
     }
@@ -6688,14 +6789,24 @@ pub(crate) async fn run_explore(
     }
 
     // If files were written and --stdout was also requested, replay to stdout.
+    // str-qwua7.11: routed to stderr when the spec also targets stdout.
     if !report_outputs.is_empty() && stdout {
         let combined = combine_explore_markdown(&md_fragments, &report_summaries);
         match format {
             crate::args::StdoutFormat::Text => {
-                print!("{}", shatter_core::report::strip_markdown_text(&combined));
+                let text = shatter_core::report::strip_markdown_text(&combined);
+                if spec_to_stdout {
+                    eprint!("{text}");
+                } else {
+                    print!("{text}");
+                }
             }
             _ => {
-                print_markdown(&combined, use_color);
+                if spec_to_stdout {
+                    eprint_markdown(&combined, use_color);
+                } else {
+                    print_markdown(&combined, use_color);
+                }
             }
         }
     }

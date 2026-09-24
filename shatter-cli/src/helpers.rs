@@ -366,6 +366,39 @@ pub(crate) fn print_markdown(md: &str, use_color: bool) {
     }
 }
 
+/// Write `s` to stderr with the same EAGAIN-tolerant retry semantics as
+/// [`print_stdout`] — but unlike it, never exits the process on write
+/// failure (including BrokenPipe): stderr here is a best-effort secondary
+/// channel and must not abort a still-in-progress stdout stream. Used by
+/// str-qwua7.11 to route the human-readable explore report to stderr when
+/// a machine-readable spec (JSON or markdown) targets stdout, so stdout
+/// stays a single parseable document — mirrors the `scan --format json`
+/// precedent.
+pub(crate) fn print_stderr(s: &str) {
+    let stderr = io::stderr();
+    let mut lock = stderr.lock();
+    // Unlike print_stdout, a broken or otherwise failing stderr must never
+    // abort the process: this report is a secondary, best-effort channel,
+    // and stdout may still be mid-stream on the JSON/markdown payload this
+    // routing exists to keep pure (str-qwua7.11 review). Drop the write and
+    // keep going -- there is no lower-priority channel to report the
+    // failure through, and exiting here would silently truncate stdout.
+    let _ = write_all_resilient(&mut lock, s.as_bytes());
+}
+
+/// Print Markdown to stderr, rendered with termimad formatting when
+/// `use_color` is true. See [`print_markdown`]; this is the stderr twin
+/// used when the report must not compete with a JSON/markdown spec on
+/// stdout.
+pub(crate) fn eprint_markdown(md: &str, use_color: bool) {
+    if use_color {
+        let rendered = format!("{}", termimad::term_text(md));
+        print_stderr(&rendered);
+    } else {
+        print_stderr(md);
+    }
+}
+
 /// Check for a custom-built frontend binary at `.shatter-cache/bin/shatter-{lang}-custom`.
 ///
 /// Also checks project-local `.shatter-cache/bin/` and legacy `.shatter/bin/`
