@@ -366,6 +366,41 @@ pub(crate) fn print_markdown(md: &str, use_color: bool) {
     }
 }
 
+/// Write `s` to stderr with the same EAGAIN-tolerant, BrokenPipe-clean
+/// semantics as [`print_stdout`]. Used by str-qwua7.11 to route the
+/// human-readable explore report to stderr when a machine-readable spec
+/// (JSON or markdown) targets stdout, so stdout stays a single parseable
+/// document — mirrors the `scan --format json` precedent.
+pub(crate) fn print_stderr(s: &str) {
+    let stderr = io::stderr();
+    let mut lock = stderr.lock();
+    match write_all_resilient(&mut lock, s.as_bytes()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+            std::process::exit(0);
+        }
+        Err(e) => {
+            // Stderr itself is broken; there is no lower-priority channel
+            // left to report through, so exit without a diagnostic.
+            let _ = e;
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Print Markdown to stderr, rendered with termimad formatting when
+/// `use_color` is true. See [`print_markdown`]; this is the stderr twin
+/// used when the report must not compete with a JSON/markdown spec on
+/// stdout.
+pub(crate) fn eprint_markdown(md: &str, use_color: bool) {
+    if use_color {
+        let rendered = format!("{}", termimad::term_text(md));
+        print_stderr(&rendered);
+    } else {
+        print_stderr(md);
+    }
+}
+
 /// Check for a custom-built frontend binary at `.shatter-cache/bin/shatter-{lang}-custom`.
 ///
 /// Also checks project-local `.shatter-cache/bin/` and legacy `.shatter/bin/`

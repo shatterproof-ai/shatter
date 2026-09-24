@@ -163,6 +163,8 @@ Every command accepts the [global options](#210-global-options) in §2.10.
 | `--spec` | false | Emit a behavioral specification (markdown by default, JSON with `--spec-json`). |
 | `--spec-json` | false | Emit the spec as JSON instead of markdown. |
 | `--spec-out PATH` | — | Write per-file spec JSON to a file (implies `--spec-json`). |
+
+**Stdout purity for `--spec`/`--spec-json` (str-qwua7.11).** When a spec targets stdout — `--spec` or `--spec-json` given without `--spec-out` — the exploration report (header, per-function detail, footer) is written to stderr instead of stdout, so stdout carries exactly the spec document(s) and nothing else. This makes `shatter explore --spec-json <target> | jq .` (or any `json.load`-based consumer) reliable. A human running interactively still sees the report on the terminal via stderr. When `--spec-out PATH` is given, the spec goes to that file and the report prints to stdout as usual (unaffected by this rule).
 | `--show-clusters` | false | Display behavior clusters in output. |
 
 *Timeouts, caching, isolation, parallelism*
