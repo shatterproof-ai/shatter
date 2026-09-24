@@ -18,6 +18,14 @@ Corpus: `/tmp/shatter-examples-main/standalone/ts`. Seeds: [1, 2, 3]. Per-functi
 | iterations | 3 | +100.0 | +67.0, +133.0, +100.0 |
 | wall_s | 3 | +0.4 | +0.1, +0.4, +0.8 |
 
+## Per seed (static vs flat)
+
+| seed | Δ branches | Δ lines | Δ wall s | claimed (static) | functions lost | functions gained | Σ allocated == n×budget |
+|---|---|---|---|---|---|---|---|
+| 1 | +0 | +0 | +0.1 | 1 | 0 | 0 | yes |
+| 2 | +1 | +1 | +0.4 | 40 | 0 | 2 (04-errors.ts::computeStats, 15-email-validator.ts::validateEmail) | yes |
+| 3 | +7 | +0 | +0.8 | 1 | 1 (13-roman-numerals.ts::romanToInt) | 1 (15-email-validator.ts::validateEmail) | yes |
+
 ## Outcomes (seed 1)
 
 | arm | behavioral | error_only |

@@ -18,6 +18,14 @@ Corpus: `/tmp/shatter-examples-main/standalone/go`. Seeds: [1, 2, 3]. Per-functi
 | iterations | 3 | +69.0 | +69.0, +69.0, +92.0 |
 | wall_s | 3 | +0.8 | +0.3, +2.7, +0.8 |
 
+## Per seed (static vs flat)
+
+| seed | Δ branches | Δ lines | Δ wall s | claimed (static) | functions lost | functions gained | Σ allocated == n×budget |
+|---|---|---|---|---|---|---|---|
+| 1 | +18 | +25 | +0.3 | 0 | 0 | 1 (15-email-validator.go::ValidateEmail) | yes |
+| 2 | +14 | +0 | +2.7 | 0 | 0 | 1 (15-email-validator.go::ValidateEmail) | yes |
+| 3 | +16 | +25 | +0.8 | 23 | 1 (13-roman-numerals.go::RomanToInt) | 1 (15-email-validator.go::ValidateEmail) | yes |
+
 ## Outcomes (seed 1)
 
 | arm | behavioral | error_only |

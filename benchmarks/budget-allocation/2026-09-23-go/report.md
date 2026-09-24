@@ -18,6 +18,14 @@ Corpus: `/tmp/shatter-examples-main/standalone/go`. Seeds: [1, 2, 3]. Per-functi
 | iterations | 3 | +720.0 | +717.0, +720.0, +723.0 |
 | wall_s | 3 | +0.9 | +0.9, +0.8, +1.4 |
 
+## Per seed (static vs flat)
+
+| seed | Δ branches | Δ lines | Δ wall s | claimed (static) | functions lost | functions gained | Σ allocated == n×budget |
+|---|---|---|---|---|---|---|---|
+| 1 | +0 | -1 | +0.9 | 0 | 1 (01-arithmetic.go::CompareMagnitudes) | 0 | yes |
+| 2 | +0 | +23 | +0.8 | 0 | 1 (01-arithmetic.go::CompareMagnitudes) | 1 (15-email-validator.go::ValidateEmail) | yes |
+| 3 | +0 | +0 | +1.4 | 0 | 1 (01-arithmetic.go::CompareMagnitudes) | 1 (15-email-validator.go::ValidateEmail) | yes |
+
 ## Outcomes (seed 1)
 
 | arm | behavioral | error_only |

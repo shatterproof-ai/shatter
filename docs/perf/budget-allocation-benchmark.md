@@ -67,42 +67,50 @@ The knob-absent sanity gate passed in every run.
 | zolem `internal/specs` | default | 24 | 33 → 33 / 43 | +0 (0, 0, 0) | +0 | −0.4 |
 | zolem `internal/specs` | tight | 24 | 31 → 31 / 43 | +0 (0, 0, 0) | +0 | +0.1 |
 
-Reading:
+Reading (every claim below is checkable in the committed `report.md` per
+run: the "Per seed" table lists claimed executions and the functions that
+lost or gained coverage for each seed, and "Per function" covers seed 1):
 
 - **Static allocation only matters when the budget binds.** At the default
   budget almost every fixture function stops at plateau well below its cap
   (3 of 35 TS, 3 of 30 Go, and 0 of 24 zolem functions reach 500
-  executions), so the two arms explore the same paths and coverage is
-  nearly identical. The extra `Σ executions used` under `static` at the
-  default budget is functions that received a larger allocation and kept
-  iterating without finding anything new. The one loss on record is at the
-  default Go budget, seed 1: `01-arithmetic.go::CompareMagnitudes` used 253
+  executions), so the two arms explore nearly the same paths. The extra
+  `Σ executions used` under `static` at the default budget is functions that
+  received a larger allocation and kept iterating without finding anything
+  new. The one loss on record at the default budget is
+  `01-arithmetic.go::CompareMagnitudes` (all three Go seeds): it used 253
   executions under `flat` but was allocated 157 under `static` and covered
   one line fewer (8 vs 9, same branches). It did not claim surplus because
-  it was not productive by the recent-hits test when it hit the cap. This is
+  it was not productive by the recent-hits test when it hit its cap. This is
   the starvation risk the floor is meant to bound; at the default budget it
-  cost one line on one function across the three corpora.
-- **Under a tight budget the gain is real but concentrated.** All of the Go
-  +16 branches in seed 1 come from one function: `15-email-validator.go::
-  ValidateEmail` goes from 2 to 20 branches (6 to 31 lines) because static
-  gives it 93 executions instead of 50. The score ranked it highest (loops,
-  string parameter, many branches), which is exactly the case the design
-  targets. The TS +7 in seed 3 is the same shape. No function lost coverage
-  in the tight runs: the donors were already at plateau.
-- **Surplus claiming almost never fires on these corpora** (Σ claimed is 0
-  or 1). Claims require a function to hit its execution cap while still
-  productive; at the default budget nothing hits the cap, and at the tight
-  budget the static allocation is already large enough for the few
-  productive functions. The claim path is exercised by the CLI test in
-  `shatter-cli/tests/scan_budget_allocation.rs` rather than by these runs.
-- **zolem is a null result in both regimes.** The specs package's coverage
-  ceiling is set by opaque callees and error-only outcomes (9 of 24
-  functions), not by execution count: every function exhausts its
-  allocation under both arms with identical coverage. Budget allocation
-  cannot help a function whose remaining branches are unreachable from the
-  harness.
-- **Wall-clock cost is under one second per scan** in every run, from the
-  extra executions of functions that received larger allocations.
+  cost one line on one function across the three corpora. (The Go seed-2
+  +23 lines is `ValidateEmail`, which reached its flat cap in that seed.)
+- **Under a tight budget the gain is real but concentrated.** In every Go
+  tight seed the gain is one function, `15-email-validator.go::ValidateEmail`
+  (seed 1: 2 → 20 branches and 6 → 31 lines, +18; seeds 2 and 3: +14 and
+  +16) because static gives it 93 executions instead of 50. The score ranked
+  it highest (loops, string parameter, many branches), which is the case the
+  design targets. TS tight is the same function in seeds 2 and 3 (+1, +7)
+  plus `computeStats` in seed 2. Two tight-budget losses are recorded, both
+  `RomanToInt`/`romanToInt` (Go seed 3, TS seed 3), each outweighed by the
+  gain in that seed; net Δ branches is ≥ 0 in every seed of every run.
+- **Surplus claiming fires in two of six tight seeds** (Go seed 3 claimed 23
+  executions, TS seed 2 claimed 40; the other seeds claimed 0 or 1) and never
+  at the default budget, where nothing reaches its cap. Claims require a
+  function to hit its execution cap while still productive, so this is
+  expected; the claim path itself is exercised deterministically by the CLI
+  test in `shatter-cli/tests/scan_budget_allocation.rs`.
+- **zolem is a null result in both regimes, and the mechanism is plateau,
+  not exhaustion.** At the default budget all 24 specs functions stop below
+  their allocation under both arms (e.g. `NormalizeGeminiDiscovery` uses 233
+  of 1106 allocated); at the tight budget 10 of 24 do. The coverage ceiling
+  is set by opaque callees and error-only outcomes (9 of 24 functions), so
+  more executions find nothing new and the per-seed tables show no function
+  gained or lost.
+- **Wall-clock cost is small but not uniformly sub-second:** median Δ is
+  under one second in every run, with two seeds above it (Go tight seed 2:
+  +2.7 s; Go default seed 3: +1.4 s) from the extra executions of functions
+  that received larger allocations.
 
 Recommendation for the epic decision: `static` is within one line of `flat`
 where the budget does not bind and is materially better only when the per-function budget

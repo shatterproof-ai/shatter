@@ -164,6 +164,38 @@
       }
     }
   },
+  "comparison": {
+    "1": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 12000,
+      "expected_allocated": 12000,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "2": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 12000,
+      "expected_allocated": 12000,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "3": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 12000,
+      "expected_allocated": 12000,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    }
+  },
   "per_function": [
     {
       "id": "internal/specs/discovery.go::NormalizeGeminiDiscovery",
@@ -174,7 +206,8 @@
       "br_flat": 4,
       "br_static": 4,
       "ln_flat": 16,
-      "ln_static": 16
+      "ln_static": 16,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/fetcher.go::(*Fetcher).Get",
@@ -185,7 +218,8 @@
       "br_flat": 4,
       "br_static": 4,
       "ln_flat": 13,
-      "ln_static": 13
+      "ln_static": 13,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/openapi.go::NormalizeOpenAPI",
@@ -196,7 +230,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 11,
-      "ln_static": 11
+      "ln_static": 11,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/openapi.go::(OpenAPINormalizer).Normalize",
@@ -207,7 +242,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 10,
-      "ln_static": 10
+      "ln_static": 10,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/validator.go::(*Validator).Validate",
@@ -218,7 +254,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 7,
-      "ln_static": 7
+      "ln_static": 7,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/validator.go::(*Validator).LoadRaw",
@@ -229,7 +266,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 5,
-      "ln_static": 5
+      "ln_static": 5,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/loader.go::(PassThroughNormalizer).Normalize",
@@ -240,7 +278,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 14,
-      "ln_static": 14
+      "ln_static": 14,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/discovery.go::LoadProviderSchema",
@@ -251,7 +290,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 12,
-      "ln_static": 12
+      "ln_static": 12,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/loader.go::(*ContractLoader).Refresh",
@@ -262,7 +302,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 11,
-      "ln_static": 11
+      "ln_static": 11,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/fetcher.go::NewFetcherWithFallback",
@@ -273,7 +314,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/validator.go::(*Validator).LoadNormalized",
@@ -284,7 +326,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 6,
-      "ln_static": 6
+      "ln_static": 6,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/loader.go::(*ContractLoader).LoadFallback",
@@ -295,7 +338,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 5,
-      "ln_static": 5
+      "ln_static": 5,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/registry.go::(Registry).List",
@@ -306,7 +350,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 12,
-      "ln_static": 12
+      "ln_static": 12,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/registry.go::DefaultRegistry",
@@ -317,7 +362,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 6,
-      "ln_static": 6
+      "ln_static": 6,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/validator.go::(*Validator).Has",
@@ -328,7 +374,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 6,
-      "ln_static": 6
+      "ln_static": 6,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/registry.go::(Registry).Lookup",
@@ -339,7 +386,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/fetcher.go::NewFetcher",
@@ -350,7 +398,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/validator.go::(*Validator).Schemas",
@@ -361,7 +410,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/loader.go::NewContractLoader",
@@ -372,7 +422,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/validator.go::(*ValidationError).Error",
@@ -383,7 +434,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/vendored.go::VendoredFallbacks",
@@ -394,7 +446,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/registry.go::(ContractSource).HasRemote",
@@ -405,7 +458,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/registry.go::(ContractSource).Key",
@@ -416,7 +470,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "internal/specs/validator.go::NewValidator",
@@ -427,7 +482,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     }
   ],
   "first_seed": {

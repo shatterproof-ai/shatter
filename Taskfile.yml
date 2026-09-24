@@ -846,8 +846,8 @@ tasks:
       - python3 scripts/perf_report.py --results-dir "{{.RESULTS_DIR}}"
 
   bench-budget-alloc:
-    desc: "Flat-vs-static budget allocation benchmark over CORPUS (SEEDS=1,2,3 MAX_ITERATIONS=100 INCLUDE='*.ts' RESULTS_DIR=target/bench-budget); needs a release shatter binary"
-    deps: [ts:build]
+    desc: "Flat-vs-static budget allocation benchmark over CORPUS (defaults SEEDS=1,2,3 MAX_ITERATIONS=100 RESULTS_DIR=target/bench-budget; INCLUDE unset scans everything, e.g. INCLUDE='*.ts'); needs a release shatter binary"
+    deps: [ts:build, go:build]
     vars:
       RESULTS_DIR: '{{.RESULTS_DIR | default "target/bench-budget"}}'
       SEEDS: '{{.SEEDS | default "1,2,3"}}'

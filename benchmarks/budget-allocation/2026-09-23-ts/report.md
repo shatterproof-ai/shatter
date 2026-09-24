@@ -18,6 +18,14 @@ Corpus: `/tmp/shatter-examples-main/standalone/ts`. Seeds: [1, 2, 3]. Per-functi
 | iterations | 3 | +327.0 | +371.0, -28.0, +327.0 |
 | wall_s | 3 | +0.5 | -0.1, +0.5, +0.9 |
 
+## Per seed (static vs flat)
+
+| seed | Δ branches | Δ lines | Δ wall s | claimed (static) | functions lost | functions gained | Σ allocated == n×budget |
+|---|---|---|---|---|---|---|---|
+| 1 | +0 | +0 | -0.1 | 0 | 0 | 0 | yes |
+| 2 | +0 | +0 | +0.5 | 0 | 0 | 0 | yes |
+| 3 | +0 | +0 | +0.9 | 0 | 0 | 0 | yes |
+
 ## Outcomes (seed 1)
 
 | arm | behavioral | error_only |

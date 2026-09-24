@@ -164,6 +164,48 @@
       }
     }
   },
+  "comparison": {
+    "1": {
+      "lost": [
+        "01-arithmetic.go::CompareMagnitudes"
+      ],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 15000,
+      "expected_allocated": 15000,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "2": {
+      "lost": [
+        "01-arithmetic.go::CompareMagnitudes"
+      ],
+      "gained": [
+        "15-email-validator.go::ValidateEmail"
+      ],
+      "claimed": 0,
+      "allocated": 15000,
+      "expected_allocated": 15000,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "3": {
+      "lost": [
+        "01-arithmetic.go::CompareMagnitudes"
+      ],
+      "gained": [
+        "15-email-validator.go::ValidateEmail"
+      ],
+      "claimed": 0,
+      "allocated": 15000,
+      "expected_allocated": 15000,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    }
+  },
   "per_function": [
     {
       "id": "10-path-router.go::MatchRoute",
@@ -174,7 +216,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     },
     {
       "id": "15-email-validator.go::ValidateEmail",
@@ -185,7 +228,8 @@
       "br_flat": 22,
       "br_static": 22,
       "ln_flat": 42,
-      "ln_static": 42
+      "ln_static": 42,
+      "missing_in": ""
     },
     {
       "id": "18-accept-language.go::NegotiateLanguage",
@@ -196,7 +240,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     },
     {
       "id": "07-auth-validation.go::AuthorizeRequest",
@@ -207,7 +252,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     },
     {
       "id": "19-robots-policy.go::EvaluateRobotsPolicy",
@@ -218,7 +264,8 @@
       "br_flat": 6,
       "br_static": 6,
       "ln_flat": 24,
-      "ln_static": 24
+      "ln_static": 24,
+      "missing_in": ""
     },
     {
       "id": "16-cron-parser.go::ParseCron",
@@ -229,7 +276,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 7,
-      "ln_static": 7
+      "ln_static": 7,
+      "missing_in": ""
     },
     {
       "id": "20-dotenv-parser.go::ParseDotenv",
@@ -240,7 +288,8 @@
       "br_flat": 11,
       "br_static": 11,
       "ln_flat": 18,
-      "ln_static": 18
+      "ln_static": 18,
+      "missing_in": ""
     },
     {
       "id": "08-data-transform.go::MergeConfig",
@@ -251,7 +300,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 7,
-      "ln_static": 7
+      "ln_static": 7,
+      "missing_in": ""
     },
     {
       "id": "06-nested-control-flow.go::ClassifyHttpResponse",
@@ -262,7 +312,8 @@
       "br_flat": 10,
       "br_static": 10,
       "ln_flat": 17,
-      "ln_static": 17
+      "ln_static": 17,
+      "missing_in": ""
     },
     {
       "id": "06-nested-control-flow.go::ProcessStateMachine",
@@ -273,7 +324,8 @@
       "br_flat": 2,
       "br_static": 2,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "10-path-router.go::ResolveMiddleware",
@@ -284,7 +336,8 @@
       "br_flat": 8,
       "br_static": 8,
       "ln_flat": 16,
-      "ln_static": 16
+      "ln_static": 16,
+      "missing_in": ""
     },
     {
       "id": "08-data-transform.go::TransformRecord",
@@ -295,7 +348,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 4,
-      "ln_static": 4
+      "ln_static": 4,
+      "missing_in": ""
     },
     {
       "id": "05-unions.go::RouteRequest",
@@ -306,7 +360,8 @@
       "br_flat": 2,
       "br_static": 2,
       "ln_flat": 5,
-      "ln_static": 5
+      "ln_static": 5,
+      "missing_in": ""
     },
     {
       "id": "14-semver.go::ParseSemver",
@@ -317,7 +372,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "09-rate-limiter.go::CheckRateLimit",
@@ -328,7 +384,8 @@
       "br_flat": 6,
       "br_static": 6,
       "ln_flat": 16,
-      "ln_static": 16
+      "ln_static": 16,
+      "missing_in": ""
     },
     {
       "id": "14-semver.go::SatisfiesRange",
@@ -339,7 +396,8 @@
       "br_flat": 12,
       "br_static": 12,
       "ln_flat": 31,
-      "ln_static": 31
+      "ln_static": 31,
+      "missing_in": ""
     },
     {
       "id": "02-strings.go::TransformString",
@@ -350,7 +408,8 @@
       "br_flat": 4,
       "br_static": 4,
       "ln_flat": 10,
-      "ln_static": 10
+      "ln_static": 10,
+      "missing_in": ""
     },
     {
       "id": "13-roman-numerals.go::RomanToInt",
@@ -361,7 +420,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 15,
-      "ln_static": 15
+      "ln_static": 15,
+      "missing_in": ""
     },
     {
       "id": "03-objects.go::CategorizeUser",
@@ -372,7 +432,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 11,
-      "ln_static": 11
+      "ln_static": 11,
+      "missing_in": ""
     },
     {
       "id": "02-strings.go::ClassifyString",
@@ -383,7 +444,8 @@
       "br_flat": 4,
       "br_static": 4,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "03-objects.go::DescribeRectangle",
@@ -394,7 +456,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "04-errors.go::ClassifyAge",
@@ -405,7 +468,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 11,
-      "ln_static": 11
+      "ln_static": 11,
+      "missing_in": ""
     },
     {
       "id": "13-roman-numerals.go::IntToRoman",
@@ -416,7 +480,8 @@
       "br_flat": 2,
       "br_static": 2,
       "ln_flat": 7,
-      "ln_static": 7
+      "ln_static": 7,
+      "missing_in": ""
     },
     {
       "id": "01-arithmetic.go::CompareMagnitudes",
@@ -427,7 +492,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 9,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "01-arithmetic.go::ClassifyNumber",
@@ -438,7 +504,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "04-errors.go::SafeDivide",
@@ -449,7 +516,8 @@
       "br_flat": 2,
       "br_static": 2,
       "ln_flat": 6,
-      "ln_static": 6
+      "ln_static": 6,
+      "missing_in": ""
     },
     {
       "id": "smoke-main.go::SmokeClassify",
@@ -460,7 +528,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 4,
-      "ln_static": 4
+      "ln_static": 4,
+      "missing_in": ""
     },
     {
       "id": "05-unions.go::(Circle).Kind",
@@ -471,7 +540,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "05-unions.go::(RectangleShape).Kind",
@@ -482,7 +552,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "05-unions.go::(Triangle).Kind",
@@ -493,7 +564,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     }
   ],
   "first_seed": {

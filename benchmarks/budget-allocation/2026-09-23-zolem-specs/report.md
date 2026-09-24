@@ -18,6 +18,14 @@ Corpus: `/var/tmp/zolem-bench`. Seeds: [1, 2, 3]. Per-function flat budget: 100 
 | iterations | 3 | +0.0 | +0.0, +0.0, -4.0 |
 | wall_s | 3 | -0.4 | +0.2, -1.1, -0.4 |
 
+## Per seed (static vs flat)
+
+| seed | Δ branches | Δ lines | Δ wall s | claimed (static) | functions lost | functions gained | Σ allocated == n×budget |
+|---|---|---|---|---|---|---|---|
+| 1 | +0 | +0 | +0.2 | 0 | 0 | 0 | yes |
+| 2 | +0 | +0 | -1.1 | 0 | 0 | 0 | yes |
+| 3 | +0 | +0 | -0.4 | 0 | 0 | 0 | yes |
+
 ## Outcomes (seed 1)
 
 | arm | behavioral | error_only |

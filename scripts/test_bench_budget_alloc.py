@@ -73,6 +73,45 @@ class Summary(unittest.TestCase):
         s = b.summarize("corpus", [1, 2], 20, self.runs(), False)
         self.assertIn("FAIL", b.render_markdown(s))
 
+    def test_sanity_none_renders_not_run(self):
+        s = b.summarize("corpus", [1, 2], 20, self.runs(), None)
+        md = b.render_markdown(s)
+        self.assertIn("not run", md)
+        self.assertNotIn("PASS", md)
+
+    def test_per_seed_comparison_reports_gains_losses_claims_and_conservation(self):
+        s = b.summarize("corpus", [1, 2], 20, self.runs(), True)
+        c = s["comparison"][1]
+        self.assertEqual(c["gained"], ["b"])
+        self.assertEqual(c["lost"], [])
+        self.assertEqual(c["claimed"], 0)
+        self.assertTrue(c["allocation_conserved"], "40 + 160 == 2 × 20 × 5")
+        md = b.render_markdown(s)
+        self.assertIn("| 1 | +3 | +6 |", md)
+        self.assertIn("| 1 (b) | yes |", md)
+
+    def test_conservation_flag_false_when_static_total_differs(self):
+        flat = [fn("a", 100, 4, 3, 8, 10)]
+        static = [fn("a", 40, 4, 2, 8, 10, alloc=40)]
+        runs = {1: {"flat": {"rows": b.load_report_rows(flat), "wall_s": 1.0}, "static": {"rows": b.load_report_rows(static), "wall_s": 1.0}}}
+        s = b.summarize("corpus", [1], 20, runs, True)
+        c = s["comparison"][1]
+        self.assertFalse(c["allocation_conserved"])
+        self.assertEqual(c["lost"], ["a"])
+        self.assertIn("NO (40 vs 100)", b.render_markdown(s))
+
+    def test_per_function_is_the_union_of_both_arms(self):
+        flat = [fn("a", 100, 4, 3, 8, 10), fn("only_flat", 5, 1, 1, 2, 2)]
+        static = [fn("a", 40, 4, 3, 8, 10, alloc=40), fn("only_static", 5, 1, 1, 2, 2, alloc=60)]
+        runs = {1: {"flat": {"rows": b.load_report_rows(flat), "wall_s": 1.0}, "static": {"rows": b.load_report_rows(static), "wall_s": 1.0}}}
+        s = b.summarize("corpus", [1], 10, runs, True)
+        ids = {r["id"]: r for r in s["per_function"]}
+        self.assertEqual(set(ids), {"a", "only_flat", "only_static"})
+        self.assertEqual(ids["only_flat"]["missing_in"], "static")
+        self.assertEqual(ids["only_static"]["missing_in"], "flat")
+        self.assertEqual(s["comparison"][1]["only_in_flat"], ["only_flat"])
+        self.assertIn("only_flat (missing in static)", b.render_markdown(s))
+
 
 if __name__ == "__main__":
     unittest.main()

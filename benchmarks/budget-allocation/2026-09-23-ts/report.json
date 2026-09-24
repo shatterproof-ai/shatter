@@ -164,6 +164,38 @@
       }
     }
   },
+  "comparison": {
+    "1": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 17500,
+      "expected_allocated": 17500,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "2": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 17500,
+      "expected_allocated": 17500,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "3": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 17500,
+      "expected_allocated": 17500,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    }
+  },
   "per_function": [
     {
       "id": "10-path-router.ts::matchRoute",
@@ -174,7 +206,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "14-semver.ts::satisfiesRange",
@@ -185,7 +218,8 @@
       "br_flat": 7,
       "br_static": 7,
       "ln_flat": 23,
-      "ln_static": 23
+      "ln_static": 23,
+      "missing_in": ""
     },
     {
       "id": "18-accept-language.ts::negotiateLanguage",
@@ -196,7 +230,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     },
     {
       "id": "16-cron-parser.ts::parseCron",
@@ -207,7 +242,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "07-auth-validation.ts::authorizeRequest",
@@ -218,7 +254,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 6,
-      "ln_static": 6
+      "ln_static": 6,
+      "missing_in": ""
     },
     {
       "id": "06-nested-control-flow.ts::processStateMachine",
@@ -229,7 +266,8 @@
       "br_flat": 2,
       "br_static": 2,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "15-email-validator.ts::validateEmail",
@@ -240,7 +278,8 @@
       "br_flat": 19,
       "br_static": 19,
       "ln_flat": 13,
-      "ln_static": 13
+      "ln_static": 13,
+      "missing_in": ""
     },
     {
       "id": "05-unions.ts::routeRequest",
@@ -251,7 +290,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "06-nested-control-flow.ts::classifyHttpResponse",
@@ -262,7 +302,8 @@
       "br_flat": 10,
       "br_static": 10,
       "ln_flat": 16,
-      "ln_static": 16
+      "ln_static": 16,
+      "missing_in": ""
     },
     {
       "id": "07-auth-validation.ts::validateJwt",
@@ -273,7 +314,8 @@
       "br_flat": 2,
       "br_static": 2,
       "ln_flat": 5,
-      "ln_static": 5
+      "ln_static": 5,
+      "missing_in": ""
     },
     {
       "id": "19-robots-policy.ts::evaluateRobotsPolicy",
@@ -284,7 +326,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 11,
-      "ln_static": 11
+      "ln_static": 11,
+      "missing_in": ""
     },
     {
       "id": "20-dotenv-parser.ts::parseDotenv",
@@ -295,7 +338,8 @@
       "br_flat": 7,
       "br_static": 7,
       "ln_flat": 21,
-      "ln_static": 21
+      "ln_static": 21,
+      "missing_in": ""
     },
     {
       "id": "05-unions.ts::computeArea",
@@ -306,7 +350,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 1,
-      "ln_static": 1
+      "ln_static": 1,
+      "missing_in": ""
     },
     {
       "id": "10-path-router.ts::resolveMiddleware",
@@ -317,7 +362,8 @@
       "br_flat": 6,
       "br_static": 6,
       "ln_flat": 12,
-      "ln_static": 12
+      "ln_static": 12,
+      "missing_in": ""
     },
     {
       "id": "09-rate-limiter.ts::checkRateLimit",
@@ -328,7 +374,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 14,
-      "ln_static": 14
+      "ln_static": 14,
+      "missing_in": ""
     },
     {
       "id": "02-strings.ts::transformString",
@@ -339,7 +386,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 10,
-      "ln_static": 10
+      "ln_static": 10,
+      "missing_in": ""
     },
     {
       "id": "22-opaque-predicate.ts::classifyWithChecksum",
@@ -350,7 +398,8 @@
       "br_flat": 4,
       "br_static": 4,
       "ln_flat": 9,
-      "ln_static": 9
+      "ln_static": 9,
+      "missing_in": ""
     },
     {
       "id": "14-semver.ts::parseSemver",
@@ -361,7 +410,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "04-errors.ts::computeStats",
@@ -372,7 +422,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 15,
-      "ln_static": 15
+      "ln_static": 15,
+      "missing_in": ""
     },
     {
       "id": "03-objects.ts::categorizeUser",
@@ -383,7 +434,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 10,
-      "ln_static": 10
+      "ln_static": 10,
+      "missing_in": ""
     },
     {
       "id": "13-roman-numerals.ts::romanToInt",
@@ -394,7 +446,8 @@
       "br_flat": 4,
       "br_static": 4,
       "ln_flat": 10,
-      "ln_static": 10
+      "ln_static": 10,
+      "missing_in": ""
     },
     {
       "id": "17-mock-branches.ts::classifyConfigs",
@@ -405,7 +458,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 5,
-      "ln_static": 5
+      "ln_static": 5,
+      "missing_in": ""
     },
     {
       "id": "02-strings.ts::classifyString",
@@ -416,7 +470,8 @@
       "br_flat": 5,
       "br_static": 5,
       "ln_flat": 10,
-      "ln_static": 10
+      "ln_static": 10,
+      "missing_in": ""
     },
     {
       "id": "03-objects.ts::describeRectangle",
@@ -427,7 +482,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 8,
-      "ln_static": 8
+      "ln_static": 8,
+      "missing_in": ""
     },
     {
       "id": "17-mock-branches.ts::loadOrDefault",
@@ -438,7 +494,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "17-mock-branches.ts::classifyStatus",
@@ -449,7 +506,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 1,
-      "ln_static": 1
+      "ln_static": 1,
+      "missing_in": ""
     },
     {
       "id": "01-arithmetic.ts::compareMagnitudes",
@@ -460,7 +518,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 9,
-      "ln_static": 9
+      "ln_static": 9,
+      "missing_in": ""
     },
     {
       "id": "04-errors.ts::safeDivide",
@@ -471,7 +530,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 7,
-      "ln_static": 7
+      "ln_static": 7,
+      "missing_in": ""
     },
     {
       "id": "01-arithmetic.ts::classifyNumber",
@@ -482,7 +542,8 @@
       "br_flat": 3,
       "br_static": 3,
       "ln_flat": 7,
-      "ln_static": 7
+      "ln_static": 7,
+      "missing_in": ""
     },
     {
       "id": "21-crypto-boundary.ts::classifySecret",
@@ -493,7 +554,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "13-roman-numerals.ts::intToRoman",
@@ -504,7 +566,8 @@
       "br_flat": 2,
       "br_static": 2,
       "ln_flat": 9,
-      "ln_static": 9
+      "ln_static": 9,
+      "missing_in": ""
     },
     {
       "id": "21-crypto-boundary.ts::encrypt",
@@ -515,7 +578,8 @@
       "br_flat": 0,
       "br_static": 0,
       "ln_flat": 2,
-      "ln_static": 2
+      "ln_static": 2,
+      "missing_in": ""
     },
     {
       "id": "13-mcdc-compound.ts::compoundAnd",
@@ -526,7 +590,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     },
     {
       "id": "13-mcdc-compound.ts::compoundOr",
@@ -537,7 +602,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     },
     {
       "id": "13-mcdc-compound.ts::threeWayAnd",
@@ -548,7 +614,8 @@
       "br_flat": 1,
       "br_static": 1,
       "ln_flat": 3,
-      "ln_static": 3
+      "ln_static": 3,
+      "missing_in": ""
     }
   ],
   "first_seed": {

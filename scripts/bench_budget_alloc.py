@@ -5,15 +5,17 @@ Runs `shatter scan --concolic` over a corpus once per arm and seed, each in
 a fresh copy of the corpus with `--no-cache --no-seeds --parallelism 1`, and
 compares the scan JSON (`functions[]`: branch_count, branches_covered,
 lines_covered, total_lines, iterations, completion_outcome,
-budget_allocated, budget_claimed) between `flat` and `static` at identical
-Σ budget_allocated. Writes `report.md` and `report.json` into the results
-directory. A sanity gate checks that the `flat` arm equals a knob-absent run
-with the same seed (seeded runs are repeatable since str-03mfx.5); a
-mismatch exits 1.
+budget_allocated, budget_claimed) between `flat` and `static` at the same
+total budget (n × max_iterations × 5 executions per layer; the `static`
+arm's Σ budget_allocated is checked against that and reported per seed).
+Writes `report.md` and `report.json` into the results directory. A sanity
+gate checks that the `flat` arm equals a knob-absent run with the same seed
+(seeded runs are repeatable since str-03mfx.5); a mismatch exits 1.
 
     python3 scripts/bench_budget_alloc.py --corpus <dir> [--include '*.ts'] \
         [--seeds 1,2,3] [--max-iterations 100] [--results-dir target/bench-budget]
     python3 scripts/bench_budget_alloc.py --from-json flat.json static.json   # parse only
+    python3 scripts/bench_budget_alloc.py --from-results <dir> --seeds 1,2,3   # re-render
 """
 
 from __future__ import annotations
@@ -135,25 +137,68 @@ def render_markdown(summary: dict) -> str:
         v = d[k]
         med = "—" if v["median_delta"] is None else f"{v['median_delta']:+.1f}"
         lines.append(f"| {k} | {v['n']} | {med} | {', '.join(f'{x:+.1f}' for x in v['deltas'])} |")
+    lines += ["", "## Per seed (static vs flat)", "",
+              "| seed | Δ branches | Δ lines | Δ wall s | claimed (static) | functions lost | functions gained | Σ allocated == n×budget |",
+              "|---|---|---|---|---|---|---|---|"]
+    for seed, c in summary["comparison"].items():
+        ps = summary["per_seed"][seed]
+        db = ps["static"]["branches_covered"] - ps["flat"]["branches_covered"]
+        dl = ps["static"]["lines_covered"] - ps["flat"]["lines_covered"]
+        dw = ps["static"]["wall_s"] - ps["flat"]["wall_s"]
+        fmt = lambda ids: str(len(ids)) + (" (" + ", ".join(ids) + ")" if ids else "")
+        cons = "yes" if c["allocation_conserved"] else f"NO ({c['allocated']} vs {c['expected_allocated']})"
+        lines.append(f"| {seed} | {db:+d} | {dl:+d} | {dw:+.1f} | {c['claimed']} | {fmt(c['lost'])} | {fmt(c['gained'])} | {cons} |")
     lines += ["", "## Outcomes (seed %s)" % summary["seeds"][0], "", "| arm | " + " | ".join(summary["outcome_keys"]) + " |", "|---|" + "---|" * len(summary["outcome_keys"])]
     for arm in ARMS:
         oc = summary["first_seed"][arm]["outcomes"]
         lines.append(f"| {arm} | " + " | ".join(str(oc.get(k, 0)) for k in summary["outcome_keys"]) + " |")
     lines += ["", f"## Per function (seed {summary['seeds'][0]}, static allocation descending)", "", "| function | allocated | claimed | executions flat/static | branches flat/static | lines flat/static |", "|---|---|---|---|---|---|"]
     for r in summary["per_function"]:
-        lines.append(f"| {r['id']} | {r['allocated']} | {r['claimed']} | {r['it_flat']}/{r['it_static']} | {r['br_flat']}/{r['br_static']} | {r['ln_flat']}/{r['ln_static']} |")
-    lines += ["", f"Sanity gate (flat == knob-absent, seed {summary['seeds'][0]}): {'PASS' if summary['sanity_ok'] else 'FAIL'}."]
+        tag = f" (missing in {r['missing_in']})" if r.get("missing_in") else ""
+        lines.append(f"| {r['id']}{tag} | {r['allocated']} | {r['claimed']} | {r['it_flat']}/{r['it_static']} | {r['br_flat']}/{r['br_static']} | {r['ln_flat']}/{r['ln_static']} |")
+    sanity = {True: "PASS", False: "FAIL", None: "not run"}[summary["sanity_ok"]]
+    lines += ["", f"Sanity gate (flat == knob-absent, seed {summary['seeds'][0]}): {sanity}."]
     return "\n".join(lines) + "\n"
 
 
-def summarize(corpus: str, seeds: list[int], max_iterations: int, runs: dict, sanity_ok: bool) -> dict:
-    """runs: {seed: {arm: {"rows": rows, "wall_s": float}}}"""
+EXECUTIONS_PER_PATH = 5
+
+
+def compare_seed(flat_rows: list[dict], static_rows: list[dict], max_iterations: int) -> dict:
+    """Per-seed function-level comparison: which functions gained or lost
+    coverage under `static`, how much was claimed, and whether the static
+    arm's Σ budget_allocated equals the flat total for that seed."""
+    flat = {r["id"]: r for r in flat_rows}
+    static = {r["id"]: r for r in static_rows}
+    lost, gained = [], []
+    for fid in sorted(set(flat) | set(static)):
+        f, s = flat.get(fid), static.get(fid)
+        if f is None or s is None:
+            continue
+        worse = s["branches_covered"] < f["branches_covered"] or s["lines_covered"] < f["lines_covered"]
+        better = s["branches_covered"] > f["branches_covered"] or s["lines_covered"] > f["lines_covered"]
+        if worse:
+            lost.append(fid)
+        if better:
+            gained.append(fid)
+    expected = len(static) * max_iterations * EXECUTIONS_PER_PATH
+    allocated = sum(r["budget_allocated"] for r in static_rows)
+    return {"lost": lost, "gained": gained, "claimed": sum(r["budget_claimed"] for r in static_rows),
+            "allocated": allocated, "expected_allocated": expected, "allocation_conserved": allocated == expected,
+            "only_in_flat": sorted(set(flat) - set(static)), "only_in_static": sorted(set(static) - set(flat))}
+
+
+def summarize(corpus: str, seeds: list[int], max_iterations: int, runs: dict, sanity_ok: bool | None) -> dict:
+    """runs: {seed: {arm: {"rows": rows, "wall_s": float}}}; sanity_ok is None when the gate did not run."""
     per_seed = {}
+    comparison = {}
     for seed, arms in runs.items():
         per_seed[seed] = {}
         for arm, run in arms.items():
             t = totals(run["rows"]); t["wall_s"] = run["wall_s"]
             per_seed[seed][arm] = t
+        if "flat" in arms and "static" in arms:
+            comparison[seed] = compare_seed(arms["flat"]["rows"], arms["static"]["rows"], max_iterations)
     median = {}
     for arm in ARMS:
         median[arm] = {}
@@ -164,17 +209,20 @@ def summarize(corpus: str, seeds: list[int], max_iterations: int, runs: dict, sa
     flat_rows = {r["id"]: r for r in runs[first]["flat"]["rows"]}
     static_rows = {r["id"]: r for r in runs[first]["static"]["rows"]}
     per_function = []
-    for fid, s in static_rows.items():
+    for fid in sorted(set(flat_rows) | set(static_rows)):
         f = flat_rows.get(fid, {})
-        per_function.append({"id": fid, "allocated": s["budget_allocated"], "claimed": s["budget_claimed"],
-                             "it_flat": f.get("iterations", 0), "it_static": s["iterations"],
-                             "br_flat": f.get("branches_covered", 0), "br_static": s["branches_covered"],
-                             "ln_flat": f.get("lines_covered", 0), "ln_static": s["lines_covered"]})
+        s = static_rows.get(fid, {})
+        per_function.append({"id": fid, "allocated": s.get("budget_allocated", 0), "claimed": s.get("budget_claimed", 0),
+                             "it_flat": f.get("iterations", 0), "it_static": s.get("iterations", 0),
+                             "br_flat": f.get("branches_covered", 0), "br_static": s.get("branches_covered", 0),
+                             "ln_flat": f.get("lines_covered", 0), "ln_static": s.get("lines_covered", 0),
+                             "missing_in": "flat" if not f else ("static" if not s else "")})
     per_function.sort(key=lambda r: -r["allocated"])
     outcome_keys = sorted({k for s in per_seed.values() for arm in s.values() for k in arm["outcomes"]})
     return {"corpus": corpus, "seeds": seeds, "max_iterations": max_iterations, "median": median,
-            "paired": paired_deltas(per_seed), "per_seed": per_seed, "per_function": per_function,
-            "first_seed": per_seed[first], "outcome_keys": outcome_keys, "sanity_ok": sanity_ok}
+            "paired": paired_deltas(per_seed), "per_seed": per_seed, "comparison": comparison,
+            "per_function": per_function, "first_seed": per_seed[first], "outcome_keys": outcome_keys,
+            "sanity_ok": sanity_ok}
 
 
 def main() -> int:
@@ -185,15 +233,33 @@ def main() -> int:
     ap.add_argument("--max-iterations", type=int, default=100)
     ap.add_argument("--results-dir", type=Path, default=Path("target/bench-budget"))
     ap.add_argument("--shatter", default=os.environ.get("SHATTER_BIN", "target/release/shatter"))
-    ap.add_argument("--from-json", nargs=2, metavar=("FLAT", "STATIC"), help="parse two existing reports instead of scanning")
+    ap.add_argument("--from-json", nargs=2, metavar=("FLAT", "STATIC"), help="parse two existing reports instead of scanning (sanity gate not run)")
+    ap.add_argument("--from-results", type=Path, metavar="DIR", help="re-render report.md/report.json from an existing results dir ({arm}-seed{S}.json, absent-seed{S}.json)")
     ap.add_argument("extra", nargs="*", help="extra args passed to shatter scan (after --)")
     args = ap.parse_args()
 
     if args.from_json:
         runs = {1: {"flat": {"rows": load_report(Path(args.from_json[0])), "wall_s": 0.0},
                     "static": {"rows": load_report(Path(args.from_json[1])), "wall_s": 0.0}}}
-        summary = summarize(str(args.from_json), [1], args.max_iterations, runs, True)
+        summary = summarize(str(args.from_json), [1], args.max_iterations, runs, None)
         args.results_dir.mkdir(parents=True, exist_ok=True)
+    elif args.from_results:
+        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+        prior = {}
+        prior_path = args.from_results / "report.json"
+        if prior_path.exists():
+            prior = json.loads(prior_path.read_text(encoding="utf-8"))
+        runs = {}
+        for seed in seeds:
+            runs[seed] = {}
+            for arm in ARMS:
+                wall = float(prior.get("per_seed", {}).get(str(seed), {}).get(arm, {}).get("wall_s", 0.0))
+                runs[seed][arm] = {"rows": load_report(args.from_results / f"{arm}-seed{seed}.json"), "wall_s": wall}
+        absent = args.from_results / f"absent-seed{seeds[0]}.json"
+        sanity_ok = coverage_signature(load_report(absent)) == coverage_signature(runs[seeds[0]]["flat"]["rows"]) if absent.exists() else None
+        corpus = str(prior.get("corpus", args.from_results))
+        summary = summarize(corpus, seeds, args.max_iterations, runs, sanity_ok)
+        args.results_dir = args.from_results
     else:
         if not args.corpus:
             ap.error("--corpus is required unless --from-json is given")
@@ -216,7 +282,7 @@ def main() -> int:
     md = render_markdown(summary)
     (args.results_dir / "report.md").write_text(md, encoding="utf-8")
     print(md)
-    if not summary["sanity_ok"]:
+    if summary["sanity_ok"] is False:
         print("SANITY GATE FAILED: flat arm differs from the knob-absent run with the same seed", file=sys.stderr)
         return 1
     return 0
