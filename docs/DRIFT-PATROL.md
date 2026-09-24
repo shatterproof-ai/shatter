@@ -41,6 +41,7 @@ drift, and failing an unrelated branch because someone else left an issue
 | `cli-surface-drift` | CLI commands missing from SPEC.md or gauntlet coverage | `str-wurp` (not implemented) |
 | `docs-stories` | Missing `docs/stories`, or an `INDEX.md` older than the stories it lists | `str-u394l.3` (not implemented) |
 | `tracker-hygiene` | `in_progress` issues untouched for >14 days; open children under a closed parent | — |
+| `git-state` | Primary checkout `core.bare=true` or `core.hooksPath` override, prunable worktree registrations, dead dirs under `~/.local/share/worktrees/shatter/` or `.claude/worktrees/`, stale `/tmp/land-work-preview-*` dirs (`--preview-max-age` hours, default 24) | `str-qwua7.1` |
 
 `protocol-conformance` is the patrol's documented fast subset of the wider
 quality suite: it runs `protocol/conformance/conformance_harness.py` only, not
@@ -112,6 +113,7 @@ python3 scripts/drift-patrol.py --only tracker-hygiene    # one check
 python3 scripts/drift-patrol.py --skip protocol-conformance
 python3 scripts/drift-patrol.py --strict-pending          # placeholders fail
 python3 scripts/drift-patrol.py --stale-days 30           # looser hygiene bar
+python3 scripts/drift-patrol.py --preview-max-age 48       # looser preview-dir staleness bar
 python3 scripts/drift-patrol.py --json                    # machine-readable
 python3 scripts/drift-patrol.py --report drift.md         # also write to a file
 ```
