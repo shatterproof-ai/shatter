@@ -44,7 +44,7 @@ import socket
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -108,13 +108,13 @@ class Result:
 
 
 def run_command(
-    cmd: list[str], *, timeout: int = 900
+    cmd: list[str], *, timeout: int = 900, cwd: Path | str | None = None
 ) -> tuple[int, str]:
-    """Run `cmd` from the repo root, returning (exit code, combined output)."""
+    """Run `cmd` from `cwd` (default: the repo root), returning (exit code, output)."""
     try:
         proc = subprocess.run(
             cmd,
-            cwd=str(REPO_ROOT),
+            cwd=str(cwd) if cwd is not None else str(REPO_ROOT),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout,
@@ -610,22 +610,29 @@ def check_tracker_hygiene(
     )
 
 
-def _dolt_data_dir() -> Path:
-    """The `.beads/dolt` directory bd's shared dolt server actually runs from.
+def _primary_checkout_root() -> Path:
+    """Root of this repo's primary (non-worktree) checkout.
 
-    bd runs a single dolt server shared by every worktree of this repo, not
-    one per worktree — its cwd is `<primary checkout>/.beads/dolt` regardless
-    of which worktree `bd` (or this script) was invoked from. `git`'s common
-    dir is identical across every linked worktree, so its parent reliably
-    names that primary checkout even when REPO_ROOT (this script's own
-    location) is a linked worktree instead.
+    `git`'s common dir is identical across every linked worktree, so its
+    parent reliably names the primary checkout even when REPO_ROOT (this
+    script's own location) is a linked worktree instead. Shared by the dolt
+    data-dir lookup and the git-state check.
     """
     code, output = run_command(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         timeout=10,
     )
-    root = Path(output.strip()).parent if code == 0 and output.strip() else REPO_ROOT
-    return root / ".beads" / "dolt"
+    return Path(output.strip()).parent if code == 0 and output.strip() else REPO_ROOT
+
+
+def _dolt_data_dir() -> Path:
+    """The `.beads/dolt` directory bd's shared dolt server actually runs from.
+
+    bd runs a single dolt server shared by every worktree of this repo, not
+    one per worktree — its cwd is `<primary checkout>/.beads/dolt` regardless
+    of which worktree `bd` (or this script) was invoked from.
+    """
+    return _primary_checkout_root() / ".beads" / "dolt"
 
 
 def _list_dolt_processes() -> list[str]:
@@ -754,6 +761,292 @@ def check_tracker_server(
     )
 
 
+# ---------------------------------------------------------------------------
+# Primary checkout / worktree / preview-dir hygiene
+# ---------------------------------------------------------------------------
+
+DEFAULT_PREVIEW_MAX_AGE_HOURS = 24
+DEFAULT_WORKTREES_ROOT = Path.home() / ".local" / "share" / "worktrees" / "shatter"
+DEFAULT_PREVIEW_ROOT = Path("/tmp")
+PREVIEW_DIR_PREFIX = "land-work-preview-"
+
+
+def _read_git_core_config(git_dir: Path) -> dict[str, str]:
+    """Read `[core]` section key/values out of a `.git/config` file.
+
+    Uses `git config --file <path> --get-regexp` rather than `git config`
+    against the repo itself: `--file` parses the named file directly without
+    opening/detecting the repo at all, so it is correct and unaffected by a
+    `core.bare=true` regression (this check exists specifically to catch
+    that) -- confirmed: `git config --file` exits 0 and reports `core.bare
+    true` correctly even against such a config. This also gets git's own
+    quoting/continuation-line handling for free instead of a hand-rolled INI
+    parser reimplementing it (possibly incorrectly).
+    """
+    config_path = git_dir / "config"
+    if not config_path.is_file():
+        return {}
+    exit_code, output = run_command(
+        ["git", "config", "--file", str(config_path), "--get-regexp", r"^core\."],
+        cwd=git_dir,
+    )
+    if exit_code != 0:
+        return {}
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        key, _, value = line.partition(" ")
+        if key.startswith("core."):
+            values[key[len("core."):].lower()] = value
+    return values
+
+
+def _is_live_worktree_checkout(entry: Path) -> bool:
+    """Whether `entry` is still a registered, usable git worktree checkout.
+
+    Not just "`.git` exists": a linked worktree's `.git` is a *file*
+    containing `gitdir: <path>`, and `git worktree remove`/prune leave that
+    file in place while deleting the gitdir it points to (str-qwua7.1's
+    `.claude/worktrees/str-umw3/` — "gitdir gone" per the audit). A plain
+    `.git` directory (the primary checkout shape) is trusted as-is.
+    """
+    git_entry = entry / ".git"
+    if git_entry.is_dir():
+        return True
+    if not git_entry.is_file():
+        return False
+    try:
+        text = git_entry.read_text(errors="replace").strip()
+    except OSError:
+        return False
+    if not text.startswith("gitdir:"):
+        return False
+    target = text.split(":", 1)[1].strip()
+    return Path(target).is_dir()
+
+
+def _dead_subdirs(root: Path) -> list[str]:
+    """Subdirectories of `root` that are no longer usable git checkouts.
+
+    A registered worktree (linked or primary) always has a `.git` entry
+    whose gitdir actually resolves. A directory that lost that — because
+    `git worktree remove` never ran, or the checkout was deleted out from
+    under git — is exactly the "dead directory" class str-qwua7.1's audit
+    found under ~/.local/share/worktrees/shatter/ and .claude/worktrees/.
+    """
+    dead = []
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if entry.is_dir() and not _is_live_worktree_checkout(entry):
+            dead.append(str(entry))
+    return dead
+
+
+def check_git_state(
+    *,
+    primary_checkout: Path | str | object = _UNSET,
+    prune_output: str | object = _UNSET,
+    worktrees_root: Path | str | None | object = _UNSET,
+    preview_root: Path | str | None | object = _UNSET,
+    claude_worktrees_root: Path | str | None | object = _UNSET,
+    preview_max_age_hours: int = DEFAULT_PREVIEW_MAX_AGE_HOURS,
+    now: datetime | None = None,
+    **_: object,
+) -> Result:
+    """Primary-checkout and worktree/preview cruft hygiene (str-qwua7.1).
+
+    Catches the class of drift the 2026-09-04 audit found: the primary
+    checkout flipped to core.bare=true (breaking `git status`, `git
+    checkout`, and VCS-stamped builds like `go test` in shatter-go), a
+    core.hooksPath override, prunable worktree registrations, dead
+    directories under ~/.local/share/worktrees/shatter/, unregistered
+    checkouts under .claude/worktrees/, and stale
+    /tmp/land-work-preview-* directories from land-work's preview cleanup
+    not running. Nothing else in this repo's tooling detected any of this —
+    scripts/setup-hooks.sh has no --check mode and agent-env-doctor checks
+    plugins/hooks, not git state — so it persisted for weeks.
+
+    Detection only: this never deletes or modifies anything. A human or
+    agent decides what is safe to clean up from the report.
+
+    Every path is injectable for tests. `worktrees_root`, `preview_root`,
+    and `claude_worktrees_root` accept `None` to simulate an absent root
+    (e.g. CI, or a machine without that directory) without touching the
+    filesystem; the corresponding section is then skipped rather than
+    failed, per str-qwua7.1's acceptance criteria.
+    """
+    check_id = "git-state"
+    title = "Primary checkout and worktree/preview hygiene"
+    now = now or datetime.now(timezone.utc)
+
+    if primary_checkout is _UNSET:
+        primary_checkout = _primary_checkout_root()
+    primary_checkout = Path(primary_checkout)
+    git_dir = primary_checkout / ".git"
+    primary_exists = git_dir.exists()
+
+    findings: list[str] = []
+    checked_anything = False
+
+    bare_flag = False
+    hooks_override: str | None = None
+    if primary_exists:
+        checked_anything = True
+        core_config = _read_git_core_config(git_dir)
+        bare_flag = core_config.get("bare", "").lower() == "true"
+        hooks_override = core_config.get("hookspath") or None
+        if bare_flag:
+            findings.append(
+                f"{primary_checkout}: core.bare=true — git status, git checkout, "
+                "and VCS-stamped builds (go test) fail against this checkout"
+            )
+        if hooks_override:
+            findings.append(
+                f"{primary_checkout}: core.hooksPath={hooks_override!r} overrides "
+                "the default hooks directory"
+            )
+
+    prune_explicit = prune_output is not _UNSET
+    if prune_explicit:
+        checked_anything = True
+    elif primary_exists:
+        checked_anything = True
+        code, output = run_command(
+            ["git", "worktree", "prune", "--dry-run", "-v"],
+            cwd=primary_checkout,
+            timeout=30,
+        )
+        prune_output = output if code == 0 else ""
+    else:
+        prune_output = ""
+    prune_lines = [ln.strip() for ln in str(prune_output).splitlines() if ln.strip()]
+    if prune_lines:
+        findings.append(f"-- git worktree prune --dry-run ({len(prune_lines)}) --")
+        findings.extend(prune_lines[:MAX_ITEMS_REPORTED])
+        if len(prune_lines) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(prune_lines) - MAX_ITEMS_REPORTED} more")
+
+    if worktrees_root is _UNSET:
+        worktrees_root = DEFAULT_WORKTREES_ROOT
+    worktrees_root = Path(worktrees_root) if worktrees_root is not None else None
+    dead_worktree_dirs: list[str] = []
+    if worktrees_root is not None and worktrees_root.is_dir():
+        checked_anything = True
+        dead_worktree_dirs = _dead_subdirs(worktrees_root)
+    if dead_worktree_dirs:
+        findings.append(
+            f"-- dead dirs under {worktrees_root} ({len(dead_worktree_dirs)}) --"
+        )
+        findings.extend(dead_worktree_dirs[:MAX_ITEMS_REPORTED])
+        if len(dead_worktree_dirs) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(dead_worktree_dirs) - MAX_ITEMS_REPORTED} more")
+
+    if claude_worktrees_root is _UNSET:
+        claude_worktrees_root = primary_checkout / ".claude" / "worktrees"
+    claude_worktrees_root = (
+        Path(claude_worktrees_root) if claude_worktrees_root is not None else None
+    )
+    dead_claude_dirs: list[str] = []
+    if claude_worktrees_root is not None and claude_worktrees_root.is_dir():
+        checked_anything = True
+        dead_claude_dirs = _dead_subdirs(claude_worktrees_root)
+    if dead_claude_dirs:
+        findings.append(
+            f"-- unregistered checkouts under {claude_worktrees_root} "
+            f"({len(dead_claude_dirs)}) --"
+        )
+        findings.extend(dead_claude_dirs[:MAX_ITEMS_REPORTED])
+        if len(dead_claude_dirs) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(dead_claude_dirs) - MAX_ITEMS_REPORTED} more")
+
+    if preview_root is _UNSET:
+        preview_root = DEFAULT_PREVIEW_ROOT
+    preview_root = Path(preview_root) if preview_root is not None else None
+    stale_previews: list[str] = []
+    if preview_root is not None and preview_root.is_dir():
+        checked_anything = True
+        cutoff = now - timedelta(hours=preview_max_age_hours)
+        try:
+            entries = sorted(
+                p for p in preview_root.glob(f"{PREVIEW_DIR_PREFIX}*") if p.is_dir()
+            )
+        except OSError:
+            entries = []
+        for entry in entries:
+            try:
+                mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                age_hours = (now - mtime).total_seconds() / 3600
+                stale_previews.append(f"{entry} (age {age_hours:.1f}h)")
+    if stale_previews:
+        findings.append(
+            f"-- stale {PREVIEW_DIR_PREFIX}* dirs older than "
+            f"{preview_max_age_hours}h ({len(stale_previews)}) --"
+        )
+        findings.extend(stale_previews[:MAX_ITEMS_REPORTED])
+        if len(stale_previews) > MAX_ITEMS_REPORTED:
+            findings.append(f"... and {len(stale_previews) - MAX_ITEMS_REPORTED} more")
+
+    remediation = (
+        "Repair: `git config core.bare false` (and unset core.hooksPath if not "
+        "intentional) in the primary checkout, then verify `git status` and "
+        "`go test ./...` in shatter-go. Prune: `git worktree prune` from the "
+        "primary checkout. Clean up dead dirs under "
+        "~/.local/share/worktrees/shatter/, unregistered .claude/worktrees/ "
+        "checkouts, and stale /tmp/land-work-preview-* dirs only after "
+        "confirming they are not another agent's active work (bento:closure "
+        "handles this as a periodic sweep over abandoned state)."
+    )
+
+    if not checked_anything:
+        return Result(
+            check_id,
+            title,
+            SKIP,
+            "no primary checkout or machine-specific worktree/preview roots "
+            "found in this environment",
+            remediation=remediation,
+        )
+
+    if findings:
+        counts = ", ".join(
+            f"{n} {label}"
+            for n, label in (
+                (int(bare_flag), "bare"),
+                (int(bool(hooks_override)), "hooksPath override"),
+                (len(prune_lines), "prunable worktree line(s)"),
+                (len(dead_worktree_dirs), "dead worktree dir(s)"),
+                (len(dead_claude_dirs), "unregistered .claude/worktrees dir(s)"),
+                (len(stale_previews), "stale preview dir(s)"),
+            )
+            if n
+        )
+        return Result(
+            check_id,
+            title,
+            FAIL,
+            f"git-state drift found: {counts}",
+            details=findings,
+            tracking_issue="str-qwua7.1",
+            remediation=remediation,
+        )
+
+    return Result(
+        check_id,
+        title,
+        PASS,
+        "primary checkout is not bare, no hooksPath override, no prunable "
+        "worktrees, no dead worktree/preview directories",
+        remediation=remediation,
+    )
+
+
 CHECKS = [
     ("protocol-registry", check_protocol_registry),
     ("protocol-codegen", check_protocol_codegen),
@@ -763,6 +1056,7 @@ CHECKS = [
     ("docs-stories", check_docs_stories),
     ("tracker-hygiene", check_tracker_hygiene),
     ("tracker-server", check_tracker_server),
+    ("git-state", check_git_state),
 ]
 
 CHECK_IDS = [check_id for check_id, _ in CHECKS]
@@ -879,6 +1173,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--preview-max-age",
+        type=int,
+        default=DEFAULT_PREVIEW_MAX_AGE_HOURS,
+        metavar="HOURS",
+        dest="preview_max_age_hours",
+        help=(
+            "flag /tmp/land-work-preview-* dirs older than HOURS as stale "
+            f"(default {DEFAULT_PREVIEW_MAX_AGE_HOURS})"
+        ),
+    )
+    parser.add_argument(
         "--today",
         metavar="YYYY-MM-DD",
         help="override today's date (testing)",
@@ -926,6 +1231,7 @@ def main(argv: list[str] | None = None) -> int:
         "warn_within_days": args.warn_within_days,
         "require_conformance": args.require_conformance,
         "strict_pending": args.strict_pending,
+        "preview_max_age_hours": args.preview_max_age_hours,
         "now": now,
     }
 

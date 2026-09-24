@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import tempfile
 import unittest
@@ -245,6 +246,451 @@ class TrackerServerTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Subprocess helper
 # ---------------------------------------------------------------------------
+
+
+class GitStateTest(unittest.TestCase):
+    """Tests for check_git_state (str-qwua7.1).
+
+    Every path is injected so no test touches the real filesystem outside
+    its own tempdir. `prune_output` is always passed explicitly so no test
+    shells out to `git worktree prune`. Core-config parsing does shell out
+    to the real `git config --file <path>` (str-qwua7.1 review: this is
+    correct-by-construction and unaffected by a bare-checkout regression,
+    unlike a hand-rolled parser), so these tests depend on `git` being on
+    PATH -- already a hard requirement for this repo's own tooling.
+    """
+
+    def _write_config(self, git_dir: Path, lines: list[str]) -> None:
+        git_dir.mkdir(parents=True, exist_ok=True)
+        (git_dir / "config").write_text("\n".join(lines) + "\n")
+
+    def _live_worktree(self, root: Path, name: str) -> Path:
+        wt = root / name
+        (wt / ".git").mkdir(parents=True)
+        return wt
+
+    def _dead_dir(self, root: Path, name: str) -> Path:
+        wt = root / name
+        wt.mkdir(parents=True)
+        return wt
+
+    def test_missing_primary_checkout_and_absent_roots_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            result = drift_patrol.check_git_state(
+                primary_checkout=tmp / "no-such-checkout",
+                worktrees_root=None,
+                preview_root=None,
+                claude_worktrees_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.SKIP)
+        self.assertFalse(result.failed)
+
+    def test_clean_repo_with_no_cruft_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            worktrees_root = tmp / "worktrees"
+            self._live_worktree(worktrees_root, "audit-2026-09-22")
+            claude_root = primary / ".claude" / "worktrees"
+            self._live_worktree(claude_root, "agent-abc")
+            preview_root = tmp / "tmp-root"
+            preview_root.mkdir()
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=worktrees_root,
+                claude_worktrees_root=claude_root,
+                preview_root=preview_root,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.PASS)
+        self.assertFalse(result.failed)
+
+    def test_core_bare_true_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            primary = Path(raw_tmp) / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = true"])
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertEqual(result.tracking_issue, "str-qwua7.1")
+        self.assertTrue(any("core.bare=true" in line for line in result.details))
+
+    def test_core_hooks_path_override_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            primary = Path(raw_tmp) / "primary"
+            self._write_config(
+                primary / ".git",
+                ["[core]", "\tbare = false", "\thooksPath = /custom/hooks"],
+            )
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any("hooksPath" in line for line in result.details))
+
+    def test_prunable_worktree_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            primary = Path(raw_tmp) / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output=(
+                    "Removing worktrees/foo: gitdir file points to non-existent "
+                    "location"
+                ),
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any("Removing worktrees/foo" in line for line in result.details))
+
+    def test_dead_dir_under_worktrees_root_fails_and_names_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            worktrees_root = tmp / "worktrees"
+            self._live_worktree(worktrees_root, "live-one")
+            dead = self._dead_dir(worktrees_root, "str-6q1i")
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=worktrees_root,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any(str(dead) in line for line in result.details))
+        self.assertFalse(any("live-one" in line for line in result.details))
+
+    def test_long_dead_dir_list_is_truncated_with_a_count_notice(self) -> None:
+        # Regression: unlike check_tracker_hygiene's pre-existing "... and N
+        # more" pattern, the new git-state lists were sliced to
+        # MAX_ITEMS_REPORTED with no notice that anything was omitted.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            worktrees_root = tmp / "worktrees"
+            for n in range(drift_patrol.MAX_ITEMS_REPORTED + 5):
+                self._dead_dir(worktrees_root, f"dead-{n}")
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=worktrees_root,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any("and 5 more" in line for line in result.details))
+
+    def test_gitdir_pointer_file_with_missing_target_is_dead(self) -> None:
+        # str-umw3's exact shape: `.git` file still present, but the gitdir
+        # it points to (git worktree remove/prune's target) is gone. A
+        # naive "does .git exist" check misses this.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            worktrees_root = tmp / "worktrees"
+            dangling = worktrees_root / "str-umw3"
+            dangling.mkdir(parents=True)
+            (dangling / ".git").write_text(
+                f"gitdir: {tmp / 'primary' / '.git' / 'worktrees' / 'str-umw3'}\n"
+            )
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=worktrees_root,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any(str(dangling) in line for line in result.details))
+
+    def test_unregistered_claude_worktrees_checkout_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            claude_root = primary / ".claude" / "worktrees"
+            self._live_worktree(claude_root, "agent-live")
+            dead = self._dead_dir(claude_root, "str-umw3")
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=claude_root,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any(str(dead) in line for line in result.details))
+
+    def test_stale_preview_dir_older_than_threshold_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            preview_root = tmp / "tmp-root"
+            preview_root.mkdir()
+            stale = preview_root / "land-work-preview-abc123"
+            stale.mkdir()
+            fresh = preview_root / "land-work-preview-def456"
+            fresh.mkdir()
+
+            stale_mtime = (NOW - timedelta(hours=26)).timestamp()
+            fresh_mtime = (NOW - timedelta(hours=1)).timestamp()
+            os.utime(stale, (stale_mtime, stale_mtime))
+            os.utime(fresh, (fresh_mtime, fresh_mtime))
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=preview_root,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+        self.assertTrue(any("land-work-preview-abc123" in line for line in result.details))
+        self.assertFalse(any("land-work-preview-def456" in line for line in result.details))
+
+    def test_stray_file_matching_preview_prefix_is_not_treated_as_a_dir(self) -> None:
+        # Regression: the preview glob must filter to directories only, the
+        # same way _dead_subdirs already does for worktree roots. A stray
+        # non-directory file (e.g. a leftover lock/log) matching the prefix
+        # must not be reported as a stale preview dir.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            preview_root = tmp / "tmp-root"
+            preview_root.mkdir()
+            stray_file = preview_root / "land-work-preview-abc123.log"
+            stray_file.write_text("not a directory\n")
+            old_mtime = (NOW - timedelta(hours=26)).timestamp()
+            os.utime(stray_file, (old_mtime, old_mtime))
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=preview_root,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.PASS)
+        self.assertFalse(any("land-work-preview-abc123.log" in line for line in result.details))
+
+    def test_preview_max_age_hours_is_honored(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            preview_root = tmp / "tmp-root"
+            preview_root.mkdir()
+            recent = preview_root / "land-work-preview-recent"
+            recent.mkdir()
+            recent_mtime = (NOW - timedelta(hours=2)).timestamp()
+            os.utime(recent, (recent_mtime, recent_mtime))
+
+            passes = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=preview_root,
+                now=NOW,
+            )
+            self.assertEqual(passes.status, drift_patrol.PASS)
+
+            fails = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=preview_root,
+                preview_max_age_hours=1,
+                now=NOW,
+            )
+        self.assertEqual(fails.status, drift_patrol.FAIL)
+
+    def test_missing_worktrees_root_skips_that_section_without_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=tmp / "does-not-exist",
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.PASS)
+
+    def test_missing_preview_root_skips_that_section_without_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=tmp / "does-not-exist",
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.PASS)
+
+    def test_missing_root_does_not_mask_a_real_finding(self) -> None:
+        # worktrees_root and claude_worktrees_root are absent (skipped
+        # sections), but a stale preview dir still fails the check.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = false"])
+            preview_root = tmp / "tmp-root"
+            preview_root.mkdir()
+            stale = preview_root / "land-work-preview-xyz"
+            stale.mkdir()
+            stale_mtime = (NOW - timedelta(hours=48)).timestamp()
+            os.utime(stale, (stale_mtime, stale_mtime))
+
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=tmp / "absent",
+                claude_worktrees_root=tmp / "also-absent",
+                preview_root=preview_root,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.FAIL)
+
+    def test_remediation_is_present_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            primary = Path(raw_tmp) / "primary"
+            self._write_config(primary / ".git", ["[core]", "\tbare = true"])
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertIsNotNone(result.remediation)
+        self.assertIn("core.bare false", result.remediation or "")
+
+    def test_missing_config_file_is_not_bare_and_not_a_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            primary = tmp / "primary"
+            (primary / ".git").mkdir(parents=True)  # no config file inside
+            result = drift_patrol.check_git_state(
+                primary_checkout=primary,
+                prune_output="",
+                worktrees_root=None,
+                claude_worktrees_root=None,
+                preview_root=None,
+                now=NOW,
+            )
+        self.assertEqual(result.status, drift_patrol.PASS)
+
+
+class IsLiveWorktreeCheckoutTest(unittest.TestCase):
+    def test_directory_git_entry_is_live(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            entry = Path(raw_tmp) / "wt"
+            (entry / ".git").mkdir(parents=True)
+            self.assertTrue(drift_patrol._is_live_worktree_checkout(entry))
+
+    def test_gitdir_pointer_to_existing_target_is_live(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            gitdir_target = tmp / "real-gitdir"
+            gitdir_target.mkdir()
+            entry = tmp / "wt"
+            entry.mkdir()
+            (entry / ".git").write_text(f"gitdir: {gitdir_target}\n")
+            self.assertTrue(drift_patrol._is_live_worktree_checkout(entry))
+
+    def test_gitdir_pointer_to_missing_target_is_dead(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            entry = tmp / "wt"
+            entry.mkdir()
+            (entry / ".git").write_text(f"gitdir: {tmp / 'nonexistent'}\n")
+            self.assertFalse(drift_patrol._is_live_worktree_checkout(entry))
+
+    def test_no_git_entry_is_dead(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            entry = Path(raw_tmp) / "wt"
+            entry.mkdir()
+            self.assertFalse(drift_patrol._is_live_worktree_checkout(entry))
+
+    def test_malformed_git_file_is_dead(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            entry = Path(raw_tmp) / "wt"
+            entry.mkdir()
+            (entry / ".git").write_text("not a gitdir pointer\n")
+            self.assertFalse(drift_patrol._is_live_worktree_checkout(entry))
+
+
+class ReadGitCoreConfigTest(unittest.TestCase):
+    def test_parses_bare_and_hookspath_under_core_section_only(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            git_dir = Path(raw_tmp) / ".git"
+            git_dir.mkdir()
+            (git_dir / "config").write_text(
+                "\n".join(
+                    [
+                        "[core]",
+                        "\trepositoryformatversion = 0",
+                        "\tbare = true",
+                        "\thooksPath = /x/y",
+                        "[remote \"origin\"]",
+                        "\tbare = false",  # different section; must not leak in
+                    ]
+                )
+                + "\n"
+            )
+            values = drift_patrol._read_git_core_config(git_dir)
+        self.assertEqual(values.get("bare"), "true")
+        self.assertEqual(values.get("hookspath"), "/x/y")
+
+    def test_missing_file_returns_empty_dict(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            values = drift_patrol._read_git_core_config(Path(raw_tmp) / ".git")
+        self.assertEqual(values, {})
 
 
 class RunCommandTest(unittest.TestCase):
