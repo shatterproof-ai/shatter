@@ -203,11 +203,33 @@ entries:
       "src/ops.rs": "def002"
       "src/math.rs": "abc001"
 YAML
-    git -C "$dir" init -q
-    git -C "$dir" config user.email "demo@shatter"
-    git -C "$dir" config user.name "Shatter Demo"
-    git -C "$dir" add -A
-    git -C "$dir" commit -qm "initial"
+    # str-qwua7.10: when this script runs inside a git hook (pre-push,
+    # pre-commit), the hook's environment carries GIT_DIR/GIT_WORK_TREE/etc
+    # pointing at the *calling* repo, and `git -C "$dir"` does not override
+    # them -- git honors the env vars over -C, so without clearing them
+    # these commands silently operate on the real repo's .git instead of
+    # this throwaway dir, corrupting its HEAD/index (reproduced: a pre-push
+    # run left this repo's worktree checked out to a bogus "initial" commit
+    # containing only src/math.rs, src/ops.rs, and the coverage-map
+    # fixture). scripts/examples_checkout.py's GIT_LOCAL_ENV_VARS is the
+    # same fix for the examples-checkout clone; mirrored here.
+    local -a git_env_clear=(
+        GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_CONFIG
+        GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_GRAFT_FILE
+        GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS
+        GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_REPLACE_REF_BASE
+        GIT_SHALLOW_FILE GIT_WORK_TREE
+    )
+    local -a unset_args=()
+    local v
+    for v in "${git_env_clear[@]}"; do
+        unset_args+=(-u "$v")
+    done
+    env "${unset_args[@]}" git -C "$dir" init -q
+    env "${unset_args[@]}" git -C "$dir" config user.email "demo@shatter"
+    env "${unset_args[@]}" git -C "$dir" config user.name "Shatter Demo"
+    env "${unset_args[@]}" git -C "$dir" add -A
+    env "${unset_args[@]}" git -C "$dir" commit -qm "initial"
     # Modify math.rs so TIA detects 1 changed file → 3 affected tests
     printf '// optimised\npub fn add(a: i32, b: i32) -> i32 { a + b }\n' > "$dir/src/math.rs"
     TIA_DEMO_DIR="$dir"
@@ -258,11 +280,34 @@ run_cmd() {
             STEP_ERRORS=$((STEP_ERRORS + 1))
         fi
         wait 2>/dev/null || true
-        local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error'
-        if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
-            echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
-            grep -iE "$error_pattern" "$output_tmp" | sed 's/^/    /' >> "$ERROR_LOG"
-            STEP_ERRORS=$((STEP_ERRORS + 1))
+        # str-qwua7.10: delegate error detection to gauntlet_check_output.py
+        # (shared with demo/gauntlet.sh) instead of this script's own regex,
+        # so both demo gates catch the same regression classes: process-level
+        # error markers, 0%-coverage-after-iterations function blocks,
+        # lifecycle/scope-mismatch thrown-error clusters, and scan-report
+        # FAIL rows, allowlist-aware via demo/gauntlet-scan-allowlist.yaml.
+        local check_helper="${SCRIPT_DIR}/gauntlet_check_output.py"
+        local check_allowlist="${SCRIPT_DIR}/gauntlet-scan-allowlist.yaml"
+        if [[ -f "$check_helper" && -f "$check_allowlist" ]]; then
+            local check_out
+            check_out="$(mktemp)"
+            if ! python3 "$check_helper" \
+                --allowlist "$check_allowlist" \
+                --output "$output_tmp" \
+                --step "${CURRENT_STEP}" >"$check_out" 2>&1; then
+                cat "$check_out" >> "$ERROR_LOG"
+                STEP_ERRORS=$((STEP_ERRORS + 1))
+            fi
+            rm -f "$check_out"
+        else
+            # Fallback to the legacy inline regex if the helper or allowlist
+            # is missing.
+            local error_pattern='\[error\]|failed to deserialize|deserialization failed|panic|SIGSEGV|error: exploration error'
+            if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
+                echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
+                grep -iE "$error_pattern" "$output_tmp" | sed 's/^/    /' >> "$ERROR_LOG"
+                STEP_ERRORS=$((STEP_ERRORS + 1))
+            fi
         fi
         rm -f "$output_tmp"
     fi

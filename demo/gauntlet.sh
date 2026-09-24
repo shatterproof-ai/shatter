@@ -371,7 +371,7 @@ run_cmd() {
         else
             # Fallback to the legacy inline regex (str-jeen.57 form) if the
             # helper or allowlist is missing.
-            local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error|[1-9][0-9]* error\(s\)|\| FAIL \|'
+            local error_pattern='\[error\]|failed to deserialize|deserialization failed|panic|SIGSEGV|error: exploration error|[1-9][0-9]* error\(s\)|\| FAIL \|'
             if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
                 echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
                 grep -iE "$error_pattern" "$output_tmp" \
