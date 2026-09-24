@@ -1,0 +1,526 @@
+{
+  "corpus": "/var/tmp/zolem-bench",
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "max_iterations": 10,
+  "median": {
+    "flat": {
+      "branch_count": 43,
+      "branches_covered": 31,
+      "lines_covered": 161,
+      "total_lines": 353,
+      "iterations": 910,
+      "budget_allocated": 0,
+      "budget_claimed": 0,
+      "wall_s": 24.385304571012966
+    },
+    "static": {
+      "branch_count": 43,
+      "branches_covered": 31,
+      "lines_covered": 161,
+      "total_lines": 353,
+      "iterations": 1103,
+      "budget_allocated": 1200,
+      "budget_claimed": 0,
+      "wall_s": 24.448738427017815
+    }
+  },
+  "paired": {
+    "branches_covered": {
+      "n": 3,
+      "median_delta": 0,
+      "deltas": [
+        0,
+        0,
+        0
+      ]
+    },
+    "lines_covered": {
+      "n": 3,
+      "median_delta": 0,
+      "deltas": [
+        0,
+        0,
+        0
+      ]
+    },
+    "iterations": {
+      "n": 3,
+      "median_delta": 193,
+      "deltas": [
+        193,
+        193,
+        193
+      ]
+    },
+    "wall_s": {
+      "n": 3,
+      "median_delta": 0.06343385600484908,
+      "deltas": [
+        0.06343385600484908,
+        -0.2134842589730397,
+        0.8333159799221903
+      ]
+    }
+  },
+  "per_seed": {
+    "1": {
+      "flat": {
+        "branch_count": 43,
+        "branches_covered": 31,
+        "lines_covered": 161,
+        "total_lines": 353,
+        "iterations": 910,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 24,
+        "outcomes": {
+          "error_only": 9,
+          "behavioral": 15
+        },
+        "wall_s": 24.385304571012966
+      },
+      "static": {
+        "branch_count": 43,
+        "branches_covered": 31,
+        "lines_covered": 161,
+        "total_lines": 353,
+        "iterations": 1103,
+        "budget_allocated": 1200,
+        "budget_claimed": 0,
+        "functions": 24,
+        "outcomes": {
+          "error_only": 9,
+          "behavioral": 15
+        },
+        "wall_s": 24.448738427017815
+      }
+    },
+    "2": {
+      "flat": {
+        "branch_count": 43,
+        "branches_covered": 31,
+        "lines_covered": 161,
+        "total_lines": 353,
+        "iterations": 910,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 24,
+        "outcomes": {
+          "error_only": 9,
+          "behavioral": 15
+        },
+        "wall_s": 24.392202561954036
+      },
+      "static": {
+        "branch_count": 43,
+        "branches_covered": 31,
+        "lines_covered": 161,
+        "total_lines": 353,
+        "iterations": 1103,
+        "budget_allocated": 1200,
+        "budget_claimed": 0,
+        "functions": 24,
+        "outcomes": {
+          "error_only": 9,
+          "behavioral": 15
+        },
+        "wall_s": 24.178718302980997
+      }
+    },
+    "3": {
+      "flat": {
+        "branch_count": 43,
+        "branches_covered": 31,
+        "lines_covered": 161,
+        "total_lines": 353,
+        "iterations": 910,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 24,
+        "outcomes": {
+          "error_only": 9,
+          "behavioral": 15
+        },
+        "wall_s": 23.644953939015977
+      },
+      "static": {
+        "branch_count": 43,
+        "branches_covered": 31,
+        "lines_covered": 161,
+        "total_lines": 353,
+        "iterations": 1103,
+        "budget_allocated": 1200,
+        "budget_claimed": 0,
+        "functions": 24,
+        "outcomes": {
+          "error_only": 9,
+          "behavioral": 15
+        },
+        "wall_s": 24.478269918938167
+      }
+    }
+  },
+  "comparison": {
+    "1": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 1200,
+      "expected_allocated": 1200,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "2": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 1200,
+      "expected_allocated": 1200,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    },
+    "3": {
+      "lost": [],
+      "gained": [],
+      "claimed": 0,
+      "allocated": 1200,
+      "expected_allocated": 1200,
+      "allocation_conserved": true,
+      "only_in_flat": [],
+      "only_in_static": []
+    }
+  },
+  "per_function": [
+    {
+      "id": "internal/specs/discovery.go::NormalizeGeminiDiscovery",
+      "allocated": 88,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 88,
+      "br_flat": 4,
+      "br_static": 4,
+      "ln_flat": 16,
+      "ln_static": 16,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/fetcher.go::(*Fetcher).Get",
+      "allocated": 86,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 86,
+      "br_flat": 4,
+      "br_static": 4,
+      "ln_flat": 13,
+      "ln_static": 13,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/openapi.go::NormalizeOpenAPI",
+      "allocated": 83,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 83,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 11,
+      "ln_static": 11,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/openapi.go::(OpenAPINormalizer).Normalize",
+      "allocated": 80,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 80,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 10,
+      "ln_static": 10,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/validator.go::(*Validator).Validate",
+      "allocated": 79,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 79,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 7,
+      "ln_static": 7,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/validator.go::(*Validator).LoadRaw",
+      "allocated": 76,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 76,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 5,
+      "ln_static": 5,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/discovery.go::LoadProviderSchema",
+      "allocated": 67,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 67,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 6,
+      "ln_static": 6,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/loader.go::(PassThroughNormalizer).Normalize",
+      "allocated": 67,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 67,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 14,
+      "ln_static": 14,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/loader.go::(*ContractLoader).Refresh",
+      "allocated": 54,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 54,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 11,
+      "ln_static": 11,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/fetcher.go::NewFetcherWithFallback",
+      "allocated": 53,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/validator.go::(*Validator).LoadNormalized",
+      "allocated": 52,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 52,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 6,
+      "ln_static": 6,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/loader.go::(*ContractLoader).LoadFallback",
+      "allocated": 46,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 46,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 5,
+      "ln_static": 5,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/registry.go::(Registry).List",
+      "allocated": 40,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 40,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 12,
+      "ln_static": 12,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/registry.go::DefaultRegistry",
+      "allocated": 38,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 38,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 6,
+      "ln_static": 6,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/validator.go::(*Validator).Has",
+      "allocated": 38,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 6,
+      "ln_static": 6,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/registry.go::(Registry).Lookup",
+      "allocated": 37,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 37,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 8,
+      "ln_static": 8,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/fetcher.go::NewFetcher",
+      "allocated": 33,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 3,
+      "ln_static": 3,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/validator.go::(*Validator).Schemas",
+      "allocated": 32,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 8,
+      "ln_static": 8,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/loader.go::NewContractLoader",
+      "allocated": 31,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/validator.go::(*ValidationError).Error",
+      "allocated": 27,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/vendored.go::VendoredFallbacks",
+      "allocated": 24,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/registry.go::(ContractSource).HasRemote",
+      "allocated": 23,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/registry.go::(ContractSource).Key",
+      "allocated": 23,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2,
+      "missing_in": ""
+    },
+    {
+      "id": "internal/specs/validator.go::NewValidator",
+      "allocated": 23,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2,
+      "missing_in": ""
+    }
+  ],
+  "first_seed": {
+    "flat": {
+      "branch_count": 43,
+      "branches_covered": 31,
+      "lines_covered": 161,
+      "total_lines": 353,
+      "iterations": 910,
+      "budget_allocated": 0,
+      "budget_claimed": 0,
+      "functions": 24,
+      "outcomes": {
+        "error_only": 9,
+        "behavioral": 15
+      },
+      "wall_s": 24.385304571012966
+    },
+    "static": {
+      "branch_count": 43,
+      "branches_covered": 31,
+      "lines_covered": 161,
+      "total_lines": 353,
+      "iterations": 1103,
+      "budget_allocated": 1200,
+      "budget_claimed": 0,
+      "functions": 24,
+      "outcomes": {
+        "error_only": 9,
+        "behavioral": 15
+      },
+      "wall_s": 24.448738427017815
+    }
+  },
+  "outcome_keys": [
+    "behavioral",
+    "error_only"
+  ],
+  "sanity_ok": true
+}
