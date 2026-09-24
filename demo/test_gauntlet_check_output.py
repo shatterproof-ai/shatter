@@ -92,26 +92,28 @@ class GauntletCheckOutputTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
-# Captured shape of the walkthrough's Rust step when the analyzer/harness
-# param-type disagreement (str-qwua7.14, closed as not-reproducible against
-# current main 2026-09-08) was live: the CLI's explore_fn.md markdown
+# Captured shape of the walkthrough's Rust step under the analyzer/harness
+# param-type disagreement (str-qwua7.14): the CLI's explore_fn.md markdown
 # (shatter-cli/templates/explore_fn.md), 0% coverage, every call throwing the
-# real executor.rs input-deserialization message
-# (shatter-rust/src/executor.rs:2471 etc: "input {i} deserialization failed:
-# {err}"). Kept as a regression fixture even though the underlying bug is
-# currently fixed, per str-qwua7.10's mandate that the *gate* be able to see
-# this class if it resurfaces.
+# real executor.rs input-deserialization message (shatter-rust/src/
+# executor.rs:2471 etc: "input {i} deserialization failed: {err}"). This
+# exact shape (function `syntheticZeroCovFn` is not a real example — chosen
+# so this fixture can't collide with a live allowlist entry) was
+# live-reproduced 2026-09-24 via `task affected` on this branch, with a
+# fresh examples checkout, against classify_string/negotiate_language (see
+# demo/gauntlet-scan-allowlist.yaml's str-qwua7.10 entries and this file's
+# GauntletCheckOutputLiveRegressionTest for the real captured text).
 RUST_ZERO_COVERAGE_EXCERPT = textwrap.dedent(
     """\
-    ## `classify_number` *(/tmp/shatter-examples-main/standalone/rust/01_arithmetic.rs:6-18)*
+    ## `syntheticZeroCovFn` *(/tmp/shatter-examples-main/standalone/rust/01_arithmetic.rs:6-18)*
 
     **3 path(s)** · **0%** coverage (0/13 lines)
 
     | # | Call | Outcome |
     |---|---|---|
-    | 1 | `classify_number(0)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer 0, expected a string` |
-    | 2 | `classify_number(-5)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer -5, expected a string` |
-    | 3 | `classify_number(2)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer 2, expected a string` |
+    | 1 | `syntheticZeroCovFn(0)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer 0, expected a string` |
+    | 2 | `syntheticZeroCovFn(-5)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer -5, expected a string` |
+    | 3 | `syntheticZeroCovFn(2)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer 2, expected a string` |
     """
 )
 
@@ -248,6 +250,98 @@ class GauntletCheckOutputLifecycleClusterTest(unittest.TestCase):
             )
             result = run_helper(LIFECYCLE_CLUSTER_EXCERPT, allowlist=allowlist)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+# Byte-accurate excerpt of the walkthrough's real Step 7 ("Explore Rust
+# Functions") output, captured 2026-09-24 by running `task affected` on this
+# branch against a *fresh* examples checkout (scripts/examples_checkout.py
+# --fresh, per demo/walkthrough.sh) — i.e. this is not a hypothetical, it is
+# what the gate actually printed that run. classify_number hit an unrelated
+# "index out of bounds" harness panic (also 0% coverage, no
+# "deserialization failed" text — proving the heading+summary check, not
+# just the PROCESS_ERROR_RE addition, is needed); classify_string and
+# negotiate_language hit the deserialization mismatch; safe_divide happened
+# to pass this run (str-qwua7.14's underlying bug is flaky against the
+# walkthrough's 3-iteration budget — it also failed the same way earlier
+# this session, just not in this particular capture). Tab/path prefixes
+# trimmed of their /tmp/shatter-walkthrough-artifacts.* noise; the
+# `[info] Wrote explore artifact ...` and `[batch ...]` lines are left out
+# since they carry no signal for this checker.
+LIVE_STEP7_EXCERPT = textwrap.dedent(
+    """\
+    ## `classify_number` *(/tmp/shatter-examples.6cknrlex/standalone/rust/01_arithmetic.rs:6-18)*
+
+    **1 path(s)** · **0%** coverage (0/13 lines)
+
+    | # | Call | Outcome |
+    |---|---|---|
+    | 1 | `classify_number(0)` | throws `runtime_error: index out of bounds: the len is 1 but the index is 1` |
+
+    ## `classify_string` *(/tmp/shatter-examples.6cknrlex/standalone/rust/02_strings.rs:7-24)*
+
+    **3 path(s)** · **0%** coverage (0/18 lines)
+
+    | # | Call | Outcome |
+    |---|---|---|
+    | 1 | `classify_string("empty")` | throws `runtime_error: input 0 deserialization failed: invalid type: string "empty", expected f64` |
+    | 2 | `classify_string("single-char")` | throws `runtime_error: input 0 deserialization failed: invalid type: string "single-char", expected f64` |
+    | 3 | `classify_string("http")` | throws `runtime_error: input 0 deserialization failed: invalid type: string "http", expected f64` |
+    - *Mocks: all, is_ascii_digit*
+
+    ## `safe_divide` *(/tmp/shatter-examples.6cknrlex/standalone/rust/04_errors.rs:6-14)*
+
+    **2 path(s)** · **44%** coverage (4/9 lines)
+
+    | # | Call | Outcome |
+    |---|---|---|
+    | 1 | `safe_divide(0.0, 0.0)` | returns `{"Err":"division by zero"}` |
+    | 2 | `safe_divide(0.0, -1.0)` | returns `{"Ok":-0.0}` |
+    - *Mocks: to_string*
+
+    ## `negotiate_language` *(/tmp/shatter-examples.6cknrlex/standalone/rust/18_accept_language.rs:101-202)*
+
+    **3 path(s)** · **0%** coverage (0/102 lines)
+
+    | # | Call | Outcome |
+    |---|---|---|
+    | 1 | `negotiate_language("*", [])` | throws `runtime_error: input 0 deserialization failed: invalid type: string "*", expected f64` |
+    | 2 | `negotiate_language("", ["*"])` | throws `runtime_error: input 0 deserialization failed: invalid type: string "", expected f64` |
+    | 3 | `negotiate_language("-", [])` | throws `runtime_error: input 0 deserialization failed: invalid type: string "-", expected f64` |
+    - *Mocks: enumerate, filter_map, is_empty, total_cmp, cmp, sort_by, map, iter, collect, then, starts_with, to_ascii_lowercase, clone*
+    """
+)
+
+
+class GauntletCheckOutputLiveRegressionTest(unittest.TestCase):
+    """str-qwua7.10 acceptance check: with the two str-qwua7.14 allowlist
+    entries in place, the live-captured Step 7 regression passes; remove
+    them and it goes red again."""
+
+    def test_live_excerpt_passes_with_current_allowlist(self) -> None:
+        result = run_helper(LIVE_STEP7_EXCERPT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_live_excerpt_fails_without_the_rust_entries(self) -> None:
+        with TemporaryDirectory() as td:
+            allowlist = write_allowlist(
+                td,
+                textwrap.dedent(
+                    """\
+                    expected_failures: []
+                    expected_scan_errors:
+                      count: 0
+                      expires: "2099-01-01"
+                    """
+                ),
+            )
+            result = run_helper(LIVE_STEP7_EXCERPT, allowlist=allowlist)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("classify_number", result.stdout)
+            self.assertIn("classify_string", result.stdout)
+            self.assertIn("negotiate_language", result.stdout)
+            # safe_divide passed this run (44% coverage) — must never be
+            # flagged regardless of allowlist contents.
+            self.assertNotIn("safe_divide", result.stdout)
 
 
 class GauntletCheckOutputAllowlistExpiryTest(unittest.TestCase):

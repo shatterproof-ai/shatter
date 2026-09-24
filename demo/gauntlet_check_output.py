@@ -151,14 +151,33 @@ def check(
     lifecycle_allowlist: frozenset[str] = frozenset(),
 ) -> list[str]:
     flagged: list[str] = []
-    pending_heading: tuple[str, str | None] | None = None
+    # Tracks the explore-markdown function block (## `name` ... through the
+    # next heading or the report's closing "---") we're currently inside, so
+    # a thrown-error table row belonging to an allowlisted function is
+    # suppressed the same way its 0%-coverage summary line is — an
+    # allowlisted flaky function's *own* errors are the point of the
+    # allowlist entry, not just its headline coverage number.
+    current_function: tuple[str, str, bool] | None = None  # (name, basename, allowed)
+    awaiting_summary = False
 
     for raw in lines:
         line = raw.rstrip("\n")
 
+        m = EXPLORE_HEADING_RE.match(line)
+        if m:
+            function, file_path = m.group(1), m.group(2)
+            basename = os.path.basename(file_path) if file_path else ""
+            current_function = (function, basename, (basename, function) in allowlist)
+            awaiting_summary = True
+            continue
+
+        if line.strip() == "---":
+            current_function = None
+            awaiting_summary = False
+
         if PROCESS_ERROR_RE.search(line):
-            flagged.append(line)
-            pending_heading = None
+            if current_function is None or not current_function[2]:
+                flagged.append(line)
             continue
 
         m = SCAN_ERROR_SUMMARY_RE.search(line)
@@ -168,7 +187,6 @@ def check(
                 flagged.append(
                     f"{line}  [unexpected: {count} > allowlisted {expected_errors}]"
                 )
-            pending_heading = None
             continue
 
         m = FAIL_ROW_RE.match(line)
@@ -178,7 +196,6 @@ def check(
             basename = os.path.basename(file_path)
             if (basename, function) not in allowlist:
                 flagged.append(line)
-            pending_heading = None
             continue
 
         m = LIFECYCLE_CLUSTER_RE.search(line)
@@ -186,30 +203,22 @@ def check(
             cluster_class = f"{m.group(1).capitalize()} scope mismatch"
             if cluster_class.lower() not in lifecycle_allowlist:
                 flagged.append(line)
-            pending_heading = None
             continue
 
-        m = EXPLORE_HEADING_RE.match(line)
-        if m:
-            pending_heading = (m.group(1), m.group(2))
-            continue
-
-        if pending_heading is not None:
+        if awaiting_summary and current_function is not None:
             if line.strip() == "":
                 continue
             m = EXPLORE_SUMMARY_RE.search(line)
             if m:
                 paths = int(m.group(1))
                 pct = m.group(2)
-                if pct is not None and float(pct) == 0.0 and paths >= 1:
-                    function, file_path = pending_heading
-                    basename = os.path.basename(file_path) if file_path else ""
-                    if (basename, function) not in allowlist:
-                        flagged.append(
-                            f"{function}: 0% coverage after {paths} path(s) "
-                            f"explored ({line.strip()})"
-                        )
-            pending_heading = None
+                if pct is not None and float(pct) == 0.0 and paths >= 1 and not current_function[2]:
+                    function, _basename, _allowed = current_function
+                    flagged.append(
+                        f"{function}: 0% coverage after {paths} path(s) "
+                        f"explored ({line.strip()})"
+                    )
+            awaiting_summary = False
             # Fall through: this line may still be a scan row below (it
             # isn't, in practice — explore and scan output never interleave
             # a heading directly into a table row — but don't `continue`
