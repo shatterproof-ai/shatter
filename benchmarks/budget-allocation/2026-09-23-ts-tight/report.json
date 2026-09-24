@@ -1,0 +1,591 @@
+{
+  "corpus": "/tmp/shatter-examples-main/standalone/ts",
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "max_iterations": 10,
+  "median": {
+    "flat": {
+      "branch_count": 235,
+      "branches_covered": 109,
+      "lines_covered": 262,
+      "total_lines": 1234,
+      "iterations": 1185,
+      "budget_allocated": 0,
+      "budget_claimed": 0,
+      "wall_s": 15.597567267948762
+    },
+    "static": {
+      "branch_count": 235,
+      "branches_covered": 112,
+      "lines_covered": 263,
+      "total_lines": 1234,
+      "iterations": 1279,
+      "budget_allocated": 1750,
+      "budget_claimed": 1,
+      "wall_s": 15.963949234923348
+    }
+  },
+  "paired": {
+    "branches_covered": {
+      "n": 3,
+      "median_delta": 1,
+      "deltas": [
+        0,
+        1,
+        7
+      ]
+    },
+    "lines_covered": {
+      "n": 3,
+      "median_delta": 0,
+      "deltas": [
+        0,
+        1,
+        0
+      ]
+    },
+    "iterations": {
+      "n": 3,
+      "median_delta": 100,
+      "deltas": [
+        67,
+        133,
+        100
+      ]
+    },
+    "wall_s": {
+      "n": 3,
+      "median_delta": 0.36638196697458625,
+      "deltas": [
+        0.06353193789254874,
+        0.36638196697458625,
+        0.8019477049820125
+      ]
+    }
+  },
+  "per_seed": {
+    "1": {
+      "flat": {
+        "branch_count": 235,
+        "branches_covered": 112,
+        "lines_covered": 262,
+        "total_lines": 1234,
+        "iterations": 1212,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 35,
+        "outcomes": {
+          "behavioral": 30,
+          "error_only": 5
+        },
+        "wall_s": 16.139862291049212
+      },
+      "static": {
+        "branch_count": 235,
+        "branches_covered": 112,
+        "lines_covered": 262,
+        "total_lines": 1234,
+        "iterations": 1279,
+        "budget_allocated": 1750,
+        "budget_claimed": 1,
+        "functions": 35,
+        "outcomes": {
+          "behavioral": 30,
+          "error_only": 5
+        },
+        "wall_s": 16.20339422894176
+      }
+    },
+    "2": {
+      "flat": {
+        "branch_count": 235,
+        "branches_covered": 109,
+        "lines_covered": 262,
+        "total_lines": 1234,
+        "iterations": 1185,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 35,
+        "outcomes": {
+          "behavioral": 30,
+          "error_only": 5
+        },
+        "wall_s": 15.597567267948762
+      },
+      "static": {
+        "branch_count": 235,
+        "branches_covered": 110,
+        "lines_covered": 263,
+        "total_lines": 1234,
+        "iterations": 1318,
+        "budget_allocated": 1750,
+        "budget_claimed": 40,
+        "functions": 35,
+        "outcomes": {
+          "behavioral": 30,
+          "error_only": 5
+        },
+        "wall_s": 15.963949234923348
+      }
+    },
+    "3": {
+      "flat": {
+        "branch_count": 235,
+        "branches_covered": 105,
+        "lines_covered": 263,
+        "total_lines": 1234,
+        "iterations": 1179,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 35,
+        "outcomes": {
+          "behavioral": 30,
+          "error_only": 5
+        },
+        "wall_s": 14.894427657010965
+      },
+      "static": {
+        "branch_count": 235,
+        "branches_covered": 112,
+        "lines_covered": 263,
+        "total_lines": 1234,
+        "iterations": 1279,
+        "budget_allocated": 1750,
+        "budget_claimed": 1,
+        "functions": 35,
+        "outcomes": {
+          "behavioral": 30,
+          "error_only": 5
+        },
+        "wall_s": 15.696375361992978
+      }
+    }
+  },
+  "per_function": [
+    {
+      "id": "10-path-router.ts::matchRoute",
+      "allocated": 111,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 2,
+      "ln_static": 2
+    },
+    {
+      "id": "14-semver.ts::satisfiesRange",
+      "allocated": 97,
+      "claimed": 0,
+      "it_flat": 35,
+      "it_static": 35,
+      "br_flat": 7,
+      "br_static": 7,
+      "ln_flat": 23,
+      "ln_static": 23
+    },
+    {
+      "id": "16-cron-parser.ts::parseCron",
+      "allocated": 84,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 84,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "18-accept-language.ts::negotiateLanguage",
+      "allocated": 84,
+      "claimed": 0,
+      "it_flat": 23,
+      "it_static": 23,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 3,
+      "ln_static": 3
+    },
+    {
+      "id": "07-auth-validation.ts::authorizeRequest",
+      "allocated": 81,
+      "claimed": 0,
+      "it_flat": 29,
+      "it_static": 29,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 6,
+      "ln_static": 6
+    },
+    {
+      "id": "06-nested-control-flow.ts::processStateMachine",
+      "allocated": 79,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 79,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "15-email-validator.ts::validateEmail",
+      "allocated": 74,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 74,
+      "br_flat": 13,
+      "br_static": 13,
+      "ln_flat": 13,
+      "ln_static": 13
+    },
+    {
+      "id": "05-unions.ts::routeRequest",
+      "allocated": 66,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 2,
+      "ln_static": 2
+    },
+    {
+      "id": "06-nested-control-flow.ts::classifyHttpResponse",
+      "allocated": 64,
+      "claimed": 0,
+      "it_flat": 35,
+      "it_static": 35,
+      "br_flat": 10,
+      "br_static": 10,
+      "ln_flat": 16,
+      "ln_static": 16
+    },
+    {
+      "id": "07-auth-validation.ts::validateJwt",
+      "allocated": 61,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 61,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 5,
+      "ln_static": 5
+    },
+    {
+      "id": "19-robots-policy.ts::evaluateRobotsPolicy",
+      "allocated": 61,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 61,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 3,
+      "ln_static": 3
+    },
+    {
+      "id": "20-dotenv-parser.ts::parseDotenv",
+      "allocated": 58,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 58,
+      "br_flat": 7,
+      "br_static": 7,
+      "ln_flat": 13,
+      "ln_static": 13
+    },
+    {
+      "id": "05-unions.ts::computeArea",
+      "allocated": 57,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 1,
+      "ln_static": 1
+    },
+    {
+      "id": "10-path-router.ts::resolveMiddleware",
+      "allocated": 52,
+      "claimed": 0,
+      "it_flat": 29,
+      "it_static": 29,
+      "br_flat": 6,
+      "br_static": 6,
+      "ln_flat": 12,
+      "ln_static": 12
+    },
+    {
+      "id": "09-rate-limiter.ts::checkRateLimit",
+      "allocated": 51,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 51,
+      "br_flat": 5,
+      "br_static": 5,
+      "ln_flat": 14,
+      "ln_static": 14
+    },
+    {
+      "id": "02-strings.ts::transformString",
+      "allocated": 43,
+      "claimed": 0,
+      "it_flat": 29,
+      "it_static": 29,
+      "br_flat": 5,
+      "br_static": 5,
+      "ln_flat": 10,
+      "ln_static": 10
+    },
+    {
+      "id": "14-semver.ts::parseSemver",
+      "allocated": 43,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 43,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "22-opaque-predicate.ts::classifyWithChecksum",
+      "allocated": 43,
+      "claimed": 1,
+      "it_flat": 50,
+      "it_static": 44,
+      "br_flat": 4,
+      "br_static": 4,
+      "ln_flat": 9,
+      "ln_static": 9
+    },
+    {
+      "id": "04-errors.ts::computeStats",
+      "allocated": 42,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 42,
+      "br_flat": 5,
+      "br_static": 5,
+      "ln_flat": 15,
+      "ln_static": 15
+    },
+    {
+      "id": "03-objects.ts::categorizeUser",
+      "allocated": 41,
+      "claimed": 0,
+      "it_flat": 43,
+      "it_static": 41,
+      "br_flat": 5,
+      "br_static": 5,
+      "ln_flat": 10,
+      "ln_static": 10
+    },
+    {
+      "id": "13-roman-numerals.ts::romanToInt",
+      "allocated": 40,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 40,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 10,
+      "ln_static": 10
+    },
+    {
+      "id": "02-strings.ts::classifyString",
+      "allocated": 38,
+      "claimed": 0,
+      "it_flat": 43,
+      "it_static": 38,
+      "br_flat": 5,
+      "br_static": 5,
+      "ln_flat": 10,
+      "ln_static": 10
+    },
+    {
+      "id": "17-mock-branches.ts::classifyConfigs",
+      "allocated": 38,
+      "claimed": 0,
+      "it_flat": 22,
+      "it_static": 22,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 5,
+      "ln_static": 5
+    },
+    {
+      "id": "03-objects.ts::describeRectangle",
+      "allocated": 35,
+      "claimed": 0,
+      "it_flat": 32,
+      "it_static": 32,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "17-mock-branches.ts::loadOrDefault",
+      "allocated": 35,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 2,
+      "ln_static": 2
+    },
+    {
+      "id": "17-mock-branches.ts::classifyStatus",
+      "allocated": 33,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 1,
+      "ln_static": 1
+    },
+    {
+      "id": "01-arithmetic.ts::classifyNumber",
+      "allocated": 29,
+      "claimed": 0,
+      "it_flat": 28,
+      "it_static": 28,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 7,
+      "ln_static": 7
+    },
+    {
+      "id": "01-arithmetic.ts::compareMagnitudes",
+      "allocated": 29,
+      "claimed": 0,
+      "it_flat": 33,
+      "it_static": 29,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 9,
+      "ln_static": 9
+    },
+    {
+      "id": "04-errors.ts::safeDivide",
+      "allocated": 29,
+      "claimed": 0,
+      "it_flat": 33,
+      "it_static": 29,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 7,
+      "ln_static": 7
+    },
+    {
+      "id": "13-roman-numerals.ts::intToRoman",
+      "allocated": 27,
+      "claimed": 0,
+      "it_flat": 32,
+      "it_static": 27,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 9,
+      "ln_static": 9
+    },
+    {
+      "id": "21-crypto-boundary.ts::classifySecret",
+      "allocated": 27,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2
+    },
+    {
+      "id": "21-crypto-boundary.ts::encrypt",
+      "allocated": 26,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2
+    },
+    {
+      "id": "13-mcdc-compound.ts::compoundAnd",
+      "allocated": 24,
+      "claimed": 0,
+      "it_flat": 23,
+      "it_static": 23,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 3,
+      "ln_static": 3
+    },
+    {
+      "id": "13-mcdc-compound.ts::compoundOr",
+      "allocated": 24,
+      "claimed": 0,
+      "it_flat": 23,
+      "it_static": 23,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 3,
+      "ln_static": 3
+    },
+    {
+      "id": "13-mcdc-compound.ts::threeWayAnd",
+      "allocated": 24,
+      "claimed": 0,
+      "it_flat": 23,
+      "it_static": 23,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 3,
+      "ln_static": 3
+    }
+  ],
+  "first_seed": {
+    "flat": {
+      "branch_count": 235,
+      "branches_covered": 112,
+      "lines_covered": 262,
+      "total_lines": 1234,
+      "iterations": 1212,
+      "budget_allocated": 0,
+      "budget_claimed": 0,
+      "functions": 35,
+      "outcomes": {
+        "behavioral": 30,
+        "error_only": 5
+      },
+      "wall_s": 16.139862291049212
+    },
+    "static": {
+      "branch_count": 235,
+      "branches_covered": 112,
+      "lines_covered": 262,
+      "total_lines": 1234,
+      "iterations": 1279,
+      "budget_allocated": 1750,
+      "budget_claimed": 1,
+      "functions": 35,
+      "outcomes": {
+        "behavioral": 30,
+        "error_only": 5
+      },
+      "wall_s": 16.20339422894176
+    }
+  },
+  "outcome_keys": [
+    "behavioral",
+    "error_only"
+  ],
+  "sanity_ok": true
+}

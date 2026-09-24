@@ -1,0 +1,536 @@
+{
+  "corpus": "/tmp/shatter-examples-main/standalone/go",
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "max_iterations": 10,
+  "median": {
+    "flat": {
+      "branch_count": 250,
+      "branches_covered": 103,
+      "lines_covered": 253,
+      "total_lines": 1171,
+      "iterations": 1187,
+      "budget_allocated": 0,
+      "budget_claimed": 0,
+      "wall_s": 39.39131354901474
+    },
+    "static": {
+      "branch_count": 250,
+      "branches_covered": 117,
+      "lines_covered": 278,
+      "total_lines": 1171,
+      "iterations": 1256,
+      "budget_allocated": 1500,
+      "budget_claimed": 0,
+      "wall_s": 40.16551811003592
+    }
+  },
+  "paired": {
+    "branches_covered": {
+      "n": 3,
+      "median_delta": 16,
+      "deltas": [
+        18,
+        14,
+        16
+      ]
+    },
+    "lines_covered": {
+      "n": 3,
+      "median_delta": 25,
+      "deltas": [
+        25,
+        0,
+        25
+      ]
+    },
+    "iterations": {
+      "n": 3,
+      "median_delta": 69,
+      "deltas": [
+        69,
+        69,
+        92
+      ]
+    },
+    "wall_s": {
+      "n": 3,
+      "median_delta": 0.774204561021179,
+      "deltas": [
+        0.31361096794717014,
+        2.7489437609910965,
+        0.774204561021179
+      ]
+    }
+  },
+  "per_seed": {
+    "1": {
+      "flat": {
+        "branch_count": 250,
+        "branches_covered": 103,
+        "lines_covered": 253,
+        "total_lines": 1171,
+        "iterations": 1187,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 30,
+        "outcomes": {
+          "behavioral": 27,
+          "error_only": 3
+        },
+        "wall_s": 39.32587186002638
+      },
+      "static": {
+        "branch_count": 250,
+        "branches_covered": 121,
+        "lines_covered": 278,
+        "total_lines": 1171,
+        "iterations": 1256,
+        "budget_allocated": 1500,
+        "budget_claimed": 0,
+        "functions": 30,
+        "outcomes": {
+          "behavioral": 27,
+          "error_only": 3
+        },
+        "wall_s": 39.63948282797355
+      }
+    },
+    "2": {
+      "flat": {
+        "branch_count": 250,
+        "branches_covered": 103,
+        "lines_covered": 253,
+        "total_lines": 1171,
+        "iterations": 1187,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 30,
+        "outcomes": {
+          "behavioral": 27,
+          "error_only": 3
+        },
+        "wall_s": 39.66090926295146
+      },
+      "static": {
+        "branch_count": 250,
+        "branches_covered": 117,
+        "lines_covered": 253,
+        "total_lines": 1171,
+        "iterations": 1256,
+        "budget_allocated": 1500,
+        "budget_claimed": 0,
+        "functions": 30,
+        "outcomes": {
+          "behavioral": 27,
+          "error_only": 3
+        },
+        "wall_s": 42.40985302394256
+      }
+    },
+    "3": {
+      "flat": {
+        "branch_count": 250,
+        "branches_covered": 101,
+        "lines_covered": 253,
+        "total_lines": 1171,
+        "iterations": 1187,
+        "budget_allocated": 0,
+        "budget_claimed": 0,
+        "functions": 30,
+        "outcomes": {
+          "behavioral": 27,
+          "error_only": 3
+        },
+        "wall_s": 39.39131354901474
+      },
+      "static": {
+        "branch_count": 250,
+        "branches_covered": 117,
+        "lines_covered": 278,
+        "total_lines": 1171,
+        "iterations": 1279,
+        "budget_allocated": 1500,
+        "budget_claimed": 23,
+        "functions": 30,
+        "outcomes": {
+          "behavioral": 27,
+          "error_only": 3
+        },
+        "wall_s": 40.16551811003592
+      }
+    }
+  },
+  "per_function": [
+    {
+      "id": "10-path-router.go::MatchRoute",
+      "allocated": 100,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 3,
+      "ln_static": 3
+    },
+    {
+      "id": "15-email-validator.go::ValidateEmail",
+      "allocated": 93,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 93,
+      "br_flat": 2,
+      "br_static": 20,
+      "ln_flat": 6,
+      "ln_static": 31
+    },
+    {
+      "id": "18-accept-language.go::NegotiateLanguage",
+      "allocated": 84,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 3,
+      "ln_static": 3
+    },
+    {
+      "id": "07-auth-validation.go::AuthorizeRequest",
+      "allocated": 78,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 3,
+      "ln_static": 3
+    },
+    {
+      "id": "19-robots-policy.go::EvaluateRobotsPolicy",
+      "allocated": 76,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 76,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 9,
+      "ln_static": 9
+    },
+    {
+      "id": "16-cron-parser.go::ParseCron",
+      "allocated": 75,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 75,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 7,
+      "ln_static": 7
+    },
+    {
+      "id": "20-dotenv-parser.go::ParseDotenv",
+      "allocated": 70,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 70,
+      "br_flat": 11,
+      "br_static": 11,
+      "ln_flat": 18,
+      "ln_static": 18
+    },
+    {
+      "id": "08-data-transform.go::MergeConfig",
+      "allocated": 62,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 62,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 7,
+      "ln_static": 7
+    },
+    {
+      "id": "06-nested-control-flow.go::ClassifyHttpResponse",
+      "allocated": 61,
+      "claimed": 0,
+      "it_flat": 35,
+      "it_static": 35,
+      "br_flat": 10,
+      "br_static": 10,
+      "ln_flat": 17,
+      "ln_static": 17
+    },
+    {
+      "id": "06-nested-control-flow.go::ProcessStateMachine",
+      "allocated": 57,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 57,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "10-path-router.go::ResolveMiddleware",
+      "allocated": 55,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 55,
+      "br_flat": 8,
+      "br_static": 8,
+      "ln_flat": 14,
+      "ln_static": 14
+    },
+    {
+      "id": "05-unions.go::RouteRequest",
+      "allocated": 54,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 54,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 5,
+      "ln_static": 5
+    },
+    {
+      "id": "08-data-transform.go::TransformRecord",
+      "allocated": 54,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 54,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 4,
+      "ln_static": 4
+    },
+    {
+      "id": "14-semver.go::ParseSemver",
+      "allocated": 52,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 52,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "09-rate-limiter.go::CheckRateLimit",
+      "allocated": 51,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 51,
+      "br_flat": 6,
+      "br_static": 6,
+      "ln_flat": 16,
+      "ln_static": 16
+    },
+    {
+      "id": "14-semver.go::SatisfiesRange",
+      "allocated": 50,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 50,
+      "br_flat": 11,
+      "br_static": 11,
+      "ln_flat": 28,
+      "ln_static": 28
+    },
+    {
+      "id": "02-strings.go::TransformString",
+      "allocated": 44,
+      "claimed": 0,
+      "it_flat": 39,
+      "it_static": 39,
+      "br_flat": 4,
+      "br_static": 4,
+      "ln_flat": 10,
+      "ln_static": 10
+    },
+    {
+      "id": "13-roman-numerals.go::RomanToInt",
+      "allocated": 40,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 40,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 10,
+      "ln_static": 10
+    },
+    {
+      "id": "03-objects.go::CategorizeUser",
+      "allocated": 39,
+      "claimed": 0,
+      "it_flat": 43,
+      "it_static": 39,
+      "br_flat": 5,
+      "br_static": 5,
+      "ln_flat": 11,
+      "ln_static": 11
+    },
+    {
+      "id": "02-strings.go::ClassifyString",
+      "allocated": 35,
+      "claimed": 0,
+      "it_flat": 24,
+      "it_static": 24,
+      "br_flat": 4,
+      "br_static": 4,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "03-objects.go::DescribeRectangle",
+      "allocated": 35,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 35,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "04-errors.go::ClassifyAge",
+      "allocated": 34,
+      "claimed": 0,
+      "it_flat": 40,
+      "it_static": 34,
+      "br_flat": 5,
+      "br_static": 5,
+      "ln_flat": 11,
+      "ln_static": 11
+    },
+    {
+      "id": "13-roman-numerals.go::IntToRoman",
+      "allocated": 30,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 30,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 7,
+      "ln_static": 7
+    },
+    {
+      "id": "01-arithmetic.go::ClassifyNumber",
+      "allocated": 28,
+      "claimed": 0,
+      "it_flat": 31,
+      "it_static": 28,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "01-arithmetic.go::CompareMagnitudes",
+      "allocated": 28,
+      "claimed": 0,
+      "it_flat": 50,
+      "it_static": 28,
+      "br_flat": 3,
+      "br_static": 3,
+      "ln_flat": 8,
+      "ln_static": 8
+    },
+    {
+      "id": "04-errors.go::SafeDivide",
+      "allocated": 28,
+      "claimed": 0,
+      "it_flat": 27,
+      "it_static": 27,
+      "br_flat": 2,
+      "br_static": 2,
+      "ln_flat": 6,
+      "ln_static": 6
+    },
+    {
+      "id": "smoke-main.go::SmokeClassify",
+      "allocated": 24,
+      "claimed": 0,
+      "it_flat": 22,
+      "it_static": 22,
+      "br_flat": 1,
+      "br_static": 1,
+      "ln_flat": 4,
+      "ln_static": 4
+    },
+    {
+      "id": "05-unions.go::(Circle).Kind",
+      "allocated": 21,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2
+    },
+    {
+      "id": "05-unions.go::(RectangleShape).Kind",
+      "allocated": 21,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2
+    },
+    {
+      "id": "05-unions.go::(Triangle).Kind",
+      "allocated": 21,
+      "claimed": 0,
+      "it_flat": 21,
+      "it_static": 21,
+      "br_flat": 0,
+      "br_static": 0,
+      "ln_flat": 2,
+      "ln_static": 2
+    }
+  ],
+  "first_seed": {
+    "flat": {
+      "branch_count": 250,
+      "branches_covered": 103,
+      "lines_covered": 253,
+      "total_lines": 1171,
+      "iterations": 1187,
+      "budget_allocated": 0,
+      "budget_claimed": 0,
+      "functions": 30,
+      "outcomes": {
+        "behavioral": 27,
+        "error_only": 3
+      },
+      "wall_s": 39.32587186002638
+    },
+    "static": {
+      "branch_count": 250,
+      "branches_covered": 121,
+      "lines_covered": 278,
+      "total_lines": 1171,
+      "iterations": 1256,
+      "budget_allocated": 1500,
+      "budget_claimed": 0,
+      "functions": 30,
+      "outcomes": {
+        "behavioral": 27,
+        "error_only": 3
+      },
+      "wall_s": 39.63948282797355
+    }
+  },
+  "outcome_keys": [
+    "behavioral",
+    "error_only"
+  ],
+  "sanity_ok": true
+}
