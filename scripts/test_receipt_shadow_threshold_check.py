@@ -67,6 +67,7 @@ class FixtureRepo:
         self._git("commit", "-q", "-m", "base")
         self.base_sha = self._out("rev-parse", "HEAD")
         self._git("update-ref", "refs/remotes/origin/main", self.base_sha)
+        self._git("update-ref", "refs/remotes/origin/master", self.base_sha)
 
     def close(self) -> None:
         self._tmp.cleanup()
@@ -89,15 +90,15 @@ class FixtureRepo:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
-    def commit_and_land(self, name: str) -> tuple[str, str]:
-        """Commits a change and folds it into origin/main -- an eligible,
-        landed push."""
+    def commit_and_land(self, name: str, remote: str = "origin/main") -> tuple[str, str]:
+        """Commits a change and folds it into the given remote-tracking ref
+        (default origin/main) -- an eligible, landed push."""
         self._write(f"{name}.txt", f"{name}\n")
         self._git("add", "-A")
         self._git("commit", "-q", "-m", name)
         sha = self._out("rev-parse", "HEAD")
         tree = self._out("rev-parse", "HEAD^{tree}")
-        self._git("update-ref", "refs/remotes/origin/main", sha)
+        self._git("update-ref", f"refs/remotes/{remote}", sha)
         return sha, tree
 
     def commit_abandoned(self, name: str) -> tuple[str, str]:
@@ -220,11 +221,25 @@ class AncestryFilteringTest(unittest.TestCase):
 
     def test_landed_commit_is_ancestor(self) -> None:
         sha, _ = self.fixture.commit_and_land("landed")
-        self.assertTrue(MODULE.git_is_ancestor(sha, str(self.fixture.repo)))
+        self.assertTrue(MODULE.git_is_ancestor(sha, str(self.fixture.repo), "origin/main"))
 
     def test_abandoned_commit_is_not_ancestor(self) -> None:
         sha, _ = self.fixture.commit_abandoned("abandoned")
-        self.assertFalse(MODULE.git_is_ancestor(sha, str(self.fixture.repo)))
+        self.assertFalse(MODULE.git_is_ancestor(sha, str(self.fixture.repo), "origin/main"))
+
+    def test_master_landed_commit_is_eligible_end_to_end(self) -> None:
+        # Regression for a bug where eligibility hardcoded origin/main even
+        # for a push whose remote_ref was refs/heads/master: a master push
+        # could never accumulate the 10 eligible events the docstring
+        # promises. Land onto origin/master only (origin/main untouched) and
+        # confirm is_eligible still recognizes it via the matched ref.
+        sha, _ = self.fixture.commit_and_land("landed-master", remote="origin/master")
+        event = make_event(
+            push_id="p-master", timestamp="2026-09-01T00:00:00Z", local_sha=sha,
+            candidate="tree-master", decision="reuse", classification="match",
+            remote_ref="refs/heads/master",
+        )
+        self.assertTrue(MODULE.is_eligible(event, str(self.fixture.repo), MODULE.git_is_ancestor))
 
 
 class EligibilityAndSelectionTest(unittest.TestCase):

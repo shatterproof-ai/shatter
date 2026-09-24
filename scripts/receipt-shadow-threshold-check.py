@@ -19,8 +19,9 @@ Eligibility (all must hold for an event to be considered):
     single-ref for this purpose, matching receipt-shadow-check.py's own
     non_deletion_updates() semantics)
   - that update's remote_ref is refs/heads/main or refs/heads/master
-  - that update's local_sha is now an ancestor of origin/main in the repo
-    the check is run against -- this is what distinguishes a push that
+  - that update's local_sha is now an ancestor of origin/main (or
+    origin/master, matched to the pushed ref) in the repo the check is
+    run against -- this is what distinguishes a push that
     actually landed from one that was later abandoned, force-pushed over,
     or simply failed before completing. A push that never reached this state
     is not evidence either way and is excluded, not counted as a miss.
@@ -118,10 +119,10 @@ def single_main_ref_update(event: dict) -> dict | None:
     return only
 
 
-AncestryCheck = Callable[[str, str], bool]
+AncestryCheck = Callable[[str, str, str], bool]
 
 
-def git_is_ancestor(sha: str, repo: str, ref: str = "origin/main") -> bool:
+def git_is_ancestor(sha: str, repo: str, ref: str) -> bool:
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", sha, ref],
         cwd=repo,
@@ -132,6 +133,11 @@ def git_is_ancestor(sha: str, repo: str, ref: str = "origin/main") -> bool:
     return result.returncode == 0
 
 
+def _origin_ref_for(remote_ref: str) -> str:
+    # "refs/heads/main" -> "origin/main"; "refs/heads/master" -> "origin/master".
+    return "origin/" + remote_ref.removeprefix("refs/heads/")
+
+
 def is_eligible(event: dict, repo: str, ancestry_check: AncestryCheck) -> bool:
     payload = event.get("payload", {})
     if payload.get("diff_class") != "other":
@@ -140,7 +146,10 @@ def is_eligible(event: dict, repo: str, ancestry_check: AncestryCheck) -> bool:
     if update is None:
         return False
     local_sha = update.get("local_sha")
-    if not local_sha or not ancestry_check(local_sha, repo):
+    remote_ref = update.get("remote_ref")
+    if not local_sha or not remote_ref:
+        return False
+    if not ancestry_check(local_sha, repo, _origin_ref_for(remote_ref)):
         return False
     return True
 
