@@ -1,5 +1,8 @@
-"""Tests for demo/gauntlet_check_output.py (str-jeen.59)."""
+"""Tests for demo/gauntlet_check_output.py (str-jeen.59; str-qwua7.10 extends
+coverage to 0%-coverage function blocks, lifecycle/scope-mismatch thrown-error
+clusters, and allowlist expiry)."""
 
+import re
 import subprocess
 import sys
 import textwrap
@@ -22,6 +25,12 @@ def run_helper(output_text: str, allowlist: Path = ALLOWLIST) -> subprocess.Comp
             text=True,
             check=False,
         )
+
+
+def write_allowlist(td: str, body: str) -> Path:
+    path = Path(td) / "allowlist.yaml"
+    path.write_text(body)
+    return path
 
 
 # A canonical scan-output snippet matching the current gauntlet baseline:
@@ -81,6 +90,222 @@ class GauntletCheckOutputTest(unittest.TestCase):
         with_prefix = "| FAIL | error_only | `computeStats` | /var/folders/abc/standalone/ts/04-errors.ts | 25.0% | 1/5 | 4/16 | 100 |\n"
         result = run_helper(with_prefix + "Scan complete: **1 function(s)** tested, **0 skipped**, **0 error(s)** (1 worker(s))\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+# Captured shape of the walkthrough's Rust step when the analyzer/harness
+# param-type disagreement (str-qwua7.14, closed as not-reproducible against
+# current main 2026-09-08) was live: the CLI's explore_fn.md markdown
+# (shatter-cli/templates/explore_fn.md), 0% coverage, every call throwing the
+# real executor.rs input-deserialization message
+# (shatter-rust/src/executor.rs:2471 etc: "input {i} deserialization failed:
+# {err}"). Kept as a regression fixture even though the underlying bug is
+# currently fixed, per str-qwua7.10's mandate that the *gate* be able to see
+# this class if it resurfaces.
+RUST_ZERO_COVERAGE_EXCERPT = textwrap.dedent(
+    """\
+    ## `classify_number` *(/tmp/shatter-examples-main/standalone/rust/01_arithmetic.rs:6-18)*
+
+    **3 path(s)** · **0%** coverage (0/13 lines)
+
+    | # | Call | Outcome |
+    |---|---|---|
+    | 1 | `classify_number(0)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer 0, expected a string` |
+    | 2 | `classify_number(-5)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer -5, expected a string` |
+    | 3 | `classify_number(2)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer 2, expected a string` |
+    """
+)
+
+# The walkthrough's OLD inline pattern (demo/walkthrough.sh:261 before
+# str-qwua7.10): confirms the exact reported gap — this pattern does not
+# match the real runtime message, "input N deserialization failed", only the
+# differently-worded "failed to deserialize".
+LEGACY_WALKTHROUGH_ERROR_RE = re.compile(
+    r"\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error",
+    re.IGNORECASE,
+)
+
+# Captured shape of a scan summary-table row (shatter-core/src/report.rs
+# write_md_summary_table) at 0% coverage with a non-FAIL status label — since
+# str-4ad5 (2026-05-22), coverage-based failures are labelled LOW/WARN/PASS,
+# never FAIL, so the old FAIL_ROW_RE alone can't see this.
+SCAN_ROW_ZERO_COVERAGE = (
+    "| LOW | error_only | `brandNewZeroFn` | /tmp/x/standalone/ts/99-novel.ts | 0.0% | 0/4 | 0/12 | 5 |\n"
+)
+
+# The real thrown message from examples/standalone/ts/setup-file-level.ts's
+# `teardown`, as rendered by a behavior-cluster line
+# (shatter-core/src/report.rs write_md_function_details: "throws {err}").
+LIFECYCLE_CLUSTER_EXCERPT = (
+    "### `teardown`\n\n"
+    "**Behaviors:**\n\n"
+    "- Cluster 1: throws Error: Teardown scope mismatch: expected a, got b (inputs: [\"a\", {}])\n"
+)
+
+
+class GauntletCheckOutputZeroCoverageTest(unittest.TestCase):
+    def test_rust_deserialization_zero_coverage_flagged(self) -> None:
+        result = run_helper(RUST_ZERO_COVERAGE_EXCERPT)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("deserialization failed", result.stdout)
+
+    def test_legacy_walkthrough_pattern_missed_this_excerpt(self) -> None:
+        # Proves the pre-str-qwua7.10 walkthrough regex silently marked this
+        # exact regression "(ok)".
+        self.assertIsNone(LEGACY_WALKTHROUGH_ERROR_RE.search(RUST_ZERO_COVERAGE_EXCERPT))
+
+    def test_zero_coverage_without_error_keyword_flagged(self) -> None:
+        # 0% coverage with no "error"/"panic"/"deserializ*" keyword anywhere
+        # (e.g. every call returns some placeholder), isolating the
+        # heading+summary detection path from PROCESS_ERROR_RE.
+        excerpt = textwrap.dedent(
+            """\
+            ## `alwaysNull` *(/tmp/x/standalone/ts/99-novel.ts:1-9)*
+
+            **2 path(s)** · **0%** coverage (0/9 lines)
+
+            | # | Call | Outcome |
+            |---|---|---|
+            | 1 | `alwaysNull(1)` | returns `null` |
+            | 2 | `alwaysNull(2)` | returns `null` |
+            """
+        )
+        result = run_helper(excerpt)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("alwaysNull", result.stdout)
+        self.assertIn("0% coverage", result.stdout)
+
+    def test_zero_coverage_allowlisted_function_passes(self) -> None:
+        with TemporaryDirectory() as td:
+            allowlist = write_allowlist(
+                td,
+                textwrap.dedent(
+                    """\
+                    expected_failures:
+                      - file: 99-novel.ts
+                        function: alwaysNull
+                        outcome: FAIL
+                        category: error_only
+                        reason: intentionally unsupported fixture
+                        expires: "2099-01-01"
+                    expected_scan_errors:
+                      count: 0
+                      expires: "2099-01-01"
+                    """
+                ),
+            )
+            excerpt = textwrap.dedent(
+                """\
+                ## `alwaysNull` *(/tmp/x/standalone/ts/99-novel.ts:1-9)*
+
+                **2 path(s)** · **0%** coverage (0/9 lines)
+
+                | # | Call | Outcome |
+                |---|---|---|
+                | 1 | `alwaysNull(1)` | returns `null` |
+                """
+            )
+            result = run_helper(excerpt, allowlist=allowlist)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_scan_row_zero_coverage_non_fail_status_flagged(self) -> None:
+        # The pre-str-qwua7.10 checker only looked for literal "| FAIL |"
+        # rows, which the live report format (report.rs write_md_summary_table,
+        # PASS/WARN/LOW since str-4ad5) never emits for coverage failures.
+        result = run_helper(SCAN_ROW_ZERO_COVERAGE)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("brandNewZeroFn", result.stdout)
+
+    def test_nonzero_low_coverage_row_not_flagged_by_zero_coverage_check(self) -> None:
+        # A genuinely low (but nonzero) coverage row must not trip the new
+        # check — only exact 0% with >=1 iteration should.
+        row = "| WARN | completed | `partiallyCovered` | /tmp/x/standalone/ts/99-novel.ts | 19.0% | 2/13 | 19/102 | 100 |\n"
+        result = run_helper(row)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class GauntletCheckOutputLifecycleClusterTest(unittest.TestCase):
+    def test_teardown_scope_mismatch_cluster_flagged(self) -> None:
+        result = run_helper(LIFECYCLE_CLUSTER_EXCERPT)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Teardown scope mismatch", result.stdout)
+
+    def test_teardown_scope_mismatch_allowlisted_passes(self) -> None:
+        with TemporaryDirectory() as td:
+            allowlist = write_allowlist(
+                td,
+                textwrap.dedent(
+                    """\
+                    expected_failures: []
+                    expected_lifecycle_clusters:
+                      - class: "Teardown scope mismatch"
+                        reason: pending discovery-side fix, str-qwua7.56
+                        expires: "2099-01-01"
+                    expected_scan_errors:
+                      count: 0
+                      expires: "2099-01-01"
+                    """
+                ),
+            )
+            result = run_helper(LIFECYCLE_CLUSTER_EXCERPT, allowlist=allowlist)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class GauntletCheckOutputAllowlistExpiryTest(unittest.TestCase):
+    def test_expired_expected_failures_entry_flagged(self) -> None:
+        with TemporaryDirectory() as td:
+            allowlist = write_allowlist(
+                td,
+                textwrap.dedent(
+                    """\
+                    expected_failures:
+                      - file: 04-errors.ts
+                        function: computeStats
+                        outcome: FAIL
+                        category: error_only
+                        reason: stale entry
+                        expires: "2000-01-01"
+                    expected_scan_errors:
+                      count: 0
+                      expires: "2099-01-01"
+                    """
+                ),
+            )
+            row = "| FAIL | error_only | `computeStats` | /tmp/x/standalone/ts/04-errors.ts | 25.0% | 1/5 | 4/16 | 100 |\n"
+            result = run_helper(row, allowlist=allowlist)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ALLOWLIST ENTRY EXPIRED", result.stdout)
+            # And, since the entry is no longer active, the row it used to
+            # suppress is flagged too.
+            self.assertIn("computeStats", result.stdout)
+
+    def test_missing_expires_is_a_hard_allowlist_error(self) -> None:
+        with TemporaryDirectory() as td:
+            allowlist = write_allowlist(
+                td,
+                textwrap.dedent(
+                    """\
+                    expected_failures:
+                      - file: 04-errors.ts
+                        function: computeStats
+                        outcome: FAIL
+                        category: error_only
+                        reason: missing expiry
+                    expected_scan_errors:
+                      count: 0
+                    """
+                ),
+            )
+            result = run_helper("clean output\n", allowlist=allowlist)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("expires", result.stdout)
+
+    def test_live_repo_allowlist_has_no_expired_entries(self) -> None:
+        # Guards against the real allowlist silently rotting: a clean run
+        # against the live demo/gauntlet-scan-allowlist.yaml must not report
+        # any expired entries today.
+        result = run_helper("clean output\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("ALLOWLIST ENTRY EXPIRED", result.stdout)
 
 
 if __name__ == "__main__":

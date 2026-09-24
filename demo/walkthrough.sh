@@ -258,11 +258,34 @@ run_cmd() {
             STEP_ERRORS=$((STEP_ERRORS + 1))
         fi
         wait 2>/dev/null || true
-        local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error'
-        if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
-            echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
-            grep -iE "$error_pattern" "$output_tmp" | sed 's/^/    /' >> "$ERROR_LOG"
-            STEP_ERRORS=$((STEP_ERRORS + 1))
+        # str-qwua7.10: delegate error detection to gauntlet_check_output.py
+        # (shared with demo/gauntlet.sh) instead of this script's own regex,
+        # so both demo gates catch the same regression classes: process-level
+        # error markers, 0%-coverage-after-iterations function blocks,
+        # lifecycle/scope-mismatch thrown-error clusters, and scan-report
+        # FAIL rows, allowlist-aware via demo/gauntlet-scan-allowlist.yaml.
+        local check_helper="${SCRIPT_DIR}/gauntlet_check_output.py"
+        local check_allowlist="${SCRIPT_DIR}/gauntlet-scan-allowlist.yaml"
+        if [[ -f "$check_helper" && -f "$check_allowlist" ]]; then
+            local check_out
+            check_out="$(mktemp)"
+            if ! python3 "$check_helper" \
+                --allowlist "$check_allowlist" \
+                --output "$output_tmp" \
+                --step "${CURRENT_STEP}" >"$check_out" 2>&1; then
+                cat "$check_out" >> "$ERROR_LOG"
+                STEP_ERRORS=$((STEP_ERRORS + 1))
+            fi
+            rm -f "$check_out"
+        else
+            # Fallback to the legacy inline regex if the helper or allowlist
+            # is missing.
+            local error_pattern='\[error\]|failed to deserialize|deserialization failed|panic|SIGSEGV|error: exploration error'
+            if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
+                echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
+                grep -iE "$error_pattern" "$output_tmp" | sed 's/^/    /' >> "$ERROR_LOG"
+                STEP_ERRORS=$((STEP_ERRORS + 1))
+            fi
         fi
         rm -f "$output_tmp"
     fi

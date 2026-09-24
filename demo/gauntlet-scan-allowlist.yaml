@@ -1,14 +1,26 @@
-# Gauntlet scan FAIL allowlist (str-jeen.59).
+# Gauntlet scan FAIL allowlist (str-jeen.59; expiry schema + lifecycle-cluster
+# section added by str-qwua7.10).
 #
 # The gauntlet scans `examples/standalone/ts/` against a default 100% coverage
 # threshold. Several functions are complex parsers, multi-condition validators,
 # or state machines that the random/concolic explorer cannot fully cover within
-# the gauntlet's default iteration budget. Their FAIL rows are honest
-# explorer-limit signal, not regressions, so we suppress them at the harness
-# level while keeping them visible in the scan report.
+# the gauntlet's default iteration budget. Their FAIL rows (and, since
+# str-qwua7.10, genuine 0%-coverage rows) are honest explorer-limit signal,
+# not regressions, so we suppress them at the harness level while keeping them
+# visible in the scan report.
 #
 # Adding a new entry here requires a one-line reason. Removing an entry once
 # its function reaches PASS is the goal.
+#
+# Every entry requires an `expires: YYYY-MM-DD` date. `gauntlet_check_output.py`
+# stops honoring an entry once its date passes and instead flags it as
+# "ALLOWLIST ENTRY EXPIRED" — so a stale suppression fails the gate loudly
+# instead of quietly rotting into a blind spot. The structural entries below
+# (durable explorer-capability limits, not tracked regressions) use a
+# long-horizon expiry that should be renewed on review, not a short one meant
+# to force near-term product work — that shorter pattern is for entries that
+# stand in for an open regression, cite the tracker issue, and should expire
+# when the fix is expected to land.
 #
 # Format:
 #   expected_failures:
@@ -17,11 +29,18 @@
 #       outcome: FAIL              # currently always FAIL; reserved for future
 #       category: error_only|behavioral
 #       reason: <one line>
+#       expires: <YYYY-MM-DD>       # required; see note above
+#
+#   expected_lifecycle_clusters:
+#     - class: <name>                # e.g. "Teardown scope mismatch"
+#       reason: <one line, cite the tracker issue>
+#       expires: <YYYY-MM-DD>       # required
 #
 #   expected_scan_errors:
 #     count: <int>                  # max scan-summary "N error(s)" tolerated
 #     files: [<basename>, ...]      # documented sources of those errors
 #     reason: <one line>
+#     expires: <YYYY-MM-DD>         # required
 
 expected_failures:
   - file: 04-errors.ts
@@ -29,81 +48,108 @@ expected_failures:
     outcome: FAIL
     category: error_only
     reason: Many error-throwing branches; explorer cannot enumerate all throw paths within default iteration budget.
+    expires: "2027-09-24"
   - file: 05-unions.ts
     function: computeArea
     outcome: FAIL
     category: behavioral
     reason: Discriminated-union shape with deep type-narrowing; coverage limited by union-input synthesis.
+    expires: "2027-09-24"
   - file: 05-unions.ts
     function: routeRequest
     outcome: FAIL
     category: behavioral
     reason: Discriminated-union routing across multiple request shapes; coverage limited by union-input synthesis.
+    expires: "2027-09-24"
   - file: 06-nested-control-flow.ts
     function: processStateMachine
     outcome: FAIL
     category: error_only
     reason: Deeply nested state-machine with 29 branches; explorer cannot reach all transitions in default budget.
+    expires: "2027-09-24"
   - file: 07-auth-validation.ts
     function: authorizeRequest
     outcome: FAIL
     category: behavioral
     reason: Multi-condition authorization with 29 branches over role/scope/resource combinations.
+    expires: "2027-09-24"
   - file: 07-auth-validation.ts
     function: validateJwt
     outcome: FAIL
     category: behavioral
     reason: Structural JWT validation with 26 branches; signature/exp/iss checks beyond explorer reach in default budget.
+    expires: "2027-09-24"
   - file: 10-path-router.ts
     function: matchRoute
     outcome: FAIL
     category: behavioral
     reason: Path-matching with 50 branches over wildcard/regex segments; concolic engine lacks full string regex support.
+    expires: "2027-09-24"
   - file: 14-semver.ts
     function: parseSemver
     outcome: FAIL
     category: error_only
     reason: Regex-driven semver grammar with many parse-error branches; concolic engine lacks full string regex support.
+    expires: "2027-09-24"
   - file: 14-semver.ts
     function: satisfiesRange
     outcome: FAIL
     category: behavioral
     reason: Borderline coverage (~47-64%); flaps across 50% PASS/WARN/FAIL threshold between runs due to explorer iteration variance.
+    expires: "2027-09-24"
   - file: 17-mock-branches.ts
     function: classifyConfigs
     outcome: FAIL
     category: error_only
     reason: Exercises explicit mock-branch fixture; behaviors gated by mocked dependency outcomes the explorer does not yet vary.
+    expires: "2027-09-24"
   - file: 17-mock-branches.ts
     function: classifyStatus
     outcome: FAIL
     category: error_only
     reason: Exercises explicit mock-branch fixture; behaviors gated by mocked dependency outcomes the explorer does not yet vary.
+    expires: "2027-09-24"
   - file: 17-mock-branches.ts
     function: loadOrDefault
     outcome: FAIL
     category: behavioral
     reason: Exercises explicit mock-branch fixture; behaviors gated by mocked dependency outcomes the explorer does not yet vary.
+    expires: "2027-09-24"
   - file: 18-accept-language.ts
     function: negotiateLanguage
     outcome: FAIL
     category: error_only
     reason: Accept-Language header parser with 28 branches over quality values and tag matching; concolic string ops insufficient.
+    expires: "2027-09-24"
   - file: 19-robots-policy.ts
     function: evaluateRobotsPolicy
     outcome: FAIL
     category: behavioral
     reason: robots.txt rule precedence with 28 branches over user-agent and path-prefix matching; coverage limited by string handling.
+    expires: "2027-09-24"
   - file: 20-dotenv-parser.ts
     function: parseDotenv
     outcome: FAIL
     category: behavioral
     reason: Line-based parser with 45 branches over quoting, escapes, and comments; concolic string ops insufficient.
+    expires: "2027-09-24"
   - file: 21-crypto-boundary.ts
     function: classifySecret
     outcome: FAIL
     category: error_only
     reason: Pattern-matching secret classifier; behaviors gated by entropy/regex checks beyond explorer reach.
+    expires: "2027-09-24"
+
+# No lifecycle-cluster suppressions are currently needed: str-qwua7.56 already
+# fixed discovery to exclude exported setup/teardown helpers from scan
+# targets (verified 2026-09-24 against current main — a scan of
+# setup-file-level.ts's directory finds "No functions to scan", so a
+# "Teardown scope mismatch" cluster from fuzzing teardown-in-isolation no
+# longer reproduces). This section stays in place, empty, so the checker's
+# lifecycle-cluster detection (str-qwua7.10) has somewhere to record a future
+# suppression if that class of cluster resurfaces, without ever suppressing
+# it by default.
+expected_lifecycle_clusters: []
 
 expected_scan_errors:
   count: 2
@@ -111,3 +157,4 @@ expected_scan_errors:
     - 11-opaque-types.ts
     - 12-external-deps.ts
   reason: Opaque-type scaffolding and external-dependency import surface are intentionally unsupported gauntlet fixtures; documented in CLAUDE.md.
+  expires: "2027-09-24"
