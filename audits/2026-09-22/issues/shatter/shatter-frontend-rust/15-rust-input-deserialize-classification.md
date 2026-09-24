@@ -6,6 +6,7 @@ priority: P2
 type: bug
 labels: [rust-frontend, reporting, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_slug: int-width-signedness-epic
 blocked_by: []
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
@@ -15,7 +16,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 ## Problem
 
-When the Rust harness cannot deserialize an input into the parameter's type (`input N deserialization failed: invalid value: integer `-998`, expected usize`), the target function never runs. Explore/scan output nevertheless records the row as `throws runtime_error: ...`, which reads as a behavior of the target. Any input the generator gets wrong (see `rust-usize-negative-inputs`, but also any future type mismatch) becomes a fake finding, and the walkthrough error regex does not match "deserialization failed", so no gate notices.
+When the Rust harness cannot deserialize an input into the parameter's type (`input N deserialization failed: invalid value: integer `-998`, expected usize`), the target function never runs. Explore/scan output nevertheless records the row as `throws runtime_error: ...`, which reads as a behavior of the target. Any input the generator gets wrong (see `int-unsigned64-clamp`, but also any future type mismatch) becomes a fake finding, and the walkthrough error regex does not match "deserialization failed", so no gate notices.
 
 ## Evidence
 
@@ -31,7 +32,7 @@ When the Rust harness cannot deserialize an input into the parameter's type (`in
 
 ## Out of scope
 
-- Fixing the generator bug that currently produces most of these rows (`rust-usize-negative-inputs`).
+- Fixing the generator bug that currently produces most of these rows (`int-unsigned64-clamp`).
 - The Go-side change (str-4yc9w), except for agreeing on the shared classification.
 
 ## Size
@@ -40,5 +41,5 @@ S
 
 ## References
 
-- Split from `rust-usize-negative-inputs` after the Codex cross-check of the 2026-09-22 audit (finding goals-15).
+- Split from `int-unsigned64-clamp` after the Codex cross-check of the 2026-09-22 audit (finding goals-15).
 - Related: str-4yc9w (open, Go), str-cfsa (closed, Go).

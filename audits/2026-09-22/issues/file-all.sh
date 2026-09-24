@@ -396,8 +396,19 @@ def process(repo, kind, where, epic_title):
                       epic_body(repo, len(new), len(notes)), None)
         # ---- 2. new issues
         companions = []
+        # Drafts with `parent_slug` nest under that draft (a child epic) instead of the repo
+        # epic, so parents are filed first.
+        new.sort(key=lambda d: bool(d.get("parent_slug")))
         for d in new:
             if d["slug"] in held: continue
+            parent = epic
+            ps = d.get("parent_slug")
+            if ps:
+                parent = ledger.get(ps) or fake.get(ps)
+                if not parent and ps in held:
+                    held[d["slug"]] = f"HOLD-PARENT: parent {ps} is held"
+                    log(f"{held[d['slug']]} -> {d['slug']}"); continue
+                if not parent: raise RuntimeError(f"{d['_rel']}: parent_slug {ps} is not filed (missing)")
             body, comps = split_companions(strip_h1(d["_body"]))
             companions += [(d, t, c) for t, c in comps]
             body, _missing = substitute(body, d, epic, fake)   # forward slug refs stay as backticked slugs
@@ -409,7 +420,7 @@ def process(repo, kind, where, epic_title):
                 labels = list(d["labels"])
             if re.search(r"\bfiler\b", body, re.I):
                 manual.append(f"{d['_rel']}: body mentions the filer; check for instructions not automated")
-            create(d["slug"], d["title"], TYPE_MAP[d["type"]], d["priority"], labels, body, epic if kind == "bd" else None)
+            create(d["slug"], d["title"], TYPE_MAP[d["type"]], d["priority"], labels, body, parent if kind == "bd" else None)
         # ---- 3. dependencies
         for d in new:
             if d["slug"] in held: continue

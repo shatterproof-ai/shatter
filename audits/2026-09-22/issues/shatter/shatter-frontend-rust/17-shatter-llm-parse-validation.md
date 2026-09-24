@@ -6,7 +6,7 @@ priority: P3
 type: bug
 labels: [llm, input-generation, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
-blocked_by: [rust-usize-negative-inputs]
+blocked_by: [int-unsigned64-clamp]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
@@ -26,11 +26,11 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 Re-verified against the audit worktree (main 16794cef + audit files):
 
 - `shatter-llm/src/parse.rs:104` `TypeInfo::Int { .. } => v.is_i64() || v.is_u64(),`. `parse.rs:62` `fn extract_first_json_array`.
-- The core range helper `shatter_core::types::int_range` (`shatter-core/src/types.rs:310-345`) returns `None` for 64/128-bit widths including `usize`, so reusing it unchanged would still accept negatives for `usize`/`u64`. `rust-usize-negative-inputs` fixes the helper; this issue is blocked by it so the parser reuses the corrected version.
+- The core range helper `shatter_core::types::int_range` (`shatter-core/src/types.rs:310-345`) returns `None` for 64/128-bit widths including `usize`, so reusing it unchanged would still accept negatives for `usize`/`u64`. `int-unsigned64-clamp` fixes the helper; this issue is blocked by it so the parser reuses the corrected version.
 
 ## Acceptance criteria
 
-- [ ] Integer values are validated with the corrected core helper (after `rust-usize-negative-inputs`): unsigned rejects negatives at every width including 64/128/usize, and 8/16/32-bit bounds are enforced. Unit tests: u8 -1 and 256 rejected, i8 -129 rejected, usize -1 rejected, u64 0 accepted. Show them failing on main.
+- [ ] Integer values are validated with the corrected core helper (after `int-unsigned64-clamp`): unsigned rejects negatives at every width including 64/128/usize, and 8/16/32-bit bounds are enforced. Unit tests: u8 -1 and 256 rejected, i8 -129 rejected, usize -1 rejected, u64 0 accepted. Show them failing on main.
 - [ ] `extract_first_json_array` tries successive `[` candidates until one parses as the expected array shape. Unit test with a leading bracketed prose fragment, and one where no candidate parses.
 - [ ] Proptest in `parse.rs`: for arbitrary strings and arbitrary `ParamInfo` type lists, `parse_response` never panics and returns only vectors whose values conform to the declared types (including width/sign).
 - [ ] `cargo test -p shatter-llm` passes.

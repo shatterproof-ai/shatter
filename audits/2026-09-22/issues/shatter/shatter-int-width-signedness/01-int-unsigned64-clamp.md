@@ -1,17 +1,20 @@
 ---
-slug: rust-usize-negative-inputs
+slug: int-unsigned64-clamp
 kind: new
-title: "usize/u64/u128 params still receive negative integers: int_range() leaves 64- and 128-bit unsigned ints unbounded"
+title: "Unsigned 64/128-bit ints (usize, u64, u128) still get negative inputs: int_range() returns None for widths beyond i64; clamp them to [0, i64::MAX]"
 priority: P2
 type: bug
 labels: [rust-frontend, input-generation, solver, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_slug: int-width-signedness-epic
 blocked_by: []
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# usize/u64/u128 params still receive negative integers: int_range() leaves 64- and 128-bit unsigned ints unbounded
+# Unsigned 64/128-bit ints (usize, u64, u128) still get negative inputs: clamp them to [0, i64::MAX]
+
+Step 1 of epic `int-width-signedness-epic`. This is the minimal core fix, on the existing i64 data path. Full u64/i128 ranges are step 3 (`core-int-range-i128`).
 
 ## Problem
 
@@ -43,7 +46,8 @@ Change `int_range` to return `(0, i64::MAX)` for unsigned widths ≥ 64 (values 
 ## Out of scope
 
 - Classifying harness input-deserialization failures as tool errors instead of target throws (`rust-input-deserialize-classification`).
-- Values above `i64::MAX` for `u64`/`u128` (representation change).
+- Values above `i64::MAX` for `u64`/`u128` (representation change): `core-int-range-i128`.
+- Go's separate `go_uint`/`go_byte` complex kinds: `go-int-width-sign-emission`.
 
 ## Size
 
