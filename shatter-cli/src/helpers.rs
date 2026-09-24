@@ -366,11 +366,14 @@ pub(crate) fn print_markdown(md: &str, use_color: bool) {
     }
 }
 
-/// Write `s` to stderr with the same EAGAIN-tolerant, BrokenPipe-clean
-/// semantics as [`print_stdout`]. Used by str-qwua7.11 to route the
-/// human-readable explore report to stderr when a machine-readable spec
-/// (JSON or markdown) targets stdout, so stdout stays a single parseable
-/// document — mirrors the `scan --format json` precedent.
+/// Write `s` to stderr with the same EAGAIN-tolerant retry semantics as
+/// [`print_stdout`] — but unlike it, never exits the process on write
+/// failure (including BrokenPipe): stderr here is a best-effort secondary
+/// channel and must not abort a still-in-progress stdout stream. Used by
+/// str-qwua7.11 to route the human-readable explore report to stderr when
+/// a machine-readable spec (JSON or markdown) targets stdout, so stdout
+/// stays a single parseable document — mirrors the `scan --format json`
+/// precedent.
 pub(crate) fn print_stderr(s: &str) {
     let stderr = io::stderr();
     let mut lock = stderr.lock();
