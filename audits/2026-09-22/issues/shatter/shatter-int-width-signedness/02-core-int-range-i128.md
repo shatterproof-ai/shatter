@@ -1,18 +1,18 @@
 ---
 slug: core-int-range-i128
 kind: new
-title: "Core: widen integer ranges and values from i64 to i128 so u64/usize and i64 are fully representable (generation, mutation, shrinking, boundaries, Z3 model extraction)"
+title: "Core: represent full u64 and i64 integer ranges exactly (i128 internally) for generation, mutation, shrinking, boundaries and Z3 model extraction"
 priority: P3
 type: feature
 labels: [input-generation, solver, protocol, audit-2026-09-22]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: [int-unsigned64-clamp]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Core: widen integer ranges and values from i64 to i128
+# Core: represent full u64 and i64 integer ranges exactly (i128 internally)
 
 Step 2 of epic `int-width-signedness-epic`.
 
@@ -35,14 +35,16 @@ to retire that kind, which is only safe once the core itself can represent the f
 
 ## Acceptance criteria
 
-- [ ] `int_range` returns `Option<(i128, i128)>` with exact bounds for every (width, signed) pair up
-  to 64 bits, and for `i128`. For `u128` it returns `(0, i128::MAX)`, and the doc comment says why.
-  Unspecified width or signedness keeps today's behaviour (full `i64`).
+- [ ] **Supported range (the boundary of this issue):** every (width, signed) pair up to 64 bits gets
+  its exact range: `u64`/`usize` = `[0, u64::MAX]`, `i64`/`isize` = `[i64::MIN, i64::MAX]`. 128-bit
+  types are clamped to their 64-bit counterparts (`u128` → `[0, u64::MAX]`, `i128` → the `i64` range),
+  and the doc comment says so. `int_range` returns `Option<(i128, i128)>` (i128 is the internal
+  carrier). Unspecified width or signedness keeps today's behaviour (full `i64`).
 - [ ] Generation, mutation, shrinking and boundary seeding produce values within the declared range,
-  including both endpoints (`u64::MAX`, `i64::MIN`). Values are emitted as exact JSON integers:
-  `serde_json` `u64`/`i64`, and for anything outside `u64 ∪ i64` a decimal string plus a documented
-  wire rule (or an explicit decision to defer beyond-64-bit values, recorded in the protocol docs and
-  SPEC).
+  including both endpoints (`u64::MAX`, `i64::MIN`). Every value is emitted as an exact JSON integer
+  (`serde_json` `u64` or `i64`). No wire-format change is made: values beyond 64 bits are not
+  generated, and SPEC plus the protocol docs record that 128-bit ranges are clamped until a
+  string encoding is designed in a separate issue.
 - [ ] Z3: range assertions use arbitrary-precision constructors (e.g. `Int::from_str` or
   `from_u64`), and model extraction returns `i128` without saturating or truncating. A test asserts a
   model value above `i64::MAX` survives extraction for a `u64` param.
@@ -50,9 +52,8 @@ to retire that kind, which is only safe once the core itself can represent the f
   output is always within range, and each endpoint is reachable. A known-answer E2E on a Rust fixture
   `fn f(n: u64) -> bool { n == u64::MAX }` finds the true branch. It fails on main, and both runs are
   pasted.
-- [ ] If the wire rule changes (string-encoded 128-bit values), the protocol schema,
-  `protocol/GOVERNANCE.md` steps and the parity matrix are updated, and `task parity` +
-  `task conformance` pass.
+- [ ] The E2E also covers `fn g(n: i64) -> bool { n == i64::MIN }` (finds the true branch), and a
+  `u128` param never receives a value above `u64::MAX` (asserting the clamp).
 - [ ] `task e2e` (all three suites) and `task affected` pass, with `Gates selected` recorded.
 
 ## Suggested approach
@@ -63,7 +64,8 @@ more, and widen only the parameter-value paths first.
 
 ## Out of scope
 
-Bit-vector (wrapping and overflow) semantics. TS `bigint`.
+Bit-vector (wrapping and overflow) semantics. TS `bigint`. Values beyond 64 bits and any string
+wire encoding for them (follow-up issue if a target needs them).
 
 ## Size
 

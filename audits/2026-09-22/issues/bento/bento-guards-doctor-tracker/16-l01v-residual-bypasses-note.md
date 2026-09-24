@@ -8,6 +8,7 @@ labels: [audit, hooks, safety]
 parent_epic: "Epic: Audit 2026-09-22 findings (bento)"
 blocked_by: []
 existing_id: bento-l01v
+set_priority: P1
 tracker: "bd in /home/ketan/project/bento (prefix bento)"
 ---
 
@@ -21,4 +22,4 @@ Audit 2026-09-22 (shatter; findings sessions-02, bento-04). The guard's most com
 
 One API request for this issue so the follow-up does not need to change the corpus: have `shell_segments` expose the `VAR=value` assignments it strips (for example a `command_segments_with_env()` sibling returning `(env, argv)` per segment), since the follow-up must inspect `GIT_CONFIG_*` assignments.
 
-Please add the follow-up to the shared-parser landing order after bento-i76i (and bento-nfi3). Because that P1 follow-up is blocked here, consider raising this issue to P1.
+Please add the follow-up to the shared-parser landing order after bento-i76i (and bento-nfi3). Maintainer decision (2026-09-24): raised to P1, because the P1 follow-up is blocked on this issue.

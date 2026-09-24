@@ -13,6 +13,8 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 # Epic: integer width and signedness end-to-end
 
+This epic is a child of the shatter audit epic "Epic: Audit 2026-09-22 findings". Its four children name it as their parent.
+
 ## Why
 
 The protocol can already describe an integer's width and signedness. `kind: "int"` carries the

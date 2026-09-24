@@ -1,6 +1,6 @@
-# Bundle: shatter-int-width-signedness (repo shatter)
+# Bundle: shatter-int-width-signedness (repo shatter), revision 2
 
-New epic created 2026-09-24 at the maintainer's request ("the core shatter protocol needs to know about signed versus unsigned integers"). Maintainer decisions D1-D10: see audits/2026-09-22.md "Maintainer decisions (2026-09-23)" and issues/DECISIONS-2026-09-23.md. Child 4 (rust-input-deserialize-classification) lives in bucket shatter-frontend-rust and is included here for context.
+New epic created 2026-09-24 at the maintainer's request. All paths are relative to the shatter repository root (github: shatterproof-ai/shatter, main at 16794cef). Child 4 (rust-input-deserialize-classification) lives in bucket shatter-frontend-rust and is included for context.
 
 ---
 slug: int-width-signedness-epic
@@ -16,6 +16,8 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
 # Epic: integer width and signedness end-to-end
+
+This epic is a child of the shatter audit epic "Epic: Audit 2026-09-22 findings". Its four children name it as their parent.
 
 ## Why
 
@@ -76,7 +78,7 @@ title: "Unsigned 64/128-bit ints (usize, u64, u128) still get negative inputs: i
 priority: P2
 type: bug
 labels: [rust-frontend, input-generation, solver, audit]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: []
 existing_id: ""
@@ -85,7 +87,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 # Unsigned 64/128-bit ints (usize, u64, u128) still get negative inputs: clamp them to [0, i64::MAX]
 
-Step 1 of epic `int-width-signedness-epic`. This is the minimal core fix, on the existing i64 data path. Full u64/i128 ranges are step 3 (`core-int-range-i128`).
+Step 1 of epic `int-width-signedness-epic`. This is the minimal core fix, on the existing i64 data path. Full u64/i64 ranges are step 2 (`core-int-range-i128`).
 
 ## Problem
 
@@ -95,12 +97,12 @@ This is a known, documented limitation of the str-ddxe fix (its own doc comment 
 
 ## Evidence
 
-Re-verified against the audit worktree (main 16794cef + audit files):
+Re-verified on shatter `main` at commit 16794cef (line numbers refer to that commit):
 
 - `shatter-core/src/types.rs:310-345`: `TypeInfo::int_range` / `fn int_range(width, signed)` return `Some` only for 8/16/32-bit widths; the arm `// 64-bit and 128-bit ranges exceed (or fill) i64; leave unconstrained.` returns `None`.
 - Consumers that fall back to full i64 on `None`: `shatter-core/src/input_gen.rs:128` (`generate_int`), `:225`, `:1955` (`mutate_int`), `:3576` (`shrink_int`), `:4020`, and `shatter-core/src/solver.rs:170-174` (Z3 range assertions).
 - The analyzer maps `usize` correctly: `shatter-rust/src/analyzer.rs:791` `"usize" => Some((64, false))`, `analyzer.rs:1290` `"usize" => int_type(64, false)`.
-- Reproduction (audit goals run, finding goals-15). Fixture: `standalone/rust/18_accept_language.rs` in the shatter-examples repo at snapshot `49984f4b974bf937e7e6a98e26a7bc205ddee8e2` (the checkout `scripts/examples_checkout.py` produces), function `fn parse_language_preference(part: &str, order: usize) -> Option<LanguagePreference>` at line 41. The recorded transcript (`audits/2026-09-22/goals-runs/rust-walk.md`, untracked in the audit worktree, lines 150-171) shows 16 paths, 12 of them `throws runtime_error: input 1 deserialization failed: invalid value: integer `-998`, expected usize` with values -998, -44, -1, -644, -838, -9223372036854775808, -690, -926, -301, -945, -16, -905. The exact `shatter` / `shatter-rust` build used was not recorded; an earlier verifier run reported 23 rows / 19 negative with a release build.
+- Reproduction (audit goals run, finding goals-15). Fixture: `standalone/rust/18_accept_language.rs` in the shatter-examples repo at snapshot `49984f4b974bf937e7e6a98e26a7bc205ddee8e2` (the checkout `scripts/examples_checkout.py` produces), function `fn parse_language_preference(part: &str, order: usize) -> Option<LanguagePreference>` at line 41. An audit run (transcript not committed; the build used was not recorded, so treat the numbers as illustrative, and the first acceptance criterion produces the pinned reproduction) showed 16 paths, 12 of them `throws runtime_error: input 1 deserialization failed: invalid value: integer `-998`, expected usize` with values -998, -44, -1, -644, -838, -9223372036854775808, -690, -926, -301, -945, -16, -905. The exact `shatter` / `shatter-rust` build used was not recorded; an earlier verifier run reported 23 rows / 19 negative with a release build.
 
 ## Acceptance criteria
 
@@ -135,18 +137,18 @@ S
 ---
 slug: core-int-range-i128
 kind: new
-title: "Core: widen integer ranges and values from i64 to i128 so u64/usize and i64 are fully representable (generation, mutation, shrinking, boundaries, Z3 model extraction)"
+title: "Core: represent full u64 and i64 integer ranges exactly (i128 internally) for generation, mutation, shrinking, boundaries and Z3 model extraction"
 priority: P3
 type: feature
 labels: [input-generation, solver, protocol, audit-2026-09-22]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: [int-unsigned64-clamp]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Core: widen integer ranges and values from i64 to i128
+# Core: represent full u64 and i64 integer ranges exactly (i128 internally)
 
 Step 2 of epic `int-width-signedness-epic`.
 
@@ -169,14 +171,16 @@ to retire that kind, which is only safe once the core itself can represent the f
 
 ## Acceptance criteria
 
-- [ ] `int_range` returns `Option<(i128, i128)>` with exact bounds for every (width, signed) pair up
-  to 64 bits, and for `i128`. For `u128` it returns `(0, i128::MAX)`, and the doc comment says why.
-  Unspecified width or signedness keeps today's behaviour (full `i64`).
+- [ ] **Supported range (the boundary of this issue):** every (width, signed) pair up to 64 bits gets
+  its exact range: `u64`/`usize` = `[0, u64::MAX]`, `i64`/`isize` = `[i64::MIN, i64::MAX]`. 128-bit
+  types are clamped to their 64-bit counterparts (`u128` → `[0, u64::MAX]`, `i128` → the `i64` range),
+  and the doc comment says so. `int_range` returns `Option<(i128, i128)>` (i128 is the internal
+  carrier). Unspecified width or signedness keeps today's behaviour (full `i64`).
 - [ ] Generation, mutation, shrinking and boundary seeding produce values within the declared range,
-  including both endpoints (`u64::MAX`, `i64::MIN`). Values are emitted as exact JSON integers:
-  `serde_json` `u64`/`i64`, and for anything outside `u64 ∪ i64` a decimal string plus a documented
-  wire rule (or an explicit decision to defer beyond-64-bit values, recorded in the protocol docs and
-  SPEC).
+  including both endpoints (`u64::MAX`, `i64::MIN`). Every value is emitted as an exact JSON integer
+  (`serde_json` `u64` or `i64`). No wire-format change is made: values beyond 64 bits are not
+  generated, and SPEC plus the protocol docs record that 128-bit ranges are clamped until a
+  string encoding is designed in a separate issue.
 - [ ] Z3: range assertions use arbitrary-precision constructors (e.g. `Int::from_str` or
   `from_u64`), and model extraction returns `i128` without saturating or truncating. A test asserts a
   model value above `i64::MAX` survives extraction for a `u64` param.
@@ -184,9 +188,8 @@ to retire that kind, which is only safe once the core itself can represent the f
   output is always within range, and each endpoint is reachable. A known-answer E2E on a Rust fixture
   `fn f(n: u64) -> bool { n == u64::MAX }` finds the true branch. It fails on main, and both runs are
   pasted.
-- [ ] If the wire rule changes (string-encoded 128-bit values), the protocol schema,
-  `protocol/GOVERNANCE.md` steps and the parity matrix are updated, and `task parity` +
-  `task conformance` pass.
+- [ ] The E2E also covers `fn g(n: i64) -> bool { n == i64::MIN }` (finds the true branch), and a
+  `u128` param never receives a value above `u64::MAX` (asserting the clamp).
 - [ ] `task e2e` (all three suites) and `task affected` pass, with `Gates selected` recorded.
 
 ## Suggested approach
@@ -197,7 +200,8 @@ more, and widen only the parameter-value paths first.
 
 ## Out of scope
 
-Bit-vector (wrapping and overflow) semantics. TS `bigint`.
+Bit-vector (wrapping and overflow) semantics. TS `bigint`. Values beyond 64 bits and any string
+wire encoding for them (follow-up issue if a target needs them).
 
 ## Size
 
@@ -213,7 +217,7 @@ title: "Go analyzer: emit int_width/int_signed for every integer kind and retire
 priority: P2
 type: bug
 labels: [go-frontend, protocol, parity, input-generation, audit-2026-09-22]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: [core-int-range-i128]
 existing_id: ""
@@ -252,9 +256,12 @@ reach the other.
 - [ ] Both Go mapping sites (`basicTypeInfo` and the name-based switch) emit
   `{"kind":"int","int_width":W,"int_signed":S}` for every Go integer kind. `int`, `uint` and
   `uintptr` use the target's word size (64 on supported platforms; state the assumption).
-- [ ] The core accepts `go_uint`/`go_byte` as deprecated aliases for one release, mapping them to
-  `Int { 64, false }` / `Int { 8, false }`, with a test. After that release they are removed, which
-  gets its own changelog row.
+- [ ] The core accepts `go_uint`/`go_byte` as deprecated aliases, mapping them to
+  `Int { 64, false }` / `Int { 8, false }`, with a test and a SPEC §8 changelog row marking them
+  deprecated. The aliases exist only so that an older installed Go frontend still works with a
+  newer core. Before closing, file a follow-up issue "Remove go_uint/go_byte aliases" (P3,
+  go-frontend), blocked on the first continuous release that ships this change, and put its id in
+  the close reason.
 - [ ] `protocol/parity-matrix.yaml` gains an "integer width and signedness" capability row: Rust
   and Go emit it; TS is marked n/a with the reason. A conformance case per frontend asserts the
   emitted TypeInfo for representative params. `task parity` and `task conformance` pass.
@@ -289,7 +296,7 @@ title: "Rust harness input-deserialization failures are reported as target `thro
 priority: P2
 type: bug
 labels: [rust-frontend, reporting, audit]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: []
 existing_id: ""

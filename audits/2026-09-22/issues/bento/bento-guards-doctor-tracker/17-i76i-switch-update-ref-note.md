@@ -8,6 +8,7 @@ labels: [audit, hooks, safety]
 parent_epic: "Epic: Audit 2026-09-22 findings (bento)"
 blocked_by: []
 existing_id: bento-i76i
+set_priority: P1
 tracker: "bd in /home/ketan/project/bento (prefix bento)"
 ---
 
@@ -23,3 +24,5 @@ Audit 2026-09-22 (shatter; finding bento-04). Two more primary-branch mutations 
 - `git update-ref refs/heads/main <sha>` moves the primary branch directly, skipping every other rule; deny `update-ref` whose ref is `refs/heads/<primary>` (including `-d`) in the primary checkout.
 
 Suggested tests: both commands exit 2 in the primary checkout, and `git switch feature` / `git update-ref refs/heads/feature <sha>` exit 0. The remaining bypass forms (`/usr/bin/git`, wrappers, `-C`, `cd`, `GIT_CONFIG_*` env) are tracked in <id of git-guard-bypasses-and-false-positives>, which lands after this issue.
+
+Maintainer decision (2026-09-24): raised to P1, because the P1 follow-up <id of git-guard-bypasses-and-false-positives> is blocked on this issue.

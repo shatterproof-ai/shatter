@@ -452,6 +452,16 @@ def process(repo, kind, where, epic_title):
             if FILER_HINT.search(outside):
                 manual.append(f"{d['_rel']}: filer/tracker instructions outside the comment text (links, AC/priority changes, extra comments) need a manual pass")
             comment(f"comment:{d['slug']}", str(d["existing_id"]).strip(), text)
+            # `set_priority: P1` on a note raises the existing issue's priority (maintainer decision).
+            sp = d.get("set_priority")
+            if sp and kind == "bd":
+                pkey = f"prio:{d['slug']}"
+                if pkey in ledger: log(f"skip {pkey}: already set")
+                else:
+                    act(["bd", "update", str(d["existing_id"]).strip(), "--priority", str(sp)], cwd)
+                    record(pkey, str(d["existing_id"]).strip(), repo)
+            elif sp:
+                manual.append(f"{d['_rel']}: set_priority {sp} on a GitHub issue needs a manual label change")
         for d, target, text in companions:
             text, missing = substitute(text, d, epic, fake)
             if missing: log(f"DEFER companion:{d['slug']}:{target}: placeholders {missing}"); continue

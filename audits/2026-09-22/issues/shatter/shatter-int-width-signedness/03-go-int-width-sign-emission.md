@@ -5,7 +5,7 @@ title: "Go analyzer: emit int_width/int_signed for every integer kind and retire
 priority: P2
 type: bug
 labels: [go-frontend, protocol, parity, input-generation, audit-2026-09-22]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: [core-int-range-i128]
 existing_id: ""
@@ -44,9 +44,12 @@ reach the other.
 - [ ] Both Go mapping sites (`basicTypeInfo` and the name-based switch) emit
   `{"kind":"int","int_width":W,"int_signed":S}` for every Go integer kind. `int`, `uint` and
   `uintptr` use the target's word size (64 on supported platforms; state the assumption).
-- [ ] The core accepts `go_uint`/`go_byte` as deprecated aliases for one release, mapping them to
-  `Int { 64, false }` / `Int { 8, false }`, with a test. After that release they are removed, which
-  gets its own changelog row.
+- [ ] The core accepts `go_uint`/`go_byte` as deprecated aliases, mapping them to
+  `Int { 64, false }` / `Int { 8, false }`, with a test and a SPEC §8 changelog row marking them
+  deprecated. The aliases exist only so that an older installed Go frontend still works with a
+  newer core. Before closing, file a follow-up issue "Remove go_uint/go_byte aliases" (P3,
+  go-frontend), blocked on the first continuous release that ships this change, and put its id in
+  the close reason.
 - [ ] `protocol/parity-matrix.yaml` gains an "integer width and signedness" capability row: Rust
   and Go emit it; TS is marked n/a with the reason. A conformance case per frontend asserts the
   emitted TypeInfo for representative params. `task parity` and `task conformance` pass.

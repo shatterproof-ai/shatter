@@ -5,7 +5,7 @@ title: "Unsigned 64/128-bit ints (usize, u64, u128) still get negative inputs: i
 priority: P2
 type: bug
 labels: [rust-frontend, input-generation, solver, audit]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: []
 existing_id: ""
@@ -14,7 +14,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 # Unsigned 64/128-bit ints (usize, u64, u128) still get negative inputs: clamp them to [0, i64::MAX]
 
-Step 1 of epic `int-width-signedness-epic`. This is the minimal core fix, on the existing i64 data path. Full u64/i128 ranges are step 3 (`core-int-range-i128`).
+Step 1 of epic `int-width-signedness-epic`. This is the minimal core fix, on the existing i64 data path. Full u64/i64 ranges are step 2 (`core-int-range-i128`).
 
 ## Problem
 
@@ -24,12 +24,12 @@ This is a known, documented limitation of the str-ddxe fix (its own doc comment 
 
 ## Evidence
 
-Re-verified against the audit worktree (main 16794cef + audit files):
+Re-verified on shatter `main` at commit 16794cef (line numbers refer to that commit):
 
 - `shatter-core/src/types.rs:310-345`: `TypeInfo::int_range` / `fn int_range(width, signed)` return `Some` only for 8/16/32-bit widths; the arm `// 64-bit and 128-bit ranges exceed (or fill) i64; leave unconstrained.` returns `None`.
 - Consumers that fall back to full i64 on `None`: `shatter-core/src/input_gen.rs:128` (`generate_int`), `:225`, `:1955` (`mutate_int`), `:3576` (`shrink_int`), `:4020`, and `shatter-core/src/solver.rs:170-174` (Z3 range assertions).
 - The analyzer maps `usize` correctly: `shatter-rust/src/analyzer.rs:791` `"usize" => Some((64, false))`, `analyzer.rs:1290` `"usize" => int_type(64, false)`.
-- Reproduction (audit goals run, finding goals-15). Fixture: `standalone/rust/18_accept_language.rs` in the shatter-examples repo at snapshot `49984f4b974bf937e7e6a98e26a7bc205ddee8e2` (the checkout `scripts/examples_checkout.py` produces), function `fn parse_language_preference(part: &str, order: usize) -> Option<LanguagePreference>` at line 41. The recorded transcript (`audits/2026-09-22/goals-runs/rust-walk.md`, untracked in the audit worktree, lines 150-171) shows 16 paths, 12 of them `throws runtime_error: input 1 deserialization failed: invalid value: integer `-998`, expected usize` with values -998, -44, -1, -644, -838, -9223372036854775808, -690, -926, -301, -945, -16, -905. The exact `shatter` / `shatter-rust` build used was not recorded; an earlier verifier run reported 23 rows / 19 negative with a release build.
+- Reproduction (audit goals run, finding goals-15). Fixture: `standalone/rust/18_accept_language.rs` in the shatter-examples repo at snapshot `49984f4b974bf937e7e6a98e26a7bc205ddee8e2` (the checkout `scripts/examples_checkout.py` produces), function `fn parse_language_preference(part: &str, order: usize) -> Option<LanguagePreference>` at line 41. An audit run (transcript not committed; the build used was not recorded, so treat the numbers as illustrative, and the first acceptance criterion produces the pinned reproduction) showed 16 paths, 12 of them `throws runtime_error: input 1 deserialization failed: invalid value: integer `-998`, expected usize` with values -998, -44, -1, -644, -838, -9223372036854775808, -690, -926, -301, -945, -16, -905. The exact `shatter` / `shatter-rust` build used was not recorded; an earlier verifier run reported 23 rows / 19 negative with a release build.
 
 ## Acceptance criteria
 

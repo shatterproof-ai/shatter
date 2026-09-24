@@ -5,7 +5,7 @@ title: "Rust harness input-deserialization failures are reported as target `thro
 priority: P2
 type: bug
 labels: [rust-frontend, reporting, audit]
-parent_epic: "Epic: Audit 2026-09-22 findings"
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: []
 existing_id: ""
