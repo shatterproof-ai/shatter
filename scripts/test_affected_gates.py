@@ -246,17 +246,22 @@ class AffectedGateMappingTests(unittest.TestCase):
             list_all_tasks(fixture)
             self.assertEqual(checksums(), before)
 
+            def assert_leaf_runs() -> None:
+                completed = subprocess.run(
+                    ["task", "leaf:run"],
+                    cwd=fixture,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                output = completed.stdout + completed.stderr
+                self.assertIn("task: [leaf:run] echo LEAF_RAN", output)
+                self.assertNotIn('Task "leaf:run" is up to date', output)
+
+            assert_leaf_runs()
+            self.assertTrue(checksums(), "fixture run must write to the observed checksum store")
             source.write_text("after\n")
-            completed = subprocess.run(
-                ["task", "leaf:run"],
-                cwd=fixture,
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-            output = completed.stdout + completed.stderr
-            self.assertIn("task: [leaf:run] echo LEAF_RAN", output)
-            self.assertNotIn('Task "leaf:run" is up to date', output)
+            assert_leaf_runs()
 
     def test_test_scripts_guard_task_list_commands(self) -> None:
         unguarded = []
