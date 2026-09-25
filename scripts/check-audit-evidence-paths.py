@@ -8,6 +8,9 @@ Scans audits/<date>.md and audits/<date>/issues/**/*.md for paths of the form
 `git cat-file -e <ref>:<path>` on each. Paths under untracked-by-design dirs
 (goals-runs/, sessions/sessions.json) are reported separately and do not fail.
 Exits 1 if any other cited path is missing at the ref.
+
+The default ref is origin/main, which is only meaningful after the audit has landed. To validate
+an audit branch before merging, pass `--ref HEAD`.
 """
 import argparse
 import pathlib
@@ -49,13 +52,10 @@ def main() -> int:
                             capture_output=True).returncode == 0
         if not ok:
             # A citation may name a file stem (`scan-mix` for scan-mix.json/.html).
-            listing = subprocess.run(["git", "ls-tree", "--name-only", args.ref, path + ".*"],
-                                     cwd=root, capture_output=True, text=True).stdout
-            parent = path.rsplit("/", 1)[0]
+            parent, stem = path.rsplit("/", 1)
             names = subprocess.run(["git", "ls-tree", "--name-only", f"{args.ref}:{parent}"],
                                    cwd=root, capture_output=True, text=True).stdout.split()
-            stem = path.rsplit("/", 1)[1]
-            ok = bool(listing.strip()) or any(n.startswith(stem + ".") for n in names)
+            ok = any(n.startswith(stem + ".") for n in names)
         if not ok:
             missing.append((path, src))
 
