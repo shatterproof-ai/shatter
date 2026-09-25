@@ -38,3 +38,17 @@ func ByteCompare(b byte) string {
 	}
 	return "other"
 }
+
+const sepRune = 'y'
+
+// CountRune ranges over a string param comparing against rune literals; the
+// literal pool must seed the string param with "x" (and "y" from the const).
+func CountRune(s string) int {
+	n := 0
+	for _, c := range s {
+		if c == 'x' || c == sepRune {
+			n++
+		}
+	}
+	return n
+}

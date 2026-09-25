@@ -78,3 +78,33 @@ func TestAnalyze_LiteralProbe(t *testing.T) {
 		t.Errorf("branch 2 rhs = %+v, want int 120", r)
 	}
 }
+
+// TestAnalyze_RuneLiteralsSeedStringAndInt: rune literals are harvested as both
+// an int codepoint and a one-character string, so a string param ranged over
+// with `c == 'x'` still gets "x" from the pool.
+func TestAnalyze_RuneLiteralsSeedStringAndInt(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	path := filepath.Join(filepath.Dir(file), "..", "..", "examples", "go", "rune-literals", "lit.go")
+	results, err := AnalyzeFile(path, "CountRune")
+	if err != nil {
+		t.Fatalf("AnalyzeFile: %v", err)
+	}
+	has := func(typ string, val any) bool {
+		for _, l := range results[0].Literals {
+			if l.Type == typ && l.Value == val {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range []struct {
+		r rune
+	}{{'x'}, {'y'}} {
+		if !has("int", int64(c.r)) {
+			t.Errorf("literals missing int %d: %+v", c.r, results[0].Literals)
+		}
+		if !has("str", string(c.r)) {
+			t.Errorf("literals missing str %q: %+v", string(c.r), results[0].Literals)
+		}
+	}
+}

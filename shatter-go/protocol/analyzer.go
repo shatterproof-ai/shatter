@@ -2691,8 +2691,11 @@ func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 					add(LiteralValue{Type: "str", Value: s})
 				}
 			case token.CHAR:
+				// Seed both the codepoint (rune/byte params) and the one-char
+				// string (string params ranged over or searched for the rune).
 				if r, err := charLitCodepoint(node); err == nil {
 					add(LiteralValue{Type: "int", Value: r})
+					add(LiteralValue{Type: "str", Value: string(rune(r))})
 				}
 			}
 		case *ast.Ident:
@@ -2765,6 +2768,7 @@ func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 					case token.CHAR:
 						if r, err := charLitCodepoint(lit); err == nil {
 							add(LiteralValue{Type: "int", Value: r})
+							add(LiteralValue{Type: "str", Value: string(rune(r))})
 						}
 					}
 				case *ast.UnaryExpr:
