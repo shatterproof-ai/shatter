@@ -37,7 +37,7 @@ pub enum PathPredicateStoreError {
     InvalidPredicate(#[from] PredicateValidationError),
 }
 
-fn validate_bundle(bundle: &PathPredicateBundle) -> Result<(), PathPredicateStoreError> {
+pub(crate) fn validate_bundle(bundle: &PathPredicateBundle) -> Result<(), PathPredicateStoreError> {
     if bundle.schema_version != PATH_PREDICATE_BUNDLE_SCHEMA_VERSION {
         return Err(PathPredicateStoreError::UnsupportedVersion);
     }
