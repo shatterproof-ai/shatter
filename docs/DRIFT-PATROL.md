@@ -21,12 +21,18 @@ found drift.
 |---|---|
 | **Trigger** | `.github/workflows/drift-patrol.yml` — weekly, Mondays 09:00 UTC, plus manual `workflow_dispatch` |
 | **Audience** | Repository maintainers. A failure shows up as a red scheduled run in the Actions tab and as a report in the run summary |
-| **Owner** | The maintainer on the weekly triage rotation; if there is no rotation, whoever is landing work that week |
+| **Owner** | The lead of the next landing session reads the last patrol run summary and files a drift issue (see below) for each `FAIL` |
 | **Scope** | Bounded checks only — the patrol is not a replacement for `/audit` or for `task check` |
 
 The workflow also runs the patrol's own unit tests on any pull request that
-touches `scripts/drift-patrol.py`, so the patrol cannot rot in place. The
-patrol itself does **not** gate pull requests: it reports repository-wide
+touches `scripts/drift-patrol.py`. That self-test only covers the Python; it
+does not execute the `patrol` job, which is skipped on pull requests.
+`scripts/test_ci_workflow_structure.py` (run by `task meta`) guards the
+workflow itself by checking that every path it references (`go-version-file`,
+`working-directory`, `hashFiles(...)` globs, ...) exists in the checkout — the
+class of bug that kept the scheduled job red for seven weeks. Nothing yet
+alerts anyone to a persistently red scheduled run; that is tracked by
+`workflow-health-patrol` (`str-49drv.25`). The patrol itself does **not** gate pull requests: it reports repository-wide
 drift, and failing an unrelated branch because someone else left an issue
 `in_progress` would just train people to ignore it.
 
@@ -42,6 +48,7 @@ drift, and failing an unrelated branch because someone else left an issue
 | `docs-stories` | Missing `docs/stories`, or an `INDEX.md` older than the stories it lists | `str-u394l.3` (not implemented) |
 | `tracker-hygiene` | `in_progress` issues untouched for >14 days; open children under a closed parent | — |
 | `git-state` | Primary checkout `core.bare=true` or `core.hooksPath` override, prunable worktree registrations, dead dirs under `~/.local/share/worktrees/shatter/` or `.claude/worktrees/`, stale `/tmp/land-work-preview-*` dirs (`--preview-max-age` hours, default 24) | `str-qwua7.1` |
+| `tracker-server` | An orphaned `dolt sql-server` holding the tracker database lock (no matching `.beads/dolt-server.port`, or a port that is not reachable); `AGENTS.md` tells agents to run `--only tracker-server` | `str-qwua7.16` |
 
 `protocol-conformance` is the patrol's documented fast subset of the wider
 quality suite: it runs `protocol/conformance/conformance_harness.py` only, not
