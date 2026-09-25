@@ -1,0 +1,19 @@
+  Created  .shatter/
+  Created  .shatter/config.yaml  (detected language: unknown)
+  Created  .gitignore  (4 generated path(s) ignored)
+Initialized Shatter project at /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/rs
+# Shatter Explore
+
+
+---
+
+**Summary:** 0 path(s) across 3 function(s)
+
+Outcome breakdown: produced coverage: 0 · runtime_failed: 3
+
+**Failure impact** (line-weighted, sorted by span lines)
+
+| Category | Lang | Functions | Files | Span lines | Selected lines | % attempted |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `runtime_failed` | `any` | 3 | 1 | 47 | 47 | 100.0% |
+

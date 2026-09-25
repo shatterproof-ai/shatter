@@ -1,0 +1,27 @@
+List source files that would be selected for a scan, with details about excluded, unsupported, and out-of-policy candidates
+
+Usage: shatter list-targets [OPTIONS] [DIRECTORY]
+
+Arguments:
+  [DIRECTORY]  Directory to inspect (default: current directory) [default: .]
+
+Options:
+      --log-level <LOG_LEVEL>          Log verbosity level: error, warn, info (default), debug, trace [default: info]
+      --scope <SCOPE>                  Path to a scope configuration YAML file (shatter.scope.yaml)
+      --include <INCLUDE>              Glob patterns for files to include (e.g. "src/**/*.ts"). May be repeated
+  -v, --verbose...                     Increase verbosity (-v = debug, -vv = trace)
+      --exclude <EXCLUDE>              Glob patterns for files to exclude (e.g. "**/vendor/**"). May be repeated
+  -q, --quiet                          Decrease verbosity to warnings and errors only
+      --language <LANGUAGE>            Restrict to a single language: typescript, go, or rust
+      --timing <TIMING>                Timing output mode [default: off] [possible values: off, summary, detailed]
+      --format <FORMAT>                Output format: text (default), json, or markdown [default: text] [possible values: text, json, markdown]
+      --timing-format <TIMING_FORMAT>  Format for timing output. `json` and `both` are intended for persisted artifacts [default: text] [possible values: text, json, both]
+  -o, --output <PATH>                  Write manifest to this file instead of stdout
+      --timing-output <PATH>           Write one timing artifact JSON file to this path
+      --timing-output-dir <DIR>        Write timing artifact JSON files into this directory
+      --project-dir <DIR>              Override auto-detected project root directory
+      --allow-host-writes              Permit executing target functions on the host without an OS sandbox
+      --set <KEY=VALUE>                Override config values using dotted-path key=value pairs (repeatable)
+      --color <WHEN>                   When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --render <MODE>                  Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+  -h, --help                           Print help (see more with '--help')

@@ -1,0 +1,30 @@
+  Created  .shatter/
+  Created  .shatter/config.yaml  (detected language: unknown)
+  Created  .gitignore  (4 generated path(s) ignored)
+Initialized Shatter project at /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/wt
+# Shatter Explore
+
+## `classifyNumber` *(standalone/ts/01-arithmetic.ts:10-21)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+
+## `safeDivide` *(standalone/ts/04-errors.ts:10-22)*
+
+**2 path(s)** · **75%** coverage (6/8 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `safeDivide(0.0, 0.0)` | throws `Error: division by zero` |
+| 2 | `safeDivide(0.0, 1)` | returns `0` |
+
+
+---
+
+**Summary:** 6 path(s) across 2 function(s) · **87%** coverage (13/15 lines)

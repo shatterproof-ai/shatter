@@ -1,0 +1,8 @@
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[progress] starting 1/1: classify_number
+[progress] failed 1/1: classify_number (443.8s)
+[batch 1/1] classify_number: 0 iters, 0 paths, 0/3 branches, 443.8s (err)
+[info] Wrote explore artifact for classify_number -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/shatter-artifacts/explore-results/rust_01_arithmetic.rs/00006_classify_number.json
+[error] Exploration error for classify_number: observe stage failed: unexpected response from frontend: execute error (CompilationError): build timed out
+[info] Wrote no-target spec marker (reason=unclassified) to /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/audits/2026-09-22/artifact-samples/rust-spec.json
+Error: explore: all 1 attempted target(s) failed (build_failed=0, runtime_failed=0, timed_out=1); no completed functions

@@ -1,0 +1,16 @@
+Shatter doctor
+
+shatter version:          0.1.0
+go-frontend source hash:  ecffdd300e190e301d518e3ea840e6396425d5897f9742da34bf8b8312105885
+go-frontend binary hash:  26039cad71eec14f659e1f9b878c39c89bae30d53a7f59e74715c981b50735a5
+ts-frontend bundle hash:  a17ac76996c87f5fc0ff494dbd2d5c5d60735d5fccbdf41df7564484cffbd6c3
+
+Project configuration
+  shatter.config.json:   not found  scan-global: discovery, output, caching, resource limits
+  .shatter/config.yaml:  present    per-function: iterations, timeouts, mocks, generators, setup, opaque types
+  Precedence: CLI flags > --set overrides > .shatter/config.yaml (nearest wins) > shatter.config.json > built-in defaults
+  The two files do not overlap; see README "Project Configuration".
+
+Embedded Go frontend: up to date.
+
+Generated-path gitignore: all configured output paths are ignored.

@@ -1,0 +1,18 @@
+No .shatter/ found — initializing project
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[progress] starting 1/3: safe_divide
+[progress] starting 2/3: compute_stats
+[progress] starting 3/3: main
+[progress] failed 1/3: main (0.0s)
+[batch 1/3] main: 0 iters, 0 paths, 0/2 branches, 0.0s (err) | active: 2 (compute_stats, safe_divide)
+[progress] failed 2/3: compute_stats (0.0s)
+[batch 2/3] compute_stats: 0 iters, 0 paths, 0/6 branches, 0.0s (err) | active: 1 (safe_divide)
+[progress] failed 3/3: safe_divide (0.1s)
+[batch 3/3] safe_divide: 0 iters, 0 paths, 0/2 branches, 0.1s (err)
+[info] Wrote explore artifact for safe_divide -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/rs/shatter-artifacts/explore-results/04_errors.rs/00006_safe_divide.json
+[info] Wrote explore artifact for compute_stats -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/rs/shatter-artifacts/explore-results/04_errors.rs/00025_compute_stats.json
+[info] Wrote explore artifact for main -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/rs/shatter-artifacts/explore-results/04_errors.rs/00056_main.json
+[error] Exploration error for safe_divide: observe stage failed: unexpected response from frontend: execute error (FileNotFound): cannot locate shatter-rust-runtime crate; set SHATTER_RUNTIME_PATH
+[error] Exploration error for compute_stats: observe stage failed: unexpected response from frontend: execute error (FileNotFound): cannot locate shatter-rust-runtime crate; set SHATTER_RUNTIME_PATH
+[error] Exploration error for main: observe stage failed: unexpected response from frontend: execute error (FileNotFound): cannot locate shatter-rust-runtime crate; set SHATTER_RUNTIME_PATH
+Error: explore: all 1 attempted target(s) failed (build_failed=0, runtime_failed=3, timed_out=0); no completed functions

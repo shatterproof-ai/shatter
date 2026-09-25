@@ -1,0 +1,2 @@
+### gate=go-vet cmd=bash -c cd /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-go && go vet ./... start=2026-09-22T13:54:01-05:00 load=7.70 16.53 36.74
+### gate=go-vet exit=0 wall=0s end=2026-09-22T13:54:01-05:00 load=7.70 16.53 36.74

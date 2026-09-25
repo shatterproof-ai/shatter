@@ -1,0 +1,943 @@
+### gate=check cmd=task check start=2026-09-22T12:07:41-05:00 load=63.84 28.82 18.17
+run-heavy: load 63.84 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 110.57 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 126.43 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 163.18 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 165.27 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 197.77 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 209.44 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 209.92 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 190.81 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 211.01 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 192.87 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 158.95 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 135.45 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 133.33 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 109.99 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 90.28 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 77.37 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 66.00 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 61.20 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 48.83 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 71.35 still above 48 after 600s; proceeding anyway
+task: [check] bash scripts/gate-wrapper.sh check task check-governed
+task: [rust-rt:clippy] cargo clippy -- -D warnings
+task: [cache-helper-tests] bash scripts/test_seed_worktree.sh
+task: [rust-fe:clippy] cargo clippy -- -D warnings
+task: [core:clippy] cargo clippy -p shatter-core -- -D warnings
+task: [cli:clippy] cargo clippy -p shatter-cli -- -D warnings
+Seeded shatter-ts/node_modules from /tmp/tmp.nGE6WWaZBa/canonical with hardlinks in 1s
+task: [cli:build] cargo build -p shatter-cli
+Seeded shatter-ts/node_modules from /tmp/tmp.nGE6WWaZBa/canonical with hardlinks in 0s
+    Blocking waiting for file lock on package cache
+task: [docs] test -f README.md || { echo "missing README.md"; exit 1; }
+test -f AGENTS.md || { echo "missing AGENTS.md"; exit 1; }
+test -f CLAUDE.md || { echo "missing CLAUDE.md"; exit 1; }
+test -d docs || { echo "missing docs/"; exit 1; }
+echo "[ok] core documentation files present"
+
+Existing node_modules does not match package-lock.json; replacing it
+Canonical dependencies are unavailable or lockfiles differ; running npm ci
+Installed shatter-ts/node_modules with npm ci in 0s
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+Hardlink cloning is unavailable; running npm ci
+Installed shatter-ts/node_modules with npm ci in 0s
+task: [schemas] python3 protocol/schemas/test_schema_validation.py
+[ok] seed-worktree detects main, hardlinks matching dependencies, and falls back to npm ci
+    Blocking waiting for file lock on package cache
+[ok] core documentation files present
+task: [docs] if command -v markdownlint-cli2 >/dev/null 2>&1; then
+  markdownlint-cli2 --config .markdownlint-cli2.yaml \
+    README.md AGENTS.md CLAUDE.md PLAN.md SPEC.md PROTOCOL.md PARITY.md docs
+else echo "[skip] markdownlint-cli2 not installed"; fi
+
+task: [cache-helper-tests] bash scripts/test_target_dir_report.sh
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+[skip] markdownlint-cli2 not installed
+task: [docs] if command -v vale >/dev/null 2>&1; then
+  vale README.md AGENTS.md CLAUDE.md PLAN.md SPEC.md PROTOCOL.md PARITY.md docs
+else echo "[skip] vale not installed"; fi
+
+[skip] vale not installed
+task: [docs] if command -v lychee >/dev/null 2>&1; then
+  lychee --config lychee.toml --no-progress \
+    README.md AGENTS.md CLAUDE.md PLAN.md SPEC.md PROTOCOL.md PARITY.md docs
+else echo "[skip] lychee not installed"; fi
+
+task: [meta] bash -n install.sh
+[skip] lychee not installed
+task: [meta] python3 -m unittest scripts.test_git_fixture_isolation
+Validating 13 valid request fixtures:
+  OK: requests/valid/analyze.json
+  OK: requests/valid/execute-no-capture.json
+  OK: requests/valid/execute-with-prepare-id.json
+  OK: requests/valid/execute-with-runtime-value-plan.json
+  OK: requests/valid/execute.json
+  OK: requests/valid/generate.json
+  OK: requests/valid/get-invocation-plan.json
+  OK: requests/valid/handshake.json
+  OK: requests/valid/instrument.json
+  OK: requests/valid/prepare.json
+  OK: requests/valid/setup.json
+  OK: requests/valid/shutdown.json
+  OK: requests/valid/teardown.json
+
+Validating 9 invalid request fixtures (must fail):
+  OK (correctly invalid): requests/invalid/missing-command.json
+  OK (correctly invalid): requests/invalid/missing-id.json
+  OK (correctly invalid): requests/invalid/missing-protocol-version.json
+  OK (correctly invalid): requests/invalid/missing-required-field.json
+  OK (correctly invalid): requests/invalid/negative-id.json
+  OK (correctly invalid): requests/invalid/prepare-missing-function.json
+  OK (correctly invalid): requests/invalid/unknown-command.json
+  OK (correctly invalid): requests/invalid/wrong-field-type.json
+  OK (correctly invalid): requests/invalid/wrong-id-type.json
+
+Validating 17 valid response fixtures:
+  OK: responses/valid/analyze-with-ite-condition.json
+  OK: responses/valid/analyze.json
+  OK: responses/valid/error.json
+  OK: responses/valid/execute-rust-global-state.json
+  OK: responses/valid/execute-with-global-state-change.json
+  OK: responses/valid/execute-with-mcdc-conditions.json
+  OK: responses/valid/execute-without-conditions.json
+  OK: responses/valid/execute.json
+  OK: responses/valid/generate.json
+  OK: responses/valid/handshake.json
+  OK: responses/valid/instrument.json
+  OK: responses/valid/invocation-plan-receiver-field-plans.json
+  OK: responses/valid/invocation-plan.json
+  OK: responses/valid/prepare.json
+  OK: responses/valid/setup.json
+  OK: responses/valid/shutdown-ack.json
+  OK: responses/valid/teardown-ack.json
+
+Validating 6 invalid response fixtures (must fail):
+  OK (correctly invalid): responses/invalid/ite-missing-fields.json
+  OK (correctly invalid): responses/invalid/missing-required-field.json
+  OK (correctly invalid): responses/invalid/missing-status.json
+  OK (correctly invalid): responses/invalid/negative-condition-index.json
+  OK (correctly invalid): responses/invalid/unknown-status.json
+  OK (correctly invalid): responses/invalid/wrong-error-code.json
+
+Validating 12 error response fixtures:
+  OK: errors/compilation-error.json
+  OK: errors/execution-crash.json
+  OK: errors/execution-timeout.json
+  OK: errors/file-not-found.json
+  OK: errors/function-not-found.json
+  OK: errors/instrumentation-failed.json
+  OK: errors/internal-error.json
+  OK: errors/invalid-request.json
+  OK: errors/parse-error.json
+  OK: errors/preflight-failed.json
+  OK: errors/prepare-not-supported.json
+  OK: errors/version-mismatch.json
+
+Validating 4 top-level fixtures:
+  OK: setup-request.json
+  OK: teardown-request.json
+  OK: setup-response.json
+  OK: teardown-ack-response.json
+
+==================================================
+Checked 61 fixtures
+All fixtures valid.
+    Blocking waiting for file lock on package cache
+[ok] target-dir-report lists target directories across worktrees
+task: [cache-helper-tests] bash scripts/test_target_dir_report_json.sh
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.44
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.228
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+   Compiling serde_json v1.0.149
+    Checking memchr v2.8.0
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking itoa v1.0.17
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Blocking waiting for file lock on package cache
+[ok] target-dir-report --json produces the v1 schema with exact byte counts
+task: [cache-helper-tests] bash scripts/test_git_sandbox_test_lib.sh
+[ok] git-sandbox-test-lib.sh isolates a leaked GIT_DIR/GIT_WORK_TREE so fixture git ops cannot see or mutate the real repo
+    Blocking waiting for file lock on build directory
+   Compiling syn v2.0.117
+   Compiling quote v1.0.44
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.182
+   Compiling serde v1.0.228
+    Checking cfg-if v1.0.4
+   Compiling find-msvc-tools v0.1.9
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.79s
+   Compiling shlex v1.3.0
+   Compiling anyhow v1.0.102
+task: [docs-smoke] python3 scripts/docs-smoke.py
+    Checking bitflags v2.11.0
+    Checking libc v0.2.182
+   Compiling mio v1.1.1
+    Checking cfg-if v1.0.4
+   Compiling log v0.4.29
+   Compiling regex-syntax v0.8.10
+   Compiling bitflags v2.11.0
+    Checking num-traits v0.2.19
+    Checking serde_core v1.0.228
+    Checking memchr v2.8.0
+    Checking typenum v1.19.0
+   Compiling heck v0.5.0
+    Checking equivalent v1.0.2
+    Checking hashbrown v0.16.1
+   Compiling tokio v1.49.0
+    Checking once_cell v1.21.3
+   Compiling zmij v1.0.21
+   Compiling rustix v1.1.4
+    Checking linux-raw-sys v0.12.1
+    Checking crossbeam-utils v0.8.21
+    Checking equivalent v1.0.2
+    Checking log v0.4.29
+    Checking generic-array v0.14.7
+    Checking num-integer v0.1.46
+    Checking hashbrown v0.16.1
+    Checking num-bigint v0.4.6
+    Checking crossbeam-epoch v0.9.18
+    Checking once_cell v1.21.3
+    Checking tracing-core v0.1.36
+   Compiling cranelift-srcgen v0.124.3
+    Checking zerocopy v0.8.39
+    Checking getrandom v0.3.4
+   Compiling syn v2.0.117
+    Checking indexmap v2.13.0
+   Compiling serde_json v1.0.149
+    Checking aho-corasick v1.1.4
+   Compiling jobserver v0.1.34
+   Compiling cranelift-assembler-x64-meta v0.124.3
+   Compiling cc v1.2.56
+   Compiling getrandom v0.4.2
+   Compiling regex-automata v0.4.14
+   Compiling serde_derive v1.0.228
+    Checking memchr v2.8.0
+    Checking serde v1.0.228
+    Checking itoa v1.0.17
+   Compiling rustix v1.1.4
+    Checking indexmap v2.13.0
+    Checking num-rational v0.4.2
+    Checking rand_core v0.9.5
+    Checking foldhash v0.1.5
+    Checking stable_deref_trait v1.2.1
+    Checking hashbrown v0.15.5
+    Checking errno v0.3.14
+    Checking getrandom v0.4.1
+    Checking crossbeam-deque v0.8.6
+    Checking crypto-common v0.1.7
+    Checking toml_datetime v0.6.11
+    Checking serde_spanned v0.6.9
+    Checking block-buffer v0.10.4
+    Checking num-iter v0.1.45
+   Compiling crc32fast v1.5.0
+    Checking allocator-api2 v0.2.21
+   Compiling regex v1.12.3
+    Checking num-complex v0.4.6
+    Checking option-ext v0.2.0
+    Checking tinyvec_macros v0.1.1
+   Compiling cranelift-bitset v0.124.3
+    Checking lazy_static v1.5.0
+    Checking pin-project-lite v0.2.16
+   Compiling libm v0.2.16
+    Checking toml_write v0.1.2
+   Compiling cranelift-isle v0.124.3
+    Checking linux-raw-sys v0.12.1
+    Checking bumpalo v3.20.2
+   Compiling bindgen v0.72.1
+    Checking winnow v0.7.14
+   Compiling hyper v1.8.1
+   Compiling typenum v1.19.0
+   Compiling target-lexicon v0.13.5
+   Compiling cranelift-codegen-shared v0.124.3
+   Compiling tokio-rustls v0.26.4
+   Compiling version_check v0.9.5
+   Compiling cranelift-assembler-x64 v0.124.3
+   Compiling tower v0.5.3
+    Checking gimli v0.32.3
+   Compiling generic-array v0.14.7
+   Compiling itoa v1.0.17
+   Compiling thiserror v2.0.18
+   Compiling pkg-config v0.3.32
+   Compiling io-lifetimes v2.0.4
+    Checking shatter-rust-runtime v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-rust-runtime)
+   Compiling hyper-util v0.1.20
+   Compiling synstructure v0.13.2
+   Compiling tower-http v0.6.8
+    Checking num v0.4.3
+    Checking wasmtime-internal-math v37.0.3
+    Checking sharded-slab v0.1.7
+    Checking dirs-sys v0.5.0
+    Checking ppv-lite86 v0.2.21
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 37.77s
+    Checking tinyvec v1.10.0
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+    Checking digest v0.10.7
+    Checking signal-hook-registry v1.4.8
+    Checking rayon-core v1.13.0
+    Checking getrandom v0.2.17
+    Checking rustc-hash v2.1.1
+   Compiling shatter-core v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core)
+   Compiling winnow v0.7.14
+    Checking zmij v1.0.21
+    Checking arbitrary v1.4.2
+    Checking rand_chacha v0.9.0
+    Checking tracing-log v0.2.0
+   Compiling thiserror v1.0.69
+   Compiling hyper-rustls v0.27.7
+    Checking bstr v1.12.1
+    Checking thread_local v1.1.9
+    Checking ryu v1.0.23
+   Compiling crossbeam-utils v0.8.21
+    Checking bytes v1.11.1
+    Checking leb128fmt v0.1.0
+    Checking toml_edit v0.22.27
+    Checking unsafe-libyaml v0.2.11
+    Checking nu-ansi-term v0.50.3
+    Checking either v1.15.0
+   Compiling object v0.37.3
+   Compiling serde_derive v1.0.228
+   Compiling zerofrom-derive v0.1.6
+   Compiling pulley-macros v37.0.3
+   Compiling reqwest v0.12.28
+    Checking fastrand v2.3.0
+   Compiling yoke-derive v0.8.1
+.
+----------------------------------------------------------------------
+Ran 1 test in 42.848s
+
+OK
+   Compiling wasmtime-internal-versioned-export-macros v37.0.3
+task: [meta] python3 -m unittest scripts.test_drift_patrol
+    Checking percent-encoding v2.3.2
+    Checking smallvec v1.15.1
+   Compiling zerovec-derive v0.11.2
+    Checking cpufeatures v0.2.17
+   Compiling pulley-interpreter v37.0.3
+    Checking sha2 v0.10.9
+..invalid --today value: nope
+.no checks selected
+........................................
+----------------------------------------------------------------------
+Ran 43 tests in 0.092s
+
+OK
+    Checking tracing-subscriber v0.3.23
+task: [meta] python3 -m unittest scripts.test_release_workflow
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+OK
+task: [meta] python3 -m unittest scripts.test_install_manifest
+    Checking tempfile v3.26.0
+   Compiling displaydoc v0.2.5
+    Checking askama v0.15.4
+...    Checking serde_yaml v0.9.34+deprecated
+.   Compiling thiserror-impl v2.0.18
+..
+----------------------------------------------------------------------
+Ran 6 tests in 0.515s
+
+OK
+task: [meta] python3 -m unittest scripts.test_package_npm_release
+   Compiling toml_parser v1.0.9+spec-1.1.0
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.055s
+
+OK
+shatter-npm-linux-x64.tgz
+shatter-npm-linux-arm64.tgz
+shatter-npm-darwin-x64.tgz
+shatter-npm-darwin-arm64.tgz
+shatter-npm-wrapper.tgz
+    Checking rayon v1.11.0
+task: [meta] python3 -m unittest scripts.test_retention_continuous_releases
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+OK
+task: [meta] bash scripts/test_cleanup_merged_remote_branches.sh
+    Checking cranelift-control v0.124.3
+    Checking globset v0.4.18
+   Compiling thiserror-impl v1.0.69
+    Checking toml v0.8.23
+    Checking thiserror v2.0.18
+[ok] cleanup-merged-remote-branches: origin/HEAD symref excluded, merged branch listed, unmerged branch absent
+    Checking tracing v0.1.44
+    Checking rand v0.9.2
+    Checking unicode-normalization v0.1.25
+    Checking serde_json v1.0.149
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+    Checking dirs v6.0.0
+   Compiling io-extras v0.18.4
+    Checking anyhow v1.0.102
+[ok] cleanup-merged-remote-branches: fourth protection layer (live per-branch bd re-check) blocks an in-progress/claimed branch at --execute time while still deleting a confirmed-safe one
+task: [meta] python3 -m unittest scripts.test_git_sandbox_test_lib
+    Checking zerofrom v0.1.6
+    Checking yoke v0.8.1
+    Checking uuid v1.22.0
+    Checking fs2 v0.4.3
+    Checking hostname v0.4.2
+    Checking hex v0.4.3
+    Checking zerovec v0.11.5
+   Compiling cranelift-codegen-meta v0.124.3
+..   Compiling wasmparser v0.239.0
+...
+----------------------------------------------------------------------
+Ran 5 tests in 1.026s
+
+OK
+task: [meta] python3 -m unittest scripts.test_walkthrough_examples_checkout
+.    Checking base64 v0.22.1
+..    Checking tinystr v0.8.2
+.Docs smoke gate — CLI binary: /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter
+
+Validating 4 doc(s)...
+
+Running 6 smoke command(s)...
+
+Docs smoke gate passed.
+.    Checking cobs v0.3.0
+..    Checking semver v1.0.27
+....   Compiling z3-sys v0.10.7
+...
+----------------------------------------------------------------------
+Ran 14 tests in 2.497s
+
+OK
+task: [meta] python3 -m unittest scripts.test_affected_gates
+...   Compiling zstd-safe v7.2.4
+    Checking litemap v0.8.1
+   Compiling cap-primitives v3.4.5
+    Checking ambient-authority v0.0.2
+   Compiling cpp_demangle v0.4.5
+   Compiling wasm-encoder v0.239.0
+..    Checking writeable v0.6.2
+........    Checking smallvec v1.15.1
+.   Compiling zerocopy v0.8.40
+.
+----------------------------------------------------------------------
+Ran 15 tests in 3.328s
+
+OK
+    Checking regalloc2 v0.13.5
+task: [meta] python3 -m unittest scripts.test_gate_receipt
+    Checking icu_locale_core v2.1.1
+    Checking cranelift-entity v0.124.3
+    Checking cranelift-bforest v0.124.3
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.11
+    Checking postcard v1.1.3
+....   Compiling cranelift-codegen v0.124.3
+.    Checking z3 v0.19.10
+.    Checking crossbeam-epoch v0.9.18
+..    Checking potential_utf v0.1.4
+.    Checking zerotrie v0.2.3
+    Checking fs-set-times v0.20.3
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking rustix-linux-procfs v0.1.1
+   Compiling ring v0.17.14
+   Compiling ittapi-sys v0.4.0
+   Compiling id-arena v2.3.0
+   Compiling autocfg v1.5.0
+   Compiling unicode-xid v0.2.6
+    Checking termcolor v1.4.1
+.    Checking toml_write v0.1.2
+.   Compiling leb128 v0.2.5
+    Checking maybe-owned v0.3.4
+   Compiling wasmtime-internal-unwinder v37.0.3
+   Compiling rayon-core v1.13.0
+   Compiling icu_normalizer_data v2.1.1
+.    Checking either v1.15.0
+    Checking ipnet v2.12.0
+   Compiling icu_properties_data v2.1.2
+.....   Compiling wast v35.0.2
+    Checking toml_edit v0.22.27
+...   Compiling num-traits v0.2.19
+    Checking wasmprinter v0.239.0
+    Checking digest v0.10.7
+    Checking icu_provider v2.1.1
+    Checking icu_collections v2.1.1
+    Checking crossbeam-deque v0.8.6
+    Checking uuid v1.21.0
+   Compiling wasmtime-internal-jit-debug v37.0.3
+   Compiling wasmtime-internal-fiber v37.0.3
+    Checking wasm-encoder v0.245.1
+    Checking dirs-sys-next v0.1.2
+    Checking tracing-core v0.1.36
+   Compiling wit-parser v0.239.0
+    Checking bytes v1.11.1
+.    Checking zeroize v1.8.2
+.   Compiling wasmtime-internal-component-macro v37.0.3
+.    Checking wasmtime-internal-component-util v37.0.3
+    Checking unicode-width v0.2.2
+    Checking rustc-demangle v0.1.27
+   Compiling cap-std v3.4.5
+   Compiling wasmtime-internal-cache v37.0.3
+    Checking byteorder v1.5.0
+    Checking cpufeatures v0.2.17
+.    Checking sha2 v0.10.9
+    Checking wasmtime-environ v37.0.3
+    Checking fxhash v0.2.1
+    Checking wast v245.0.1
+   Compiling proc-macro-utils v0.10.0
+.    Checking rustls-pki-types v1.14.0
+..    Checking ppv-lite86 v0.2.21
+    Checking directories-next v2.0.0
+   Compiling witx v0.9.1
+    Checking debugid v0.8.0
+    Checking toml v0.8.23
+.   Compiling wasmtime-internal-wit-bindgen v37.0.3
+.    Checking zstd v0.13.3
+.    Checking itertools v0.14.0
+   Compiling wasmtime v37.0.3
+   Compiling tracing-attributes v0.1.31
+    Checking rand_core v0.6.4
+.   Compiling serde_spanned v1.0.4
+    Checking wasmtime-internal-asm-macros v37.0.3
+   Compiling rustix v0.38.44
+   Compiling cbindgen v0.29.2
+.
+----------------------------------------------------------------------
+Ran 32 tests in 37.987s
+
+OK
+task: [meta] python3 -m unittest scripts.test_precompletion_bootstrap
+    Checking pin-project-lite v0.2.17
+   Compiling httparse v1.10.1
+   Compiling wiggle-macro v37.0.3
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.004s
+
+OK
+task: [meta] bash scripts/test_demo_cache_modes.sh
+[test] warm defaults use stable HOME fallback and preserve host caches
+   Compiling fastrand v2.3.0
+    Checking untrusted v0.9.0
+    Checking tracing v0.1.44
+   Compiling tempfile v3.26.0
+    Checking wat v1.245.1
+[test] a completed warm gauntlet clears only an isolated per-run cache
+    Checking rand_chacha v0.3.1
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling wiggle-generate v37.0.3
+    Checking icu_normalizer v2.1.1
+    Checking icu_properties v2.1.2
+    Checking ittapi v0.4.0
+    Checking rayon v1.11.0
+    Checking fxprof-processed-profile v0.6.0
+   Compiling manyhow-macros v0.11.4
+   Compiling toml_edit v0.23.10+spec-1.0.0
+    Checking addr2line v0.25.1
+   Compiling async-trait v0.1.89
+    Checking memfd v0.6.5
+    Checking wasmtime-internal-jit-icache-coherence v37.0.3
+    Checking encoding_rs v0.8.35
+    Checking percent-encoding v2.3.2
+   Compiling system-interface v0.27.3
+    Checking wasmtime-internal-slab v37.0.3
+    Checking simd-adler32 v0.3.8
+    Checking adler2 v2.0.1
+   Compiling cap-fs-ext v3.4.5
+   Compiling rustls v0.23.37
+    Checking linux-raw-sys v0.4.15
+    Checking regex-syntax v0.8.10
+    Checking miniz_oxide v0.8.9
+   Compiling proc-macro-crate v3.4.0
+   Compiling manyhow v0.11.4
+    Checking rmp v0.8.15
+    Checking regex-automata v0.4.14
+    Checking idna_adapter v1.2.1
+   Compiling prost-derive v0.14.3
+    Checking rustls-webpki v0.103.9
+    Checking rand v0.8.5
+    Checking http v1.4.0
+    Checking lazy_static v1.5.0
+    Checking subtle v2.6.1
+    Checking utf8_iter v1.0.4
+    Checking iana-time-zone v0.1.65
+    Checking cap-time-ext v3.4.5
+    Checking idna v1.1.0
+    Checking sharded-slab v0.1.7
+    Checking ureq-proto v0.5.3
+    Checking matchers v0.2.0
+    Checking cap-rand v3.4.5
+    Checking rmp-serde v1.3.1
+   Compiling extism-convert-macros v1.13.0
+    Checking prost v0.14.3
+    Checking flate2 v1.1.9
+    Checking form_urlencoded v1.2.2
+    Checking webpki-roots v1.0.6
+    Checking tracing-log v0.2.0
+    Checking thread_local v1.1.9
+    Checking toml_writer v1.0.6+spec-1.1.0
+    Checking bytemuck v1.25.0
+    Checking nu-ansi-term v0.50.3
+    Checking utf-8 v0.7.6
+    Checking url v2.5.8
+    Checking extism-convert v1.13.0
+    Checking extism-manifest v1.13.0
+    Checking tracing-subscriber v0.3.22
+    Checking glob v0.3.3
+   Compiling extism v1.13.0
+    Checking ureq v3.2.0
+    Checking cranelift-native v0.124.3
+    Checking cranelift-frontend v0.124.3
+    Checking wasmtime-internal-cranelift v37.0.3
+[test] SHATTER_DEMO_CACHE supports spaces and warm paths override ambient cache variables
+[test] cold mode isolates and removes script-owned paths
+[test] cold cleanup preserves caller-owned Cargo, XDG, and Go caches
+[test] the warm-root lock serializes complete walkthrough and gauntlet processes
+[test] help and argument errors allocate nothing
+[test] perf and concurrency invocations isolate demo caches
+[ok] warm and cold demo cache ownership, cleanup, locking, and argument lifecycle
+task: [meta] python3 -m unittest scripts.test_root_cargo_phases
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13m 20s
+.
+----------------------------------------------------------------------
+Ran 1 test in 416.880s
+
+OK
+task: [meta] python3 -m unittest scripts.test_governed_task_graph
+.    Checking wiggle v37.0.3
+.    Checking wasi-common v37.0.3
+.....
+----------------------------------------------------------------------
+Ran 7 tests in 4.973s
+
+OK
+task: [meta] python3 -m unittest scripts.test_bench_frontier_report
+...................
+----------------------------------------------------------------------
+Ran 19 tests in 0.015s
+
+OK
+task: [meta] python3 -m unittest scripts.test_test_tier_wiring
+..............
+----------------------------------------------------------------------
+Ran 14 tests in 1.286s
+
+OK
+task: [meta] cd shatter-go-tool && go test ./...
+ok  	github.com/shatterproof-ai/shatter/go-tool/cmd/shatter	0.008s
+task: [meta] if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
+  actionlint
+else echo "[skip] actionlint not installed or no workflows"; fi
+
+task: [meta] cfg="${SEMGREP_CONFIG:-.semgrep/shatter.yml}"
+if [ -f "$cfg" ] && command -v semgrep >/dev/null 2>&1; then
+  semgrep --config "$cfg" .
+else echo "[skip] semgrep not installed or no config"; fi
+
+[skip] semgrep not installed or no config
+    Checking shatter-rust v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14m 48s
+    Checking mio v1.1.1
+    Checking smallvec v1.15.1
+    Checking zerofrom v0.1.6
+    Checking stable_deref_trait v1.2.1
+    Checking futures-core v0.3.32
+    Checking socket2 v0.6.2
+    Checking http v1.4.0
+    Checking percent-encoding v2.3.2
+    Checking slab v0.4.12
+    Checking yoke v0.8.1
+    Checking litemap v0.8.1
+    Checking writeable v0.6.2
+    Checking rustix v1.1.4
+    Checking zerovec v0.11.5
+    Checking zerotrie v0.2.3
+    Checking httparse v1.10.1
+    Checking tokio v1.49.0
+    Checking futures-task v0.3.32
+    Checking foreign-types-shared v0.1.1
+    Checking futures-sink v0.3.32
+    Checking zeroize v1.8.2
+    Checking foreign-types v0.3.2
+    Checking http-body v1.0.1
+    Checking rustls-pki-types v1.14.0
+    Checking futures-util v0.3.32
+    Checking openssl-sys v0.9.116
+    Checking icu_normalizer_data v2.1.1
+    Checking icu_properties_data v2.1.2
+    Checking base64 v0.22.1
+    Checking try-lock v0.2.5
+    Checking scopeguard v1.2.0
+    Checking tinystr v0.8.2
+    Checking potential_utf v0.1.4
+    Checking tower-service v0.3.3
+    Checking fnv v1.0.7
+    Checking icu_locale_core v2.1.1
+    Checking atomic-waker v1.1.2
+    Checking icu_collections v2.1.1
+    Checking openssl v0.10.80
+    Checking lock_api v0.4.14
+    Checking want v0.3.1
+    Checking futures-channel v0.3.32
+    Checking parking_lot_core v0.9.12
+    Checking signal-hook v0.3.18
+    Checking utf8parse v0.2.2
+    Checking pin-utils v0.1.0
+    Checking openssl-probe v0.2.1
+    Checking signal-hook-mio v0.2.5
+    Checking parking_lot v0.12.5
+    Checking anstyle-parse v0.2.7
+    Checking derive_more v2.1.1
+    Checking icu_provider v2.1.1
+    Checking sync_wrapper v1.0.2
+    Checking form_urlencoded v1.2.2
+    Checking getrandom v0.2.17
+    Checking utf8_iter v1.0.4
+    Checking icu_normalizer v2.1.1
+    Checking icu_properties v2.1.2
+    Checking is_terminal_polyfill v1.70.2
+    Checking untrusted v0.9.0
+    Checking ipnet v2.11.0
+    Checking anstyle-query v1.1.5
+    Checking colorchoice v1.0.4
+    Checking anstyle v1.0.13
+    Checking tower-layer v0.3.3
+    Checking crossterm v0.29.0
+    Checking z3-sys v0.10.7
+    Checking anstream v0.6.21
+    Checking ring v0.17.14
+    Checking http-body-util v0.1.3
+    Checking simd-adler32 v0.3.8
+    Checking adler2 v2.0.1
+    Checking idna_adapter v1.2.1
+    Checking iri-string v0.7.10
+    Checking miniz_oxide v0.8.9
+    Checking idna v1.1.0
+    Checking tracing-subscriber v0.3.23
+    Checking tempfile v3.26.0
+    Checking z3 v0.19.10
+   Compiling shatter-core v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core)
+    Checking url v2.5.8
+    Checking askama v0.15.4
+    Checking crc32fast v1.5.0
+    Checking rustls-webpki v0.103.9
+    Checking native-tls v0.2.18
+    Checking tokio-util v0.7.18
+    Checking tower v0.5.3
+    Checking serde_urlencoded v0.7.1
+    Checking crossbeam-channel v0.5.15
+    Checking crossbeam-queue v0.3.12
+    Checking encoding_rs v0.8.35
+    Checking strsim v0.11.1
+    Checking tokio-native-tls v0.3.1
+    Checking mime v0.3.17
+    Checking tower-http v0.6.8
+    Checking h2 v0.4.14
+    Checking clap_lex v1.0.0
+    Checking strict v0.2.0
+    Checking subtle v2.6.1
+    Checking crokey v1.4.0
+    Checking rustls v0.23.37
+    Checking lazy-regex v3.6.0
+    Checking flate2 v1.1.9
+    Checking crossbeam v0.8.4
+    Checking clap_builder v4.5.60
+    Checking coolor v1.1.0
+    Checking ureq-proto v0.6.0
+    Checking webpki-roots v1.0.6
+    Checking env_filter v1.0.0
+    Checking minimad v0.14.0
+    Checking jiff v0.2.23
+   Compiling shatter-cli v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-cli)
+    Checking utf8-zero v0.8.1
+    Checking unicode-width v0.1.14
+    Checking termimad v0.34.1
+    Checking clap v4.5.60
+    Checking hyper v1.8.1
+    Checking ureq v3.3.0
+    Checking hyper-util v0.1.20
+    Checking env_logger v0.11.9
+    Checking hyper-tls v0.6.0
+    Checking reqwest v0.12.28
+    Checking shatter-llm v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-llm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22m 01s
+task: Task "rust-rt:test" is up to date
+task: Task "ts:install" is up to date
+task: [ts:build] npm run build
+task: Task "go:vet" is up to date
+task: Task "go:test" is up to date
+
+> shatter-ts@0.1.0 build
+> tsc
+
+task: Task "ts:test" is up to date
+task: Task "cli:test" is up to date
+task: Task "rust-fe:test" is up to date
+task: [go:build] go build -buildvcs=false ./...
+task: [go:build] go build -buildvcs=false -o bin/shatter-go .
+task: Task "core:test-ignored" is up to date
+task: [conformance] bash scripts/gate-wrapper.sh conformance task conformance-governed
+task: Task "rust-fe:build" is up to date
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+task: Task "go:build" is up to date
+task: [conformance-governed] python3 protocol/conformance/conformance_harness.py
+
+Protocol Conformance Testing
+========================================
+
+Spawning frontends:
+  OK noop
+  OK typescript
+  OK go
+  OK rust
+
+Running 18 conformance cases against 4 frontends:
+
+  [handshake]
+    noop: OK (status=handshake)
+    typescript: OK (status=handshake)
+    go: OK (status=handshake)
+    rust: OK (status=handshake)
+    cross-check: OK structures match
+
+  [analyze_missing_file]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [setup_session]
+    noop: OK (status=setup)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [teardown_session]
+    noop: OK (status=teardown_ack)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=teardown_ack)
+    cross-check: OK structures match
+
+  [generate_value]
+    noop: OK (status=generate)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [prepare_supported_rust]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=prepare)
+    cross-check: SKIP only 1 frontend responded
+
+  [execute_with_invalid_prepare_id]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=error)
+    cross-check: SKIP only 1 frontend responded
+
+  [unsupported_command_returns_invalid_request]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [version_mismatch_rejected]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [analyze_missing_file_precedes_missing_function]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [execute_outcome_shape_go]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=error)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [execute_outcome_shape_ts]
+    noop: SKIP (not in case allowlist)
+    typescript: OK (status=execute)
+    go: SKIP (not in case allowlist)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [execute_outcome_shape_rust]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=execute)
+    cross-check: SKIP only 1 frontend responded
+
+  [adapter_http_nethttp_go_analyze]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=analyze)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [adapter_http_nethttp_ts_rust_reject]
+    noop: SKIP (not in case allowlist)
+    typescript: OK (status=error)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [analyze_runtime_value_go]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=analyze)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [planner_runtime_value_go]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=invocation_plan)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [shutdown]
+    noop: OK (status=shutdown_ack)
+    typescript: OK (status=shutdown_ack)
+    go: OK (status=shutdown_ack)
+    rust: OK (status=shutdown_ack)
+    cross-check: OK structures match
+
+========================================
+Tested 4 frontends x 18 cases = 42 checks
+All checks passed.
+task: Task "parity" is up to date
+### gate=check exit=0 wall=2472s end=2026-09-22T12:48:53-05:00 load=115.34 146.37 134.16

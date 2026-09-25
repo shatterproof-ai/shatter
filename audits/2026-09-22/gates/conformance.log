@@ -1,0 +1,149 @@
+### gate=conformance cmd=task --force conformance start=2026-09-22T13:53:45-05:00 load=8.88 17.19 37.28
+task: [conformance] bash scripts/gate-wrapper.sh conformance task conformance-governed
+task: Task "rust-fe:build" is up to date
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+task: Task "go:build" is up to date
+task: [conformance-governed] python3 protocol/conformance/conformance_harness.py
+
+Protocol Conformance Testing
+========================================
+
+Spawning frontends:
+  OK noop
+  OK typescript
+  OK go
+  OK rust
+
+Running 18 conformance cases against 4 frontends:
+
+  [handshake]
+    noop: OK (status=handshake)
+    typescript: OK (status=handshake)
+    go: OK (status=handshake)
+    rust: OK (status=handshake)
+    cross-check: OK structures match
+
+  [analyze_missing_file]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [setup_session]
+    noop: OK (status=setup)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [teardown_session]
+    noop: OK (status=teardown_ack)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=teardown_ack)
+    cross-check: OK structures match
+
+  [generate_value]
+    noop: OK (status=generate)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [prepare_supported_rust]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=prepare)
+    cross-check: SKIP only 1 frontend responded
+
+  [execute_with_invalid_prepare_id]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=error)
+    cross-check: SKIP only 1 frontend responded
+
+  [unsupported_command_returns_invalid_request]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [version_mismatch_rejected]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [analyze_missing_file_precedes_missing_function]
+    noop: SKIP (excluded from case)
+    typescript: OK (status=error)
+    go: OK (status=error)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [execute_outcome_shape_go]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=error)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [execute_outcome_shape_ts]
+    noop: SKIP (not in case allowlist)
+    typescript: OK (status=execute)
+    go: SKIP (not in case allowlist)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [execute_outcome_shape_rust]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=execute)
+    cross-check: SKIP only 1 frontend responded
+
+  [adapter_http_nethttp_go_analyze]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=analyze)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [adapter_http_nethttp_ts_rust_reject]
+    noop: SKIP (not in case allowlist)
+    typescript: OK (status=error)
+    go: SKIP (not in case allowlist)
+    rust: OK (status=error)
+    cross-check: OK structures match
+
+  [analyze_runtime_value_go]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=analyze)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [planner_runtime_value_go]
+    noop: SKIP (not in case allowlist)
+    typescript: SKIP (not in case allowlist)
+    go: OK (status=invocation_plan)
+    rust: SKIP (not in case allowlist)
+    cross-check: SKIP only 1 frontend responded
+
+  [shutdown]
+    noop: OK (status=shutdown_ack)
+    typescript: OK (status=shutdown_ack)
+    go: OK (status=shutdown_ack)
+    rust: OK (status=shutdown_ack)
+    cross-check: OK structures match
+
+========================================
+Tested 4 frontends x 18 cases = 42 checks
+All checks passed.
+### gate=conformance exit=0 wall=6s end=2026-09-22T13:53:51-05:00 load=8.57 16.99 37.11

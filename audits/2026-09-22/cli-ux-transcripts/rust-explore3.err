@@ -1,0 +1,13 @@
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[progress] starting 2/3: compute_stats
+[progress] starting 1/3: safe_divide
+[progress] starting 3/3: main
+[progress] completed 1/3: main (12.3s)
+[batch 1/3] main: 100 iters, 1 paths, 1/2 branches, 12.3s (ok) | active: 2 (safe_divide, compute_stats)
+[progress] completed 2/3: safe_divide (12.6s)
+[batch 2/3] safe_divide: 100 iters, 2 paths, 2/2 branches, 12.6s (ok) | active: 1 (compute_stats)
+[progress] completed 3/3: compute_stats (12.6s)
+[batch 3/3] compute_stats: 100 iters, 17 paths, 6/6 branches, 12.7s (ok)
+[info] Wrote explore artifact for safe_divide -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/rs/shatter-artifacts/explore-results/04_errors.rs/00006_safe_divide.json
+[info] Wrote explore artifact for compute_stats -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/rs/shatter-artifacts/explore-results/04_errors.rs/00025_compute_stats.json
+[info] Wrote explore artifact for main -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/rs/shatter-artifacts/explore-results/04_errors.rs/00056_main.json

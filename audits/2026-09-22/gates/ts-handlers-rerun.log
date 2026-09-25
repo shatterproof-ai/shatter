@@ -1,0 +1,121 @@
+### gate=ts-handlers-rerun cmd=bash -c cd /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts && SHATTER_EXAMPLES_DIR=/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples npx jest --runInBand src/handlers.test.ts start=2026-09-22T13:43:26-05:00 load=31.20 35.55 56.58
+PASS src/handlers.test.ts (25.723 s)
+  parseRequest
+    ✓ rejects non-JSON input (2 ms)
+    ✓ rejects non-object JSON
+    ✓ rejects request without id (1 ms)
+    ✓ rejects request without protocol_version
+    ✓ rejects request without command
+    ✓ rejects unknown command (1 ms)
+    ✓ accepts valid handshake request
+    ✓ accepts valid shutdown request
+    ✓ accepts valid setup request with level and scope
+    ✓ accepts valid teardown request with level and scope (1 ms)
+    ✓ accepts valid generate request
+  handleRequest
+    handshake
+      ✓ responds with frontend version and capabilities (1 ms)
+      ✓ does not emit timing unless the core requests it (1 ms)
+      ✓ enables timing emission when the core advertises timing capability
+    version mismatch
+      ✓ returns error for incompatible protocol version
+      ✓ accepts matching major.minor with different patch
+    analyze
+      ✓ returns file_not_found error for missing file
+      ✓ emits timing when timing capability was requested in handshake (869 ms)
+      ✓ returns function_not_found error for missing function in existing file (852 ms)
+      ✓ returns function analysis for existing file and function (826 ms)
+      ✓ returns all functions when no function name specified (652 ms)
+    instrument
+      ✓ returns file_not_found error for missing file
+      ✓ returns instrumentation_failed for missing function (1 ms)
+      ✓ instruments a real function successfully (13 ms)
+    prepare
+      ✓ returns instrumentation_failed when instrument has not been called first
+      ✓ returns prepare_id after instrument (49 ms)
+      ✓ is idempotent: same inputs return same prepare_id (12 ms)
+      ✓ execute with valid prepare_id returns correct result (14 ms)
+      ✓ execute with stale prepare_id falls through to non-prepared execution (11 ms)
+      ✓ invalidates stale target when mocks change (18 ms)
+      ✓ prepare succeeds for a .tsx file with JSX and interface types (str-jeen.68) (43 ms)
+    execute
+      ✓ returns error when function cannot be resolved (16 ms)
+      ✓ executes a real function after analyze (756 ms)
+      ✓ executes via file:function format with relative path (9 ms)
+      ✓ executes after analyze with relative path (590 ms)
+      ✓ executes instrumented code with relative path (18 ms)
+      ✓ fails explicitly when execution_profile requests an unsupported adapter (927 ms)
+      ✓ resolves tsconfig path aliases when execution_profile enables the adapter (1115 ms)
+    invocation adapter hooks
+      ✓ populates cachedAnalyses on analyze and clears on clearInstrumentedSources (926 ms)
+      ✓ routes through the adapter hook when invocation_model is adapter-owned (613 ms)
+      ✓ uses the direct path when invocation_model is { kind: 'direct' } (569 ms)
+      ✓ returns not_supported when adapter_id has no matching hook (676 ms)
+      ✓ clears cachedAnalyses on shutdown (604 ms)
+    async function execution
+      ✓ executes async function and returns resolved value (1285 ms)
+      ✓ executes async function that rejects and captures thrown_error (942 ms)
+    shutdown
+      ✓ returns shutdown_ack and signals shutdown (90 ms)
+    setup
+      ✓ loads setup file and returns setup_context with function level (12 ms)
+      ✓ works with execution level (16 ms)
+      ✓ works with session level (6 ms)
+      ✓ passes parent_context to setup function (6 ms)
+      ✓ maintains separate context caches per level (5 ms)
+      ✓ returns file_not_found for missing setup file (1 ms)
+      ✓ returns error when setup export is missing (12 ms)
+      ✓ fails explicitly when execution_profile requests an unsupported setup adapter
+    teardown
+      ✓ tears down after a successful setup (9 ms)
+      ✓ returns error when no setup context exists
+      ✓ returns error when setup file has no teardown export (10 ms)
+    generate
+      ✓ generates a value for type_name kind (7 ms)
+      ✓ generates a value for param_name kind (8 ms)
+      ✓ generates a numeric value (5 ms)
+      ✓ returns file_not_found for missing generator file
+      ✓ returns error when generator export is missing (11 ms)
+    capabilities
+      ✓ includes setup, teardown, and generate in capabilities (2 ms)
+    memory management
+      ✓ teardown clears instrumented sources and module cache (1717 ms)
+      ✓ shutdown clears instrumented sources and module cache (62 ms)
+      ✓ shutdown clears prepared keys and targets (385 ms)
+    response format conformance
+      ✓ all responses include protocol_version and id (13 ms)
+    startup staging
+      ✓ handshake triggers background preloads; wasm-generator is excluded (1287 ms)
+      ✓ execute works after preload-triggered loading (951 ms)
+      ✓ instrument works after preload-triggered loading (877 ms)
+    environment preflight (str-jeen.26)
+      ✓ reports a single preflight failure when node_modules is absent (6 ms)
+      ✓ short-circuits subsequent analyze/instrument/prepare/execute/setup with the cached failure (4 ms)
+      ✓ passes preflight when node_modules is present (analyze proceeds) (1134 ms)
+      ✓ does not run preflight when project_root is omitted (996 ms)
+    missing browser global classification (str-jeen.30)
+      ✓ returns not_supported with unsupported_missing_global prefix when window is referenced (833 ms)
+      ✓ returns not_supported when document is referenced (445 ms)
+      ✓ returns not_supported when localStorage is referenced (486 ms)
+  protocol round-trip
+    ✓ handshake response deserializes from noop-frontend format (1 ms)
+    ✓ handshake response serializes to valid JSON (1 ms)
+    ✓ error response matches protocol schema
+    ✓ shutdown_ack response matches protocol schema (6 ms)
+    ✓ setup response round-trips through JSON
+    ✓ teardown_ack response round-trips through JSON (1 ms)
+    ✓ generate response round-trips through JSON
+    ✓ generate response with primitive value round-trips
+    ✓ generate response with recipe round-trips through JSON
+    ✓ SetupRequest with level and parent_context round-trips through JSON (1 ms)
+    ✓ TeardownRequest with level round-trips through JSON
+    ✓ SetupContextStack round-trips through JSON (1 ms)
+    ✓ execute response with scope_events round-trips through JSON (1 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       90 passed, 90 total
+Snapshots:   0 total
+Time:        26.11 s, estimated 680 s
+Ran all test suites matching /src\/handlers.test.ts/i.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?
+### gate=ts-handlers-rerun exit=0 wall=28s end=2026-09-22T13:43:54-05:00 load=29.35 34.66 55.72

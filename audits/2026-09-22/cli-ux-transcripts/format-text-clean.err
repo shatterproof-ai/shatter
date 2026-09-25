@@ -1,0 +1,5 @@
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[progress] starting 1/1: markup
+[progress] completed 1/1: markup (20.5s)
+[batch 1/1] markup: 100 iters, 2 paths, 1/1 branches, 21.6s (ok)
+[info] Wrote explore artifact for markup -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/shatter-artifacts/explore-results/markup.ts/00001_markup.json

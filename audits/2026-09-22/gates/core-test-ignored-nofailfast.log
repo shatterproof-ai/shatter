@@ -1,0 +1,58 @@
+### gate=core-test-ignored-nofailfast cmd=bash -c cd /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core && SHATTER_EXAMPLES_DIR=/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples SHATTER_GO_FRONTEND_BIN=/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-go/bin/shatter-go bash ../scripts/gate-wrapper.sh core:test-ignored cargo nextest run -p shatter-core --run-ignored all --no-fail-fast start=2026-09-22T13:26:36-05:00 load=52.80 61.16 87.43
+run-heavy: load 52.80 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 69.38 > 48 (nproc=32 × 1.5); waiting 30s
+run-heavy: load 64.47 > 48 (nproc=32 × 1.5); waiting 30s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+────────────
+ Nextest run ID 789db123-c350-4916-9a30-a039708100b0 with nextest profile: default
+    Starting 3531 tests across 17 binaries
+ TERMINATING [>120.000s] (─────────) shatter-core::bench_frontier_ranking bench_frontier_ranking
+     TIMEOUT [ 120.025s] (3446/3531) shatter-core::bench_frontier_ranking bench_frontier_ranking
+  stdout ───
+
+    running 1 test
+    test bench_frontier_ranking has been running for over 60 seconds
+  stderr ───
+    ts/01-arithmetic/classifyNumber seed=1 executions heuristic: 60 exec, 2866 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=1 executions random: 60 exec, 3552 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=1 executions cheating: 60 exec, 3199 ms, 4/4 expected, 6/6 sides
+    skip generative: ANTHROPIC_API_KEY unset
+    skip jev: TYPESAFE_API_KEY unset and no replay cache at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core/../benchmarks/frontier-ranking/jev-replay
+    ts/01-arithmetic/classifyNumber seed=2 executions heuristic: 60 exec, 2845 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=2 executions random: 60 exec, 2923 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=2 executions cheating: 60 exec, 4044 ms, 4/4 expected, 6/6 sides
+    skip generative: ANTHROPIC_API_KEY unset
+    skip jev: TYPESAFE_API_KEY unset and no replay cache at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core/../benchmarks/frontier-ranking/jev-replay
+    ts/01-arithmetic/classifyNumber seed=3 executions heuristic: 60 exec, 2350 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=3 executions random: 60 exec, 2793 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=3 executions cheating: 60 exec, 4914 ms, 4/4 expected, 6/6 sides
+    skip generative: ANTHROPIC_API_KEY unset
+    skip jev: TYPESAFE_API_KEY unset and no replay cache at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core/../benchmarks/frontier-ranking/jev-replay
+    ts/01-arithmetic/classifyNumber seed=4 executions heuristic: 60 exec, 3092 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=4 executions random: 60 exec, 3634 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=4 executions cheating: 60 exec, 3454 ms, 4/4 expected, 6/6 sides
+    skip generative: ANTHROPIC_API_KEY unset
+    skip jev: TYPESAFE_API_KEY unset and no replay cache at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core/../benchmarks/frontier-ranking/jev-replay
+    ts/01-arithmetic/classifyNumber seed=5 executions heuristic: 60 exec, 4299 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=5 executions random: 60 exec, 2634 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=5 executions cheating: 60 exec, 2547 ms, 4/4 expected, 6/6 sides
+    skip generative: ANTHROPIC_API_KEY unset
+    skip jev: TYPESAFE_API_KEY unset and no replay cache at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core/../benchmarks/frontier-ranking/jev-replay
+    ts/01-arithmetic/classifyNumber seed=6 executions heuristic: 60 exec, 4367 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=6 executions random: 60 exec, 2787 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=6 executions cheating: 60 exec, 3194 ms, 4/4 expected, 6/6 sides
+    skip generative: ANTHROPIC_API_KEY unset
+    skip jev: TYPESAFE_API_KEY unset and no replay cache at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core/../benchmarks/frontier-ranking/jev-replay
+    ts/01-arithmetic/classifyNumber seed=7 executions heuristic: 60 exec, 3830 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=7 executions random: 60 exec, 2398 ms, 4/4 expected, 6/6 sides
+    ts/01-arithmetic/classifyNumber seed=7 executions cheating: 60 exec, 3188 ms, 4/4 expected, 6/6 sides
+    skip generative: ANTHROPIC_API_KEY unset
+    skip jev: TYPESAFE_API_KEY unset and no replay cache at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core/../benchmarks/frontier-ranking/jev-replay
+
+    (test timed out)
+
+────────────
+     Summary [ 381.804s] 3531 tests run: 3530 passed, 1 timed out, 0 skipped
+     TIMEOUT [ 120.025s] (3446/3531) shatter-core::bench_frontier_ranking bench_frontier_ranking
+error: test run failed
+### gate=core-test-ignored-nofailfast exit=100 wall=493s end=2026-09-22T13:34:49-05:00 load=63.29 55.74 73.62

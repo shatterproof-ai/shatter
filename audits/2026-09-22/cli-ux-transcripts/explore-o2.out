@@ -1,0 +1,59 @@
+# Shatter Explore
+
+## `classifyNumber` *(01-arithmetic.ts:10-21)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+
+## `compareMagnitudes` *(01-arithmetic.ts:31-45)*
+
+**2 path(s)** · **100%** coverage (9/9 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `compareMagnitudes(-121, -511)` | returns `"product-large"` |
+| 2 | `compareMagnitudes(959, 291)` | returns `"both-large"` |
+
+
+---
+
+**Summary:** 6 path(s) across 2 function(s) · **100%** coverage (16/16 lines)
+## classifyNumber
+
+**Status:** `completed`
+
+exploration completed
+
+## `classifyNumber` *(01-arithmetic.ts:10-21)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+
+---
+
+## compareMagnitudes
+
+**Status:** `completed`
+
+exploration completed
+
+## `compareMagnitudes` *(01-arithmetic.ts:31-45)*
+
+**2 path(s)** · **100%** coverage (9/9 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `compareMagnitudes(-121, -511)` | returns `"product-large"` |
+| 2 | `compareMagnitudes(959, 291)` | returns `"both-large"` |

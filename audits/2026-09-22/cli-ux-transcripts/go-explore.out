@@ -1,0 +1,33 @@
+  Created  .shatter/
+  Created  .shatter/config.yaml  (detected language: unknown)
+  Created  .gitignore  (4 generated path(s) ignored)
+Initialized Shatter project at /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/goproj
+# Shatter Explore
+
+## `SafeDivide` *(04-errors.go:22-30)*
+
+**3 path(s)** · **100%** coverage (5/5 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `SafeDivide(0, 0)` | throws `function_error: division by zero` |
+| 2 | `SafeDivide(0, 1)` | returns `0` |
+| 3 | `SafeDivide(1, 1)` | returns `1` |
+
+## `ClassifyAge` *(04-errors.go:33-50)*
+
+**6 path(s)** · **100%** coverage (11/11 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `ClassifyAge(0)` | returns `"newborn"` |
+| 2 | `ClassifyAge(-1)` | throws `function_error: negative age: -1` |
+| 3 | `ClassifyAge(1)` | returns `"child"` |
+| 4 | `ClassifyAge(13)` | returns `"teenager"` |
+| 5 | `ClassifyAge(18)` | returns `"adult"` |
+| 6 | `ClassifyAge(65)` | returns `"senior"` |
+
+
+---
+
+**Summary:** 9 path(s) across 2 function(s) · **100%** coverage (16/16 lines)

@@ -1,0 +1,137 @@
+### gate=e2e cmd=task e2e start=2026-09-22T13:44:05-05:00 load=25.53 33.67 55.17
+task: [e2e] bash scripts/gate-wrapper.sh e2e task e2e-governed
+task: [rust-fe:build] cargo build
+task: Task "go:build" is up to date
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.57s
+task: [e2e-ts] bash scripts/gate-wrapper.sh e2e-ts task e2e-ts-governed
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+task: Task "go:build" is up to date
+task: [e2e-ts-governed] examples_root="$(python3 scripts/examples_checkout.py)"
+export SHATTER_EXAMPLES_DIR="$examples_root"
+export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
+cargo test --test e2e_concolic -- --include-ignored
+
+   Compiling tokio v1.49.0
+   Compiling futures-channel v0.3.32
+   Compiling futures-macro v0.3.32
+   Compiling aho-corasick v1.1.4
+   Compiling httpdate v1.0.3
+   Compiling serde_json v1.0.149
+   Compiling bstr v1.12.1
+   Compiling futures-util v0.3.32
+   Compiling regex-automata v0.4.14
+   Compiling regex v1.12.3
+   Compiling globset v0.4.18
+   Compiling tokio-util v0.7.18
+   Compiling tower v0.5.3
+   Compiling tokio-native-tls v0.3.1
+   Compiling shatter-core v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core)
+   Compiling tower-http v0.6.8
+   Compiling h2 v0.4.14
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-tls v0.6.0
+   Compiling reqwest v0.12.28
+   Compiling shatter-llm v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-llm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.94s
+     Running tests/e2e_concolic.rs (target/debug/deps/e2e_concolic-1f9964aafeaae841)
+
+running 26 tests
+test adapter_owned_react_execution_reports_coverage ... ok
+test concolic_classifynumber_discovers_all_branches ... ok
+test concolic_comparemagnitudes_discovers_compound_branches ... ok
+test concolic_invokecallback_materializes_callable_closure_param ... ok
+test concolic_computestats_materializes_iterable_array_param ... ok
+test concolic_matches_random_line_totals_and_keeps_inputs ... ok
+test concolic_mock_result_branches_discovered ... ok
+test concolic_mock_loop_branches_discovered ... ok
+test concolic_mock_status_branches_discovered ... ok
+test concolic_safedivide_discovers_error_paths ... ok
+test concolic_tsconfig_at_alias_executes ... ok
+test e2e_ts_enum_value_domain_reaches_all_arms ... ok
+test e2e_ts_opaque_param_stub_registry_explores_both_branches ... ok
+test concolic_validateemail_with_literal_seeds ... ok
+test concolic_validateemail_discovers_string_paths ... ok
+test explorer_explore_function_with_setup ... ok
+test genetic_opaque_predicate_runs_and_produces_result ... ok
+test mcdc_compound_and_discovers_all_branches_and_reports_summary ... ok
+test mcdc_compound_or_discovers_all_branches ... ok
+test setup_failure_skips_dependents ... ok
+test setup_file_level_scoped_per_file ... ok
+test orchestrator_explore_with_setup_context ... ok
+test setup_teardown_runs_in_reverse_order ... ok
+test setup_session_context_flows_to_execute ... ok
+test go_method_planner_driven_e2e ... ok
+test go_method_planner_driven_via_orchestrator ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.48s
+
+task: [e2e-go] bash scripts/gate-wrapper.sh e2e-go task e2e-go-governed
+task: Task "go:build" is up to date
+task: [e2e-go-governed] examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+export SHATTER_EXAMPLES_DIR="$examples_root"
+export SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go"
+cargo test --test e2e_concolic_go -- --include-ignored
+
+   Compiling shatter-core v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.21s
+     Running tests/e2e_concolic_go.rs (target/debug/deps/e2e_concolic_go-e852951f23a6c214)
+
+running 23 tests
+test e2e_go_configured_receiver_recipe_executes_seeded_backend ... ok
+test e2e_go_enum_planner_seeds_include_constants ... ok
+test e2e_go_categorize_ite_in_branch_condition ... ok
+test e2e_go_classify_number_discovers_all_branches ... ok
+test e2e_go_duration_param_categorize ... ok
+test e2e_go_enum_value_domain_random_explorer_reaches_valid_arms ... ok
+test e2e_go_error_param_classify ... ok
+test e2e_go_enum_value_domain_reaches_all_arms ... ok
+test e2e_go_error_sentinel_discovers_all_arms ... ok
+test e2e_go_filters_main_entrypoints_from_scan ... ok
+test e2e_go_instrumentable_line_count_matches_probed_lines ... ok
+test e2e_go_http_request_symbolic_body_discovers_body_branches ... ok
+test e2e_go_main_run_error_return_is_observed_and_never_void ... ok
+test e2e_go_http_handler_adapter_reports_coverage ... ok
+test e2e_go_pointer_zero_receiver_no_unknown_receiver_kind ... ok
+test e2e_go_mock_substitution_reaches_mock_only_branches ... ok
+test e2e_go_random_explorer_threads_default_execute_plan ... ok
+test e2e_go_primitive_constructor_prefix_decodes ... ok
+test e2e_go_service_compute_discovers_branches ... ok
+test e2e_go_schema_synthesis_reaches_structured_decode_branches_without_seeds ... ok
+test e2e_go_seed_pool_reaches_structured_decode_branches ... ok
+test e2e_go_value_zero_receiver_no_unknown_receiver_kind ... ok
+test e2e_go_variadic_sum_discovers_branches ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 92.97s
+
+task: [e2e-rust] bash scripts/gate-wrapper.sh e2e-rust task e2e-rust-governed
+task: Task "rust-fe:build" is up to date
+task: [e2e-rust-governed] examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+export SHATTER_EXAMPLES_DIR="$examples_root"
+cargo test --test e2e_concolic_rust -- --include-ignored
+
+   Compiling shatter-core v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.44s
+     Running tests/e2e_concolic_rust.rs (target/debug/deps/e2e_concolic_rust-b9d6e7724c231237)
+
+running 13 tests
+test e2e_rust_classify_option_discovers_enum_branches ... ok
+test e2e_rust_classify_float_discovers_nested_branches ... ok
+test e2e_rust_crate_bridge_generic_deserialize_with_fn_reports_unsupported_with_reason ... ok
+test e2e_rust_classify_number_discovers_all_branches ... ok
+test e2e_rust_chrono_naive_date_field_materializes_and_executes ... ok
+test e2e_rust_enum_value_domain_reaches_all_arms ... ok
+test e2e_rust_crate_backed_axum_resolves_super_and_external_extractor_types ... ok
+test e2e_rust_cross_file_struct_by_ref_discovers_branches ... ok
+test e2e_rust_cross_file_struct_discovers_branches ... ok
+test e2e_rust_tuple_param_discovers_all_branches ... ok
+test e2e_rust_serde_rename_all_field_overlay ... ok
+test e2e_rust_u8_param_stays_in_range_and_executes ... ok
+test e2e_rust_nested_enum_field_domain_reaches_several_arms ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 41.28s
+
+### gate=e2e exit=0 wall=193s end=2026-09-22T13:47:18-05:00 load=25.28 28.45 49.11

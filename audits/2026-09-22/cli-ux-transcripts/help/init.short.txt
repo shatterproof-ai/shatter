@@ -1,0 +1,13 @@
+Initialize a repository for persistent Shatter project state
+
+Usage: shatter init [OPTIONS]
+
+Options:
+  -d, --directory <DIRECTORY>  Directory to initialize (default: auto-detected project root)
+      --log-level <LOG_LEVEL>  Log verbosity level: error, warn, info (default), debug, trace [default: info]
+  -v, --verbose...             Increase verbosity (-v = debug, -vv = trace)
+  -q, --quiet                  Decrease verbosity to warnings and errors only
+      --project-dir <DIR>      Override auto-detected project root directory
+      --color <WHEN>           When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --render <MODE>          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+  -h, --help                   Print help (see more with '--help')

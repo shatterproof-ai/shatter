@@ -1,0 +1,5 @@
+No .shatter/ found — initializing project
+[info] Discovered 1 source file(s) in /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/deep
+[info] Scanning 1 function(s) in dependency order...
+[warn] failed to write scan artifact temp file for /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccc/dddddddddddddddddddddddddddddddddddddddd/aVeryLongModuleNameForTestingPurposes.ts::f: File name too long (os error 36)
+[info] [1/1] /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccc/dddddddddddddddddddddddddddddddddddddddd/aVeryLongModuleNameForTestingPurposes.ts::f (2.8s elapsed)

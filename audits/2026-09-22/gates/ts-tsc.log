@@ -1,0 +1,2 @@
+### gate=ts-tsc cmd=bash -c cd /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts && npx tsc --noEmit start=2026-09-22T13:54:01-05:00 load=7.70 16.53 36.74
+### gate=ts-tsc exit=0 wall=4s end=2026-09-22T13:54:05-05:00 load=7.41 16.32 36.56

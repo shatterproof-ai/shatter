@@ -1,0 +1,366 @@
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts::classifyNumber` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts::compareMagnitudes` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts::classifyString` | 5 | 91% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts::transformString` | 6 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts::categorizeUser` | 4 | 73% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts::describeRectangle` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts::computeStats` | 3 | 63% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts::safeDivide` | 3 | 88% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v1.ts::classifyNumber` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v2.ts::classifyNumber` | 6 | 100% |
+
+---
+
+Scan complete: **10 completed**, **0 failed**, **0 unsupported**, **0 interrupted**, **0 expected skipped** (7 worker(s))
+# Shatter Scan Report
+
+- **Functions discovered:** 10
+- **Functions attempted:** 10
+- **Functions completed:** 10
+  - **with observed behavior:** 9
+  - **error-only (all discovered inputs threw):** 1
+
+## Source Set Summary
+
+| Bucket | Files | Lines |
+|--------|-------|-------|
+| `production_ish` | 6 | 286 |
+| `test_spec` | 0 | 0 |
+| `generated` | 0 | 0 |
+| `declaration_only` | 0 | 0 |
+| `fixture_sample` | 0 | 0 |
+| `policy_excluded` | 0 | 0 |
+| `unsupported` | 0 | 0 |
+
+- **Production-ish source lines:** 286 (whole-source denominator; see Coverage section below)
+
+## Coverage
+
+- **Attempted-function span:** 10 of 10 discovered functions attempted
+- **Total branches:** 40 (across completed functions)
+- **Branches covered:** 37
+- **Overall coverage (completed-functions subset):** 92.5%
+
+## Function Summary
+
+| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |
+|--------|---------|----------|------|----------|----------|-------|------------|
+| PASS | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts | 100.0% | 3/3 | 7/7 | 100 |
+| PASS | behavioral | `compareMagnitudes` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts | 100.0% | 3/3 | 9/9 | 100 |
+| WARN | behavioral | `classifyString` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts | 90.9% | 5/5 | 10/11 | 100 |
+| PASS | behavioral | `transformString` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts | 100.0% | 5/5 | 11/11 | 100 |
+| WARN | behavioral | `categorizeUser` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts | 72.7% | 4/5 | 8/11 | 100 |
+| PASS | behavioral | `describeRectangle` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts | 100.0% | 3/3 | 8/8 | 100 |
+| WARN | error_only | `computeStats` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts | 62.5% | 3/5 | 10/16 | 100 |
+| WARN | behavioral | `safeDivide` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts | 87.5% | 3/3 | 7/8 | 100 |
+| PASS | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v1.ts | 100.0% | 3/3 | 7/7 | 100 |
+| PASS | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v2.ts | 100.0% | 5/5 | 11/11 | 100 |
+
+## Function Details
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 7/7
+- **Iterations:** 100
+- **Constraints collected:** 201
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 2)
+- Cluster 3: returns "positive-odd" (inputs: 1)
+
+### `compareMagnitudes`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 9/9
+- **Iterations:** 100
+- **Constraints collected:** 220
+
+**Behaviors:**
+
+- Cluster 0: returns "both-small" (inputs: -0.4809300165667742, 1.0)
+- Cluster 1: returns "both-small" (inputs: 3.1934977938894282, 1.0)
+- Cluster 2: returns "both-small" (inputs: 0.3803643971687418, 1.0)
+- Cluster 3: returns "both-small" (inputs: 7.240137403825707, 1.0)
+- Cluster 4: returns "both-small" (inputs: -2.5522955025754985, 1.0)
+- ... and 15 more clusters
+
+### `classifyString`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts
+- **Coverage:** 90.9%
+- **Branches:** 5/5
+- **Lines:** 10/11
+- **Iterations:** 100
+- **Constraints collected:** 199
+
+**Behaviors:**
+
+- Cluster 0: returns "text" (inputs: "length")
+- Cluster 1: returns "empty" (inputs: "")
+- Cluster 2: returns "text" (inputs: "empty")
+- Cluster 3: returns "text" (inputs: "single-char")
+- Cluster 4: returns "text" (inputs: "startsWith")
+- ... and 11 more clusters
+
+### `transformString`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/02-strings.ts
+- **Coverage:** 100.0%
+- **Branches:** 5/5
+- **Lines:** 11/11
+- **Iterations:** 100
+- **Constraints collected:** 293
+
+**Behaviors:**
+
+- Cluster 0: returns "upper" (inputs: "upper", "", 0)
+- Cluster 1: returns "UPPER" (inputs: "upper", "upper", 0)
+- Cluster 2: returns "" (inputs: "", "upper", 0)
+- Cluster 3: returns "toUpperCase" (inputs: "toUpperCase", "", 0)
+- Cluster 4: returns "" (inputs: "", "toUpperCase", 0)
+- ... and 45 more clusters
+
+### `categorizeUser`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts
+- **Coverage:** 72.7%
+- **Branches:** 4/5
+- **Lines:** 8/11
+- **Iterations:** 100
+- **Constraints collected:** 211
+
+**Behaviors:**
+
+- Cluster 0: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"age","role":""})
+- Cluster 1: throws Error: invalid age (inputs: {"age":-1,"isVerified":false,"name":"age","role":""})
+- Cluster 2: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"","role":"age"})
+- Cluster 3: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"invalid age","role"...)
+- Cluster 4: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"","role":"invalid a...)
+- ... and 71 more clusters
+
+### `describeRectangle`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/03-objects.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 8/8
+- **Iterations:** 100
+- **Constraints collected:** 198
+
+**Behaviors:**
+
+- Cluster 0: throws Error: non-positive dimension (inputs: {"height":0.0,"width":0.0})
+- Cluster 1: returns "square" (inputs: {"height":1,"width":1})
+- Cluster 2: throws Error: non-positive dimension (inputs: {"height":1,"width":0})
+- Cluster 3: returns "small-rectangle" (inputs: {"height":2,"width":1})
+- Cluster 4: returns "large-rectangle" (inputs: {"height":846,"width":845})
+
+### `computeStats`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts
+- **Coverage:** 62.5%
+- **Branches:** 3/5
+- **Lines:** 10/16
+- **Iterations:** 100
+- **Constraints collected:** 105
+
+**Behaviors:**
+
+- Cluster 0: throws Error: negative value (inputs: [10.0,982.0596102041002,-960.8361458783605,1.0])
+- Cluster 1: throws Error: empty array (inputs: {"length":0})
+- Cluster 2: throws TypeError: items is not iterable (inputs: {"length":1})
+
+### `safeDivide`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/04-errors.ts
+- **Coverage:** 87.5%
+- **Branches:** 3/3
+- **Lines:** 7/8
+- **Iterations:** 100
+- **Constraints collected:** 228
+
+**Behaviors:**
+
+- Cluster 0: returns 42.721100767194784 (inputs: 42.721100767194784, 1.0)
+- Cluster 1: returns 257.2100449513093 (inputs: 257.2100449513093, 1.0)
+- Cluster 2: returns -16.97642205133465 (inputs: -16.97642205133465, 1.0)
+- Cluster 3: returns -17.243991372646576 (inputs: -17.243991372646576, 1.0)
+- Cluster 4: returns 7.3560014651970995 (inputs: 7.3560014651970995, 1.0)
+- ... and 8 more clusters
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v1.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 7/7
+- **Iterations:** 100
+- **Constraints collected:** 201
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 2)
+- Cluster 3: returns "positive-odd" (inputs: 1)
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/arithmetic-v2.ts
+- **Coverage:** 100.0%
+- **Branches:** 5/5
+- **Lines:** 11/11
+- **Iterations:** 100
+- **Constraints collected:** 263
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 1000)
+- Cluster 3: returns "positive-even" (inputs: 2)
+- Cluster 4: returns "positive-odd" (inputs: 1)
+- ... and 3 more clusters
+
+## Uncovered Branches
+
+- `classifyString`: 0 uncovered branch(es) (90.9% coverage)
+- `categorizeUser`: 1 uncovered branch(es) (72.7% coverage)
+- `computeStats`: 2 uncovered branch(es) (62.5% coverage)
+- `safeDivide`: 0 uncovered branch(es) (87.5% coverage)
+
+## Interesting Inputs
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+
+### `compareMagnitudes`
+
+- 100.0, 0.0 -> "both-small"
+- 101, 0 -> "sum-large"
+- 0.0, 100.0 -> "both-small"
+- 1000.0, 0.0 -> "sum-large"
+- 0.0, 1000.0 -> "sum-large"
+- 100, 0 -> "both-small"
+- 0, 0 -> "both-small"
+- 0, 101 -> "sum-large"
+
+### `classifyString`
+
+- "" -> "empty"
+
+### `transformString`
+
+- "upper", "", 0 -> "upper"
+- "upper", "upper", 0 -> "UPPER"
+- "", "lower", 0 -> ""
+- "", "reverse", 0 -> ""
+- "", "repeat", 0 -> ""
+- "", "repeat", 1 -> ""
+- "", "upper", 0 -> ""
+- "toUpperCase", "", 0 -> "toUpperCase"
+- "", "toUpperCase", 0 -> ""
+- "lower", "", 0 -> "lower"
+- "toLowerCase", "", 0 -> "toLowerCase"
+- "", "toLowerCase", 0 -> ""
+- "reverse", "", 0 -> "reverse"
+- "join", "", 0 -> "join"
+- "", "join", 0 -> ""
+- "split", "", 0 -> "split"
+- "", "split", 0 -> ""
+- "", "", 0 -> ""
+- "repeat", "", 0 -> "repeat"
+- "upper", "lower", 0 -> "upper"
+- "upper", "reverse", 0 -> "reppu"
+- "upper", "repeat", 0 -> ""
+- "toUpperCase", "upper", 0 -> "TOUPPERCASE"
+- "toUpperCase", "lower", 0 -> "touppercase"
+- "toUpperCase", "reverse", 0 -> "esaCreppUot"
+- "toUpperCase", "repeat", 0 -> ""
+- "lower", "upper", 0 -> "LOWER"
+- "lower", "lower", 0 -> "lower"
+- "lower", "reverse", 0 -> "rewol"
+- "lower", "repeat", 0 -> ""
+- "toLowerCase", "upper", 0 -> "TOLOWERCASE"
+- "toLowerCase", "lower", 0 -> "tolowercase"
+- "toLowerCase", "reverse", 0 -> "esaCrewoLot"
+- "toLowerCase", "repeat", 0 -> ""
+- "reverse", "upper", 0 -> "REVERSE"
+- "reverse", "lower", 0 -> "reverse"
+- "reverse", "reverse", 0 -> "esrever"
+- "reverse", "repeat", 0 -> ""
+- "join", "upper", 0 -> "JOIN"
+- "join", "lower", 0 -> "join"
+- "join", "reverse", 0 -> "nioj"
+- "join", "repeat", 0 -> ""
+- "split", "upper", 0 -> "SPLIT"
+- "split", "lower", 0 -> "split"
+- "split", "reverse", 0 -> "tilps"
+- "split", "repeat", 0 -> ""
+- "repeat", "upper", 0 -> "REPEAT"
+- "repeat", "lower", 0 -> "repeat"
+- "repeat", "reverse", 0 -> "taeper"
+- "repeat", "repeat", 0 -> ""
+
+### `categorizeUser`
+
+- {"age":-1,"isVerified":false,"name":"age","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"age"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"invalid age","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"invalid age"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"child","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"child"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"teen","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"teen"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"isVerified","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"isVerified"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"role","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"role"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"admin","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"admin"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"verified-user","role... -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"verified-u... -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"unverified-user","ro... -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"unverified... -> **error:** Error: invalid age
+
+### `describeRectangle`
+
+- {"height":0.0,"width":0.0} -> **error:** Error: non-positive dimension
+- {"height":1,"width":0} -> **error:** Error: non-positive dimension
+
+### `computeStats`
+
+- [10.0,982.0596102041002,-960.8361458783605,1.0] -> **error:** Error: negative value
+- {"length":0} -> **error:** Error: empty array
+- {"length":1} -> **error:** TypeError: items is not iterable
+
+### `safeDivide`
+
+- 0.0, 0.0 -> **error:** Error: division by zero
+- 0.0, 1 -> 0
+- 0.0, 0 -> **error:** Error: division by zero
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+

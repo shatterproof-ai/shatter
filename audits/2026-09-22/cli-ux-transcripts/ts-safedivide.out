@@ -1,0 +1,14 @@
+# Shatter Explore
+
+## `safeDivide` *(04-errors.ts:10-22)*
+
+**1 path(s)** · **88%** coverage (7/8 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `safeDivide(0.0, 0.0)` | throws `Error: division by zero` |
+
+
+---
+
+**Summary:** 1 path(s) across 1 function(s) · **88%** coverage (7/8 lines)

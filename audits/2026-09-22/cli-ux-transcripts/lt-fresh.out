@@ -1,0 +1,21 @@
+{
+  "schema_version": "1",
+  "kind": "target_manifest",
+  "scan_id": "9104e092-bb2a-487f-8878-c19a7cab129d",
+  "project_root": "/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/lt",
+  "config_hash": "170de33ea509f8bc6d431cba351b14946f1f6534ecf586d90757f4de154f9ab9",
+  "source_set_hash": "5783b87cb8e22e9044988f4ac8385e1a34a6415c944de41e2b461913ea03943b",
+  "generated_at_ns": 1790099598433662878,
+  "selected": [
+    {
+      "path": "01-arithmetic.ts",
+      "language": "typescript",
+      "frontend": "shatter-ts",
+      "line_count": 45,
+      "content_hash": "f0496154a54c82c64e8064f4ca9c1e2f6710f8971ff5a040a1cf59b42d27c466"
+    }
+  ],
+  "excluded": [],
+  "unsupported": [],
+  "candidate_outside_policy": []
+}

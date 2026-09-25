@@ -1,0 +1,53 @@
+Check which functions in a source file are stale relative to a spec file
+
+Usage: shatter stale [OPTIONS] <SOURCE> <SPEC>
+
+Arguments:
+  <SOURCE>  Source file to analyze (e.g., "src/math.ts"). Must be a concrete file path — wildcards are rejected; use `explore`/`properties` for glob targets, or `scan --include` for repository discovery
+  <SPEC>    Path to the existing spec JSON file
+
+Options:
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace [default: info]
+      --output-format <OUTPUT_FORMAT>
+          Output format: "text" (default) or "json" [default: text]
+      --request-timeout <REQUEST_TIMEOUT>
+          Per-request timeout in seconds for frontend communication [default: 30]
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+      --exec-timeout <EXEC_TIMEOUT>
+          Execution timeout in seconds for each function invocation [default: 10]
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+      --build-timeout <BUILD_TIMEOUT>
+          Build timeout in seconds for compiling instrumented code [default: 30]
+      --timing <TIMING>
+          Timing output mode [default: off] [possible values: off, summary, detailed]
+      --release
+          Compile harnesses in release mode (optimized but slower compilation). Default is debug mode for faster compilation [env: SHATTER_HARNESS_RELEASE=]
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts [default: text] [possible values: text, json, both]
+      --memory-limit <MEMORY_LIMIT>
+          Memory limit in MB for the frontend process
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+      --cache-dir <CACHE_DIR>
+          Cache directory for loading cross-file dependency fingerprints
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+      --no-cache
+          Disable cache (skip cross-file dependency tracking)
+      --project-dir <DIR>
+          Override auto-detected project root directory
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox
+      --strict
+          Treat untracked functions (present in source, absent from spec) as failures. Default behavior reports them but exits 0 if no tracked function is stale or removed (str-d6hj). Use this when the spec is expected to cover the entire file
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable)
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+  -h, --help
+          Print help (see more with '--help')

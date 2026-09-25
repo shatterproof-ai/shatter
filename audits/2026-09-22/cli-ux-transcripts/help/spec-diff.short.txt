@@ -1,0 +1,17 @@
+Compare two function specifications and report behavioral changes
+
+Usage: shatter spec-diff [OPTIONS] <OLD> <NEW>
+
+Arguments:
+  <OLD>  Path to the old (baseline) spec JSON file
+  <NEW>  Path to the new (current) spec JSON file
+
+Options:
+      --json                   Output the diff result as JSON instead of human-readable text
+      --log-level <LOG_LEVEL>  Log verbosity level: error, warn, info (default), debug, trace [default: info]
+  -v, --verbose...             Increase verbosity (-v = debug, -vv = trace)
+  -q, --quiet                  Decrease verbosity to warnings and errors only
+      --project-dir <DIR>      Override auto-detected project root directory
+      --color <WHEN>           When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never) [default: auto] [possible values: always, auto, never]
+      --render <MODE>          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI) [default: md] [possible values: md, plain]
+  -h, --help                   Print help (see more with '--help')

@@ -1,0 +1,102 @@
+  Created  .shatter/
+  Created  .shatter/config.yaml  (detected language: unknown)
+  Created  .gitignore  (4 generated path(s) ignored)
+Initialized Shatter project at /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/cc
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/cc/01-arithmetic.ts::classifyNumber` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/cc/01-arithmetic.ts::compareMagnitudes` | 4 | 100% |
+
+---
+
+Scan complete: **2 completed**, **0 failed**, **0 unsupported**, **0 interrupted**, **0 expected skipped** (2 worker(s))
+# Shatter Scan Report
+
+- **Functions discovered:** 2
+- **Functions attempted:** 2
+- **Functions completed:** 2
+  - **with observed behavior:** 2
+  - **error-only (all discovered inputs threw):** 0
+
+## Source Set Summary
+
+| Bucket | Files | Lines |
+|--------|-------|-------|
+| `production_ish` | 1 | 45 |
+| `test_spec` | 0 | 0 |
+| `generated` | 0 | 0 |
+| `declaration_only` | 0 | 0 |
+| `fixture_sample` | 0 | 0 |
+| `policy_excluded` | 0 | 0 |
+| `unsupported` | 0 | 0 |
+
+- **Production-ish source lines:** 45 (whole-source denominator; see Coverage section below)
+
+## Coverage
+
+- **Attempted-function span:** 2 of 2 discovered functions attempted
+- **Total branches:** 6 (across completed functions)
+- **Branches covered:** 6
+- **Overall coverage (completed-functions subset):** 100.0%
+
+## Function Summary
+
+| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |
+|--------|---------|----------|------|----------|----------|-------|------------|
+| PASS | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/cc/01-arithmetic.ts | 100.0% | 3/3 | 7/7 | 20 |
+| PASS | behavioral | `compareMagnitudes` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/cc/01-arithmetic.ts | 100.0% | 3/3 | 9/9 | 20 |
+
+## Function Details
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/cc/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 7/7
+- **Iterations:** 20
+- **Constraints collected:** 41
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 2)
+- Cluster 3: returns "positive-odd" (inputs: 1)
+
+### `compareMagnitudes`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/cc/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 9/9
+- **Iterations:** 20
+- **Constraints collected:** 40
+
+**Behaviors:**
+
+- Cluster 0: returns "both-small" (inputs: 100.0, 0.0)
+- Cluster 1: returns "sum-large" (inputs: 101, 0)
+- Cluster 2: returns "both-small" (inputs: 0.0, 100.0)
+- Cluster 3: returns "sum-large" (inputs: 1000.0, 0.0)
+- Cluster 4: returns "sum-large" (inputs: 0.0, 1000.0)
+- ... and 5 more clusters
+
+## Interesting Inputs
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+
+### `compareMagnitudes`
+
+- 100.0, 0.0 -> "both-small"
+- 101, 0 -> "sum-large"
+- 0.0, 100.0 -> "both-small"
+- 1000.0, 0.0 -> "sum-large"
+- 0.0, 1000.0 -> "sum-large"
+- 100, 0 -> "both-small"
+

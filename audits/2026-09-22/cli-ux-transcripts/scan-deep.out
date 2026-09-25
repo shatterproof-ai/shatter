@@ -1,0 +1,72 @@
+  Created  .shatter/
+  Created  .shatter/config.yaml  (detected language: unknown)
+  Created  .gitignore  (4 generated path(s) ignored)
+Initialized Shatter project at /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/deep
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccc/dddddddddddddddddddddddddddddddddddddddd/aVeryLongModuleNameForTestingPurposes.ts::f` | 2 | 100% |
+
+---
+
+Scan complete: **1 completed**, **0 failed**, **0 unsupported**, **0 interrupted**, **0 expected skipped** (1 worker(s))
+# Shatter Scan Report
+
+- **Functions discovered:** 1
+- **Functions attempted:** 1
+- **Functions completed:** 1
+  - **with observed behavior:** 1
+  - **error-only (all discovered inputs threw):** 0
+
+## Source Set Summary
+
+| Bucket | Files | Lines |
+|--------|-------|-------|
+| `production_ish` | 1 | 4 |
+| `test_spec` | 0 | 0 |
+| `generated` | 0 | 0 |
+| `declaration_only` | 0 | 0 |
+| `fixture_sample` | 0 | 0 |
+| `policy_excluded` | 0 | 0 |
+| `unsupported` | 0 | 0 |
+
+- **Production-ish source lines:** 4 (whole-source denominator; see Coverage section below)
+
+## Coverage
+
+- **Attempted-function span:** 1 of 1 discovered functions attempted
+- **Total branches:** 1 (across completed functions)
+- **Branches covered:** 1
+- **Overall coverage (completed-functions subset):** 100.0%
+
+## Function Summary
+
+| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |
+|--------|---------|----------|------|----------|----------|-------|------------|
+| PASS | behavioral | `f` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccc/dddddddddddddddddddddddddddddddddddddddd/aVeryLongModuleNameForTestingPurposes.ts | 100.0% | 1/1 | 2/2 | 10 |
+
+## Function Details
+
+### `f`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/deep/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccc/dddddddddddddddddddddddddddddddddddddddd/aVeryLongModuleNameForTestingPurposes.ts
+- **Coverage:** 100.0%
+- **Branches:** 1/1
+- **Lines:** 2/2
+- **Iterations:** 10
+- **Constraints collected:** 10
+
+**Behaviors:**
+
+- Cluster 0: returns "n" (inputs: 0.0)
+- Cluster 1: returns "p" (inputs: 1)
+- Cluster 2: returns "n" (inputs: 0)
+
+## Interesting Inputs
+
+### `f`
+
+- 0.0 -> "n"
+- 0 -> "n"
+

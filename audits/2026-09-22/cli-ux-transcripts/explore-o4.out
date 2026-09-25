@@ -1,0 +1,64 @@
+# Shatter Explore
+
+# Specification: `classifyNumber`
+
+**Location:** `01-arithmetic.ts:10-21`
+
+**Behavioral classes:** 4  
+**Exploration:** 100 iterations, 7/7 lines covered (100%)
+
+---
+
+## Class 1 — returns "zero"
+
+**Preconditions** [observed]:
+- param[0] == 0
+
+**Postcondition** [observed]: returns "zero"
+
+**Example** (33 execution(s) observed):
+```
+classifyNumber(0) -> "zero"
+```
+
+---
+
+## Class 2 — returns "negative"
+
+**Preconditions** [observed]:
+- param[0] == -1
+
+**Postcondition** [observed]: returns "negative"
+
+**Example** (33 execution(s) observed):
+```
+classifyNumber(-1) -> "negative"
+```
+
+---
+
+## Class 3 — returns "positive-odd"
+
+**Preconditions** [observed]:
+- param[0] == 1
+
+**Postcondition** [observed]: returns "positive-odd"
+
+**Example** (22 execution(s) observed):
+```
+classifyNumber(1) -> "positive-odd"
+```
+
+---
+
+## Class 4 — returns "positive-even"
+
+**Preconditions** [observed]:
+- param[0] == 2
+
+**Postcondition** [observed]: returns "positive-even"
+
+**Example** (12 execution(s) observed):
+```
+classifyNumber(2) -> "positive-even"
+```

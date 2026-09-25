@@ -1,0 +1,14 @@
+# Shatter Explore
+
+## `fmt` *(edge/sym.ts:1-9)*
+
+**1 path(s)** · **100%** coverage (5/5 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `fmt(11)` | returns `"a | b"` |
+
+
+---
+
+**Summary:** 1 path(s) across 1 function(s) · **100%** coverage (5/5 lines)

@@ -1,0 +1,4 @@
+classifyNumber  (standalone/ts/01-arithmetic.ts:10)
+  params: 1, branches: 3
+categorizeUser  (standalone/ts/03-objects.ts:19)
+  params: 1, branches: 5

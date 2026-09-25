@@ -1,0 +1,10 @@
+No .shatter/ found — initializing project
+[info] Spawned 1 frontend session(s) for 2 target(s) (16 parallel worker(s))
+[progress] starting 1/2: classifyNumber
+[progress] starting 2/2: safeDivide
+[progress] completed 1/2: safeDivide (7.4s)
+[progress] completed 2/2: classifyNumber (7.5s)
+[batch 1/2] safeDivide: 20 iters, 2 paths, 3/3 branches, 7.5s (ok) | active: 1 (classifyNumber)
+[batch 2/2] classifyNumber: 20 iters, 4 paths, 3/3 branches, 7.6s (ok)
+[info] Wrote explore artifact for classifyNumber -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/wt/artifacts/explore-results/standalone_ts_01-arithmetic.ts/00010_classifyNumber.json
+[info] Wrote explore artifact for safeDivide -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/wt/artifacts/explore-results/standalone_ts_04-errors.ts/00010_safeDivide.json

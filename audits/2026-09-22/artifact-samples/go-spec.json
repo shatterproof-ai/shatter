@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "file": "go/01-arithmetic.go",
+  "functions": [
+    {
+      "function_name": "ClassifyNumber",
+      "location": "go/01-arithmetic.go:19-30",
+      "classes": [
+        {
+          "label": "Class 1 — returns \"zero\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "AllEqual": {
+                "param_index": 0,
+                "value": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "zero"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                0
+              ],
+              "return_value": "zero",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 6,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 2 — returns \"negative\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "AllEqual": {
+                "param_index": 0,
+                "value": -1
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "negative"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                -1
+              ],
+              "return_value": "negative",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 7,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 3 — returns \"positive-odd\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            },
+            {
+              "branch_id": 2,
+              "taken": false
+            }
+          ],
+          "preconditions": [
+            {
+              "AllEqual": {
+                "param_index": 0,
+                "value": 1
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "positive-odd"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                1
+              ],
+              "return_value": "positive-odd",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 4,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 4 — returns \"positive-even\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            },
+            {
+              "branch_id": 2,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "AllEqual": {
+                "param_index": 0,
+                "value": 2
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "positive-even"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                2
+              ],
+              "return_value": "positive-even",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 3,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        }
+      ],
+      "iterations": 20,
+      "lines_covered": 7,
+      "total_lines": 7,
+      "fingerprint": "a9961a6206c5eb01bbab1dc7b436f63ae977217fcc30889ab67ab95e838604b1"
+    }
+  ]
+}

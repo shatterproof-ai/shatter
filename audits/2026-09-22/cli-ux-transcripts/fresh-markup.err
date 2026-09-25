@@ -1,0 +1,15 @@
+No .shatter/ found — initializing project
+[info] Spawned 1 frontend session(s) for 2 target(s) (16 parallel worker(s))
+[progress] starting 1/2: classifyNumber
+[progress] starting 2/2: markup
+[21s] classifyNumber: 44 iters, 4 paths, 3/3 branches, 2.1 iter/s (idle 40)
+[16s] markup: 38 iters, 2 paths, 1/1 branches, 2.3 iter/s (idle 38)
+[32s] markup: 64 iters, 2 paths, 1/1 branches, 2.0 iter/s (idle 64)
+[36s] classifyNumber: 62 iters, 4 paths, 3/3 branches, 1.7 iter/s (idle 58)
+[progress] completed 1/2: markup (55.3s)
+[batch 1/2] markup: 100 iters, 2 paths, 1/1 branches, 56.2s (ok) | active: 1 (classifyNumber)
+[51s] classifyNumber: 94 iters, 4 paths, 3/3 branches, 1.8 iter/s (idle 90)
+[progress] completed 2/2: classifyNumber (65.3s)
+[batch 2/2] classifyNumber: 100 iters, 4 paths, 3/3 branches, 65.7s (ok)
+[info] Wrote explore artifact for classifyNumber -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/fresh/shatter-artifacts/explore-results/01-arithmetic.ts/00010_classifyNumber.json
+[info] Wrote explore artifact for markup -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/fresh/shatter-artifacts/explore-results/markup.ts/00001_markup.json

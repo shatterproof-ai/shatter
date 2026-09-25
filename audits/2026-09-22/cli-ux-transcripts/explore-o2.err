@@ -1,0 +1,10 @@
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[info] Found prior explore summary for 01-arithmetic.ts (2 completed, 0 failed)
+[info] [resumed] classifyNumber: 3 branches, 6.6s (prior run)
+[info] [resumed] compareMagnitudes: 3 branches, 6.8s (prior run)
+[info] Resumed 2/2 function(s) from prior artifacts for 01-arithmetic.ts
+[info] Resumed 2 function(s) from prior explore artifacts
+[info] Wrote explore artifact for classifyNumber -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/shatter-artifacts/explore-results/01-arithmetic.ts/00010_classifyNumber.json
+[info] Wrote explore artifact for compareMagnitudes -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/shatter-artifacts/explore-results/01-arithmetic.ts/00031_compareMagnitudes.json
+[warn] JSON output for explore writes spec bundle; use --spec-out for explicit spec output
+[info] Wrote no-target spec marker (reason=unclassified) to /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/audits/2026-09-22/cli-ux-transcripts/explore-bundle2.json

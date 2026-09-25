@@ -1,0 +1,149 @@
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::classifyNumber` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts::compareMagnitudes` | 4 | 100% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::computeStats` | 2 | 31% |
+| `/tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts::safeDivide` | 2 | 75% |
+
+---
+
+Scan complete: **4 completed**, **0 failed**, **0 unsupported**, **0 interrupted**, **0 expected skipped** (4 worker(s))
+# Shatter Scan Report
+
+- **Functions discovered:** 4
+- **Functions attempted:** 4
+- **Functions completed:** 4
+  - **with observed behavior:** 3
+  - **error-only (all discovered inputs threw):** 1
+
+## Source Set Summary
+
+| Bucket | Files | Lines |
+|--------|-------|-------|
+| `production_ish` | 2 | 110 |
+| `test_spec` | 0 | 0 |
+| `generated` | 0 | 0 |
+| `declaration_only` | 0 | 0 |
+| `fixture_sample` | 0 | 0 |
+| `policy_excluded` | 0 | 0 |
+| `unsupported` | 0 | 0 |
+
+- **Production-ish source lines:** 110 (whole-source denominator; see Coverage section below)
+
+## Coverage
+
+- **Attempted-function span:** 4 of 4 discovered functions attempted
+- **Total branches:** 14 (across completed functions)
+- **Branches covered:** 10
+- **Overall coverage (completed-functions subset):** 71.4%
+
+## Function Summary
+
+| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |
+|--------|---------|----------|------|----------|----------|-------|------------|
+| PASS | behavioral | `classifyNumber` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts | 100.0% | 3/3 | 7/7 | 20 |
+| PASS | behavioral | `compareMagnitudes` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts | 100.0% | 3/3 | 9/9 | 20 |
+| LOW | error_only | `computeStats` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts | 31.2% | 1/5 | 5/16 | 20 |
+| WARN | behavioral | `safeDivide` | /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts | 75.0% | 3/3 | 6/8 | 20 |
+
+## Function Details
+
+### `classifyNumber`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 7/7
+- **Iterations:** 20
+- **Constraints collected:** 41
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 2)
+- Cluster 3: returns "positive-odd" (inputs: 1)
+
+### `compareMagnitudes`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 9/9
+- **Iterations:** 20
+- **Constraints collected:** 40
+
+**Behaviors:**
+
+- Cluster 0: returns "both-small" (inputs: 100.0, 0.0)
+- Cluster 1: returns "sum-large" (inputs: 101, 0)
+- Cluster 2: returns "both-small" (inputs: 0.0, 100.0)
+- Cluster 3: returns "sum-large" (inputs: 1000.0, 0.0)
+- Cluster 4: returns "sum-large" (inputs: 0.0, 1000.0)
+- ... and 5 more clusters
+
+### `computeStats`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts
+- **Coverage:** 31.2%
+- **Branches:** 1/5
+- **Lines:** 5/16
+- **Iterations:** 20
+- **Constraints collected:** 20
+
+**Behaviors:**
+
+- Cluster 0: throws Error: empty array (inputs: [])
+- Cluster 1: throws TypeError: items is not iterable (inputs: {"length":1})
+- Cluster 2: throws Error: empty array (inputs: {"length":0})
+
+### `safeDivide`
+
+- **File:** /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/cliux/p/04-errors.ts
+- **Coverage:** 75.0%
+- **Branches:** 3/3
+- **Lines:** 6/8
+- **Iterations:** 20
+- **Constraints collected:** 38
+
+**Behaviors:**
+
+- Cluster 0: throws Error: division by zero (inputs: 0.0, 0.0)
+- Cluster 1: returns 0 (inputs: 0.0, 1)
+- Cluster 2: throws Error: division by zero (inputs: 0.0, 0)
+
+## Uncovered Branches
+
+- `computeStats`: 4 uncovered branch(es) (31.2% coverage)
+- `safeDivide`: 0 uncovered branch(es) (75.0% coverage)
+
+## Interesting Inputs
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+
+### `compareMagnitudes`
+
+- 100.0, 0.0 -> "both-small"
+- 101, 0 -> "sum-large"
+- 0.0, 100.0 -> "both-small"
+- 1000.0, 0.0 -> "sum-large"
+- 0.0, 1000.0 -> "sum-large"
+- 100, 0 -> "both-small"
+
+### `computeStats`
+
+- [] -> **error:** Error: empty array
+- {"length":1} -> **error:** TypeError: items is not iterable
+- {"length":0} -> **error:** Error: empty array
+
+### `safeDivide`
+
+- 0.0, 0.0 -> **error:** Error: division by zero
+- 0.0, 1 -> 0
+- 0.0, 0 -> **error:** Error: division by zero
+

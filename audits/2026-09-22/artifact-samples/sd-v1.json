@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "file": "sd/calc.ts",
+  "functions": [
+    {
+      "function_name": "grade",
+      "location": "sd/calc.ts:1-9",
+      "classes": [
+        {
+          "label": "Class 1 — returns \"invalid\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "AllNegative": {
+                "param_index": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "invalid"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                -1
+              ],
+              "return_value": "invalid",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 16,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 2 — returns \"fail\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": true
+            }
+          ],
+          "preconditions": [
+            {
+              "SameType": {
+                "param_index": 0,
+                "type_name": "number"
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "fail"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                0
+              ],
+              "return_value": "fail",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 17,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        },
+        {
+          "label": "Class 3 — returns \"pass\"",
+          "branch_path": [
+            {
+              "branch_id": 0,
+              "taken": false
+            },
+            {
+              "branch_id": 1,
+              "taken": false
+            }
+          ],
+          "preconditions": [
+            {
+              "AllPositive": {
+                "param_index": 0
+              }
+            }
+          ],
+          "postcondition": {
+            "kind": "returns",
+            "value": "pass"
+          },
+          "side_effects": [],
+          "examples": [
+            {
+              "inputs": [
+                50
+              ],
+              "return_value": "pass",
+              "thrown_error": null
+            }
+          ],
+          "sample_count": 12,
+          "precondition_provenance": "observed",
+          "postcondition_provenance": "observed"
+        }
+      ],
+      "iterations": 40,
+      "lines_covered": 5,
+      "total_lines": 5,
+      "fingerprint": "6049550273aae15af0d7478e3b0d95c6e114fa59dfb52a3d27f2bb524b86c554"
+    }
+  ]
+}

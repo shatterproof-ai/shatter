@@ -1,0 +1,6 @@
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[info] Found prior explore summary for ts/01-arithmetic.ts (1 completed, 0 failed)
+[info] [resumed] classifyNumber: 3 branches, 20.2s (prior run)
+[info] Resumed 1/1 function(s) from prior artifacts for ts/01-arithmetic.ts
+[info] Resumed 1 function(s) from prior explore artifacts
+[info] Wrote explore artifact for classifyNumber -> /tmp/claude-1000/-home-ketan-project-shatter/63ab6471-d62f-4111-8969-df8076934da8/scratchpad/proj/shatter-artifacts/explore-results/ts_01-arithmetic.ts/00010_classifyNumber.json
