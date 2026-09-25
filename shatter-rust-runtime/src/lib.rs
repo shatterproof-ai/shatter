@@ -12,6 +12,11 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod protocol_channel;
+pub use protocol_channel::{
+    attach_console_output, console_output_effects, ProtocolChannel, MAX_CONSOLE_MESSAGE_CHARS,
+};
+
 // ---------------------------------------------------------------------------
 // Wire-compatible types (match shatter-core protocol)
 // ---------------------------------------------------------------------------

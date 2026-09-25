@@ -488,12 +488,16 @@ side_effect_capabilities:
       "log", "warn", "error", "info", and "debug". Rust currently captures
       stdout/stderr as combined buffers using level "log" for stdout and
       "error" for stderr.
-      Rust captures via fd redirection in standalone/dispatch harnesses;
-      crate-bridge harness does not capture console output.
+      Rust captures via fd redirection in standalone/dispatch harnesses.
+      The crate-bridge harness (str-49drv.116) moves stdout/stderr onto
+      capture files at startup (dup2 on Unix, SetStdHandle on Windows,
+      via shatter-rust-runtime ProtocolChannel) and writes responses only
+      to a private handle to the original stdout, so user output can never
+      corrupt the protocol channel; captured lines become console_output.
     frontends:
       typescript: captured
       go: captured
-      rust: captured   # standalone/dispatch harnesses; crate-bridge skips
+      rust: captured   # standalone, dispatch, and crate-bridge harnesses
 
   global_state_change:
     status: optional

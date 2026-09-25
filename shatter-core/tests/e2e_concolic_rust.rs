@@ -109,6 +109,10 @@ const RUST_FRONTEND_EXEC_TIMEOUT_SECS: &str = "60";
 const RUST_FRONTEND_REQUEST_TIMEOUT_SECS: u64 = 240;
 
 async fn spawn_rust_frontend() -> Frontend {
+    spawn_rust_frontend_with_env(Vec::new()).await
+}
+
+async fn spawn_rust_frontend_with_env(extra_env: Vec<(String, String)>) -> Frontend {
     let frontend_path = rust_frontend_path();
     let runtime_path = workspace_path("../shatter-rust-runtime");
     assert!(
@@ -131,6 +135,7 @@ async fn spawn_rust_frontend() -> Frontend {
         "SHATTER_EXEC_TIMEOUT".to_string(),
         RUST_FRONTEND_EXEC_TIMEOUT_SECS.to_string(),
     ));
+    config.env_vars.extend(extra_env);
 
     Frontend::spawn(&config)
         .await
@@ -1590,6 +1595,186 @@ async fn e2e_rust_chrono_naive_date_field_materializes_and_executes() {
     );
 
     frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// Relative paths under `root`, up to `depth` levels, for failure diagnostics.
+fn walk_dir_names(root: &Path, depth: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, level)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            out.push(
+                path.strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+            );
+            if level + 1 < depth && path.is_dir() {
+                pending.push((path, level + 1));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// str-49drv.116 regression gate: a target that prints must execute through
+/// the crate_bridge harness and return its own value.
+///
+/// The crate_bridge driver used to `println!` each JSON response onto the
+/// stdout the target writes to, so any `print!`/`println!` in the target was
+/// read as the protocol line and every execution failed as an output-parse
+/// internal_error. The fix moves user stdout/stderr onto capture files and
+/// answers on a private handle (`shatter_rust_runtime::ProtocolChannel`).
+///
+/// `noisy_classify` lives in a module that imports through `crate::`, which
+/// the bin_only harness rejects as NonExecutable, so the frontend auto-routes
+/// it to crate_bridge (the core never sends `harness_mode`). The test pins
+/// `SHATTER_HARNESS_CACHE` to a tempdir and asserts a crate_bridge harness was
+/// built there for this crate, so the harness mode is checked, not assumed.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_crate_bridge_printing_target() {
+    let module_src = r#"use crate::MAGIC;
+
+/// Prints on every path, including a partial line, stderr, and a line that
+/// imitates an execute result, before returning.
+pub fn noisy_classify(n: i64) -> i64 {
+    println!("classifying {n}");
+    print!("partial ");
+    eprintln!("stderr {n}");
+    if n == 42 {
+        println!("{{\"return_value\":99}}");
+        MAGIC
+    } else if n < 0 {
+        -1
+    } else {
+        0
+    }
+}
+"#;
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let crate_dir = tmp.path().join("crate");
+    let lib = write_temp_crate(&crate_dir, "pub mod noisy;\n\npub const MAGIC: i64 = 42;\n");
+    let module = lib.with_file_name("noisy.rs");
+    std::fs::write(&module, module_src).expect("write noisy.rs");
+    let file_str = module.to_string_lossy().to_string();
+    let harness_cache = tmp.path().join("harness-cache");
+
+    let mut frontend = spawn_rust_frontend_with_env(vec![(
+        "SHATTER_HARNESS_CACHE".to_string(),
+        harness_cache.to_string_lossy().into_owned(),
+    )])
+    .await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "noisy_classify").await;
+    assert_eq!(analysis.params.len(), 1, "noisy_classify takes 1 param");
+    instrument_function(&mut frontend, &file_str, "noisy_classify").await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(30),
+        max_executions: Some(80),
+        plateau_threshold: 20,
+        ..Default::default()
+    };
+    let seed_inputs = vec![vec![serde_json::json!(5)], vec![serde_json::json!(-3)]];
+
+    let explore_outcome = orchestrator::explore(
+        &mut frontend,
+        "noisy_classify",
+        seed_inputs,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await;
+
+    let (result, _) = match explore_outcome {
+        Ok(pair) => pair,
+        Err(err) => {
+            let message = format!("{err:?}");
+            if is_offline_compile_error(&message) {
+                eprintln!("skipping e2e_rust_crate_bridge_printing_target: {message}");
+                frontend.shutdown().await.expect("frontend shutdown failed");
+                return;
+            }
+            panic!("orchestrator::explore failed: {message}");
+        }
+    };
+    frontend.shutdown().await.expect("frontend shutdown failed");
+
+    // Harness mode: a crate_bridge harness for this crate must exist in the
+    // pinned cache (`<cache>/rust/crate-bridge/<key>/crate-shadow`).
+    let bridge_root = harness_cache.join("rust").join("crate-bridge");
+    let bridged = std::fs::read_dir(&bridge_root)
+        .unwrap_or_else(|e| {
+            let listing: Vec<String> = walk_dir_names(&harness_cache, 3);
+            panic!(
+                "no crate_bridge harness under {}: {e}\nharness cache contents: {listing:#?}\nreturns: {:?}",
+                bridge_root.display(),
+                return_value_set(&result)
+            )
+        })
+        .filter_map(Result::ok)
+        .any(|entry| {
+            std::fs::read_to_string(entry.path().join("crate-shadow/src/noisy.rs"))
+                .is_ok_and(|s| s.contains("fn noisy_classify") && s.contains("shatter_crate_bridge_entry"))
+        });
+    assert!(
+        bridged,
+        "noisy_classify must execute through the crate_bridge harness (none found under {})",
+        bridge_root.display()
+    );
+
+    let return_values = return_value_set(&result);
+    assert!(
+        return_values.iter().all(|v| !v.starts_with("ERROR:")),
+        "printing target must never fail as an output-parse error; got: {return_values:?}"
+    );
+    for expected in ["-1", "0", "42"] {
+        assert!(
+            return_values.contains(expected),
+            "should reach the branch returning {expected} (n == 42 needs Z3); found: {return_values:?}"
+        );
+    }
+
+    // The target's output is reported as console_output, not lost or parsed.
+    let (_, _, first) = result
+        .raw_results
+        .first()
+        .expect("explore must record executions");
+    let console: Vec<(&str, &str)> = first
+        .side_effects
+        .iter()
+        .filter_map(|se| match se {
+            shatter_core::execution_record::SideEffect::ConsoleOutput { level, message } => {
+                Some((level.as_str(), message.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        console
+            .iter()
+            .any(|(level, m)| *level == "log" && m.starts_with("classifying ")),
+        "stdout must be captured as console_output: {console:?}"
+    );
+    assert!(
+        console
+            .iter()
+            .any(|(level, m)| *level == "error" && m.starts_with("stderr ")),
+        "stderr must be captured as console_output: {console:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
