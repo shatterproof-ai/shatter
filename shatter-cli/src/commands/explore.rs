@@ -184,6 +184,21 @@ fn new_discoveries_in_batch(
 /// - `shrink_stats`: last-wins. The field is a set of aggregate counters; the
 ///   last batch's stats reflect the most recent shrink phase.
 /// - `stubbed_modules`: concatenated, then sorted + deduped on finalization.
+/// - `solver_guided_inputs`: summed (saturating) across batches.
+/// - `stop_reason`: taken from the last *successful* batch. A resumed-only
+///   function merges just its prior artifact's observation, so it keeps the
+///   prior value; failed batches never overwrite it.
+/// - `timed_out`: taken from the same (last successful) batch as
+///   `stop_reason`, never OR-ed. Core guarantees `stop_reason ==
+///   TimeoutExplore` iff `timed_out`, and `timed_out` drives the
+///   "failed" outcome classification, so the pair must not contradict. A
+///   resumed function is never enqueued for further batches (only
+///   "completed" summary entries resume, and a timed-out function is
+///   recorded "failed"), so in practice the pair comes from one batch.
+/// - `oracle_stats`: last `Some` wins (cumulative telemetry snapshot).
+/// - `budget_claimed`: summed (saturating).
+/// - `budget_allocated`: max across batches. Only the scan orchestrator sets
+///   it, but a resumed prior artifact may carry it, so it is preserved.
 ///
 /// If *every* batch for a function errored, `into_result` returns the last
 /// error so the failure is surfaced in the explore summary.
@@ -208,6 +223,12 @@ struct ExploreResultAccumulator {
     abandoned_frontiers: Vec<(u32, u32)>,
     opaque_suggestions: Vec<shatter_core::executability::OpaqueSuggestion>,
     stubbed_modules: Vec<String>,
+    solver_guided_inputs: usize,
+    stop_reason: shatter_core::explorer::StopReason,
+    timed_out: bool,
+    oracle_stats: Option<shatter_core::oracle::OracleStats>,
+    budget_claimed: u32,
+    budget_allocated: u32,
     last_error: Option<String>,
     successful_batches: u32,
     batches_merged: u32,
@@ -232,6 +253,12 @@ impl ExploreResultAccumulator {
             abandoned_frontiers: Vec::new(),
             opaque_suggestions: Vec::new(),
             stubbed_modules: Vec::new(),
+            solver_guided_inputs: 0,
+            stop_reason: Default::default(),
+            timed_out: false,
+            oracle_stats: None,
+            budget_claimed: 0,
+            budget_allocated: 0,
             last_error: None,
             successful_batches: 0,
             batches_merged: 0,
@@ -279,6 +306,16 @@ impl ExploreResultAccumulator {
                 self.abandoned_frontiers.extend(obs.abandoned_frontiers);
                 self.opaque_suggestions.extend(obs.opaque_suggestions);
                 self.stubbed_modules.extend(obs.stubbed_modules);
+                self.solver_guided_inputs = self
+                    .solver_guided_inputs
+                    .saturating_add(obs.solver_guided_inputs);
+                self.stop_reason = obs.stop_reason;
+                self.timed_out = obs.timed_out;
+                if obs.oracle_stats.is_some() {
+                    self.oracle_stats = obs.oracle_stats;
+                }
+                self.budget_claimed = self.budget_claimed.saturating_add(obs.budget_claimed);
+                self.budget_allocated = self.budget_allocated.max(obs.budget_allocated);
             }
             Err(e) => {
                 self.last_error = Some(e);
@@ -323,7 +360,12 @@ impl ExploreResultAccumulator {
             abandoned_frontiers: self.abandoned_frontiers,
             opaque_suggestions: self.opaque_suggestions,
             stubbed_modules: stubbed,
-            ..Default::default()
+            solver_guided_inputs: self.solver_guided_inputs,
+            stop_reason: self.stop_reason,
+            timed_out: self.timed_out,
+            oracle_stats: self.oracle_stats,
+            budget_claimed: self.budget_claimed,
+            budget_allocated: self.budget_allocated,
         })
     }
 }
@@ -7568,6 +7610,143 @@ mod tests {
         let obs = acc.into_result().expect("ok");
         assert_eq!(obs.lines_covered, 7);
         assert_eq!(obs.total_lines, 10);
+    }
+
+    /// Batch observation carrying the engine-computed accounting fields that
+    /// `ExploreResultAccumulator` must not drop (str-49drv.74).
+    fn obs_accounting(
+        stop_reason: shatter_core::explorer::StopReason,
+        solver_guided_inputs: usize,
+        timed_out: bool,
+    ) -> shatter_core::explorer::ObservationOutput {
+        shatter_core::explorer::ObservationOutput {
+            iterations: 10,
+            solver_guided_inputs,
+            stop_reason,
+            timed_out,
+            ..obs_with(10, 1, 10, vec![], vec![])
+        }
+    }
+
+    #[test]
+    fn accumulator_carries_stop_reason_and_solver_guided_inputs() {
+        use shatter_core::explorer::StopReason;
+        let mut acc = ExploreResultAccumulator::new("f".to_string());
+        acc.merge(Ok(obs_accounting(StopReason::MaxIterations, 3, false)));
+        acc.merge(Ok(obs_accounting(StopReason::MaxExecutions, 4, false)));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.solver_guided_inputs, 7, "summed across batches");
+        assert_eq!(obs.stop_reason, StopReason::MaxExecutions, "last batch wins");
+    }
+
+    #[test]
+    fn accumulator_stop_reason_ignores_failed_batches() {
+        use shatter_core::explorer::StopReason;
+        let mut acc = ExploreResultAccumulator::new("f".to_string());
+        acc.merge(Ok(obs_accounting(StopReason::CoveragePlateau, 1, false)));
+        acc.merge(Err("boom".to_string()));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.stop_reason, StopReason::CoveragePlateau);
+    }
+
+    #[test]
+    fn accumulator_resumed_only_keeps_prior_stop_reason() {
+        use shatter_core::explorer::StopReason;
+        let mut acc = ExploreResultAccumulator::new("f".to_string());
+        // The resume path merges the deserialized prior observation once.
+        acc.merge(Ok(obs_accounting(StopReason::McdcComplete, 5, false)));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.stop_reason, StopReason::McdcComplete);
+        assert_eq!(obs.solver_guided_inputs, 5);
+    }
+
+    #[test]
+    fn accumulator_timed_out_follows_stop_reason_last_batch_wins() {
+        use shatter_core::explorer::StopReason;
+        // A timed-out batch followed by a batch that ran to its budget must
+        // not leave the merged result claiming both timed_out and
+        // MaxIterations: core guarantees `TimeoutExplore <=> timed_out`, and
+        // the merge preserves it by taking both from the same (last) batch.
+        let mut acc = ExploreResultAccumulator::new("f".to_string());
+        acc.merge(Ok(obs_accounting(StopReason::TimeoutExplore, 0, true)));
+        acc.merge(Ok(obs_accounting(StopReason::MaxIterations, 0, false)));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.stop_reason, StopReason::MaxIterations);
+        assert!(!obs.timed_out);
+
+        // Reverse order: the final batch timing out is reported as timed out.
+        let mut acc = ExploreResultAccumulator::new("f".to_string());
+        acc.merge(Ok(obs_accounting(StopReason::MaxIterations, 0, false)));
+        acc.merge(Ok(obs_accounting(StopReason::TimeoutExplore, 0, true)));
+        let obs = acc.into_result().expect("ok");
+        assert_eq!(obs.stop_reason, StopReason::TimeoutExplore);
+        assert!(obs.timed_out);
+    }
+
+    #[test]
+    fn accumulator_carries_budget_allocated_taking_larger() {
+        use shatter_core::explorer::StopReason;
+        let with_budget = |n: u32| shatter_core::explorer::ObservationOutput {
+            budget_allocated: n,
+            ..obs_accounting(StopReason::MaxIterations, 0, false)
+        };
+        // Resumed-only: the prior artifact's value survives.
+        let mut acc = ExploreResultAccumulator::new("f".to_string());
+        acc.merge(Ok(with_budget(40)));
+        assert_eq!(acc.into_result().expect("ok").budget_allocated, 40);
+        // Both sides set: the larger wins, regardless of order.
+        for (a, b) in [(40, 25), (25, 40), (0, 40), (40, 0)] {
+            let mut acc = ExploreResultAccumulator::new("f".to_string());
+            acc.merge(Ok(with_budget(a)));
+            acc.merge(Ok(with_budget(b)));
+            assert_eq!(acc.into_result().expect("ok").budget_allocated, a.max(b));
+        }
+    }
+
+    proptest::proptest! {
+        /// Merge invariants: solver_guided_inputs is the (saturating) sum of
+        /// the successful batches, stop_reason is the last successful batch's,
+        /// timed_out is the last successful batch's (never contradicts stop_reason) — independent of interleaved failed batches.
+        #[test]
+        fn accumulator_accounting_merge_invariants(
+            batches in proptest::collection::vec(
+                (0usize..1000, 0u8..6, proptest::bool::ANY, proptest::bool::ANY),
+                1..8,
+            ),
+        ) {
+            use shatter_core::explorer::StopReason;
+            let reason = |n: u8| match n {
+                0 => StopReason::MaxIterations,
+                1 => StopReason::MaxExecutions,
+                2 => StopReason::CoveragePlateau,
+                3 => StopReason::WorklistExhausted,
+                4 => StopReason::TimeoutExplore,
+                _ => StopReason::McdcComplete,
+            };
+            let mut acc = ExploreResultAccumulator::new("f".to_string());
+            let (mut sum, mut last, mut last_timeout, mut ok_count) =
+                (0usize, None, false, 0u32);
+            for (sgi, r, timed_out, fail) in &batches {
+                if *fail {
+                    acc.merge(Err("x".to_string()));
+                } else {
+                    acc.merge(Ok(obs_accounting(reason(*r), *sgi, *timed_out)));
+                    sum += sgi;
+                    last = Some(reason(*r));
+                    last_timeout = *timed_out;
+                    ok_count += 1;
+                }
+            }
+            match acc.into_result() {
+                Ok(obs) => {
+                    proptest::prop_assert!(ok_count > 0);
+                    proptest::prop_assert_eq!(obs.solver_guided_inputs, sum);
+                    proptest::prop_assert_eq!(Some(obs.stop_reason), last);
+                    proptest::prop_assert_eq!(obs.timed_out, last_timeout);
+                }
+                Err(_) => proptest::prop_assert_eq!(ok_count, 0),
+            }
+        }
     }
 
     #[test]
