@@ -7,7 +7,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::invariants::{PathPredicateRecord, PredicateValidationError, validate_path_predicate};
+use crate::invariants::{
+    PathPredicateRecord, PredicateValidationError, validate_path_predicate_stored_evidence,
+};
 
 /// Wire version for a collection of path predicate records.
 pub const PATH_PREDICATE_BUNDLE_SCHEMA_VERSION: u32 = 1;
@@ -41,7 +43,7 @@ fn validate_bundle(bundle: &PathPredicateBundle) -> Result<(), PathPredicateStor
     }
     let mut seen = HashSet::new();
     for record in &bundle.predicates {
-        validate_path_predicate(record)?;
+        validate_path_predicate_stored_evidence(record)?;
         if !seen.insert(&record.predicate_id) {
             return Err(PathPredicateStoreError::DuplicateId(
                 record.predicate_id.clone(),

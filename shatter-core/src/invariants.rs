@@ -1006,13 +1006,22 @@ pub fn validate_path_predicate(
     if evidence.holds.checked_add(evidence.violated) != Some(evidence.eligible) {
         return Err(PredicateValidationError::InvalidEvidence);
     }
+    if predicate.predicate_id != canonical_path_predicate_id(predicate)? {
+        return Err(PredicateValidationError::InvalidId);
+    }
+    Ok(())
+}
+
+/// Apply the stricter evidence-store rules without changing v1 record parsing.
+pub(crate) fn validate_path_predicate_stored_evidence(
+    predicate: &PathPredicateRecord,
+) -> Result<(), PredicateValidationError> {
+    validate_path_predicate(predicate)?;
+    let evidence = &predicate.evidence;
     if !valid_witnesses(&evidence.supporting_witnesses, evidence.holds)
         || !valid_witnesses(&evidence.refuting_witnesses, evidence.violated)
     {
         return Err(PredicateValidationError::InvalidEvidence);
-    }
-    if predicate.predicate_id != canonical_path_predicate_id(predicate)? {
-        return Err(PredicateValidationError::InvalidId);
     }
     Ok(())
 }
@@ -1035,7 +1044,7 @@ pub fn record_path_predicate_observation(
     observation: &PathObservation,
     witness: Option<&str>,
 ) -> Result<PredicateEvaluation, PredicateEvidenceError> {
-    validate_path_predicate(record)?;
+    validate_path_predicate_stored_evidence(record)?;
     if witness == Some("") {
         return Err(PredicateEvidenceError::EmptyWitness);
     }
@@ -1339,6 +1348,23 @@ mod tests {
         let original = record.clone();
         assert!(matches!(
             record_path_predicate_observation(&mut record, &holding, None),
+            Err(PredicateEvidenceError::InvalidRecord(_))
+        ));
+        assert_eq!(record, original);
+    }
+
+    #[test]
+    fn legacy_v1_parser_still_accepts_witness_metadata_rejected_by_accumulation() {
+        let mut record = scalar_predicate(PathCompareOp::Eq);
+        record.evidence.eligible = 2;
+        record.evidence.holds = 2;
+        record.evidence.supporting_witnesses = vec!["duplicate".into(), "duplicate".into()];
+        let json = serde_json::to_string(&record).expect("serialize");
+        assert_eq!(parse_path_predicate(&json).expect("legacy parse"), record);
+        let original = record.clone();
+        let observation = scalar_observation(json!(1), json!(1));
+        assert!(matches!(
+            record_path_predicate_observation(&mut record, &observation, None),
             Err(PredicateEvidenceError::InvalidRecord(_))
         ));
         assert_eq!(record, original);
