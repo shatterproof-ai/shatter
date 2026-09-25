@@ -6,7 +6,7 @@ priority: P2
 type: bug
 labels: [rust-frontend, reporting, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
-blocked_by: []
+blocked_by: [str-4yc9w]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
@@ -63,8 +63,9 @@ deserializ` and `input_error` find no Rust-side duplicate.
 
 - [ ] All nine sites above emit a distinct classification for a failed parameter decode: either a
   `thrown_error.error_type` such as `input_error`, or a distinct execute-result outcome. It must be
-  the same one str-4yc9w chooses for Go. Coordinate on str-4yc9w before picking, and name the
-  choice in the close note.
+  the same one str-4yc9w lands for Go. **str-4yc9w owns the choice** (it is the open P1 already
+  working on Go's decode-error outcome), which is why this issue is blocked by it: implement the
+  classification str-4yc9w lands, name it in the close note, and do not introduce a second one.
 - [ ] The core and report layers treat that outcome as a tool or input error. It is not counted as
   a target behaviour or finding in explore and scan output, and it is counted in the run's error
   summary.

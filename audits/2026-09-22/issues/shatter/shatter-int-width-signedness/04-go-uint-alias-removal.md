@@ -5,8 +5,7 @@ title: "Remove the deprecated go_uint/go_byte TypeInfo aliases after the compati
 priority: P3
 type: task
 labels: [go-frontend, protocol, parity, audit-2026-09-22]
-parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
-parent_slug: int-width-signedness-epic
+parent_epic: "Epic: Audit 2026-09-22 findings"
 blocked_by: [go-int-width-sign-emission]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"

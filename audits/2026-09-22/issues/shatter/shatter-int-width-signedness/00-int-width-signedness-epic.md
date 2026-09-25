@@ -73,9 +73,9 @@ fixtures and commands are in the children:
    integer kind. The core keeps `go_uint`/`go_byte` only as deprecated aliases. This step adds a
    parity-matrix row and conformance cases. It is blocked by 2 because `go_uint` already generates
    `u64::MAX`, and moving Go to the plain int path earlier would lose that boundary.
-4. `go-uint-alias-removal` (P3, blocked by 3): remove the aliases once the compatibility window has
-   passed. This is a deferred cleanup with its own release-based trigger. It is not part of
-   "Done when".
+Follow-up, not a child: `go-uint-alias-removal` (P3, blocked by 3, parented to the audit epic)
+removes the aliases once the compatibility window has passed. It is a deferred cleanup with its own
+release-based trigger, so it is kept out of this epic and cannot hold the epic open.
 
 ## Related, not a child
 
@@ -93,9 +93,6 @@ reporting. Every proof here asserts on the generated input values themselves.
   `examples/go/int-width`, with both the default and the `--concolic` explorer. Paste the four
   summary lines in the epic close reason.
 
-`go-uint-alias-removal` may still be open when the epic closes, because it waits on a release
-window. If `bd close` refuses to close an epic with an open child, re-parent that child to the
-audit epic first and say so in the close reason.
 
 ## Out of scope
 

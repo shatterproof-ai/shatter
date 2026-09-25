@@ -1,10 +1,7 @@
-# Bundle: shatter-int-width-signedness (repo shatter), revision 3
+# Bundle: shatter-int-width-signedness (repo shatter), revision 4
 
-All paths are relative to the shatter repo root (github: shatterproof-ai/shatter); code line numbers verified at 16794cef. Drafts 00-04 are this bucket (epic + four children). The last draft, rust-input-deserialize-classification (bucket shatter-frontend-rust), is included as **Related, not a child**: it files under the audit epic, not this one.
+All paths are relative to the shatter repo root (github: shatterproof-ai/shatter), checkout at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22; code line numbers verified at 16794cef. Drafts 00-03 are the epic and its three children. 04 (go-uint-alias-removal) is a follow-up parented to the audit epic. The last draft (rust-input-deserialize-classification) is related, not a child.
 
----
-
-<!-- 00-int-width-signedness-epic.md -->
 ---
 slug: int-width-signedness-epic
 kind: new
@@ -80,9 +77,9 @@ fixtures and commands are in the children:
    integer kind. The core keeps `go_uint`/`go_byte` only as deprecated aliases. This step adds a
    parity-matrix row and conformance cases. It is blocked by 2 because `go_uint` already generates
    `u64::MAX`, and moving Go to the plain int path earlier would lose that boundary.
-4. `go-uint-alias-removal` (P3, blocked by 3): remove the aliases once the compatibility window has
-   passed. This is a deferred cleanup with its own release-based trigger. It is not part of
-   "Done when".
+Follow-up, not a child: `go-uint-alias-removal` (P3, blocked by 3, parented to the audit epic)
+removes the aliases once the compatibility window has passed. It is a deferred cleanup with its own
+release-based trigger, so it is kept out of this epic and cannot hold the epic open.
 
 ## Related, not a child
 
@@ -100,9 +97,6 @@ reporting. Every proof here asserts on the generated input values themselves.
   `examples/go/int-width`, with both the default and the `--concolic` explorer. Paste the four
   summary lines in the epic close reason.
 
-`go-uint-alias-removal` may still be open when the epic closes, because it waits on a release
-window. If `bd close` refuses to close an epic with an open child, re-parent that child to the
-audit epic first and say so in the close reason.
 
 ## Out of scope
 
@@ -113,9 +107,9 @@ audit epic first and say so in the close reason.
 - Z3 range assertions for integers nested inside objects or arrays. Today only top-level params are
   asserted (`solver.rs:172-180`).
 
+
 ---
 
-<!-- 01-int-unsigned64-clamp.md -->
 ---
 slug: int-unsigned64-clamp
 kind: new
@@ -387,9 +381,9 @@ S–M
 - str-qwua7.14 (closed): walkthrough param-type disagreement.
 - None of these duplicate this draft (see the epic's tracker table).
 
+
 ---
 
-<!-- 02-core-int-range-i128.md -->
 ---
 slug: core-int-range-i128
 kind: new
@@ -574,9 +568,9 @@ M–L
   int path.
 - No existing tracker issue covers i128 or `IntRange` (`bd search` returns nothing).
 
+
 ---
 
-<!-- 03-go-int-width-sign-emission.md -->
 ---
 slug: go-int-width-sign-emission
 kind: new
@@ -763,7 +757,12 @@ Z3 on the literals and through `go_uint`'s `u64::MAX`. That coverage must not re
   (`export.rs:513`, `:589`) still emits Go `byte`/`uint16` etc. from the new TypeInfo.
 - [ ] **Deprecated aliases.** The core still accepts `go_uint`/`go_byte` on the wire and treats
   them as `Int { 64, false }` / `Int { 8, false }` on the `int_range` path, not through the
-  separate generators. A deserialization test covers each alias. SPEC §8 gets a changelog row
+  separate generators. A deserialization test covers each alias. **Compatibility test:** feed the
+  core an analyze response exactly as today's `shatter-go` emits it (capture one from main for the
+  fixture's `AtMaxUint64`/`AtMaxByte` params into a golden file, with
+  `{"kind":"complex","complex_kind":"go_uint"}` / `"go_byte"` and the old handshake's
+  `complex_type:go_byte` declaration). Assert that the core accepts the handshake, and that every
+  generated input for those params is within `uint64`/`uint8` bounds. SPEC §8 gets a changelog row
   marking both deprecated, pointing to `go-uint-alias-removal`. The aliases exist so that an older
   installed `shatter-go` binary still works with a newer core. The Go frontend stops declaring
   `complex_type:go_byte`. Update `handler.go:306`, the handshake golden and `registry.yaml` to
@@ -786,7 +785,17 @@ Z3 on the literals and through `go_uint`'s `u64::MAX`. That coverage must not re
   The case is `#[ignore]`d, and no `SHATTER_EXAMPLES_DIR` is needed for a repo-local fixture.
   Paste the failing `test result:` line from main and the passing line from the branch.
 - [ ] Re-run the baseline on the branch, once with the default explorer and once with
-  `--concolic`. Both checker runs print `out of bounds: 0`.
+  `--concolic`, from a fresh copy each time so artifacts from the first run cannot be resumed:
+  ```bash
+  for mode in "" "--concolic"; do
+    tmp=$(mktemp -d) && cp -r examples/go/int-width "$tmp"/
+    target/debug/shatter explore "$tmp/int-width/widths.go" --allow-host-writes \
+      --max-iterations 60 --request-timeout 240 $mode
+    python3 scripts/check_go_int_width_bounds.py "$tmp/int-width/shatter-artifacts"
+    rm -rf "$tmp"
+  done
+  ```
+  Both checker runs print `out of bounds: 0`.
 - [ ] `shatter-go/CLAUDE.md` documents the protocol-visible change. `task e2e` and
   `task affected` pass, with `Gates selected` recorded.
 - [ ] `go-uint-alias-removal` is filed (it is part of this epic's drafts). Its id goes in this
@@ -815,9 +824,9 @@ M
 - No existing tracker issue covers Go int width emission (`bd search go_uint` and `int8` return
   nothing).
 
+
 ---
 
-<!-- 04-go-uint-alias-removal.md -->
 ---
 slug: go-uint-alias-removal
 kind: new
@@ -825,8 +834,7 @@ title: "Remove the deprecated go_uint/go_byte TypeInfo aliases after the compati
 priority: P3
 type: task
 labels: [go-frontend, protocol, parity, audit-2026-09-22]
-parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
-parent_slug: int-width-signedness-epic
+parent_epic: "Epic: Audit 2026-09-22 findings"
 blocked_by: [go-int-width-sign-emission]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
@@ -906,9 +914,9 @@ S
 - str-ieuc (closed): `go_byte`.
 - No existing tracker issue covers the removal.
 
+
 ---
 
-<!-- Related, not a child: ../shatter-frontend-rust/15-rust-input-deserialize-classification.md -->
 ---
 slug: rust-input-deserialize-classification
 kind: new
@@ -917,7 +925,7 @@ priority: P2
 type: bug
 labels: [rust-frontend, reporting, audit]
 parent_epic: "Epic: Audit 2026-09-22 findings"
-blocked_by: []
+blocked_by: [str-4yc9w]
 existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
@@ -974,8 +982,9 @@ deserializ` and `input_error` find no Rust-side duplicate.
 
 - [ ] All nine sites above emit a distinct classification for a failed parameter decode: either a
   `thrown_error.error_type` such as `input_error`, or a distinct execute-result outcome. It must be
-  the same one str-4yc9w chooses for Go. Coordinate on str-4yc9w before picking, and name the
-  choice in the close note.
+  the same one str-4yc9w lands for Go. **str-4yc9w owns the choice** (it is the open P1 already
+  working on Go's decode-error outcome), which is why this issue is blocked by it: implement the
+  classification str-4yc9w lands, name it in the close note, and do not introduce a second one.
 - [ ] The core and report layers treat that outcome as a tool or input error. It is not counted as
   a target behaviour or finding in explore and scan output, and it is counted in the run's error
   summary.
@@ -1014,3 +1023,7 @@ S
   goals-15).
 - Related: str-4yc9w (open, Go), str-cfsa (closed, Go), epic `int-width-signedness-epic` (related,
   not the parent).
+
+
+---
+

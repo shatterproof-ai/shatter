@@ -184,7 +184,12 @@ Z3 on the literals and through `go_uint`'s `u64::MAX`. That coverage must not re
   (`export.rs:513`, `:589`) still emits Go `byte`/`uint16` etc. from the new TypeInfo.
 - [ ] **Deprecated aliases.** The core still accepts `go_uint`/`go_byte` on the wire and treats
   them as `Int { 64, false }` / `Int { 8, false }` on the `int_range` path, not through the
-  separate generators. A deserialization test covers each alias. SPEC §8 gets a changelog row
+  separate generators. A deserialization test covers each alias. **Compatibility test:** feed the
+  core an analyze response exactly as today's `shatter-go` emits it (capture one from main for the
+  fixture's `AtMaxUint64`/`AtMaxByte` params into a golden file, with
+  `{"kind":"complex","complex_kind":"go_uint"}` / `"go_byte"` and the old handshake's
+  `complex_type:go_byte` declaration). Assert that the core accepts the handshake, and that every
+  generated input for those params is within `uint64`/`uint8` bounds. SPEC §8 gets a changelog row
   marking both deprecated, pointing to `go-uint-alias-removal`. The aliases exist so that an older
   installed `shatter-go` binary still works with a newer core. The Go frontend stops declaring
   `complex_type:go_byte`. Update `handler.go:306`, the handshake golden and `registry.yaml` to
@@ -207,7 +212,17 @@ Z3 on the literals and through `go_uint`'s `u64::MAX`. That coverage must not re
   The case is `#[ignore]`d, and no `SHATTER_EXAMPLES_DIR` is needed for a repo-local fixture.
   Paste the failing `test result:` line from main and the passing line from the branch.
 - [ ] Re-run the baseline on the branch, once with the default explorer and once with
-  `--concolic`. Both checker runs print `out of bounds: 0`.
+  `--concolic`, from a fresh copy each time so artifacts from the first run cannot be resumed:
+  ```bash
+  for mode in "" "--concolic"; do
+    tmp=$(mktemp -d) && cp -r examples/go/int-width "$tmp"/
+    target/debug/shatter explore "$tmp/int-width/widths.go" --allow-host-writes \
+      --max-iterations 60 --request-timeout 240 $mode
+    python3 scripts/check_go_int_width_bounds.py "$tmp/int-width/shatter-artifacts"
+    rm -rf "$tmp"
+  done
+  ```
+  Both checker runs print `out of bounds: 0`.
 - [ ] `shatter-go/CLAUDE.md` documents the protocol-visible change. `task e2e` and
   `task affected` pass, with `Gates selected` recorded.
 - [ ] `go-uint-alias-removal` is filed (it is part of this epic's drafts). Its id goes in this
