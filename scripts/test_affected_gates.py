@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -265,15 +266,25 @@ class AffectedGateMappingTests(unittest.TestCase):
 
     def test_test_scripts_guard_task_list_commands(self) -> None:
         unguarded = []
-        command_pattern = re.compile(
-            r"\[\s*['\"]task['\"]\s*,[^\]]*['\"]--list(?:-all)?['\"][^\]]*\]",
-            re.DOTALL,
-        )
         for directory in (ROOT / "scripts", ROOT / "demo"):
             for path in directory.glob("test_*.py"):
-                for match in command_pattern.finditer(path.read_text()):
-                    if not re.search(r"['\"]--dry['\"]", match.group()):
-                        unguarded.append(f"{path.relative_to(ROOT)}: {match.group()}")
+                tree = ast.parse(path.read_text(), filename=str(path))
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.List, ast.Tuple)):
+                        args = [
+                            item.value if isinstance(item, ast.Constant) else None
+                            for item in node.elts
+                        ]
+                        if args and args[0] == "task" and any(
+                            isinstance(arg, str) and arg.startswith("--list")
+                            for arg in args[1:]
+                        ) and "--dry" not in args:
+                            unguarded.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+                    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                        if re.search(r"\btask\s+--list(?:-all)?\b", node.value) and not re.search(
+                            r"(?:^|\s)--dry(?:\s|$)", node.value
+                        ):
+                            unguarded.append(f"{path.relative_to(ROOT)}:{node.lineno}")
         self.assertEqual(unguarded, [])
 
 
