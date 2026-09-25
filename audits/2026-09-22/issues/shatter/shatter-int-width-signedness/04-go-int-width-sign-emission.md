@@ -174,7 +174,8 @@ Recorded at 16794cef on 2026-09-24, before any epic child landed: the checker ex
 - `AtMaxUint64`: `null`.
 
 The branch base will already include `int-unsigned64-clamp`, `core-int-range-i128` and
-`core-go-alias-int-range`, so the count will differ. It must still be non-zero: the signed kinds
+`core-go-alias-int-range`, so the count will differ from the 16794cef recording above. Record the
+base commit (`git rev-parse HEAD` before your first change) next to the output. It must still be non-zero: the signed kinds
 are bare `int` and `uint16` is still a width-less `go_uint`. Paste the actual output. In the report
 out-of-range values appear as `throws function_error: param n: json: cannot unmarshal number 128
 into Go value of type int8`. The min/max branches are already reached, through Z3 on the literals
@@ -187,8 +188,9 @@ and the unsigned boundary seeds. That coverage must not regress.
 - [ ] **Analyzer.** The Go `TypeInfo` gains `IntWidth`/`IntSigned` (`json:"int_width,omitempty"`,
   `json:"int_signed,omitempty"`). Both mapping sites (`basicTypeInfo` and `typeInfoFromAST`) emit
   `{"kind":"int","int_width":W,"int_signed":S}` for every Go integer kind, including `uintptr` in
-  both. `int`, `uint` and `uintptr` use width 64, and a comment states the 64-bit-platform
-  assumption. `rune` is `(32, true)`; `byte` is `(8, false)`. Neither site emits `go_uint` or
+  both. `int`, `uint` and `uintptr` take their width from the analyzed
+  package's target sizes (`types.SizesFor("gc", GOARCH)` for the GOARCH the frontend loads with),
+  not a hard-coded 64. A unit test covers `GOARCH=amd64` (64) and `GOARCH=386` (32). `rune` is `(32, true)`; `byte` is `(8, false)`. Neither site emits `go_uint` or
   `go_byte` any more. Analyzer unit tests cover every kind at both sites.
 - [ ] **Planner and handler.** They recognize unsigned ints and `[]byte` from the new TypeInfo
   (`int_signed: false`; an array whose element is `int_width: 8, int_signed: false`) in

@@ -236,8 +236,10 @@ unsigned 64/128-bit functions and `-1` for `rank_u8` appear every time.
   reach.
 - [ ] `task e2e` and `task affected` pass, with `Gates selected` recorded. `task e2e` uses
   `python3 scripts/examples_checkout.py` for the other suites.
-- [ ] `shatter-llm-parse-validation` is filed with a `blocked_by` on this issue. Post a comment
-  there when this issue lands, so its width check uses the corrected helper.
+- [ ] When this issue lands, post a comment on the issue filed from draft
+  `shatter-llm-parse-validation` (a separate audit draft in bucket shatter-frontend-rust, filed in
+  the same batch and already `blocked_by` this issue) saying the corrected helper is available.
+  That issue is not a child of this epic, and its completion is not part of this issue.
 
 ## Suggested approach
 

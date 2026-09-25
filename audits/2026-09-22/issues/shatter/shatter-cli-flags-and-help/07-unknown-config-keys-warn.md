@@ -17,7 +17,7 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 Shatter type-checks config values but not config keys. A typo such as `--set defaults.max_iteratons=5`, or a misspelled key in `.shatter/config.yaml` or `shatter.config.json`, is silently dropped. The run continues with the default value, exits 0, and prints no warning. The user believes the setting took effect. The Go frontend's config loader already warns on unknown top-level keys, so the core is inconsistent with it as well.
 
-A related silent drop: `--set` is a global flag, but only `explore` applies it (`main.rs:437` is the only reader of `cli.set_overrides`). `scan --set ...` and `run --set ...` accept the flag and ignore it entirely, so even a correctly spelled key has no effect there. help-hides-execution-flags removes `--set` from those commands; until it lands, this issue makes the drop visible.
+A related silent drop: `--set` is a global flag, but only `explore` applies it (`main.rs:437` is the only reader of `cli.set_overrides`). `scan --set ...` and `run --set ...` accept the flag and ignore it entirely, so even a correctly spelled key has no effect there. That flag-scoping problem is owned by help-hides-execution-flags (which removes `--set` from those commands), not by this issue.
 
 ## Evidence
 
@@ -35,10 +35,9 @@ Re-verified against `audit-2026-09-22` (source at `56c86168`):
 
 ## Acceptance criteria
 
-- [ ] An unknown key in `.shatter/config.yaml`, in `shatter.config.json`, or in a `--set KEY=VALUE` override produces exactly one warning on stderr per key per run, at every load site listed above (per-function config and LLM config). The warning names the source (file path or `--set`), the full dotted key path and, when a known key is close, a "did you mean `defaults.max_iterations`?" suggestion.
+- [ ] An unknown key in `.shatter/config.yaml`, in `shatter.config.json`, or in a `--set KEY=VALUE` override produces exactly one warning on stderr per distinct (source, dotted key path) per process, whichever load site sees it first (a typo in `--set` parsed for both the per-function and LLM config warns once; the same typo in two different config files warns once per file), at every load site listed above (per-function config and LLM config). The warning names the source (file path or `--set`), the full dotted key path and, when a known key is close, a "did you mean `defaults.max_iterations`?" suggestion.
 - [ ] A strict mode turns those warnings into a usage error (exit 2). Pick one form (`--strict-config` flag, config key, or env var), document it in the config reference, and test it.
 - [ ] `parse_set_overrides_unknown_field_is_ignored_by_serde` is replaced by tests that assert (a) the warning and suggestion for a typo in `--set` on `explore`, (b) the same for a typo in a YAML config file, (c) exit 2 in strict mode, and (d) no warning for a valid config (use the repo's own example configs and `demo/` configs as a no-false-positive check). Tests (a) and (b) fail before the change; the close comment records both runs.
-- [ ] `--set` on a command that does not apply it is not silent: either it is rejected by clap (if help-hides-execution-flags has landed) or the command prints `warning: --set is ignored by <cmd>` on stderr. A CLI test covers `scan <dir> --set defaults.max_iterations=5` and asserts whichever of the two applies at close time.
 - [ ] Keys that are legitimately open-ended (maps keyed by user data, if any) do not warn. List them in the close comment.
 - [ ] Warnings go to stderr only, so JSON stdout contracts (`shatter-cli/tests/json_stdout_contract.rs`) still pass.
 - [ ] `task affected` passes, and the close comment records the gates selected.
@@ -52,7 +51,7 @@ Wrap the deserializer at each config load site, and in `parse_set_overrides`, wi
 - A generated config reference document (str-qwua7.21.1).
 - Validating free-string format values for stale/revalidate (str-9ee5).
 - Changes to the Go frontend loader, which already warns.
-- Making scan/run apply `--set` (see help-hides-execution-flags).
+- `--set` on scan/run, whether applied, warned or rejected (owned by help-hides-execution-flags).
 
 ## Dependencies
 

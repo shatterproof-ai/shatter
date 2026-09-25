@@ -64,3 +64,13 @@ Other changes in this revision:
   children land the out-of-bounds count changes but stays non-zero.
 - `BUNDLE.md` regenerated as revision 5 (00-05 plus the related
   `shatter-frontend-rust/15-rust-input-deserialize-classification.md`).
+
+## Revision 6 (2026-09-24, applied directly after Codex round 5)
+
+| Finding | Action |
+|---|---|
+| MAJOR Go int/uint/uintptr width hard-coded to 64 | Applied: width comes from `types.SizesFor("gc", GOARCH)`, with tests for amd64 and 386 |
+| MAJOR epic requires filing shatter-llm-parse-validation | Applied: 01 now only posts a comment on that separate draft, which is not part of this issue |
+| MINOR Go baseline commit unpinned | Applied: record the branch-base SHA next to the output |
+
+No further Codex round: findings were down to scope and wording, with no blockers.

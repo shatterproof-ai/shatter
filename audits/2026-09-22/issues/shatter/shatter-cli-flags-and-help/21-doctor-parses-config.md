@@ -65,8 +65,9 @@ Exit status 2.
   for `shatter.config.json`. It does not add a second parser.
 - [ ] A file that fails to parse is shown as `invalid: <error>` in place of `present`. The error
   text includes the line and column from the parser.
-- [ ] An invalid config makes `doctor` exit non-zero, like its existing failing checks
-  (`run_doctor` returns `Ok(false)`).
+- [ ] An invalid config makes `doctor` exit 1, the same status as its existing failing checks
+  (`run_doctor` returns `Ok(false)`). Each file is reported on its own line; if both files are
+  invalid, both lines show `invalid:` and the exit status is still 1.
 - [ ] Tests with a fixture: (a) `foo: [unclosed` in `.shatter/config.yaml` gives `invalid:` with
   line/column and a failing result; (b) invalid JSON in `shatter.config.json` does the same;
   (c) valid configs are still reported as `present` and do not fail. Test (a) fails on main; the
