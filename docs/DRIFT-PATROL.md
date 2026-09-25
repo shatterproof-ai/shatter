@@ -28,11 +28,17 @@ The workflow also runs the patrol's own unit tests on any pull request that
 touches `scripts/drift-patrol.py`. That self-test only covers the Python; it
 does not execute the `patrol` job, which is skipped on pull requests.
 `scripts/test_ci_workflow_structure.py` (run by `task meta`) guards the
-workflow itself by checking that every path it references (`go-version-file`,
-`working-directory`, `hashFiles(...)` globs, ...) exists in the checkout — the
-class of bug that kept the scheduled job red for seven weeks. Nothing yet
-alerts anyone to a persistently red scheduled run; that is tracked by
-`workflow-health-patrol` (`str-49drv.25`). The patrol itself does **not** gate pull requests: it reports repository-wide
+workflow itself, but only partly: it checks that `go-version-file`,
+`cache-dependency-path`, `node-version-file`, `working-directory`, and the
+single-quoted arguments of `hashFiles(...)` exist in the checkout — the class
+of bug that kept the scheduled job red for seven weeks. It does **not** check
+`uses: ./local-action`, other `with:` inputs such as `path`, `on.*.paths`
+filters, or repo-relative files named in `run:` commands, and values it skips
+(`${{ ... }}` expressions, non-literal `hashFiles` arguments) must be listed in
+the test's `EXPECTED_SKIPS`. Nothing yet alerts anyone to a persistently red
+scheduled run; that is tracked by `workflow-health-patrol` (`str-49drv.25`).
+
+The patrol itself does **not** gate pull requests: it reports repository-wide
 drift, and failing an unrelated branch because someone else left an issue
 `in_progress` would just train people to ignore it.
 

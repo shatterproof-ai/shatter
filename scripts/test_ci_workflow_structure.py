@@ -122,9 +122,23 @@ class CiWorkflowStructureTests(unittest.TestCase):
 # --- Path contract for every workflow (str-49drv.24) ------------------------
 #
 # A workflow that points setup-go at a file that does not exist fails ~20s
-# into every run (drift-patrol.yml did, 7/7 scheduled runs). Every literal
-# path a workflow references must exist in the checkout, and every glob must
-# match something.
+# into every run (drift-patrol.yml did, 7/7 scheduled runs).
+#
+# COVERED path kinds (each must exist in the checkout; globs must match):
+#   - with.go-version-file, with.cache-dependency-path (one path per line),
+#     with.node-version-file
+#   - step-level and job-default working-directory
+#   - single-quoted arguments of hashFiles(...) in `with:` and job `env:` values
+#
+# NOT covered (a wrong path of these kinds still goes undetected):
+#   - `uses: ./local-action` references
+#   - with.path and other `with:` inputs not listed above
+#   - on.*.paths / paths-ignore trigger filters
+#   - repo-relative scripts or files named inside `run:` commands
+#   - path values containing `${{ ... }}` other than a plain hashFiles call
+#     (reported as skipped, see EXPECTED_SKIPS)
+#   - hashFiles(...) calls whose arguments are not all single-quoted literals
+#     (reported as skipped, see EXPECTED_SKIPS)
 
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
@@ -132,6 +146,11 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 # Each entry needs a one-line reason. Empty today: every working-directory in
 # the workflows is a checked-in directory.
 RUNTIME_PATH_ALLOWLIST: dict[str, str] = {}
+
+# Values the checker skipped on purpose, as "workflow.yml: location: 'value'
+# (reason)" strings. The test fails on any skip not listed here, so a skip is
+# never silent. Empty today: no workflow needs one.
+EXPECTED_SKIPS: set[str] = set()
 
 PATH_INPUT_KEYS = ("go-version-file", "cache-dependency-path", "node-version-file")
 GLOB_CHARS = ("*", "?", "[")
@@ -184,8 +203,14 @@ def check_path_refs(workflow: dict, repo_root: Path, allowlist=None):
 
     for location, value in _workflow_path_refs(workflow):
         if "hashFiles(" in value:
-            for arg in _hashfiles_globs(value):
-                check_one(f"{location} hashFiles", arg)
+            for call in HASHFILES_RE.finditer(value):
+                raw_args = call.group("args")
+                literals = QUOTED_ARG_RE.findall(raw_args)
+                leftover = QUOTED_ARG_RE.sub("", raw_args).replace(",", "").strip()
+                if leftover or not literals:
+                    skipped.append(f"{location}: {call.group(0)!r} (non-literal hashFiles arguments)")
+                for arg in literals:
+                    check_one(f"{location} hashFiles", arg)
         elif "${{" in value:
             skipped.append(f"{location}: {value!r} (expression)")
         else:
@@ -199,13 +224,19 @@ class WorkflowPathContractTests(unittest.TestCase):
         workflows = sorted(WORKFLOWS_DIR.glob("*.yml"))
         self.assertTrue(workflows, "no workflows found")
         problems: list[str] = []
+        all_skipped: list[str] = []
         for wf in workflows:
             parsed = yaml.safe_load(wf.read_text(encoding="utf-8"))
             wf_problems, skipped = check_path_refs(parsed, REPO_ROOT)
             problems += [f"{wf.name}: {p}" for p in wf_problems]
-            for s in skipped:
-                print(f"skipped {wf.name}: {s}")
+            all_skipped += [f"{wf.name}: {s}" for s in skipped]
         self.assertFalse(problems, "\n" + "\n".join(problems))
+        unexpected = sorted(set(all_skipped) - EXPECTED_SKIPS)
+        self.assertFalse(
+            unexpected,
+            "path values skipped by the checker and not listed in EXPECTED_SKIPS:\n"
+            + "\n".join(unexpected),
+        )
 
     def test_drift_patrol_uses_shatter_go_module(self):
         parsed = yaml.safe_load(
@@ -272,6 +303,14 @@ class CheckPathRefsUnitTests(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertEqual(len(skipped), 1)
         self.assertIn("matrix.dir", skipped[0])
+
+    def test_non_literal_hashfiles_args_are_skipped_and_listed(self):
+        problems, skipped = check_path_refs(
+            self.wf(**{"with": {"key": 'k-${{ hashFiles("**/Missing.lock") }}'}}), self.root, {}
+        )
+        self.assertEqual(problems, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("non-literal hashFiles", skipped[0])
 
     def test_allowlisted_runtime_path_passes(self):
         wf = self.wf(**{"working-directory": "staging"})
