@@ -1,0 +1,4 @@
+### gate=clippy-workspace cmd=cargo clippy --workspace -- -D warnings start=2026-09-22T13:53:57-05:00 load=7.70 16.53 36.74
+   Compiling shatter-cli v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.16s
+### gate=clippy-workspace exit=0 wall=4s end=2026-09-22T13:54:01-05:00 load=7.70 16.53 36.74

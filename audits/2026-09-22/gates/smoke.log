@@ -1,0 +1,84 @@
+### gate=smoke cmd=task smoke start=2026-09-22T13:47:18-05:00 load=25.28 28.45 49.11
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+task: [smoke] examples_root="$(python3 scripts/examples_checkout.py)"
+cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "$examples_root/standalone/ts/01-arithmetic.ts:classifyNumber"
+
+   Compiling shatter-cli v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.09s
+     Running `target/debug/shatter explore --max-iterations 3 --timeout-explore 10 '/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples/standalone/ts/01-arithmetic.ts:classifyNumber'`
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[progress] starting 1/1: classifyNumber
+[progress] completed 1/1: classifyNumber (1.1s)
+[batch 1/1] classifyNumber: 3 iters, 3 paths, 3/3 branches, 1.1s (ok)
+[info] Wrote explore artifact for classifyNumber -> /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-artifacts/explore-results/tmp_shatter-examples-snapshots_49984f4b974bf937e7e6a98e26a7bc205ddee8e2_examples_standalone_ts_01-arithmetic.ts/00010_classifyNumber.json
+## `classifyNumber` *(/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples/standalone/ts/01-arithmetic.ts:10-21)*
+
+**3 path(s)** · **86%** coverage (6/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+
+
+---
+
+**Summary:** 3 path(s) across 1 function(s) · **86%** coverage (6/7 lines)
+task: [smoke] examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "$examples_root/standalone/go/smoke-main.go:SmokeClassify"
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running `target/debug/shatter explore --max-iterations 3 --timeout-explore 10 '/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples/standalone/go/smoke-main.go:SmokeClassify'`
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[progress] starting 1/1: SmokeClassify
+[progress] completed 1/1: SmokeClassify (1.0s)
+[batch 1/1] SmokeClassify: 3 iters, 2 paths, 1/1 branches, 1.0s (ok)
+[info] Wrote explore artifact for SmokeClassify -> /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-artifacts/explore-results/tmp_shatter-examples-snapshots_49984f4b974bf937e7e6a98e26a7bc205ddee8e2_examples_standalone_go_smoke-main.go/00012_SmokeClassify.json
+## `SmokeClassify` *(/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples/standalone/go/smoke-main.go:12-17)*
+
+**2 path(s)** · **100%** coverage (3/3 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `SmokeClassify(0)` | returns `"non-positive"` |
+| 2 | `SmokeClassify(1)` | returns `"positive"` |
+
+
+---
+
+**Summary:** 2 path(s) across 1 function(s) · **100%** coverage (3/3 lines)
+task: [smoke] examples_root="$(python3 scripts/examples_checkout.py --no-update)"
+cargo run -p shatter-cli -- explore --max-iterations 3 --timeout-explore 10 "$examples_root/standalone/go/01-arithmetic.go:ClassifyNumber"
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running `target/debug/shatter explore --max-iterations 3 --timeout-explore 10 '/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples/standalone/go/01-arithmetic.go:ClassifyNumber'`
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[progress] starting 1/1: ClassifyNumber
+[progress] completed 1/1: ClassifyNumber (1.1s)
+[batch 1/1] ClassifyNumber: 3 iters, 3 paths, 3/3 branches, 1.1s (ok)
+[info] Wrote explore artifact for ClassifyNumber -> /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-artifacts/explore-results/tmp_shatter-examples-snapshots_49984f4b974bf937e7e6a98e26a7bc205ddee8e2_examples_standalone_go_01-arithmetic.go/00019_ClassifyNumber.json
+## `ClassifyNumber` *(/tmp/shatter-examples-snapshots/49984f4b974bf937e7e6a98e26a7bc205ddee8e2/examples/standalone/go/01-arithmetic.go:19-30)*
+
+**3 path(s)** · **86%** coverage (6/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `ClassifyNumber(0)` | returns `"zero"` |
+| 2 | `ClassifyNumber(-1)` | returns `"negative"` |
+| 3 | `ClassifyNumber(1)` | returns `"positive-odd"` |
+
+
+---
+
+**Summary:** 3 path(s) across 1 function(s) · **86%** coverage (6/7 lines)
+task: [smoke] bash scripts/test_empty_report_regression.sh
+[ok] a4: empty-report regression — report non-empty, contains 'DoIt', outcome is honest
+### gate=smoke exit=0 wall=17s end=2026-09-22T13:47:35-05:00 load=24.99 28.22 48.59

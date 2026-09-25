@@ -1,0 +1,458 @@
+### gate=check-unit cmd=env PROPTEST_CASES=256 SHATTER_FUZZ_CASES=1000 SHATTER_FAST_CHECK_NUM_RUNS=default bash scripts/gate-wrapper.sh check task check-unit start=2026-09-22T12:52:01-05:00 load=23.69 88.69 113.87
+task: [rust-rt:test] if command -v cargo-nextest >/dev/null 2>&1; then
+  cargo test --doc
+  cargo nextest run --config-file ../.config/nextest-standalone.toml
+else
+  cargo test
+fi
+
+task: [ts:install] npm install --silent
+task: [go:vet] go vet ./...
+task: [go:test] bash ../scripts/go-test-tier.sh full
+   Compiling memchr v2.8.0
+   Compiling itoa v1.0.17
+   Compiling serde_core v1.0.228
+   Compiling zmij v1.0.21
+ok  	github.com/shatter-dev/shatter/shatter-go	0.347s
+--- FAIL: TestLoad_MissingFile_ReturnsZeroFile (0.01s)
+    loader_test.go:668: expected empty File, got {Functions:map[] GoRuntimeValues:map[] Warnings:[config /tmp/.shatter/config.yaml: ignoring unknown top-level key "defaults"]}
+FAIL
+FAIL	github.com/shatter-dev/shatter/shatter-go/config	0.027s
+ok  	github.com/shatter-dev/shatter/shatter-go/frontendsetup	0.083s
+ok  	github.com/shatter-dev/shatter/shatter-go/generators	0.022s
+   Compiling serde_json v1.0.149
+   Compiling serde v1.0.228
+ok  	github.com/shatter-dev/shatter/shatter-go/launcher	1.861s
+ok  	github.com/shatter-dev/shatter/shatter-go/loader	1.444s
+ok  	github.com/shatter-dev/shatter/shatter-go/reconstruct	0.014s
+ok  	github.com/shatter-dev/shatter/shatter-go/runtimeval	0.021s
+ok  	github.com/shatter-dev/shatter/shatter-go/sandbox	0.134s
+?   	github.com/shatter-dev/shatter/shatter-go/setup	[no test files]
+ok  	github.com/shatter-dev/shatter/shatter-go/timing	0.063s
+FAIL
+   Compiling shatter-rust-runtime v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-rust-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.46s
+   Doc-tests shatter_rust_runtime
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling shatter-rust-runtime v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-rust-runtime)
+task: [ts:build] npm run build
+
+> shatter-ts@0.1.0 build
+> tsc
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.81s
+────────────
+ Nextest run ID da534b73-02fc-4064-ad55-5ac69a771a90 with nextest profile: default
+    Starting 25 tests across 1 binary
+────────────
+     Summary [   0.094s] 25 tests run: 25 passed, 0 skipped
+task: [ts:test] examples_root="$(python3 ../scripts/examples_checkout.py)"
+SHATTER_EXAMPLES_DIR="$examples_root" npm test -- --runInBand
+
+
+> shatter-ts@0.1.0 test
+> jest --runInBand
+
+{"level":40,"time":1790099549443,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module @mantine/core could not be resolved; returning stub"}
+{"level":40,"time":1790099549444,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module @/theme could not be resolved; returning stub"}
+{"level":40,"time":1790099549459,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module @playwright/test could not be resolved; returning stub"}
+{"level":40,"time":1790099549954,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module ./does-not-exist could not be resolved; returning stub"}
+{"level":40,"time":1790099553051,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module nonexistent-module-xyz-stub-test could not be resolved; returning stub"}
+{"level":40,"time":1790099553055,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module nonexistent-deep-xyz-stub-test could not be resolved; returning stub"}
+{"level":40,"time":1790099553061,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module nonexistent-ctor-xyz-stub-test could not be resolved; returning stub"}
+{"level":40,"time":1790099553069,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module nonexistent-dedup-xyz-stub-test could not be resolved; returning stub"}
+{"level":40,"time":1790099553070,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module nonexistent-dedup-xyz-stub-test could not be resolved; returning stub"}
+{"level":40,"time":1790099553074,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module adapter-controlled-stub could not be resolved; returning stub"}
+{"level":40,"time":1790099553086,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module nonexistent-feature-detect-stub-test could not be resolved; returning stub"}
+{"level":40,"time":1790099553091,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module nonexistent-chain-xyz-stub-test could not be resolved; returning stub"}
+PASS src/executor.test.ts (17.269 s)
+  ● Console
+
+    console.log
+      should not be captured
+
+      at Object.invoke (src/executor.test.ts:3599:15)
+
+PASS src/property.test.ts (15.943 s)
+PASS src/instrumentor.test.ts
+FAIL src/handlers.test.ts (679.399 s)
+  ● handleRequest › analyze › returns function_not_found error for missing function in existing file
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      366 |     });
+      367 |
+    > 368 |     it("returns function_not_found error for missing function in existing file", async () => {
+          |     ^
+      369 |       const fixtureFile = require("path").join(
+      370 |         __dirname,
+      371 |         "__fixtures__",
+
+      at src/handlers.test.ts:368:5
+      at src/handlers.test.ts:323:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › analyze › returns all functions when no function name specified
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      404 |     });
+      405 |
+    > 406 |     it("returns all functions when no function name specified", async () => {
+          |     ^
+      407 |       const fixtureFile = require("path").join(
+      408 |         __dirname,
+      409 |         "__fixtures__",
+
+      at src/handlers.test.ts:406:5
+      at src/handlers.test.ts:323:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › instrument › returns instrumentation_failed for missing function
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      437 |     });
+      438 |
+    > 439 |     it("returns instrumentation_failed for missing function", async () => {
+          |     ^
+      440 |       const fixtureFile = path.resolve(
+      441 |         __dirname,
+      442 |         "__fixtures__",
+
+      at src/handlers.test.ts:439:5
+      at src/handlers.test.ts:422:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › invocation adapter hooks › returns not_supported when adapter_id has no matching hook
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1019 |     });
+      1020 |
+    > 1021 |     it("returns not_supported when adapter_id has no matching hook", async () => {
+           |     ^
+      1022 |       const exampleFile = TS_ARITHMETIC;
+      1023 |
+      1024 |       await handleRequest(
+
+      at src/handlers.test.ts:1021:5
+      at src/handlers.test.ts:891:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › invocation adapter hooks › clears cachedAnalyses on shutdown
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1051 |     });
+      1052 |
+    > 1053 |     it("clears cachedAnalyses on shutdown", async () => {
+           |     ^
+      1054 |       const exampleFile = TS_ARITHMETIC;
+      1055 |       await handleRequest(
+      1056 |         makeRequest({
+
+      at src/handlers.test.ts:1053:5
+      at src/handlers.test.ts:891:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › async function execution › executes async function and returns resolved value
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1068 |
+      1069 |   describe("async function execution", () => {
+    > 1070 |     it("executes async function and returns resolved value", async () => {
+           |     ^
+      1071 |       const asyncFixture = path.resolve(
+      1072 |         __dirname,
+      1073 |         "__fixtures__",
+
+      at src/handlers.test.ts:1070:5
+      at src/handlers.test.ts:1069:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › async function execution › executes async function that rejects and captures thrown_error
+
+    Worker terminated
+
+      120 |   async terminate(): Promise<void> {
+      121 |     for (const [, p] of this.pending) {
+    > 122 |       p.reject(new Error("Worker terminated"));
+          |                ^
+      123 |     }
+      124 |     this.pending.clear();
+      125 |     await this.worker.terminate();
+
+      at InstrumentationWorker.terminate (src/instrumentation-worker.ts:122:16)
+      at handleRequest (src/handlers.ts:1059:23)
+      at Object.<anonymous> (src/handlers.test.ts:1064:26)
+
+  ● handleRequest › missing browser global classification (str-jeen.30) › returns not_supported with unsupported_missing_global prefix when window is referenced
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1932 |     );
+      1933 |
+    > 1934 |     it("returns not_supported with unsupported_missing_global prefix when window is referenced", async () => {
+           |     ^
+      1935 |       await handleRequest(
+      1936 |         makeRequest({ command: "analyze", file: browserFixture }),
+      1937 |       );
+
+      at src/handlers.test.ts:1934:5
+      at src/handlers.test.ts:1921:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › missing browser global classification (str-jeen.30) › returns not_supported when document is referenced
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1953 |     });
+      1954 |
+    > 1955 |     it("returns not_supported when document is referenced", async () => {
+           |     ^
+      1956 |       await handleRequest(
+      1957 |         makeRequest({ command: "analyze", file: browserFixture }),
+      1958 |       );
+
+      at src/handlers.test.ts:1955:5
+      at src/handlers.test.ts:1921:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › missing browser global classification (str-jeen.30) › returns not_supported when localStorage is referenced
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1973 |     });
+      1974 |
+    > 1975 |     it("returns not_supported when localStorage is referenced", async () => {
+           |     ^
+      1976 |       await handleRequest(
+      1977 |         makeRequest({ command: "analyze", file: browserFixture }),
+      1978 |       );
+
+      at src/handlers.test.ts:1975:5
+      at src/handlers.test.ts:1921:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+PASS src/analyzer.test.ts (427.524 s)
+{"level":40,"time":1790100689704,"pid":769001,"hostname":"pontoon","err":{"type":"Error","message":"instrumented top-level boom","stack":"/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/__fixtures__/adapter-hooks.tsx:2\nthrow new Error('instrumented top-level boom');\n^\n\nError: instrumented top-level boom\n    at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/__fixtures__/adapter-hooks.tsx:2:7\n    at Script.runInContext (node:vm:149:12)\n    at load (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/executor.ts:3006:20)\n    at loadInstrumentedModuleInSandbox (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/executor.ts:3010:5)\n    at Object.loadInstrumentedExports (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/executor.ts:2359:16)\n    at loadTargetExports (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/react-hook-invocation.ts:481:20)\n    at Object.invoke (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/react-hook-invocation.ts:627:24)\n    at invokeFn (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/executor.ts:2401:54)\n    at executeAdapterOwned (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/executor.ts:2404:15)\n    at Object.<anonymous> (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/react-hook-invocation.test.ts:1101:45)"},"file":"/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-ts/src/__fixtures__/adapter-hooks.tsx","function":"useToggle","msg":"[shatter-ts] instrumented adapter load failed; falling back to raw module (coverage unavailable)"}
+PASS src/react-hook-invocation.test.ts
+PASS src/react-hook-recognizer.test.ts
+{"level":40,"time":1790100741007,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module @lib/math could not be resolved; returning stub"}
+{"level":40,"time":1790100741015,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module @utils could not be resolved; returning stub"}
+{"level":40,"time":1790100741402,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] module @/lib/sign could not be resolved; returning stub"}
+PASS src/adapter-fixtures.test.ts (211.894 s)
+PASS src/browser-dom-adapter.test.ts (18.1 s)
+PASS src/browser-globals-recognizer.test.ts (8.929 s)
+PASS src/param-shape-inference.test.ts (72.52 s)
+PASS src/runtime-hooks.test.ts
+PASS src/runtime-hints.test.ts
+{"level":40,"time":1790101009312,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] ts_runtime_values[K].overrides.bad has a non-scalar entry; ignoring it"}
+{"level":40,"time":1790101009312,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] ts_runtime_values[K].overrides.notList is not a list; ignoring"}
+{"level":40,"time":1790101009314,"pid":769001,"hostname":"pontoon","msg":"[shatter-ts] ts_runtime_values must be a mapping of type key → entry; ignoring"}
+PASS src/opaque-stub-registry.test.ts
+PASS src/integer-heuristic.test.ts (61.949 s)
+(node:769001) ExperimentalWarning: WASI is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS src/wasm-generator.test.ts
+PASS src/opaque-stub-analyzer.test.ts (5.093 s)
+PASS src/reconstruct.test.ts
+PASS src/serialize.test.ts
+PASS src/protocol.test.ts
+PASS src/entropy.test.ts
+
+Summary of all failing tests
+FAIL src/handlers.test.ts (679.399 s)
+  ● handleRequest › analyze › returns function_not_found error for missing function in existing file
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      366 |     });
+      367 |
+    > 368 |     it("returns function_not_found error for missing function in existing file", async () => {
+          |     ^
+      369 |       const fixtureFile = require("path").join(
+      370 |         __dirname,
+      371 |         "__fixtures__",
+
+      at src/handlers.test.ts:368:5
+      at src/handlers.test.ts:323:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › analyze › returns all functions when no function name specified
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      404 |     });
+      405 |
+    > 406 |     it("returns all functions when no function name specified", async () => {
+          |     ^
+      407 |       const fixtureFile = require("path").join(
+      408 |         __dirname,
+      409 |         "__fixtures__",
+
+      at src/handlers.test.ts:406:5
+      at src/handlers.test.ts:323:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › instrument › returns instrumentation_failed for missing function
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      437 |     });
+      438 |
+    > 439 |     it("returns instrumentation_failed for missing function", async () => {
+          |     ^
+      440 |       const fixtureFile = path.resolve(
+      441 |         __dirname,
+      442 |         "__fixtures__",
+
+      at src/handlers.test.ts:439:5
+      at src/handlers.test.ts:422:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › invocation adapter hooks › returns not_supported when adapter_id has no matching hook
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1019 |     });
+      1020 |
+    > 1021 |     it("returns not_supported when adapter_id has no matching hook", async () => {
+           |     ^
+      1022 |       const exampleFile = TS_ARITHMETIC;
+      1023 |
+      1024 |       await handleRequest(
+
+      at src/handlers.test.ts:1021:5
+      at src/handlers.test.ts:891:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › invocation adapter hooks › clears cachedAnalyses on shutdown
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1051 |     });
+      1052 |
+    > 1053 |     it("clears cachedAnalyses on shutdown", async () => {
+           |     ^
+      1054 |       const exampleFile = TS_ARITHMETIC;
+      1055 |       await handleRequest(
+      1056 |         makeRequest({
+
+      at src/handlers.test.ts:1053:5
+      at src/handlers.test.ts:891:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › async function execution › executes async function and returns resolved value
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1068 |
+      1069 |   describe("async function execution", () => {
+    > 1070 |     it("executes async function and returns resolved value", async () => {
+           |     ^
+      1071 |       const asyncFixture = path.resolve(
+      1072 |         __dirname,
+      1073 |         "__fixtures__",
+
+      at src/handlers.test.ts:1070:5
+      at src/handlers.test.ts:1069:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › async function execution › executes async function that rejects and captures thrown_error
+
+    Worker terminated
+
+      120 |   async terminate(): Promise<void> {
+      121 |     for (const [, p] of this.pending) {
+    > 122 |       p.reject(new Error("Worker terminated"));
+          |                ^
+      123 |     }
+      124 |     this.pending.clear();
+      125 |     await this.worker.terminate();
+
+      at InstrumentationWorker.terminate (src/instrumentation-worker.ts:122:16)
+      at handleRequest (src/handlers.ts:1059:23)
+      at Object.<anonymous> (src/handlers.test.ts:1064:26)
+
+  ● handleRequest › missing browser global classification (str-jeen.30) › returns not_supported with unsupported_missing_global prefix when window is referenced
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1932 |     );
+      1933 |
+    > 1934 |     it("returns not_supported with unsupported_missing_global prefix when window is referenced", async () => {
+           |     ^
+      1935 |       await handleRequest(
+      1936 |         makeRequest({ command: "analyze", file: browserFixture }),
+      1937 |       );
+
+      at src/handlers.test.ts:1934:5
+      at src/handlers.test.ts:1921:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › missing browser global classification (str-jeen.30) › returns not_supported when document is referenced
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1953 |     });
+      1954 |
+    > 1955 |     it("returns not_supported when document is referenced", async () => {
+           |     ^
+      1956 |       await handleRequest(
+      1957 |         makeRequest({ command: "analyze", file: browserFixture }),
+      1958 |       );
+
+      at src/handlers.test.ts:1955:5
+      at src/handlers.test.ts:1921:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+  ● handleRequest › missing browser global classification (str-jeen.30) › returns not_supported when localStorage is referenced
+
+    thrown: "Exceeded timeout of 30000 ms for a test.
+    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."
+
+      1973 |     });
+      1974 |
+    > 1975 |     it("returns not_supported when localStorage is referenced", async () => {
+           |     ^
+      1976 |       await handleRequest(
+      1977 |         makeRequest({ command: "analyze", file: browserFixture }),
+      1978 |       );
+
+      at src/handlers.test.ts:1975:5
+      at src/handlers.test.ts:1921:3
+      at Object.<anonymous> (src/handlers.test.ts:170:1)
+
+
+Test Suites: 1 failed, 20 passed, 21 total
+Tests:       10 failed, 968 passed, 978 total
+Snapshots:   0 total
+Time:        1537.371 s
+Ran all test suites.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?
+task: Failed to run task "check-unit": task: Failed to run task "go:test": exit status 1
+### gate=check-unit exit=201 wall=1558s end=2026-09-22T13:17:59-05:00 load=86.04 108.99 113.43

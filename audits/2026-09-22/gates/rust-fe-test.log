@@ -1,0 +1,25 @@
+### gate=rust-fe-test cmd=task rust-fe:test start=2026-09-22T13:39:03-05:00 load=35.02 48.82 66.70
+task: [rust-fe:test] if command -v cargo-nextest >/dev/null 2>&1; then
+  cargo test --doc
+  cargo nextest run --config-file ../.config/nextest-standalone.toml
+else
+  cargo test
+fi
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+   Doc-tests shatter_rust
+
+running 2 tests
+test src/instrument.rs - instrument::Instrumentor::branch_hit_stmt (line 215) ... ignored
+test src/instrument.rs - instrument::Instrumentor::wrap_condition (line 189) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.23s; merged doctests compilation took 0.22s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+────────────
+ Nextest run ID 8d7ae431-1601-44fa-9977-824444b7322f with nextest profile: default
+    Starting 1178 tests across 3 binaries
+────────────
+     Summary [ 245.907s] 1178 tests run: 1178 passed (2 leaky), 0 skipped
+### gate=rust-fe-test exit=0 wall=260s end=2026-09-22T13:43:23-05:00 load=29.74 35.34 56.63

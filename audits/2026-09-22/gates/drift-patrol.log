@@ -1,0 +1,75 @@
+### gate=drift-patrol cmd=task drift-patrol start=2026-09-22T13:53:51-05:00 load=8.57 16.99 37.11
+task: Task "rust-fe:build" is up to date
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+task: Task "go:build" is up to date
+task: [drift-patrol] python3 scripts/drift-patrol.py --require-conformance
+# Shatter drift patrol
+
+Run at 2026-09-22 18:53 UTC — 1 failed, 2 pending, 0 skipped, 5 passed.
+
+| Check | Status | Summary |
+|-------|--------|---------|
+| `protocol-registry` | PASS | registry names and field models agree with the source of truth |
+| `protocol-codegen` | PASS | generated bindings match protocol/registry.yaml |
+| `protocol-conformance` | PASS | all frontends conform to the protocol contract |
+| `parity-expiry` | PASS | no resolved divergence is within 14 day(s) of its removal deadline |
+| `cli-surface-drift` | PENDING | not implemented — tracked by str-wurp (status: open) |
+| `docs-stories` | PENDING | not implemented — tracked by str-u394l.3 (status: open) |
+| `tracker-hygiene` | FAIL | 2 stale in_progress issue(s), 4 orphaned child issue(s) |
+| `tracker-server` | PASS | dolt sql-server is running and reachable on port 39321 |
+
+## Findings
+
+### FAIL: Tracker hygiene (stale in_progress, orphaned children) (`tracker-hygiene`)
+
+2 stale in_progress issue(s), 4 orphaned child issue(s)
+
+Responsible issue: `str-u394l.1`
+
+```
+source: bd list --all
+-- in_progress with no update for >14d (2) --
+str-8q1b4 (22d) Resumed scans produce reports not comparable to uninterrupted scans
+str-mpgg1 (21d) Revert unauthorized beads-hook edits from str-35vtk.4
+-- open/in_progress children under a closed parent (4) --
+str-qwua7.56.1 [open] — parent str-qwua7.56 (bug) is closed: Dry-run scan JSON undercounts lifecycle-excluded exports
+str-hy9b.J3 [open] — parent str-hy9b (epic) is closed: Kapow re-run validation
+str-hy9b.1 [open] — parent str-hy9b (epic) is closed: Go frontend redesign doc
+str-qwua7.9.1 [open] — parent str-qwua7.9 (task) is closed: docs-smoke.py validate_structured_kind re-parses already-par
+```
+
+Remediation: For each stale issue: finish it, or `bd update <id> --status open` to release the claim. For each orphan: reopen the parent, re-parent the child, or close the child.
+
+### PENDING: CLI surface vs SPEC.md and gauntlet coverage (`cli-surface-drift`)
+
+not implemented — tracked by str-wurp (status: open)
+
+Responsible issue: `str-wurp`
+
+```
+A mechanical CLI-surface drift gate (clap inventory vs SPEC.md §2 and gauntlet coverage) is not implemented yet.
+This patrol slot activates when str-wurp lands; it is reported
+on every run so the gap stays visible instead of being forgotten.
+```
+
+Remediation: Implement str-wurp's clap-inventory check, then replace this placeholder in scripts/drift-patrol.py with a call to it.
+
+### PENDING: docs/stories exists and its index is fresh (`docs-stories`)
+
+not implemented — tracked by str-u394l.3 (status: open)
+
+Responsible issue: `str-u394l.3`
+
+```
+A stories coverage gate (docs/stories does not exist yet) is not implemented yet.
+This patrol slot activates when str-u394l.3 lands; it is reported
+on every run so the gap stays visible instead of being forgotten.
+```
+
+Remediation: Land str-u394l.3 (stories coverage gate) — `storystore:stories-init` creates docs/stories and its INDEX.md.
+
+
+File or update a Beads issue with this report under the `drift` label, parented to `str-u394l`.
+task: Failed to run task "drift-patrol": exit status 1
+### gate=drift-patrol exit=201 wall=6s end=2026-09-22T13:53:57-05:00 load=7.70 16.53 36.74

@@ -1,0 +1,76 @@
+### gate=parity cmd=task --force parity start=2026-09-22T13:53:43-05:00 load=8.88 17.19 37.28
+task: [parity] bash scripts/gate-wrapper.sh parity task parity-governed
+task: Task "rust-fe:build" is up to date
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+task: Task "go:build" is up to date
+task: [parity-governed] python3 scripts/validate-protocol-registry.py
+Registry: 10 commands, 11 statuses, 12 error codes
+
+Warnings:
+  shatter-rust/src/protocol.rs + handler.rs:
+    commands: 'get_invocation_plan' in registry but not found in shatter-rust (may be unimplemented)
+
+All checks passed (with informational warnings).
+task: [parity-governed] python3 scripts/protocol-codegen.py --check
+task: [parity-governed] if [ -f scripts/validate-parity.py ]; then
+  python3 scripts/validate-parity.py
+else
+  echo "[skip] validate-parity.py not present (pending str-7jgm.2)"
+fi
+
+Loading parity matrix: /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/protocol/parity-matrix.yaml
+Matrix: 10 commands, 32 complex_types, 9 allowed_divergences
+
+Loading registry capabilities: /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/protocol/registry.yaml
+
+Detecting capabilities: go
+Detecting capabilities: rust
+Detecting capabilities: typescript
+
+Validating...
+
+Parity check passed.
+task: [parity-governed] python3 protocol/conformance/run_golden_tests.py
+
+Protocol Parity Golden Tests — CHECK mode
+==================================================
+
+[handshake]
+  noop: OK matches golden
+  typescript: OK matches golden
+  go: OK matches golden
+  rust: OK matches golden
+
+[shutdown]
+  noop: OK matches golden
+  typescript: OK matches golden
+  go: OK matches golden
+  rust: OK matches golden
+  cross-check: OK noop == typescript
+  cross-check: OK noop == go
+  cross-check: OK noop == rust
+
+[invalid_command]
+  noop: OK matches golden
+  typescript: OK matches golden
+  go: OK matches golden
+  rust: OK matches golden
+  cross-check: OK noop == typescript
+  cross-check: OK noop == go
+  cross-check: OK noop == rust
+
+[analyze_file_not_found]
+  typescript: OK matches golden
+  go: OK matches golden
+  rust: OK matches golden
+  cross-check: OK typescript == go
+  cross-check: OK typescript == rust
+
+[execute_noop]
+  noop: OK matches golden
+
+==================================================
+Ran 16 golden checks across 5 cases
+All golden checks passed.
+### gate=parity exit=0 wall=2s end=2026-09-22T13:53:45-05:00 load=8.88 17.19 37.28

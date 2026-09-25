@@ -1,0 +1,2543 @@
+### gate=walkthrough cmd=task walkthrough start=2026-09-22T13:47:35-05:00 load=24.99 28.22 48.59
+task: [walkthrough] bash scripts/gate-wrapper.sh walkthrough task walkthrough-governed
+task: [rust-rt:build] cargo build
+task: Task "rust-fe:build" is up to date
+task: Task "ts:install" is up to date
+task: Task "ts:build" is up to date
+task: Task "go:build" is up to date
+task: [workspace-build] cargo build --workspace
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.27s
+task: [walkthrough-governed] bash demo/walkthrough.sh --auto --delay 0
+waiting for shared demo cache lock: /home/ketan/.cache/shatter-demo/demo.lock
+Cloning clean examples checkout...
+
+Shatter Walkthrough
+Compact demo of the Shatter pipeline
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 1/11 · Analyze TypeScript Functions
+  Discover parameters, types, and branch conditions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --analyze-only /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:classifyNumber /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts:classifyString /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts:categorizeUser /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts:safeDivide /tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts:negotiateLanguage
+
+[info] Spawned 1 frontend session(s) for 5 target(s) (16 parallel worker(s))
+classifyNumber  (/tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:10)
+  params: 1, branches: 3
+classifyString  (/tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts:12)
+  params: 1, branches: 5
+categorizeUser  (/tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts:19)
+  params: 1, branches: 5
+safeDivide  (/tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts:10)
+  params: 2, branches: 3
+negotiateLanguage  (/tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts:95)
+  params: 2, branches: 12
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 2/11 · Explore TypeScript Functions
+  Concolic execution: generate inputs to cover all branches
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --max-iterations 20 --timeout-explore 15 /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:classifyNumber /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts:classifyString /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts:categorizeUser /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts:safeDivide /tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts:negotiateLanguage
+
+[info] Spawned 1 frontend session(s) for 5 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[progress] starting 1/5: classifyNumber
+[progress] starting 2/5: classifyString
+[progress] starting 3/5: categorizeUser
+[progress] starting 4/5: safeDivide
+[progress] starting 5/5: negotiateLanguage
+[progress] completed 1/5: negotiateLanguage (2.3s)
+[progress] completed 2/5: safeDivide (2.3s)
+[batch 1/5] negotiateLanguage: 20 iters, 3 paths, 2/12 branches, 2.3s (ok) | active: 4 (classifyNumber, categorizeUser, classifyString +1 more)
+[batch 2/5] safeDivide: 20 iters, 2 paths, 3/3 branches, 2.3s (ok) | active: 3 (classifyNumber, categorizeUser, classifyString)
+[progress] completed 3/5: classifyNumber (2.4s)
+[batch 3/5] classifyNumber: 20 iters, 4 paths, 3/3 branches, 2.4s (ok) | active: 2 (categorizeUser, classifyString)
+[progress] completed 4/5: categorizeUser (2.7s)
+[batch 4/5] categorizeUser: 20 iters, 3 paths, 3/5 branches, 2.8s (ok) | active: 1 (classifyString)
+[progress] completed 5/5: classifyString (2.8s)
+[batch 5/5] classifyString: 20 iters, 4 paths, 5/5 branches, 2.9s (ok)
+[info] Wrote explore artifact for classifyNumber -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_ts_01-arithmetic.ts/00010_classifyNumber.json
+## `classifyNumber` *(/tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:10-21)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+
+[info] Wrote explore artifact for classifyString -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_ts_02-strings.ts/00012_classifyString.json
+## `classifyString` *(/tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts:12-29)*
+
+**4 path(s)** · **82%** coverage (9/11 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyString("length")` | returns `"text"` |
+| 2 | `classifyString("")` | returns `"empty"` |
+| 3 | `classifyString("http")` | returns `"url"` |
+| 4 | `classifyString("@")` | returns `"single-char"` |
+
+[info] Wrote explore artifact for categorizeUser -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_ts_03-objects.ts/00019_categorizeUser.json
+## `categorizeUser` *(/tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts:19-36)*
+
+**3 path(s)** · **55%** coverage (6/11 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `categorizeUser({"age":0.0,"isVerified":false,"name":...)` | returns `"child"` |
+| 2 | `categorizeUser({"age":-1,"isVerified":false,"name":"...)` | throws `Error: invalid age` |
+| 3 | `categorizeUser({"age":13,"isVerified":false,"name":"...)` | returns `"teen"` |
+
+[info] Wrote explore artifact for safeDivide -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_ts_04-errors.ts/00010_safeDivide.json
+## `safeDivide` *(/tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts:10-22)*
+
+**2 path(s)** · **75%** coverage (6/8 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `safeDivide(0.0, 0.0)` | throws `Error: division by zero` |
+| 2 | `safeDivide(0.0, 1)` | returns `0` |
+
+[info] Wrote explore artifact for negotiateLanguage -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_ts_18-accept-language.ts/00095_negotiateLanguage.json
+## `negotiateLanguage` *(/tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts:95-180)*
+
+**3 path(s)** · **18%** coverage (5/28 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `negotiateLanguage("length", [])` | returns `{"matchedRange":null,"quality":0,"rea...` |
+| 2 | `negotiateLanguage("length", {"length":1})` | throws `TypeError: supported.map is not a function` |
+| 3 | `negotiateLanguage("", ["length"])` | returns `{"matchedRange":null,"quality":1,"rea...` |
+
+
+---
+
+**Summary:** 16 path(s) across 5 function(s) · **51%** coverage (33/65 lines)
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 3/11 · Scan Standalone TypeScript
+  Scan a directory of standalone TypeScript files
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter scan /tmp/shatter-examples.zgl141xd/standalone/ts
+
+[info] Discovered 26 source file(s) in /tmp/shatter-examples.zgl141xd/standalone/ts
+[info] Omitting 21 unexported function(s) by default; re-run with --all to include them
+[info] Skipped 2 function(s) (unexecutable parameter types):
+[info]   mergeConfig: param "base" → ConfigObject (interface with no implementors — no concrete implementation visible in scope); param "override" → ConfigObject (interface with no implementors — no concrete implementation visible in scope)
+[info]   transformRecord: param "record" → RawRecord (interface with no implementors — no concrete implementation visible in scope)
+[info] Scanning 35 function(s) in dependency order...
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts::classifyNumber -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00001_tmp_shatter-examples.zgl141xd_standalone_ts_01-arithmetic.ts__classifyNumber.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts::classifySecret -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00033_tmp_shatter-examples.zgl141xd_standalone_ts_21-crypto-boundary.ts__classifySecret.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/19-robots-policy.ts::evaluateRobotsPolicy -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00031_tmp_shatter-examples.zgl141xd_standalone_ts_19-robots-policy.ts__evaluateRobotsPolicy.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::classifyConfigs -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00027_tmp_shatter-examples.zgl141xd_standalone_ts_17-mock-branches.ts__classifyConfigs.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::compoundAnd -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00018_tmp_shatter-examples.zgl141xd_standalone_ts_13-mcdc-compound.ts__compoundAnd.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts::computeArea -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00009_tmp_shatter-examples.zgl141xd_standalone_ts_05-unions.ts__computeArea.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts::parseSemver -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00023_tmp_shatter-examples.zgl141xd_standalone_ts_14-semver.ts__parseSemver.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts::computeStats -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00007_tmp_shatter-examples.zgl141xd_standalone_ts_04-errors.ts__computeStats.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/16-cron-parser.ts::parseCron -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00026_tmp_shatter-examples.zgl141xd_standalone_ts_16-cron-parser.ts__parseCron.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/20-dotenv-parser.ts::parseDotenv -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00032_tmp_shatter-examples.zgl141xd_standalone_ts_20-dotenv-parser.ts__parseDotenv.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts::authorizeRequest -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00013_tmp_shatter-examples.zgl141xd_standalone_ts_07-auth-validation.ts__authorizeRequest.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts::categorizeUser -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00005_tmp_shatter-examples.zgl141xd_standalone_ts_03-objects.ts__categorizeUser.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/15-email-validator.ts::validateEmail -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00025_tmp_shatter-examples.zgl141xd_standalone_ts_15-email-validator.ts__validateEmail.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts::transformString -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00004_tmp_shatter-examples.zgl141xd_standalone_ts_02-strings.ts__transformString.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts::negotiateLanguage -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00030_tmp_shatter-examples.zgl141xd_standalone_ts_18-accept-language.ts__negotiateLanguage.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts::matchRoute -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00016_tmp_shatter-examples.zgl141xd_standalone_ts_10-path-router.ts__matchRoute.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts::encrypt -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00034_tmp_shatter-examples.zgl141xd_standalone_ts_21-crypto-boundary.ts__encrypt.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::classifyStatus -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00028_tmp_shatter-examples.zgl141xd_standalone_ts_17-mock-branches.ts__classifyStatus.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/22-opaque-predicate.ts::classifyWithChecksum -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00035_tmp_shatter-examples.zgl141xd_standalone_ts_22-opaque-predicate.ts__classifyWithChecksum.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/09-rate-limiter.ts::checkRateLimit -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00015_tmp_shatter-examples.zgl141xd_standalone_ts_09-rate-limiter.ts__checkRateLimit.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts::routeRequest -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00010_tmp_shatter-examples.zgl141xd_standalone_ts_05-unions.ts__routeRequest.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::compoundOr -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00019_tmp_shatter-examples.zgl141xd_standalone_ts_13-mcdc-compound.ts__compoundOr.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts::validateJwt -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00014_tmp_shatter-examples.zgl141xd_standalone_ts_07-auth-validation.ts__validateJwt.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts::classifyHttpResponse -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00011_tmp_shatter-examples.zgl141xd_standalone_ts_06-nested-control-flow.ts__classifyHttpResponse.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::loadOrDefault -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00029_tmp_shatter-examples.zgl141xd_standalone_ts_17-mock-branches.ts__loadOrDefault.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts::safeDivide -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00008_tmp_shatter-examples.zgl141xd_standalone_ts_04-errors.ts__safeDivide.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts::compareMagnitudes -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00002_tmp_shatter-examples.zgl141xd_standalone_ts_01-arithmetic.ts__compareMagnitudes.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts::describeRectangle -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00006_tmp_shatter-examples.zgl141xd_standalone_ts_03-objects.ts__describeRectangle.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts::classifyString -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00003_tmp_shatter-examples.zgl141xd_standalone_ts_02-strings.ts__classifyString.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts::intToRoman -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00021_tmp_shatter-examples.zgl141xd_standalone_ts_13-roman-numerals.ts__intToRoman.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts::satisfiesRange -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00024_tmp_shatter-examples.zgl141xd_standalone_ts_14-semver.ts__satisfiesRange.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::threeWayAnd -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00020_tmp_shatter-examples.zgl141xd_standalone_ts_13-mcdc-compound.ts__threeWayAnd.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts::resolveMiddleware -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00017_tmp_shatter-examples.zgl141xd_standalone_ts_10-path-router.ts__resolveMiddleware.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts::processStateMachine -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00012_tmp_shatter-examples.zgl141xd_standalone_ts_06-nested-control-flow.ts__processStateMachine.json
+[info] Wrote scan artifact for /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts::romanToInt -> /tmp/shatter-walkthrough-artifacts.cAxyij/scan-results/027297fe45149964eba9fdfee000a37e997491ba50b26c47622edb771434131d/functions/00022_tmp_shatter-examples.zgl141xd_standalone_ts_13-roman-numerals.ts__romanToInt.json
+[info] [1/35] /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts::classifyNumber (33.0s elapsed)
+[info] [2/35] /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts::compareMagnitudes (33.0s elapsed)
+[info] [3/35] /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts::classifyString (33.0s elapsed)
+[info] [4/35] /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts::transformString (33.0s elapsed)
+[info] [5/35] /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts::categorizeUser (33.0s elapsed)
+[info] [6/35] /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts::describeRectangle (33.0s elapsed)
+[info] [7/35] /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts::computeStats (33.0s elapsed)
+[info] [8/35] /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts::safeDivide (33.0s elapsed)
+[info] [9/35] /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts::computeArea (33.0s elapsed)
+[info] [10/35] /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts::routeRequest (33.0s elapsed)
+[info] [11/35] /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts::classifyHttpResponse (33.0s elapsed)
+[info] [12/35] /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts::processStateMachine (33.0s elapsed)
+[info] [13/35] /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts::authorizeRequest (33.0s elapsed)
+[info] [14/35] /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts::validateJwt (33.0s elapsed)
+[info] [15/35] /tmp/shatter-examples.zgl141xd/standalone/ts/09-rate-limiter.ts::checkRateLimit (33.0s elapsed)
+[info] [16/35] /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts::matchRoute (33.0s elapsed)
+[info] [17/35] /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts::resolveMiddleware (33.0s elapsed)
+[info] [18/35] /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::compoundAnd (33.0s elapsed)
+[info] [19/35] /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::compoundOr (33.0s elapsed)
+[info] [20/35] /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::threeWayAnd (33.0s elapsed)
+[info] [21/35] /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts::intToRoman (33.0s elapsed)
+[info] [22/35] /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts::romanToInt (33.0s elapsed)
+[info] [23/35] /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts::parseSemver (33.0s elapsed)
+[info] [24/35] /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts::satisfiesRange (33.0s elapsed)
+[info] [25/35] /tmp/shatter-examples.zgl141xd/standalone/ts/15-email-validator.ts::validateEmail (33.0s elapsed)
+[info] [26/35] /tmp/shatter-examples.zgl141xd/standalone/ts/16-cron-parser.ts::parseCron (33.0s elapsed)
+[info] [27/35] /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::classifyConfigs (33.0s elapsed)
+[info] [28/35] /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::classifyStatus (33.0s elapsed)
+[info] [29/35] /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::loadOrDefault (33.0s elapsed)
+[info] [30/35] /tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts::negotiateLanguage (33.0s elapsed)
+[info] [31/35] /tmp/shatter-examples.zgl141xd/standalone/ts/19-robots-policy.ts::evaluateRobotsPolicy (33.0s elapsed)
+[info] [32/35] /tmp/shatter-examples.zgl141xd/standalone/ts/20-dotenv-parser.ts::parseDotenv (33.0s elapsed)
+[info] [33/35] /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts::classifySecret (33.0s elapsed)
+[info] [34/35] /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts::encrypt (33.0s elapsed)
+[info] [35/35] /tmp/shatter-examples.zgl141xd/standalone/ts/22-opaque-predicate.ts::classifyWithChecksum (33.0s elapsed)
+# Scan Results
+
+| Function | Paths | Coverage |
+|---|---|---|
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts::classifyNumber` | 4 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts::compareMagnitudes` | 4 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts::classifyString` | 5 | 91% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts::transformString` | 6 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts::categorizeUser` | 4 | 73% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts::describeRectangle` | 4 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts::computeStats` | 2 | 31% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts::safeDivide` | 3 | 88% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts::computeArea` | 1 | 10% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts::routeRequest` | 2 | 31% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts::classifyHttpResponse` | 13 | 96% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts::processStateMachine` | 5 | 38% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts::authorizeRequest` | 2 | 14% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts::validateJwt` | 2 | 19% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/09-rate-limiter.ts::checkRateLimit` | 5 | 78% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts::matchRoute` | 3 | 12% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts::resolveMiddleware` | 9 | 94% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::compoundAnd` | 2 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::compoundOr` | 2 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts::threeWayAnd` | 2 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts::intToRoman` | 6 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts::romanToInt` | 3 | 82% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts::parseSemver` | 3 | 36% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts::satisfiesRange` | 8 | 64% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/15-email-validator.ts::validateEmail` | 4 | 28% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/16-cron-parser.ts::parseCron` | 3 | 81% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::classifyConfigs` | 3 | 42% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::classifyStatus` | 1 | 13% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts::loadOrDefault` | 1 | 33% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts::negotiateLanguage` | 3 | 18% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/19-robots-policy.ts::evaluateRobotsPolicy` | 3 | 39% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/20-dotenv-parser.ts::parseDotenv` | 3 | 29% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts::classifySecret` | 1 | 29% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts::encrypt` | 1 | 100% |
+| `/tmp/shatter-examples.zgl141xd/standalone/ts/22-opaque-predicate.ts::classifyWithChecksum` | 4 | 90% |
+
+---
+
+Scan complete: **35 completed**, **0 failed**, **2 unsupported**, **0 interrupted**, **0 expected skipped** (16 worker(s))
+# Shatter Scan Report
+
+- **Functions discovered:** 37
+- **Functions attempted:** 35
+- **Functions completed:** 35
+  - **with observed behavior:** 31
+  - **error-only (all discovered inputs threw):** 4
+- **Functions skipped:** 2
+  - **unsupported (target shape not representable):** 2
+
+## Source Set Summary
+
+| Bucket | Files | Lines |
+|--------|-------|-------|
+| `production_ish` | 21 | 2495 |
+| `test_spec` | 0 | 0 |
+| `generated` | 0 | 0 |
+| `declaration_only` | 0 | 0 |
+| `fixture_sample` | 0 | 0 |
+| `policy_excluded` | 0 | 0 |
+| `unsupported` | 0 | 0 |
+
+- **Production-ish source lines:** 2495 (whole-source denominator; see Coverage section below)
+
+## Coverage
+
+- **Attempted-function span:** 35 of 37 discovered functions attempted
+- **Total branches:** 235 (across completed functions)
+- **Branches covered:** 105
+- **Overall coverage (completed-functions subset):** 44.7%
+
+## Low-Coverage Buckets
+
+*Completing a function (running it without a crash) is not the same as achieving high source or branch coverage. These buckets classify why coverage stays shallow so the low numbers can be acted on directly.*
+
+Low-coverage cutoff: completed functions with coverage ≤ 10%.
+
+| Bucket | Count |
+|--------|-------|
+| Failed (attempted, did not complete) | 0 |
+| Skipped / unsupported | 2 |
+| Zero coverage with branches (needs setup/mocks) | 0 |
+| Zero coverage, no branches (accessors/getters) | 0 |
+| Positive but low coverage | 1 |
+
+### Top branch-heavy low-coverage functions
+
+These have the most branch logic left unexplored — the highest-value targets for better setup or mocks.
+
+| Function | File | Coverage | Branches | Lines |
+|----------|------|----------|----------|-------|
+| `computeArea` | /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts | 10.0% | 0/6 | 1/10 |
+
+### Low coverage by area
+
+Grouped by file-path directory (derived from the scan's own paths).
+
+| Area | Low-coverage functions | Zero-cov w/ branches | Uncovered branches |
+|------|------------------------|----------------------|--------------------|
+| `/tmp/shatter-examples.zgl141xd/standalone/ts` | 1 | 0 | 6 |
+
+## Function Summary
+
+| Status | Outcome | Function | File | Coverage | Branches | Lines | Iterations |
+|--------|---------|----------|------|----------|----------|-------|------------|
+| PASS | behavioral | `classifyNumber` | /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts | 100.0% | 3/3 | 7/7 | 100 |
+| PASS | behavioral | `compareMagnitudes` | /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts | 100.0% | 3/3 | 9/9 | 100 |
+| WARN | behavioral | `classifyString` | /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts | 90.9% | 5/5 | 10/11 | 100 |
+| PASS | behavioral | `transformString` | /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts | 100.0% | 5/5 | 11/11 | 100 |
+| WARN | behavioral | `categorizeUser` | /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts | 72.7% | 4/5 | 8/11 | 100 |
+| PASS | behavioral | `describeRectangle` | /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts | 100.0% | 3/3 | 8/8 | 100 |
+| LOW | error_only | `computeStats` | /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts | 31.2% | 1/5 | 5/16 | 100 |
+| WARN | behavioral | `safeDivide` | /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts | 87.5% | 3/3 | 7/8 | 100 |
+| LOW | behavioral | `computeArea` | /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts | 10.0% | 0/6 | 1/10 | 100 |
+| LOW | behavioral | `routeRequest` | /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts | 30.8% | 1/8 | 4/13 | 100 |
+| WARN | behavioral | `classifyHttpResponse` | /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts | 96.3% | 13/13 | 26/27 | 100 |
+| LOW | behavioral | `processStateMachine` | /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts | 37.9% | 2/12 | 11/29 | 100 |
+| LOW | behavioral | `authorizeRequest` | /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts | 13.8% | 2/14 | 4/29 | 100 |
+| LOW | behavioral | `validateJwt` | /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts | 19.2% | 2/8 | 5/26 | 100 |
+| WARN | behavioral | `checkRateLimit` | /tmp/shatter-examples.zgl141xd/standalone/ts/09-rate-limiter.ts | 77.8% | 5/6 | 14/18 | 100 |
+| LOW | behavioral | `matchRoute` | /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts | 12.0% | 3/19 | 6/50 | 100 |
+| WARN | behavioral | `resolveMiddleware` | /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts | 93.8% | 7/7 | 15/16 | 100 |
+| PASS | behavioral | `compoundAnd` | /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts | 100.0% | 1/1 | 3/3 | 100 |
+| PASS | behavioral | `compoundOr` | /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts | 100.0% | 1/1 | 3/3 | 100 |
+| PASS | behavioral | `threeWayAnd` | /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts | 100.0% | 1/1 | 3/3 | 100 |
+| PASS | behavioral | `intToRoman` | /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts | 100.0% | 2/2 | 9/9 | 100 |
+| WARN | behavioral | `romanToInt` | /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts | 82.4% | 4/5 | 14/17 | 100 |
+| LOW | error_only | `parseSemver` | /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts | 36.4% | 3/6 | 8/22 | 100 |
+| WARN | behavioral | `satisfiesRange` | /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts | 63.9% | 7/16 | 23/36 | 100 |
+| LOW | behavioral | `validateEmail` | /tmp/shatter-examples.zgl141xd/standalone/ts/15-email-validator.ts | 27.7% | 6/19 | 13/47 | 100 |
+| WARN | behavioral | `parseCron` | /tmp/shatter-examples.zgl141xd/standalone/ts/16-cron-parser.ts | 81.2% | 3/11 | 13/16 | 100 |
+| LOW | behavioral | `classifyConfigs` | /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts | 41.7% | 1/4 | 5/12 | 100 |
+| LOW | error_only | `classifyStatus` | /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts | 12.5% | 0/3 | 1/8 | 100 |
+| LOW | behavioral | `loadOrDefault` | /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts | 33.3% | 1/2 | 2/6 | 100 |
+| LOW | behavioral | `negotiateLanguage` | /tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts | 17.9% | 2/12 | 5/28 | 100 |
+| LOW | behavioral | `evaluateRobotsPolicy` | /tmp/shatter-examples.zgl141xd/standalone/ts/19-robots-policy.ts | 39.3% | 3/9 | 11/28 | 100 |
+| LOW | behavioral | `parseDotenv` | /tmp/shatter-examples.zgl141xd/standalone/ts/20-dotenv-parser.ts | 28.9% | 4/12 | 13/45 | 100 |
+| LOW | error_only | `classifySecret` | /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts | 28.6% | 0/2 | 2/7 | 100 |
+| PASS | behavioral | `encrypt` | /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts | 100.0% | 0/0 | 2/2 | 100 |
+| WARN | behavioral | `classifyWithChecksum` | /tmp/shatter-examples.zgl141xd/standalone/ts/22-opaque-predicate.ts | 90.0% | 4/4 | 9/10 | 100 |
+
+## Function Details
+
+### `classifyNumber`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 7/7
+- **Iterations:** 100
+- **Constraints collected:** 201
+
+**Behaviors:**
+
+- Cluster 0: returns "zero" (inputs: 0)
+- Cluster 1: returns "negative" (inputs: -1)
+- Cluster 2: returns "positive-even" (inputs: 2)
+- Cluster 3: returns "positive-odd" (inputs: 1)
+
+### `compareMagnitudes`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 9/9
+- **Iterations:** 100
+- **Constraints collected:** 220
+
+**Behaviors:**
+
+- Cluster 0: returns "both-small" (inputs: 42.56570549298276, 1.0)
+- Cluster 1: returns "both-small" (inputs: 7.579648481308663, 1.0)
+- Cluster 2: returns "both-small" (inputs: -2.324456851871316, 1.0)
+- Cluster 3: returns "both-small" (inputs: 1.7007931846792013, 1.0)
+- Cluster 4: returns "both-small" (inputs: 0.32230622994391106, 1.0)
+- ... and 15 more clusters
+
+### `classifyString`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts
+- **Coverage:** 90.9%
+- **Branches:** 5/5
+- **Lines:** 10/11
+- **Iterations:** 100
+- **Constraints collected:** 179
+
+**Behaviors:**
+
+- Cluster 0: returns "text" (inputs: "length")
+- Cluster 1: returns "empty" (inputs: "")
+- Cluster 2: returns "text" (inputs: "empty")
+- Cluster 3: returns "text" (inputs: "single-char")
+- Cluster 4: returns "text" (inputs: "startsWith")
+- ... and 10 more clusters
+
+### `transformString`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/02-strings.ts
+- **Coverage:** 100.0%
+- **Branches:** 5/5
+- **Lines:** 11/11
+- **Iterations:** 100
+- **Constraints collected:** 293
+
+**Behaviors:**
+
+- Cluster 0: returns "upper" (inputs: "upper", "", 0)
+- Cluster 1: returns "UPPER" (inputs: "upper", "upper", 0)
+- Cluster 2: returns "" (inputs: "", "upper", 0)
+- Cluster 3: returns "toUpperCase" (inputs: "toUpperCase", "", 0)
+- Cluster 4: returns "" (inputs: "", "toUpperCase", 0)
+- ... and 45 more clusters
+
+### `categorizeUser`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts
+- **Coverage:** 72.7%
+- **Branches:** 4/5
+- **Lines:** 8/11
+- **Iterations:** 100
+- **Constraints collected:** 211
+
+**Behaviors:**
+
+- Cluster 0: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"age","role":""})
+- Cluster 1: throws Error: invalid age (inputs: {"age":-1,"isVerified":false,"name":"age","role":""})
+- Cluster 2: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"","role":"age"})
+- Cluster 3: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"invalid age","role"...)
+- Cluster 4: returns "child" (inputs: {"age":0.0,"isVerified":false,"name":"","role":"invalid a...)
+- ... and 71 more clusters
+
+### `describeRectangle`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/03-objects.ts
+- **Coverage:** 100.0%
+- **Branches:** 3/3
+- **Lines:** 8/8
+- **Iterations:** 100
+- **Constraints collected:** 198
+
+**Behaviors:**
+
+- Cluster 0: throws Error: non-positive dimension (inputs: {"height":0.0,"width":0.0})
+- Cluster 1: returns "square" (inputs: {"height":1,"width":1})
+- Cluster 2: throws Error: non-positive dimension (inputs: {"height":1,"width":0})
+- Cluster 3: returns "small-rectangle" (inputs: {"height":2,"width":1})
+- Cluster 4: returns "large-rectangle" (inputs: {"height":846,"width":845})
+
+### `computeStats`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts
+- **Coverage:** 31.2%
+- **Branches:** 1/5
+- **Lines:** 5/16
+- **Iterations:** 100
+- **Constraints collected:** 100
+
+**Behaviors:**
+
+- Cluster 0: throws TypeError: items is not iterable (inputs: {"length":1})
+- Cluster 1: throws Error: empty array (inputs: {"length":0})
+
+### `safeDivide`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/04-errors.ts
+- **Coverage:** 87.5%
+- **Branches:** 3/3
+- **Lines:** 7/8
+- **Iterations:** 100
+- **Constraints collected:** 228
+
+**Behaviors:**
+
+- Cluster 0: returns 100.29620058684728 (inputs: 100.29620058684729, 1.0)
+- Cluster 1: returns -2.2823784892861174 (inputs: -2.2823784892861174, 1.0)
+- Cluster 2: returns -0.057856292183321445 (inputs: -0.057856292183321445, 1.0)
+- Cluster 3: returns 0.3377237213475854 (inputs: 0.3377237213475854, 1.0)
+- Cluster 4: returns 0.7263668942198893 (inputs: 0.7263668942198893, 1.0)
+- ... and 8 more clusters
+
+### `computeArea`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts
+- **Coverage:** 10.0%
+- **Branches:** 0/6
+- **Lines:** 1/10
+- **Iterations:** 100
+- **Constraints collected:** 0
+
+**Behaviors:**
+
+- Cluster 0: returns void (inputs: {})
+- Cluster 1: throws TypeError: Cannot read properties of null (reading 'kind') (inputs: null)
+- Cluster 2: returns void (inputs: {"height":-1.0,"kind":"test","width":-648.9218679346163})
+- Cluster 3: returns void (inputs: {"height":-526.4449787228905,"kind":"xthpbsaldkx","width"...)
+- Cluster 4: returns void (inputs: {"height":-375.71819610488524,"kind":"hello","width":88.0})
+- ... and 90 more clusters
+
+### `routeRequest`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/05-unions.ts
+- **Coverage:** 30.8%
+- **Branches:** 1/8
+- **Lines:** 4/13
+- **Iterations:** 100
+- **Constraints collected:** 100
+
+**Behaviors:**
+
+- Cluster 0: throws Error: empty path (inputs: {"authenticated":false,"body":null,"method":"length","pat...)
+- Cluster 1: returns "read" (inputs: {"authenticated":false,"body":null,"method":"GET","path":...)
+- Cluster 2: throws Error: empty path (inputs: {"authenticated":false,"body":"length","method":"GET","pa...)
+- Cluster 3: throws Error: empty path (inputs: {"authenticated":false,"body":null,"method":"path","path"...)
+- Cluster 4: returns "read" (inputs: {"authenticated":false,"body":null,"method":"GET","path":...)
+- ... and 43 more clusters
+
+### `classifyHttpResponse`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts
+- **Coverage:** 96.3%
+- **Branches:** 13/13
+- **Lines:** 26/27
+- **Iterations:** 100
+- **Constraints collected:** 334
+
+**Behaviors:**
+
+- Cluster 0: throws Error: invalid status (inputs: -0.10194318561574234, "test", null)
+- Cluster 1: throws Error: invalid status (inputs: -17.197454427909335, "test", null)
+- Cluster 2: throws Error: invalid status (inputs: 3.6524388899380025, "test", null)
+- Cluster 3: throws Error: invalid status (inputs: 42.83204657903048, "test", null)
+- Cluster 4: returns "informational" (inputs: 100.11594988577448, "test", null)
+- ... and 86 more clusters
+
+### `processStateMachine`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/06-nested-control-flow.ts
+- **Coverage:** 37.9%
+- **Branches:** 2/12
+- **Lines:** 11/29
+- **Iterations:** 100
+- **Constraints collected:** 109
+
+**Behaviors:**
+
+- Cluster 0: throws TypeError: Cannot read properties of null (reading 'length') (inputs: null, 7.289363211692572)
+- Cluster 1: throws TypeError: Cannot read properties of null (reading 'length') (inputs: null, -16.944703753131257)
+- Cluster 2: throws TypeError: Cannot read properties of null (reading 'length') (inputs: null, -17.100118043179563)
+- Cluster 3: throws TypeError: Cannot read properties of null (reading 'length') (inputs: null, 1.8862129128278)
+- Cluster 4: throws TypeError: Cannot read properties of null (reading 'length') (inputs: null, 257.2265153797509)
+- ... and 12 more clusters
+
+### `authorizeRequest`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts
+- **Coverage:** 13.8%
+- **Branches:** 2/14
+- **Lines:** 4/29
+- **Iterations:** 100
+- **Constraints collected:** 101
+
+**Behaviors:**
+
+- Cluster 0: returns "denied: no roles" (inputs: {"active":false,"id":"length","roles":[]}, "", "", "")
+- Cluster 1: returns "denied: inactive user" (inputs: {"active":false,"id":"length","roles":{"length":1}}, "", "", "")
+- Cluster 2: returns "denied: no roles" (inputs: {"active":false,"id":"","roles":[]}, "length", "", "")
+- Cluster 3: returns "denied: no roles" (inputs: {"active":false,"id":"","roles":[]}, "", "length", "")
+- Cluster 4: returns "denied: no roles" (inputs: {"active":false,"id":"","roles":[]}, "", "", "length")
+- ... and 95 more clusters
+
+### `validateJwt`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/07-auth-validation.ts
+- **Coverage:** 19.2%
+- **Branches:** 2/8
+- **Lines:** 5/26
+- **Iterations:** 100
+- **Constraints collected:** 134
+
+**Behaviors:**
+
+- Cluster 0: returns "invalid: malformed token" (inputs: "test", "test", "test", "test", -0.44101858445112163)
+- Cluster 1: returns "invalid: malformed token" (inputs: "test", "test", "test", "test", 7.274251311777428)
+- Cluster 2: returns "invalid: malformed token" (inputs: "test", "test", "test", "test", 0.45654660040575223)
+- Cluster 3: returns "invalid: malformed token" (inputs: "test", "test", "test", "test", 3.4704039489572347)
+- Cluster 4: returns "invalid: malformed token" (inputs: "test", "test", "test", "test", 3.4958269560526354)
+- ... and 99 more clusters
+
+### `checkRateLimit`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/09-rate-limiter.ts
+- **Coverage:** 77.8%
+- **Branches:** 5/6
+- **Lines:** 14/18
+- **Iterations:** 100
+- **Constraints collected:** 293
+
+**Behaviors:**
+
+- Cluster 0: returns {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt... (inputs: null, 99.91665352146367, 1.0, 1.0, "test")
+- Cluster 1: returns {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt... (inputs: null, 1.927800006677284, 1.0, 1.0, "test")
+- Cluster 2: throws Error: invalid capacity (inputs: null, -0.3287335778536124, 1.0, 1.0, "test")
+- Cluster 3: returns {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt... (inputs: null, 257.4247072629277, 1.0, 1.0, "test")
+- Cluster 4: returns {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt... (inputs: null, 100.23449451745046, 1.0, 1.0, "test")
+- ... and 83 more clusters
+
+### `matchRoute`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts
+- **Coverage:** 12.0%
+- **Branches:** 3/19
+- **Lines:** 6/50
+- **Iterations:** 100
+- **Constraints collected:** 144
+
+**Behaviors:**
+
+- Cluster 0: returns {"message":"empty path","status":"error"} (inputs: [], "length", "")
+- Cluster 1: returns {"message":"path must start with /","status":"error"} (inputs: [], "", "length")
+- Cluster 2: returns {"message":"empty path","status":"error"} (inputs: [], "error", "")
+- Cluster 3: returns {"message":"path must start with /","status":"error"} (inputs: [], "", "error")
+- Cluster 4: returns {"message":"empty path","status":"error"} (inputs: [], "empty path", "")
+- ... and 41 more clusters
+
+### `resolveMiddleware`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/10-path-router.ts
+- **Coverage:** 93.8%
+- **Branches:** 7/7
+- **Lines:** 15/16
+- **Iterations:** 100
+- **Constraints collected:** 415
+
+**Behaviors:**
+
+- Cluster 0: returns {"middleware":["logging","error-handler"],"status":"ok"} (inputs: {"allowedOrigins":[],"contentType":"logging","corsOrigin"..., null)
+- Cluster 1: returns {"middleware":[],"reason":"missing auth","status":"reject... (inputs: {"allowedOrigins":[],"contentType":"logging","corsOrigin"..., null)
+- Cluster 2: returns {"middleware":[],"reason":"origin not allowed","status":"... (inputs: {"allowedOrigins":[],"contentType":"","corsOrigin":"loggi..., null)
+- Cluster 3: returns {"middleware":["logging","error-handler"],"status":"ok"} (inputs: {"allowedOrigins":[],"contentType":"","corsOrigin":null,"..., "logging")
+- Cluster 4: returns {"middleware":["logging","error-handler"],"status":"ok"} (inputs: {"allowedOrigins":[],"contentType":"error-handler","corsO..., null)
+- ... and 83 more clusters
+
+### `compoundAnd`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts
+- **Coverage:** 100.0%
+- **Branches:** 1/1
+- **Lines:** 3/3
+- **Iterations:** 100
+- **Constraints collected:** 110
+
+**Behaviors:**
+
+- Cluster 0: returns "neither" (inputs: -17.010041742706136, 1.0)
+- Cluster 1: returns "neither" (inputs: -2.4238149942915626, 1.0)
+- Cluster 2: returns "both" (inputs: 3.25768486241496, 1.0)
+- Cluster 3: returns "neither" (inputs: -0.3536172499403124, 1.0)
+- Cluster 4: returns "both" (inputs: 257.268344475559, 1.0)
+- ... and 10 more clusters
+
+### `compoundOr`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts
+- **Coverage:** 100.0%
+- **Branches:** 1/1
+- **Lines:** 3/3
+- **Iterations:** 100
+- **Constraints collected:** 100
+
+**Behaviors:**
+
+- Cluster 0: returns "either" (inputs: false, true)
+- Cluster 1: returns "none" (inputs: false, false)
+- Cluster 2: returns "either" (inputs: true, false)
+
+### `threeWayAnd`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/13-mcdc-compound.ts
+- **Coverage:** 100.0%
+- **Branches:** 1/1
+- **Lines:** 3/3
+- **Iterations:** 100
+- **Constraints collected:** 115
+
+**Behaviors:**
+
+- Cluster 0: returns "all positive" (inputs: 1.5341177694483281, 1.0, 1.0)
+- Cluster 1: returns "all positive" (inputs: 0.4088527636141384, 1.0, 1.0)
+- Cluster 2: returns "not all positive" (inputs: -17.038999508519325, 1.0, 1.0)
+- Cluster 3: returns "not all positive" (inputs: -2.2451910623476006, 1.0, 1.0)
+- Cluster 4: returns "all positive" (inputs: 257.14185172407514, 1.0, 1.0)
+- ... and 13 more clusters
+
+### `intToRoman`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts
+- **Coverage:** 100.0%
+- **Branches:** 2/2
+- **Lines:** 9/9
+- **Iterations:** 100
+- **Constraints collected:** 1116
+
+**Behaviors:**
+
+- Cluster 0: returns "CCLVII" (inputs: 257.01280452657454)
+- Cluster 1: throws Error: out of range (inputs: -17.25697042768776)
+- Cluster 2: throws Error: out of range (inputs: -2.483470464447057)
+- Cluster 3: returns "XCIX" (inputs: 99.99809217028792)
+- Cluster 4: returns "XLII" (inputs: 42.974402521177595)
+- ... and 17 more clusters
+
+### `romanToInt`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/13-roman-numerals.ts
+- **Coverage:** 82.4%
+- **Branches:** 4/5
+- **Lines:** 14/17
+- **Iterations:** 100
+- **Constraints collected:** 112
+
+**Behaviors:**
+
+- Cluster 0: throws Error: invalid roman numeral (inputs: "length")
+- Cluster 1: returns 0 (inputs: "")
+- Cluster 2: throws Error: invalid roman numeral (inputs: "toUpperCase")
+- Cluster 3: throws Error: invalid roman numeral (inputs: "invalid roman numeral")
+
+### `parseSemver`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts
+- **Coverage:** 36.4%
+- **Branches:** 3/6
+- **Lines:** 8/22
+- **Iterations:** 100
+- **Constraints collected:** 132
+
+**Behaviors:**
+
+- Cluster 0: throws Error: invalid semver (inputs: "length")
+- Cluster 1: throws Error: invalid semver (inputs: "")
+- Cluster 2: throws Error: invalid semver (inputs: "invalid semver")
+- Cluster 3: throws Error: invalid semver (inputs: "startsWith")
+- Cluster 4: throws Error: invalid semver (inputs: "v")
+- ... and 7 more clusters
+
+### `satisfiesRange`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/14-semver.ts
+- **Coverage:** 63.9%
+- **Branches:** 7/16
+- **Lines:** 23/36
+- **Iterations:** 100
+- **Constraints collected:** 456
+
+**Behaviors:**
+
+- Cluster 0: throws Error: invalid semver (inputs: "*", "")
+- Cluster 1: returns true (inputs: "*", "*")
+- Cluster 2: returns true (inputs: "", "*")
+- Cluster 3: throws Error: invalid semver (inputs: "x", "")
+- Cluster 4: returns true (inputs: "", "x")
+- ... and 65 more clusters
+
+### `validateEmail`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/15-email-validator.ts
+- **Coverage:** 27.7%
+- **Branches:** 6/19
+- **Lines:** 13/47
+- **Iterations:** 100
+- **Constraints collected:** 198
+
+**Behaviors:**
+
+- Cluster 0: returns {"reason":"missing @","valid":false} (inputs: "length")
+- Cluster 1: returns {"reason":"empty","valid":false} (inputs: "")
+- Cluster 2: returns {"reason":"missing @","valid":false} (inputs: "empty")
+- Cluster 3: returns {"reason":"missing @","valid":false} (inputs: "indexOf")
+- Cluster 4: returns {"reason":"empty local part","valid":false} (inputs: "@")
+- ... and 30 more clusters
+
+### `parseCron`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/16-cron-parser.ts
+- **Coverage:** 81.2%
+- **Branches:** 3/11
+- **Lines:** 13/16
+- **Iterations:** 100
+- **Constraints collected:** 159
+
+**Behaviors:**
+
+- Cluster 0: throws Error: expected 5 fields (inputs: "true")
+- Cluster 1: throws Error: empty expression (inputs: "")
+- Cluster 2: throws Error: expected 5 fields (inputs: "length")
+- Cluster 3: throws Error: expected 5 fields (inputs: "empty expression")
+- Cluster 4: throws Error: expected 5 fields (inputs: "startsWith")
+- ... and 18 more clusters
+
+### `classifyConfigs`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts
+- **Coverage:** 41.7%
+- **Branches:** 1/4
+- **Lines:** 5/12
+- **Iterations:** 100
+- **Constraints collected:** 100
+
+**Behaviors:**
+
+- Cluster 0: throws Error: ENOENT: no such file or directory, open 'length' (inputs: ["length"])
+- Cluster 1: returns "no-comments" (inputs: {"length":0})
+- Cluster 2: throws Error: ENOENT: no such file or directory, open 'no-comments' (inputs: ["no-comments"])
+- Cluster 3: throws Error: ENOENT: no such file or directory, open 'utf-8' (inputs: ["utf-8"])
+- Cluster 4: throws Error: ENOENT: no such file or directory, open 'startsWith' (inputs: ["startsWith"])
+- ... and 4 more clusters
+
+### `classifyStatus`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts
+- **Coverage:** 12.5%
+- **Branches:** 0/3
+- **Lines:** 1/8
+- **Iterations:** 100
+- **Constraints collected:** 0
+
+**Behaviors:**
+
+- Cluster 0: throws Error: ENOENT: no such file or directory, open 'trim' (inputs: "trim")
+- Cluster 1: throws Error: ENOENT: no such file or directory, open 'utf-8' (inputs: "utf-8")
+- Cluster 2: throws Error: ENOENT: no such file or directory, open 'length' (inputs: "length")
+- Cluster 3: throws Error: ENOENT: no such file or directory, open 'empty' (inputs: "empty")
+- Cluster 4: throws Error: ENOENT: no such file or directory, open 'short' (inputs: "short")
+- ... and 31 more clusters
+
+### `loadOrDefault`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/17-mock-branches.ts
+- **Coverage:** 33.3%
+- **Branches:** 1/2
+- **Lines:** 2/6
+- **Iterations:** 100
+- **Constraints collected:** 100
+
+**Behaviors:**
+
+- Cluster 0: returns "missing" (inputs: "missing")
+- Cluster 1: returns "missing" (inputs: "utf-8")
+- Cluster 2: returns "missing" (inputs: "loaded")
+- Cluster 3: returns "missing" (inputs: "empty-config")
+- Cluster 4: returns "missing" (inputs: "/tmp/data/report.csv")
+- ... and 31 more clusters
+
+### `negotiateLanguage`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/18-accept-language.ts
+- **Coverage:** 17.9%
+- **Branches:** 2/12
+- **Lines:** 5/28
+- **Iterations:** 100
+- **Constraints collected:** 120
+
+**Behaviors:**
+
+- Cluster 0: returns {"matchedRange":null,"quality":0,"reason":"no-supported",... (inputs: "length", [])
+- Cluster 1: throws TypeError: supported.map is not a function (inputs: "length", {"length":1})
+- Cluster 2: returns {"matchedRange":null,"quality":1,"reason":"default","sele... (inputs: "", ["length"])
+- Cluster 3: returns {"matchedRange":null,"quality":0,"reason":"no-supported",... (inputs: "no-supported", [])
+- Cluster 4: returns {"matchedRange":null,"quality":1,"reason":"default","sele... (inputs: "", ["no-supported"])
+- ... and 67 more clusters
+
+### `evaluateRobotsPolicy`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/19-robots-policy.ts
+- **Coverage:** 39.3%
+- **Branches:** 3/9
+- **Lines:** 11/28
+- **Iterations:** 100
+- **Constraints collected:** 154
+
+**Behaviors:**
+
+- Cluster 0: returns {"allowed":false,"crawlDelay":null,"matchedDirective":nul... (inputs: "length", "", "")
+- Cluster 1: returns {"allowed":false,"crawlDelay":null,"matchedDirective":nul... (inputs: "", "length", "")
+- Cluster 2: returns {"allowed":false,"crawlDelay":null,"matchedDirective":nul... (inputs: "", "", "length")
+- Cluster 3: returns {"allowed":false,"crawlDelay":null,"matchedDirective":nul... (inputs: "missing-user-agent", "", "")
+- Cluster 4: returns {"allowed":false,"crawlDelay":null,"matchedDirective":nul... (inputs: "", "missing-user-agent", "")
+- ... and 90 more clusters
+
+### `parseDotenv`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/20-dotenv-parser.ts
+- **Coverage:** 28.9%
+- **Branches:** 4/12
+- **Lines:** 13/45
+- **Iterations:** 100
+- **Constraints collected:** 464
+
+**Behaviors:**
+
+- Cluster 0: returns {"values":{},"warnings":["line 1: missing separator"]} (inputs: "split")
+- Cluster 1: returns {"values":{},"warnings":["line 1: missing separator"]} (inputs: "replace")
+- Cluster 2: returns {"values":{},"warnings":["line 1: missing separator"]} (inputs: "\\r\\n?")
+- Cluster 3: returns {"values":{},"warnings":[]} (inputs: "\n")
+- Cluster 4: returns {"values":{},"warnings":["line 1: missing separator"]} (inputs: "length")
+- ... and 62 more clusters
+
+### `classifySecret`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts
+- **Coverage:** 28.6%
+- **Branches:** 0/2
+- **Lines:** 2/7
+- **Iterations:** 100
+- **Constraints collected:** 0
+
+**Behaviors:**
+
+- Cluster 0: throws Error: error:1C80006B:Provider routines::wrong final block length (inputs: {"__complex_type":"buffer","encoding":"base64","value":"A...)
+- Cluster 1: throws Error: error:1C80006B:Provider routines::wrong final block length (inputs: {"__complex_type":"buffer","encoding":"base64","value":"A...)
+- Cluster 2: throws Error: error:1C80006B:Provider routines::wrong final block length (inputs: {"__complex_type":"buffer","encoding":"base64","value":"/...)
+- Cluster 3: throws Error: error:1C80006B:Provider routines::wrong final block length (inputs: {"__complex_type":"buffer","encoding":"base64","value":"S...)
+- Cluster 4: throws Error: error:1C80006B:Provider routines::wrong final block length (inputs: {"__complex_type":"buffer","encoding":"base64","value":""})
+
+### `encrypt`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/21-crypto-boundary.ts
+- **Coverage:** 100.0%
+- **Branches:** 0/0
+- **Lines:** 2/2
+- **Iterations:** 100
+- **Constraints collected:** 0
+
+**Behaviors:**
+
+- Cluster 0: returns {"data":[86,249,108,251,56,85,251,68,141,47,62,120,107,11... (inputs: "createCipheriv")
+- Cluster 1: returns {"data":[81,151,130,15,43,241,122,102,170,221,110,71,109,... (inputs: "aes-256-cbc")
+- Cluster 2: returns {"data":[192,30,155,104,180,162,112,41,225,98,44,61,106,1... (inputs: "concat")
+- Cluster 3: returns {"data":[49,179,220,174,138,131,65,225,242,205,202,29,178... (inputs: "update")
+- Cluster 4: returns {"data":[109,221,35,30,169,157,230,150,55,149,85,178,8,15... (inputs: "utf8")
+- ... and 56 more clusters
+
+### `classifyWithChecksum`
+
+- **File:** /tmp/shatter-examples.zgl141xd/standalone/ts/22-opaque-predicate.ts
+- **Coverage:** 90.0%
+- **Branches:** 4/4
+- **Lines:** 9/10
+- **Iterations:** 100
+- **Constraints collected:** 143
+
+**Behaviors:**
+
+- Cluster 0: returns "checksum-miss" (inputs: "length")
+- Cluster 1: returns "empty" (inputs: "")
+- Cluster 2: returns "checksum-miss" (inputs: "empty")
+- Cluster 3: returns "checksum-miss" (inputs: "too-long")
+- Cluster 4: returns "checksum-miss" (inputs: "charCodeAt")
+- ... and 2 more clusters
+
+## Uncovered Branches
+
+- `classifyString`: 0 uncovered branch(es) (90.9% coverage)
+- `categorizeUser`: 1 uncovered branch(es) (72.7% coverage)
+- `computeStats`: 4 uncovered branch(es) (31.2% coverage)
+- `safeDivide`: 0 uncovered branch(es) (87.5% coverage)
+- `computeArea`: 6 uncovered branch(es) (10.0% coverage)
+- `routeRequest`: 7 uncovered branch(es) (30.8% coverage)
+- `classifyHttpResponse`: 0 uncovered branch(es) (96.3% coverage)
+- `processStateMachine`: 10 uncovered branch(es) (37.9% coverage)
+- `authorizeRequest`: 12 uncovered branch(es) (13.8% coverage)
+- `validateJwt`: 6 uncovered branch(es) (19.2% coverage)
+- `checkRateLimit`: 1 uncovered branch(es) (77.8% coverage)
+- `matchRoute`: 16 uncovered branch(es) (12.0% coverage)
+- `resolveMiddleware`: 0 uncovered branch(es) (93.8% coverage)
+- `romanToInt`: 1 uncovered branch(es) (82.4% coverage)
+- `parseSemver`: 3 uncovered branch(es) (36.4% coverage)
+- `satisfiesRange`: 9 uncovered branch(es) (63.9% coverage)
+- `validateEmail`: 13 uncovered branch(es) (27.7% coverage)
+- `parseCron`: 8 uncovered branch(es) (81.2% coverage)
+- `classifyConfigs`: 3 uncovered branch(es) (41.7% coverage)
+- `classifyStatus`: 3 uncovered branch(es) (12.5% coverage)
+- `loadOrDefault`: 1 uncovered branch(es) (33.3% coverage)
+- `negotiateLanguage`: 10 uncovered branch(es) (17.9% coverage)
+- `evaluateRobotsPolicy`: 6 uncovered branch(es) (39.3% coverage)
+- `parseDotenv`: 8 uncovered branch(es) (28.9% coverage)
+- `classifySecret`: 2 uncovered branch(es) (28.6% coverage)
+- `classifyWithChecksum`: 0 uncovered branch(es) (90.0% coverage)
+
+## Interesting Inputs
+
+### `classifyNumber`
+
+- 0 -> "zero"
+- -1 -> "negative"
+
+### `compareMagnitudes`
+
+- 100.0, 0.0 -> "both-small"
+- 101, 0 -> "sum-large"
+- 0.0, 100.0 -> "both-small"
+- 1000.0, 0.0 -> "sum-large"
+- 0.0, 1000.0 -> "sum-large"
+- 100, 0 -> "both-small"
+- 0, 0 -> "both-small"
+- 0, 101 -> "sum-large"
+
+### `classifyString`
+
+- "" -> "empty"
+
+### `transformString`
+
+- "upper", "", 0 -> "upper"
+- "upper", "upper", 0 -> "UPPER"
+- "", "lower", 0 -> ""
+- "", "reverse", 0 -> ""
+- "", "repeat", 0 -> ""
+- "", "repeat", 1 -> ""
+- "", "upper", 0 -> ""
+- "toUpperCase", "", 0 -> "toUpperCase"
+- "", "toUpperCase", 0 -> ""
+- "lower", "", 0 -> "lower"
+- "toLowerCase", "", 0 -> "toLowerCase"
+- "", "toLowerCase", 0 -> ""
+- "reverse", "", 0 -> "reverse"
+- "join", "", 0 -> "join"
+- "", "join", 0 -> ""
+- "split", "", 0 -> "split"
+- "", "split", 0 -> ""
+- "", "", 0 -> ""
+- "repeat", "", 0 -> "repeat"
+- "upper", "lower", 0 -> "upper"
+- "upper", "reverse", 0 -> "reppu"
+- "upper", "repeat", 0 -> ""
+- "toUpperCase", "upper", 0 -> "TOUPPERCASE"
+- "toUpperCase", "lower", 0 -> "touppercase"
+- "toUpperCase", "reverse", 0 -> "esaCreppUot"
+- "toUpperCase", "repeat", 0 -> ""
+- "lower", "upper", 0 -> "LOWER"
+- "lower", "lower", 0 -> "lower"
+- "lower", "reverse", 0 -> "rewol"
+- "lower", "repeat", 0 -> ""
+- "toLowerCase", "upper", 0 -> "TOLOWERCASE"
+- "toLowerCase", "lower", 0 -> "tolowercase"
+- "toLowerCase", "reverse", 0 -> "esaCrewoLot"
+- "toLowerCase", "repeat", 0 -> ""
+- "reverse", "upper", 0 -> "REVERSE"
+- "reverse", "lower", 0 -> "reverse"
+- "reverse", "reverse", 0 -> "esrever"
+- "reverse", "repeat", 0 -> ""
+- "join", "upper", 0 -> "JOIN"
+- "join", "lower", 0 -> "join"
+- "join", "reverse", 0 -> "nioj"
+- "join", "repeat", 0 -> ""
+- "split", "upper", 0 -> "SPLIT"
+- "split", "lower", 0 -> "split"
+- "split", "reverse", 0 -> "tilps"
+- "split", "repeat", 0 -> ""
+- "repeat", "upper", 0 -> "REPEAT"
+- "repeat", "lower", 0 -> "repeat"
+- "repeat", "reverse", 0 -> "taeper"
+- "repeat", "repeat", 0 -> ""
+
+### `categorizeUser`
+
+- {"age":-1,"isVerified":false,"name":"age","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"age"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"invalid age","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"invalid age"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"child","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"child"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"teen","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"teen"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"isVerified","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"isVerified"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"role","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"role"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"admin","role":""} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"admin"} -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"verified-user","role... -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"verified-u... -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"unverified-user","ro... -> **error:** Error: invalid age
+- {"age":-1,"isVerified":false,"name":"","role":"unverified... -> **error:** Error: invalid age
+
+### `describeRectangle`
+
+- {"height":0.0,"width":0.0} -> **error:** Error: non-positive dimension
+- {"height":1,"width":0} -> **error:** Error: non-positive dimension
+
+### `computeStats`
+
+- {"length":1} -> **error:** TypeError: items is not iterable
+- {"length":0} -> **error:** Error: empty array
+
+### `safeDivide`
+
+- 0.0, 0.0 -> **error:** Error: division by zero
+- 0.0, 1 -> 0
+- 0.0, 0 -> **error:** Error: division by zero
+
+### `computeArea`
+
+- null -> **error:** TypeError: Cannot read properties of null (reading 'kind')
+
+### `routeRequest`
+
+- {"authenticated":false,"body":null,"method":"length","pat... -> **error:** Error: empty path
+- {"authenticated":false,"body":"length","method":"GET","pa... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"path","path"... -> **error:** Error: empty path
+- {"authenticated":false,"body":"path","method":"GET","path... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"empty path",... -> **error:** Error: empty path
+- {"authenticated":false,"body":"empty path","method":"GET"... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"method","pat... -> **error:** Error: empty path
+- {"authenticated":false,"body":"method","method":"GET","pa... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"GET","path":""} -> **error:** Error: empty path
+- {"authenticated":false,"body":"GET","method":"GET","path"... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"read","path"... -> **error:** Error: empty path
+- {"authenticated":false,"body":"read","method":"GET","path... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"DELETE","pat... -> **error:** Error: empty path
+- {"authenticated":false,"body":"DELETE","method":"GET","pa... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"authenticate... -> **error:** Error: empty path
+- {"authenticated":false,"body":"authenticated","method":"G... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"auth require... -> **error:** Error: empty path
+- {"authenticated":false,"body":"auth required","method":"G... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"delete","pat... -> **error:** Error: empty path
+- {"authenticated":false,"body":"delete","method":"GET","pa... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"POST","path"... -> **error:** Error: empty path
+- {"authenticated":false,"body":"POST","method":"GET","path... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"body","path"... -> **error:** Error: empty path
+- {"authenticated":false,"body":"body","method":"GET","path... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"body require... -> **error:** Error: empty path
+- {"authenticated":false,"body":"body required","method":"G... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"create","pat... -> **error:** Error: empty path
+- {"authenticated":false,"body":"create","method":"GET","pa... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"PUT","path":""} -> **error:** Error: empty path
+- {"authenticated":false,"body":"PUT","method":"GET","path"... -> **error:** Error: empty path
+- {"authenticated":false,"body":null,"method":"update","pat... -> **error:** Error: empty path
+- {"authenticated":false,"body":"update","method":"GET","pa... -> **error:** Error: empty path
+
+### `classifyHttpResponse`
+
+- 200.0, "", null -> "ok-binary"
+- 300.0, "", null -> "redirect-other"
+- 201.0, "", null -> "created-empty"
+- 204.0, "", null -> "no-content"
+- 400.0, "", null -> "client-error"
+- 301.0, "", null -> "redirect"
+- 500.0, "", null -> "server-error"
+- 401.0, "", null -> "auth-error"
+- 200, "text/", null -> "ok-text"
+- 200, "application/json", null -> "ok-json"
+- 264, "", null -> "success-other"
+- -0.10194318561574234, "test", null -> **error:** Error: invalid status
+- -17.197454427909335, "test", null -> **error:** Error: invalid status
+- 3.6524388899380025, "test", null -> **error:** Error: invalid status
+- 42.83204657903048, "test", null -> **error:** Error: invalid status
+- 100.11594988577448, "test", null -> "informational"
+- 100.0, "", null -> "informational"
+- 0, "", null -> **error:** Error: invalid status
+- 600.0, "", null -> **error:** Error: invalid status
+- 0.0, "invalid status", null -> **error:** Error: invalid status
+- 0.0, "", "invalid status" -> **error:** Error: invalid status
+- 0.0, "informational", null -> **error:** Error: invalid status
+- 0.0, "", "informational" -> **error:** Error: invalid status
+- 0.0, "startsWith", null -> **error:** Error: invalid status
+- 0.0, "", "startsWith" -> **error:** Error: invalid status
+- 0.0, "text/", null -> **error:** Error: invalid status
+- 0.0, "", "text/" -> **error:** Error: invalid status
+- 0.0, "ok-text", null -> **error:** Error: invalid status
+- 0.0, "", "ok-text" -> **error:** Error: invalid status
+- 0.0, "application/json", null -> **error:** Error: invalid status
+- 0.0, "", "application/json" -> **error:** Error: invalid status
+- 0.0, "ok-json", null -> **error:** Error: invalid status
+- 0.0, "", "ok-json" -> **error:** Error: invalid status
+- 0.0, "ok-binary", null -> **error:** Error: invalid status
+- 0.0, "", "ok-binary" -> **error:** Error: invalid status
+- 0.0, "length", null -> **error:** Error: invalid status
+- 0.0, "", "length" -> **error:** Error: invalid status
+- 0.0, "", null -> **error:** Error: invalid status
+- 0.0, "created-with-body", null -> **error:** Error: invalid status
+- 0.0, "", "created-with-body" -> **error:** Error: invalid status
+- 0.0, "created-empty", null -> **error:** Error: invalid status
+- 0.0, "", "created-empty" -> **error:** Error: invalid status
+- 0.0, "no-content", null -> **error:** Error: invalid status
+- 0.0, "", "no-content" -> **error:** Error: invalid status
+- 0.0, "success-other", null -> **error:** Error: invalid status
+- 0.0, "", "success-other" -> **error:** Error: invalid status
+- 302.0, "", null -> "redirect"
+- 0.0, "redirect", null -> **error:** Error: invalid status
+- 0.0, "", "redirect" -> **error:** Error: invalid status
+- 0.0, "redirect-other", null -> **error:** Error: invalid status
+- 0.0, "", "redirect-other" -> **error:** Error: invalid status
+- 403.0, "", null -> "auth-error"
+- 0.0, "auth-error", null -> **error:** Error: invalid status
+- 0.0, "", "auth-error" -> **error:** Error: invalid status
+- 0.0, "client-error", null -> **error:** Error: invalid status
+- 0.0, "", "client-error" -> **error:** Error: invalid status
+- 0.0, "server-error", null -> **error:** Error: invalid status
+- 0.0, "", "server-error" -> **error:** Error: invalid status
+- 456, "", null -> "client-error"
+- 580, "", null -> "server-error"
+- 580, "invalid status", null -> "server-error"
+- 580, "", "invalid status" -> "server-error"
+- 164, "", null -> "informational"
+- 556, "", null -> "server-error"
+- 201, "", null -> "created-empty"
+- 580, "informational", null -> "server-error"
+- 580, "", "informational" -> "server-error"
+- 528, "", null -> "server-error"
+- 301, "", null -> "redirect"
+- 580, "startsWith", null -> "server-error"
+- 580, "", "startsWith" -> "server-error"
+- 580, "text/", null -> "server-error"
+- 580, "", "text/" -> "server-error"
+- 580, "ok-text", null -> "server-error"
+- 580, "", "ok-text" -> "server-error"
+- 580, "application/json", null -> "server-error"
+- 580, "", "application/json" -> "server-error"
+- 580, "ok-json", null -> "server-error"
+- 580, "", "ok-json" -> "server-error"
+- 580, "ok-binary", null -> "server-error"
+- 580, "", "ok-binary" -> "server-error"
+- 200, "", null -> "ok-binary"
+- 580, "length", null -> "server-error"
+- 580, "", "length" -> "server-error"
+- 580, "created-with-body", null -> "server-error"
+- 580, "", "created-with-body" -> "server-error"
+- 580, "created-empty", null -> "server-error"
+- 580, "", "created-empty" -> "server-error"
+- 202, "", null -> "success-other"
+- 580, "no-content", null -> "server-error"
+- 580, "", "no-content" -> "server-error"
+
+### `processStateMachine`
+
+- ["idle"], 0.0 -> "invalid-transition"
+- {"length":0}, 0.0 -> "idle"
+- ["start"], 0.0 -> "loading"
+- {"length":1}, 0.0 -> **error:** TypeError: events is not iterable
+- null, 7.289363211692572 -> **error:** TypeError: Cannot read properties of null (reading 'length')
+- null, -16.944703753131257 -> **error:** TypeError: Cannot read properties of null (reading 'length')
+- null, -17.100118043179563 -> **error:** TypeError: Cannot read properties of null (reading 'length')
+- null, 1.8862129128278 -> **error:** TypeError: Cannot read properties of null (reading 'length')
+- null, 257.2265153797509 -> **error:** TypeError: Cannot read properties of null (reading 'length')
+- [], 0.0 -> "idle"
+- ["length"], 0.0 -> "invalid-transition"
+- ["loading"], 0.0 -> "invalid-transition"
+- ["invalid-transition"], 0.0 -> "invalid-transition"
+- ["success"], 0.0 -> "invalid-transition"
+- ["error"], 0.0 -> "invalid-transition"
+- ["reset"], 0.0 -> "invalid-transition"
+- ["done"], 0.0 -> "invalid-transition"
+
+### `authorizeRequest`
+
+- {"active":false,"id":"length","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"length","roles":{"length":1}}, "", "", "" -> "denied: inactive user"
+- {"active":false,"id":"","roles":[]}, "length", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "length", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "length" -> "denied: no roles"
+- {"active":false,"id":"roles","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "roles", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "roles", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "roles" -> "denied: no roles"
+- {"active":false,"id":"denied: no roles","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "denied: no roles", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "denied: no roles", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "denied: no roles" -> "denied: no roles"
+- {"active":false,"id":"active","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "active", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "active", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "active" -> "denied: no roles"
+- {"active":false,"id":"denied: inactive user","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "denied: inactive user", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "denied: inactive user", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "denied: inactive user" -> "denied: no roles"
+- {"active":false,"id":"denied: invalid resource","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "denied: invalid resource", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "denied: invalid resource", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "denied: invalid resource" -> "denied: no roles"
+- {"active":false,"id":"includes","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "includes", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "includes", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "includes" -> "denied: no roles"
+- {"active":false,"id":"denied: invalid action","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "denied: invalid action", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "denied: invalid action", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "denied: invalid action" -> "denied: no roles"
+- {"active":false,"id":"superadmin","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "superadmin", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "superadmin", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "superadmin" -> "denied: no roles"
+- {"active":false,"id":"granted: superadmin","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "granted: superadmin", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "granted: superadmin", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "granted: superadmin" -> "denied: no roles"
+- {"active":false,"id":"id","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "id", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "id", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "id" -> "denied: no roles"
+- {"active":false,"id":"read","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "read", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "read", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "read" -> "denied: no roles"
+- {"active":false,"id":"granted: owner-read","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "granted: owner-read", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "granted: owner-read", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "granted: owner-read" -> "denied: no roles"
+- {"active":false,"id":"write","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "write", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "write", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "write" -> "denied: no roles"
+- {"active":false,"id":"granted: owner-write","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "granted: owner-write", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "granted: owner-write", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "granted: owner-write" -> "denied: no roles"
+- {"active":false,"id":"delete","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "delete", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "delete", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "delete" -> "denied: no roles"
+- {"active":false,"id":"granted: owner-delete","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "granted: owner-delete", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "granted: owner-delete", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "granted: owner-delete" -> "denied: no roles"
+- {"active":false,"id":"admin","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "admin", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "admin", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "admin" -> "denied: no roles"
+- {"active":false,"id":"granted: admin-read","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "granted: admin-read", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "granted: admin-read", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "granted: admin-read" -> "denied: no roles"
+- {"active":false,"id":"granted: admin-write","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "granted: admin-write", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "granted: admin-write", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "granted: admin-write" -> "denied: no roles"
+- {"active":false,"id":"denied: admin-no-delete","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "denied: admin-no-delete", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "denied: admin-no-delete", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "denied: admin-no-delete" -> "denied: no roles"
+- {"active":false,"id":"viewer","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "viewer", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "viewer", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "viewer" -> "denied: no roles"
+- {"active":false,"id":"granted: viewer","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "granted: viewer", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "granted: viewer", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "granted: viewer" -> "denied: no roles"
+- {"active":false,"id":"denied: viewer-readonly","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "denied: viewer-readonly", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "denied: viewer-readonly", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "", "denied: viewer-readonly" -> "denied: no roles"
+- {"active":false,"id":"denied: no matching role","roles":[]}, "", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "denied: no matching role", "", "" -> "denied: no roles"
+- {"active":false,"id":"","roles":[]}, "", "denied: no matching role", "" -> "denied: no roles"
+
+### `validateJwt`
+
+- "", "", "", "", 0.0 -> "invalid: empty token"
+- "length", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "length", "", "", 0.0 -> "invalid: empty token"
+- "", "", "length", "", 0.0 -> "invalid: empty token"
+- "", "", "", "length", 0.0 -> "invalid: empty token"
+- "invalid: empty token", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: empty token", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: empty token", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: empty token", 0.0 -> "invalid: empty token"
+- "split", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "split", "", "", 0.0 -> "invalid: empty token"
+- "", "", "split", "", 0.0 -> "invalid: empty token"
+- "", "", "", "split", 0.0 -> "invalid: empty token"
+- ".", "", "", "", 0.0 -> "invalid: malformed token"
+- "", ".", "", "", 0.0 -> "invalid: empty token"
+- "", "", ".", "", 0.0 -> "invalid: empty token"
+- "", "", "", ".", 0.0 -> "invalid: empty token"
+- "", "", "", "", 3.0 -> "invalid: empty token"
+- "invalid: malformed token", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: malformed token", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: malformed token", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: malformed token", 0.0 -> "invalid: empty token"
+- "parse", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "parse", "", "", 0.0 -> "invalid: empty token"
+- "", "", "parse", "", 0.0 -> "invalid: empty token"
+- "", "", "", "parse", 0.0 -> "invalid: empty token"
+- "toString", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "toString", "", "", 0.0 -> "invalid: empty token"
+- "", "", "toString", "", 0.0 -> "invalid: empty token"
+- "", "", "", "toString", 0.0 -> "invalid: empty token"
+- "from", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "from", "", "", 0.0 -> "invalid: empty token"
+- "", "", "from", "", 0.0 -> "invalid: empty token"
+- "", "", "", "from", 0.0 -> "invalid: empty token"
+- "base64", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "base64", "", "", 0.0 -> "invalid: empty token"
+- "", "", "base64", "", 0.0 -> "invalid: empty token"
+- "", "", "", "base64", 0.0 -> "invalid: empty token"
+- "invalid: corrupt header", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: corrupt header", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: corrupt header", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: corrupt header", 0.0 -> "invalid: empty token"
+- "alg", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "alg", "", "", 0.0 -> "invalid: empty token"
+- "", "", "alg", "", 0.0 -> "invalid: empty token"
+- "", "", "", "alg", 0.0 -> "invalid: empty token"
+- "HS256", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "HS256", "", "", 0.0 -> "invalid: empty token"
+- "", "", "HS256", "", 0.0 -> "invalid: empty token"
+- "", "", "", "HS256", 0.0 -> "invalid: empty token"
+- "invalid: unsupported algorithm", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: unsupported algorithm", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: unsupported algorithm", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: unsupported algorithm", 0.0 -> "invalid: empty token"
+- "", "", "", "", 1.0 -> "invalid: empty token"
+- "invalid: corrupt payload", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: corrupt payload", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: corrupt payload", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: corrupt payload", 0.0 -> "invalid: empty token"
+- "exp", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "exp", "", "", 0.0 -> "invalid: empty token"
+- "", "", "exp", "", 0.0 -> "invalid: empty token"
+- "", "", "", "exp", 0.0 -> "invalid: empty token"
+- "number", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "number", "", "", 0.0 -> "invalid: empty token"
+- "", "", "number", "", 0.0 -> "invalid: empty token"
+- "", "", "", "number", 0.0 -> "invalid: empty token"
+- "invalid: token expired", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: token expired", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: token expired", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: token expired", 0.0 -> "invalid: empty token"
+- "iss", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "iss", "", "", 0.0 -> "invalid: empty token"
+- "", "", "iss", "", 0.0 -> "invalid: empty token"
+- "", "", "", "iss", 0.0 -> "invalid: empty token"
+- "invalid: wrong issuer", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: wrong issuer", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: wrong issuer", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: wrong issuer", 0.0 -> "invalid: empty token"
+- "isArray", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "isArray", "", "", 0.0 -> "invalid: empty token"
+- "", "", "isArray", "", 0.0 -> "invalid: empty token"
+- "", "", "", "isArray", 0.0 -> "invalid: empty token"
+- "aud", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "aud", "", "", 0.0 -> "invalid: empty token"
+- "", "", "aud", "", 0.0 -> "invalid: empty token"
+- "", "", "", "aud", 0.0 -> "invalid: empty token"
+- "includes", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "includes", "", "", 0.0 -> "invalid: empty token"
+- "", "", "includes", "", 0.0 -> "invalid: empty token"
+- "", "", "", "includes", 0.0 -> "invalid: empty token"
+- "invalid: wrong audience", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "invalid: wrong audience", "", "", 0.0 -> "invalid: empty token"
+- "", "", "invalid: wrong audience", "", 0.0 -> "invalid: empty token"
+- "", "", "", "invalid: wrong audience", 0.0 -> "invalid: empty token"
+- "scope", "", "", "", 0.0 -> "invalid: malformed token"
+- "", "scope", "", "", 0.0 -> "invalid: empty token"
+- "", "", "scope", "", 0.0 -> "invalid: empty token"
+- "", "", "", "scope", 0.0 -> "invalid: empty token"
+
+### `checkRateLimit`
+
+- {"lastRefillMs":1,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0, "" -> **error:** Error: clock skew detected
+- {"lastRefillMs":0,"penaltyUntilMs":1,"tokens":0.0}, 1, 1, 0, "" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- null, 99.91665352146367, 1.0, 1.0, "test" -> {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt...
+- null, 1.927800006677284, 1.0, 1.0, "test" -> {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt...
+- null, -0.3287335778536124, 1.0, 1.0, "test" -> **error:** Error: invalid capacity
+- null, 257.4247072629277, 1.0, 1.0, "test" -> {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt...
+- null, 100.23449451745046, 1.0, 1.0, "test" -> {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt...
+- null, 1.0, 1.5567504673812835, 1.0, "test" -> {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt...
+- null, 1.0, -0.361532210619666, 1.0, "test" -> **error:** Error: invalid refill rate
+- null, 1.0, -2.2703350635478374, 1.0, "test" -> **error:** Error: invalid refill rate
+- null, 1.0, -16.877292868370176, 1.0, "test" -> **error:** Error: invalid refill rate
+- null, 1.0, 1.5600882252342911, 1.0, "test" -> {"allowed":false,"newState":{"lastRefillMs":1,"penaltyUnt...
+- null, 1.0, 1.0, 0.4190202109952636, "test" -> {"allowed":false,"newState":{"lastRefillMs":0.41902021099...
+- null, 1.0, 1.0, 1.5351372995151455, "test" -> {"allowed":false,"newState":{"lastRefillMs":1.53513729951...
+- null, 1.0, 1.0, 100.26913990384735, "test" -> {"allowed":false,"newState":{"lastRefillMs":100.269139903...
+- null, 1.0, 1.0, 100.3548350137286, "test" -> {"allowed":false,"newState":{"lastRefillMs":100.354835013...
+- null, 1.0, 1.0, 42.66767727506521, "test" -> {"allowed":false,"newState":{"lastRefillMs":42.6676772750...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "invalid capacity" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "invalid refill rate" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "lastRefillMs" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "clock skew detected" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "penaltyUntilMs" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "denied: penalty active" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1000.0, 0.0, 0.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 1000.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 1000.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "min" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "tokens" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "denied: unknown priority" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 0.0, "denied: insufficient tokens" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1.0, 0.0, 0.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 1.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 1.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 2.0, 0.0, 0.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 2.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 2.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 5.0, 0.0, 0.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 5.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 5.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 10.0, 0.0, 0.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 10.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0.0, 0.0, 10.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "invalid capacity" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "invalid refill rate" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "lastRefillMs" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "clock skew detected" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "penaltyUntilMs" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "denied: penalty active" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1000.0, 0.0, "" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 1000.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "min" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "tokens" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "denied: unknown priority" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 0.0, "denied: insufficient tokens" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1.0, 0.0, "" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 1.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 2.0, 0.0, "" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 2.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 5.0, 0.0, "" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 5.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 10.0, 0.0, "" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0.0, 10.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 1, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 0, 0.0, "" -> **error:** Error: invalid refill rate
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "invalid capacity" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "invalid capacity" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "invalid refill rate" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "invalid refill rate" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "lastRefillMs" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "lastRefillMs" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "clock skew detected" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "clock skew detected" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "penaltyUntilMs" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "penaltyUntilMs" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "denied: penalty active" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "denied: penalty active" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 1000.0, 0.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 1000.0, "" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 1000.0, "" -> {"allowed":false,"newState":{"lastRefillMs":1000,"penalty...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "min" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "min" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "tokens" -> **error:** Error: invalid capacity
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 1, 1, 0.0, "tokens" -> {"allowed":false,"newState":{"lastRefillMs":0,"penaltyUnt...
+- {"lastRefillMs":0.0,"penaltyUntilMs":0.0,"tokens":0.0}, 0, 0.0, 0.0, "denied: unknown priority" -> **error:** Error: invalid capacity
+
+### `matchRoute`
+
+- [], "length", "" -> {"message":"empty path","status":"error"}
+- [], "", "length" -> {"message":"path must start with /","status":"error"}
+- [], "", "/" -> {"message":"empty method","status":"error"}
+- [], "error", "" -> {"message":"empty path","status":"error"}
+- [], "", "error" -> {"message":"path must start with /","status":"error"}
+- [], "empty path", "" -> {"message":"empty path","status":"error"}
+- [], "", "empty path" -> {"message":"path must start with /","status":"error"}
+- [], "startsWith", "" -> {"message":"empty path","status":"error"}
+- [], "", "startsWith" -> {"message":"path must start with /","status":"error"}
+- [], "/", "" -> {"message":"empty path","status":"error"}
+- [], "path must start with /", "" -> {"message":"empty path","status":"error"}
+- [], "", "path must start with /" -> {"message":"path must start with /","status":"error"}
+- [], "empty method", "" -> {"message":"empty path","status":"error"}
+- [], "", "empty method" -> {"message":"path must start with /","status":"error"}
+- [], "not-found", "" -> {"message":"empty path","status":"error"}
+- [], "", "not-found" -> {"message":"path must start with /","status":"error"}
+- [], "endsWith", "" -> {"message":"empty path","status":"error"}
+- [], "", "endsWith" -> {"message":"path must start with /","status":"error"}
+- [], "slice", "" -> {"message":"empty path","status":"error"}
+- [], "", "slice" -> {"message":"path must start with /","status":"error"}
+- [], "filter", "" -> {"message":"empty path","status":"error"}
+- [], "", "filter" -> {"message":"path must start with /","status":"error"}
+- [], "split", "" -> {"message":"empty path","status":"error"}
+- [], "", "split" -> {"message":"path must start with /","status":"error"}
+- [], "toUpperCase", "" -> {"message":"empty path","status":"error"}
+- [], "", "toUpperCase" -> {"message":"path must start with /","status":"error"}
+- [], "pattern", "" -> {"message":"empty path","status":"error"}
+- [], "", "pattern" -> {"message":"path must start with /","status":"error"}
+- [], "*", "" -> {"message":"empty path","status":"error"}
+- [], "", "*" -> {"message":"path must start with /","status":"error"}
+- [], ":", "" -> {"message":"empty path","status":"error"}
+- [], "", ":" -> {"message":"path must start with /","status":"error"}
+- [], "method", "" -> {"message":"empty path","status":"error"}
+- [], "", "method" -> {"message":"path must start with /","status":"error"}
+- [], "wildcard", "" -> {"message":"empty path","status":"error"}
+- [], "", "wildcard" -> {"message":"path must start with /","status":"error"}
+- [], "join", "" -> {"message":"empty path","status":"error"}
+- [], "", "join" -> {"message":"path must start with /","status":"error"}
+- [], "matched", "" -> {"message":"empty path","status":"error"}
+- [], "", "matched" -> {"message":"path must start with /","status":"error"}
+- [], "handler", "" -> {"message":"empty path","status":"error"}
+- [], "", "handler" -> {"message":"path must start with /","status":"error"}
+- [], "method-not-allowed", "" -> {"message":"empty path","status":"error"}
+- [], "", "method-not-allowed" -> {"message":"path must start with /","status":"error"}
+- [], "", "" -> {"message":"empty path","status":"error"}
+- [], "", "A" -> {"message":"path must start with /","status":"error"}
+
+### `resolveMiddleware`
+
+- {"allowedOrigins":[],"contentType":"logging","corsOrigin"..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"logging","corsOrigin"..., null -> {"middleware":[],"reason":"missing auth","status":"reject...
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"loggi..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"application/json","co..., null -> {"middleware":["logging","error-handler","json-parser"],"...
+- {"allowedOrigins":[],"contentType":"multipart/form-data",..., null -> {"middleware":["logging","error-handler","multipart-parse...
+- {"allowedOrigins":[],"contentType":"application/json","co..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"multipart/form-data",..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":"","contentType":"","corsOrigin":"","re..., null -> {"middleware":["logging","error-handler","cors"],"status"...
+- {"allowedOrigins":[],"contentType":"error-handler","corsO..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"error..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"requiresAuth","corsOr..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"requi..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"rejected","corsOrigin..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"rejec..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"missing auth","corsOr..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"missi..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"startsWith","corsOrig..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"start..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"Bearer ","corsOrigin"..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"Beare..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"length","corsOrigin":..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"lengt..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"invalid auth format",..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"inval..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"push","corsOrigin":nu..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"push"..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"auth","corsOrigin":nu..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"auth"..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"contentType","corsOri..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"conte..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"appli..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"json-parser","corsOri..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"json-..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"multi..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"multipart-parser","co..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"multi..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"corsOrigin","corsOrig..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"corsO..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"includes","corsOrigin..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"inclu..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"allowedOrigins","cors..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"allow..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"cors","corsOrigin":nu..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"cors"..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"origin not allowed","..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"origi..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"ok","corsOrigin":null..., null -> {"middleware":["logging","error-handler"],"status":"ok"}
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"ok","..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"","re..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"loggi..., null -> {"middleware":[],"reason":"missing auth","status":"reject...
+- {"allowedOrigins":[],"contentType":"error-handler","corsO..., null -> {"middleware":[],"reason":"missing auth","status":"reject...
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"error..., null -> {"middleware":[],"reason":"missing auth","status":"reject...
+- {"allowedOrigins":[],"contentType":"application/json","co..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"multipart/form-data",..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"requiresAuth","corsOr..., null -> {"middleware":[],"reason":"missing auth","status":"reject...
+- {"allowedOrigins":[],"contentType":"","corsOrigin":"requi..., null -> {"middleware":[],"reason":"missing auth","status":"reject...
+- {"allowedOrigins":[],"contentType":"application/json","co..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+- {"allowedOrigins":[],"contentType":"multipart/form-data",..., null -> {"middleware":[],"reason":"origin not allowed","status":"...
+
+### `compoundAnd`
+
+- 0.0, 0.0 -> "neither"
+- 10.0, 0.0 -> "both"
+- 0.0, 10.0 -> "neither"
+- 0, 9 -> "neither"
+
+### `threeWayAnd`
+
+- 0.0, 0.0, 0.0 -> "not all positive"
+- 0, 1, 1 -> "not all positive"
+
+### `intToRoman`
+
+- -17.25697042768776 -> **error:** Error: out of range
+- -2.483470464447057 -> **error:** Error: out of range
+- 0.0 -> **error:** Error: out of range
+- 4000 -> **error:** Error: out of range
+
+### `romanToInt`
+
+- "length" -> **error:** Error: invalid roman numeral
+- "" -> 0
+- "toUpperCase" -> **error:** Error: invalid roman numeral
+- "invalid roman numeral" -> **error:** Error: invalid roman numeral
+
+### `parseSemver`
+
+- "length" -> **error:** Error: invalid semver
+- "" -> **error:** Error: invalid semver
+- "v" -> **error:** Error: invalid semver
+- "invalid semver" -> **error:** Error: invalid semver
+- "startsWith" -> **error:** Error: invalid semver
+- "V" -> **error:** Error: invalid semver
+- "slice" -> **error:** Error: invalid semver
+- "split" -> **error:** Error: invalid semver
+- "." -> **error:** Error: invalid semver
+- "indexOf" -> **error:** Error: invalid semver
+- "-" -> **error:** Error: invalid semver
+- "VV" -> **error:** Error: invalid semver
+
+### `satisfiesRange`
+
+- "*", "" -> **error:** Error: invalid semver
+- "", ">=" -> **error:** Error: invalid semver
+- "", ">" -> **error:** Error: invalid semver
+- "", "<=" -> **error:** Error: invalid semver
+- "", "<" -> **error:** Error: invalid semver
+- "", "^" -> **error:** Error: invalid semver
+- "", "~" -> **error:** Error: invalid semver
+- "", "*" -> true
+- "x", "" -> **error:** Error: invalid semver
+- "", "x" -> true
+- "", "" -> **error:** Error: invalid semver
+- "startsWith", "" -> **error:** Error: invalid semver
+- "", "startsWith" -> **error:** Error: invalid semver
+- ">=", "" -> **error:** Error: invalid semver
+- "slice", "" -> **error:** Error: invalid semver
+- "", "slice" -> **error:** Error: invalid semver
+- ">", "" -> **error:** Error: invalid semver
+- "<=", "" -> **error:** Error: invalid semver
+- "<", "" -> **error:** Error: invalid semver
+- "^", "" -> **error:** Error: invalid semver
+- "~", "" -> **error:** Error: invalid semver
+- "major", "" -> **error:** Error: invalid semver
+- "", "major" -> **error:** Error: invalid semver
+- "minor", "" -> **error:** Error: invalid semver
+- "", "minor" -> **error:** Error: invalid semver
+- "unknown range operator", "" -> **error:** Error: invalid semver
+- "", "unknown range operator" -> **error:** Error: invalid semver
+- "*", ">=" -> **error:** Error: invalid semver
+- "*", ">A" -> **error:** Error: invalid semver
+- "*", "<=" -> **error:** Error: invalid semver
+- "*", "<A" -> **error:** Error: invalid semver
+- "*", "^A" -> **error:** Error: invalid semver
+- "*", "~A" -> **error:** Error: invalid semver
+- "x", ">=" -> **error:** Error: invalid semver
+- "x", ">A" -> **error:** Error: invalid semver
+- "x", "<=" -> **error:** Error: invalid semver
+- "x", "<A" -> **error:** Error: invalid semver
+- "x", "^A" -> **error:** Error: invalid semver
+- "x", "~A" -> **error:** Error: invalid semver
+- "", ">A" -> **error:** Error: invalid semver
+- "", "<A" -> **error:** Error: invalid semver
+- "", "^A" -> **error:** Error: invalid semver
+- "", "~A" -> **error:** Error: invalid semver
+- "startsWith", ">=" -> **error:** Error: invalid semver
+- "startsWith", ">A" -> **error:** Error: invalid semver
+- "startsWith", "<=" -> **error:** Error: invalid semver
+- "startsWith", "<A" -> **error:** Error: invalid semver
+- "startsWith", "^A" -> **error:** Error: invalid semver
+- "startsWith", "~A" -> **error:** Error: invalid semver
+- ">=", ">=" -> **error:** Error: invalid semver
+- ">=", ">A" -> **error:** Error: invalid semver
+- ">=", "<=" -> **error:** Error: invalid semver
+- ">=", "<A" -> **error:** Error: invalid semver
+- ">=", "^A" -> **error:** Error: invalid semver
+- ">=", "~A" -> **error:** Error: invalid semver
+- "slice", ">=" -> **error:** Error: invalid semver
+- "slice", ">A" -> **error:** Error: invalid semver
+- "slice", "<=" -> **error:** Error: invalid semver
+- "slice", "<A" -> **error:** Error: invalid semver
+- "slice", "^A" -> **error:** Error: invalid semver
+- "slice", "~A" -> **error:** Error: invalid semver
+- ">", ">=" -> **error:** Error: invalid semver
+- ">", ">A" -> **error:** Error: invalid semver
+- ">", "<=" -> **error:** Error: invalid semver
+
+### `validateEmail`
+
+- "" -> {"reason":"empty","valid":false}
+
+### `parseCron`
+
+- "true" -> **error:** Error: expected 5 fields
+- "" -> **error:** Error: empty expression
+- "@" -> **error:** Error: unknown special
+- "length" -> **error:** Error: expected 5 fields
+- "empty expression" -> **error:** Error: expected 5 fields
+- "startsWith" -> **error:** Error: expected 5 fields
+- "toLowerCase" -> **error:** Error: expected 5 fields
+- "unknown special" -> **error:** Error: expected 5 fields
+- "split" -> **error:** Error: expected 5 fields
+- "trim" -> **error:** Error: expected 5 fields
+- "\\s+" -> **error:** Error: expected 5 fields
+- "expected 5 fields" -> **error:** Error: expected 5 fields
+- "values" -> **error:** Error: expected 5 fields
+- "weekday" -> **error:** Error: expected 5 fields
+- "map" -> **error:** Error: expected 5 fields
+- "A" -> **error:** Error: expected 5 fields
+
+### `classifyConfigs`
+
+- ["length"] -> **error:** Error: ENOENT: no such file or directory, open 'length'
+- {"length":1} -> **error:** TypeError: paths is not iterable
+- ["no-comments"] -> **error:** Error: ENOENT: no such file or directory, open 'no-comments'
+- ["utf-8"] -> **error:** Error: ENOENT: no such file or directory, open 'utf-8'
+- ["startsWith"] -> **error:** Error: ENOENT: no such file or directory, open 'startsWith'
+- ["#"] -> **error:** Error: ENOENT: no such file or directory, open '#'
+- ["all-comments"] -> **error:** Error: ENOENT: no such file or directory, open 'all-comments'
+- ["mixed"] -> **error:** Error: ENOENT: no such file or directory, open 'mixed'
+
+### `classifyStatus`
+
+- "trim" -> **error:** Error: ENOENT: no such file or directory, open 'trim'
+- "utf-8" -> **error:** Error: ENOENT: no such file or directory, open 'utf-8'
+- "length" -> **error:** Error: ENOENT: no such file or directory, open 'length'
+- "empty" -> **error:** Error: ENOENT: no such file or directory, open 'empty'
+- "short" -> **error:** Error: ENOENT: no such file or directory, open 'short'
+- "medium" -> **error:** Error: ENOENT: no such file or directory, open 'medium'
+- "long" -> **error:** Error: ENOENT: no such file or directory, open 'long'
+- "http" -> **error:** Error: ENOENT: no such file or directory, open 'http'
+- "/tmp/data/report.csv" -> **error:** Error: ENOENT: no such file or directory, open '/tmp/data/report.csv'
+- "" -> **error:** Error: ENOENT: no such file or directory, open ''
+- "@" -> **error:** Error: ENOENT: no such file or directory, open '@'
+- " " -> **error:** Error: ENOENT: no such file or directory, open ' '
+- "a" -> **error:** Error: ENOENT: no such file or directory, open 'a'
+- "ab" -> **error:** Error: ENOENT: no such file or directory, open 'ab'
+- "text/" -> **error:** Error: ENOENT: no such file or directory, open 'text/'
+- "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa... -> **error:** Error: ENAMETOOLONG: name too long, open 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+- "\t" -> **error:** Error: ENOENT: no such file or directory, open '	'
+- "\n" -> **error:** Error: ENOENT: no such file or directory, open '
+'
+- "application/json" -> **error:** Error: ENOENT: no such file or directory, open 'application/json'
+- "A" -> **error:** Error: ENOENT: no such file or directory, open 'A'
+- "single-char" -> **error:** Error: ENOENT: no such file or directory, open 'single-char'
+- "\r\n" -> **error:** Error: ENOENT: no such file or directory, open '
+'
+- "\u0000" -> **error:** TypeError: The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received '\x00'
+- "-" -> **error:** Error: ENOENT: no such file or directory, open '-'
+- "a\u0000b" -> **error:** TypeError: The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received 'a\x00b'
+- "\u001b[31m" -> **error:** Error: ENOENT: no such file or directory, open '[31m'
+- "é" -> **error:** Error: ENOENT: no such file or directory, open 'é'
+- "日本語" -> **error:** Error: ENOENT: no such file or directory, open '日本語'
+- "🎉" -> **error:** Error: ENOENT: no such file or directory, open '🎉'
+- "true" -> **error:** Error: ENOENT: no such file or directory, open 'true'
+- "false" -> **error:** Error: ENOENT: no such file or directory, open 'false'
+- "null" -> **error:** Error: ENOENT: no such file or directory, open 'null'
+- "0" -> **error:** Error: ENOENT: no such file or directory, open '0'
+- "-1" -> **error:** Error: ENOENT: no such file or directory, open '-1'
+- "<script>" -> **error:** Error: ENOENT: no such file or directory, open '<script>'
+- "'; DROP TABLE" -> **error:** Error: ENOENT: no such file or directory, open ''; DROP TABLE'
+
+### `loadOrDefault`
+
+- "" -> "missing"
+
+### `negotiateLanguage`
+
+- "length", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "length", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "", ["length"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "no-supported", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["no-supported"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "map", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["map"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "toLowerCase", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["toLowerCase"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "trim", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["trim"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "default", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["default"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "filter", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["filter"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "split", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["split"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- ",", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", [","] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "q", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["q"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "tag", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["tag"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "*", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["*"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "wildcard", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["wildcard"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "exact", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["exact"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "slice", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["slice"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "primary", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["primary"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "prefix", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["prefix"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "region", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["region"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "fallback", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["fallback"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "no-match", [] -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "", ["no-match"] -> {"matchedRange":null,"quality":1,"reason":"default","sele...
+- "", {"length":0} -> {"matchedRange":null,"quality":0,"reason":"no-supported",...
+- "no-supported", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "map", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "toLowerCase", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "trim", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "default", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "filter", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "split", {"length":1} -> **error:** TypeError: supported.map is not a function
+- ",", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "q", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "tag", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "*", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "wildcard", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "exact", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "slice", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "primary", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "prefix", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "region", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "fallback", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "no-match", {"length":1} -> **error:** TypeError: supported.map is not a function
+- "", {"length":1} -> **error:** TypeError: supported.map is not a function
+
+### `evaluateRobotsPolicy`
+
+- "length", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "length", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "length" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "missing-user-agent", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "missing-user-agent", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "missing-user-agent" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "charAt", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "charAt", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "charAt" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "/", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "/", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "/" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "invalid-path", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "invalid-path", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "invalid-path" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "filter", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "filter", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "filter" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "indexOf", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "indexOf", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "indexOf" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "agents", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "agents", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "agents" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "*", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "*", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "*" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "no-group", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "no-group", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "no-group" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "crawlDelay", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "crawlDelay", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "crawlDelay" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "rules", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "rules", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "rules" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "pattern", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "pattern", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "pattern" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "directive", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "directive", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "directive" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "allow", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "allow", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "allow" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "disallow", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "disallow", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "disallow" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "no-rule", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "no-rule", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "no-rule" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", " ", "/tmp/data/report.csv" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "http", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "@", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "ktej", "", "/tmp/data/report.csv" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- " ", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "trim", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "a", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "ab", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..., "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "text/", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "\t", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- " ", "", "/tmp/data/report.csv" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "\n", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "empty", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "\r\n", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "phgkmkbtjjawa", "", "/tmp/data/report.csv" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "\u0000", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "application/json", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "a\u0000b", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "A", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "single-char", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "-", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "", "", "/tmp/data/report.csv" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "\u001b[31m", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "é", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+- "日本語", "", "" -> {"allowed":false,"crawlDelay":null,"matchedDirective":nul...
+
+### `parseDotenv`
+
+- "" -> {"values":{},"warnings":[]}
+
+### `classifySecret`
+
+- {"__complex_type":"buffer","encoding":"base64","value":"A... -> **error:** Error: error:1C80006B:Provider routines::wrong final block length
+- {"__complex_type":"buffer","encoding":"base64","value":"A... -> **error:** Error: error:1C80006B:Provider routines::wrong final block length
+- {"__complex_type":"buffer","encoding":"base64","value":"/... -> **error:** Error: error:1C80006B:Provider routines::wrong final block length
+- {"__complex_type":"buffer","encoding":"base64","value":"S... -> **error:** Error: error:1C80006B:Provider routines::wrong final block length
+- {"__complex_type":"buffer","encoding":"base64","value":""} -> **error:** Error: error:1C80006B:Provider routines::wrong final block length
+
+### `encrypt`
+
+- "" -> {"data":[55,213,164,96,215,161,201,83,42,131,236,209,168,...
+
+### `classifyWithChecksum`
+
+- "" -> "empty"
+
+## Skipped (Unsupported)
+
+- `mergeConfig`: param "base" → ConfigObject (interface with no implementors — no concrete implementation visible in scope); param "override" → ConfigObject (interface with no implementors — no concrete implementation visible in scope)
+- `transformRecord`: param "record" → RawRecord (interface with no implementors — no concrete implementation visible in scope)
+
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 4/11 · Analyze Go Functions
+  Discover parameters, types, and branch conditions in Go code
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --analyze-only /tmp/shatter-examples.zgl141xd/standalone/go/01-arithmetic.go:ClassifyNumber /tmp/shatter-examples.zgl141xd/standalone/go/02-strings.go:ClassifyString /tmp/shatter-examples.zgl141xd/standalone/go/04-errors.go:SafeDivide /tmp/shatter-examples.zgl141xd/standalone/go/18-accept-language.go:NegotiateLanguage
+
+[info] Spawned 1 frontend session(s) for 4 target(s) (16 parallel worker(s))
+ClassifyNumber  (/tmp/shatter-examples.zgl141xd/standalone/go/01-arithmetic.go:19)
+  params: 1, branches: 3
+ClassifyString  (/tmp/shatter-examples.zgl141xd/standalone/go/02-strings.go:23)
+  params: 1, branches: 4
+SafeDivide  (/tmp/shatter-examples.zgl141xd/standalone/go/04-errors.go:22)
+  params: 2, branches: 2
+NegotiateLanguage  (/tmp/shatter-examples.zgl141xd/standalone/go/18-accept-language.go:119)
+  params: 2, branches: 18
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 5/11 · Explore Go Functions
+  Concolic execution on Go: generate inputs to cover all branches
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --max-iterations 3 --timeout-explore 25 /tmp/shatter-examples.zgl141xd/standalone/go/01-arithmetic.go:ClassifyNumber /tmp/shatter-examples.zgl141xd/standalone/go/02-strings.go:ClassifyString /tmp/shatter-examples.zgl141xd/standalone/go/04-errors.go:SafeDivide /tmp/shatter-examples.zgl141xd/standalone/go/18-accept-language.go:NegotiateLanguage
+
+[info] Spawned 1 frontend session(s) for 4 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[progress] starting 1/4: ClassifyNumber
+[progress] starting 3/4: SafeDivide
+[progress] starting 2/4: ClassifyString
+[progress] starting 4/4: NegotiateLanguage
+[progress] completed 1/4: ClassifyNumber (0.7s)
+[batch 1/4] ClassifyNumber: 3 iters, 3 paths, 3/3 branches, 0.7s (ok) | active: 3 (ClassifyString, SafeDivide, NegotiateLanguage)
+[progress] completed 2/4: ClassifyString (1.1s)
+[batch 2/4] ClassifyString: 3 iters, 2 paths, 2/4 branches, 1.1s (ok) | active: 2 (SafeDivide, NegotiateLanguage)
+[progress] completed 3/4: SafeDivide (1.2s)
+[batch 3/4] SafeDivide: 3 iters, 2 paths, 2/2 branches, 1.2s (ok) | active: 1 (NegotiateLanguage)
+[progress] completed 4/4: NegotiateLanguage (2.0s)
+[batch 4/4] NegotiateLanguage: 3 iters, 2 paths, 2/18 branches, 2.0s (ok)
+[info] Wrote explore artifact for ClassifyNumber -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_go_01-arithmetic.go/00019_ClassifyNumber.json
+## `ClassifyNumber` *(/tmp/shatter-examples.zgl141xd/standalone/go/01-arithmetic.go:19-30)*
+
+**3 path(s)** · **86%** coverage (6/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `ClassifyNumber(0)` | returns `"zero"` |
+| 2 | `ClassifyNumber(-1)` | returns `"negative"` |
+| 3 | `ClassifyNumber(1)` | returns `"positive-odd"` |
+
+[info] Wrote explore artifact for ClassifyString -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_go_02-strings.go/00023_ClassifyString.json
+## `ClassifyString` *(/tmp/shatter-examples.zgl141xd/standalone/go/02-strings.go:23-37)*
+
+**2 path(s)** · **44%** coverage (4/9 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `ClassifyString("")` | returns `"empty"` |
+| 2 | `ClassifyString("A")` | returns `"single-char"` |
+
+[info] Wrote explore artifact for SafeDivide -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_go_04-errors.go/00022_SafeDivide.json
+## `SafeDivide` *(/tmp/shatter-examples.zgl141xd/standalone/go/04-errors.go:22-30)*
+
+**2 path(s)** · **80%** coverage (4/5 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `SafeDivide(0, 0)` | throws `function_error: division by zero` |
+| 2 | `SafeDivide(0, 1)` | returns `0` |
+
+[info] Wrote explore artifact for NegotiateLanguage -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_go_18-accept-language.go/00119_NegotiateLanguage.json
+## `NegotiateLanguage` *(/tmp/shatter-examples.zgl141xd/standalone/go/18-accept-language.go:119-216)*
+
+**2 path(s)** · **25%** coverage (5/20 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `NegotiateLanguage("", [])` | returns `{"MatchedRange":null,"Quality":0,"Rea...` |
+| 2 | `NegotiateLanguage("", [""])` | returns `{"MatchedRange":null,"Quality":1,"Rea...` |
+- *Mocks: parseLanguagePreference*
+
+
+---
+
+**Summary:** 9 path(s) across 4 function(s) · **46%** coverage (19/41 lines)
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 6/11 · Analyze Rust Functions
+  Discover parameters, types, and branch conditions in Rust code
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --analyze-only /tmp/shatter-examples.zgl141xd/standalone/rust/01_arithmetic.rs:classify_number /tmp/shatter-examples.zgl141xd/standalone/rust/02_strings.rs:classify_string /tmp/shatter-examples.zgl141xd/standalone/rust/04_errors.rs:safe_divide /tmp/shatter-examples.zgl141xd/standalone/rust/18_accept_language.rs:negotiate_language
+
+[info] Spawned 1 frontend session(s) for 4 target(s) (16 parallel worker(s))
+classify_number  (/tmp/shatter-examples.zgl141xd/standalone/rust/01_arithmetic.rs:6)
+  params: 1, branches: 3
+classify_string  (/tmp/shatter-examples.zgl141xd/standalone/rust/02_strings.rs:7)
+  params: 1, branches: 5
+safe_divide  (/tmp/shatter-examples.zgl141xd/standalone/rust/04_errors.rs:6)
+  params: 2, branches: 2
+negotiate_language  (/tmp/shatter-examples.zgl141xd/standalone/rust/18_accept_language.rs:101)
+  params: 2, branches: 13
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 7/11 · Explore Rust Functions
+  Concolic execution on Rust: generate inputs to cover all branches
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --max-iterations 3 --timeout-explore 25 /tmp/shatter-examples.zgl141xd/standalone/rust/01_arithmetic.rs:classify_number /tmp/shatter-examples.zgl141xd/standalone/rust/02_strings.rs:classify_string /tmp/shatter-examples.zgl141xd/standalone/rust/04_errors.rs:safe_divide /tmp/shatter-examples.zgl141xd/standalone/rust/18_accept_language.rs:negotiate_language
+
+[info] Spawned 1 frontend session(s) for 4 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[progress] starting 1/4: classify_number
+[progress] starting 2/4: classify_string
+[progress] starting 3/4: safe_divide
+[progress] starting 4/4: negotiate_language
+[progress] completed 2/4: classify_number (1.0s)
+[progress] completed 1/4: safe_divide (1.0s)
+[batch 1/4] safe_divide: 3 iters, 1 paths, 0/2 branches, 1.0s (ok) | active: 3 (classify_number, negotiate_language, classify_string)
+[batch 2/4] classify_number: 3 iters, 2 paths, 0/3 branches, 1.0s (ok) | active: 2 (negotiate_language, classify_string)
+[progress] completed 3/4: negotiate_language (1.0s)
+[batch 3/4] negotiate_language: 3 iters, 2 paths, 2/13 branches, 1.0s (ok) | active: 1 (classify_string)
+[progress] completed 4/4: classify_string (1.1s)
+[batch 4/4] classify_string: 3 iters, 2 paths, 5/5 branches, 1.1s (ok)
+[info] Wrote explore artifact for classify_number -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_rust_01_arithmetic.rs/00006_classify_number.json
+## `classify_number` *(/tmp/shatter-examples.zgl141xd/standalone/rust/01_arithmetic.rs:6-18)*
+
+**2 path(s)** · **0%** coverage (0/13 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classify_number(0)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer `0`, expected a string` |
+| 2 | `classify_number(2)` | throws `runtime_error: input 0 deserialization failed: invalid type: integer `2`, expected a string` |
+
+[info] Wrote explore artifact for classify_string -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_rust_02_strings.rs/00007_classify_string.json
+## `classify_string` *(/tmp/shatter-examples.zgl141xd/standalone/rust/02_strings.rs:7-24)*
+
+**2 path(s)** · **39%** coverage (7/18 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classify_string("empty")` | returns `"text"` |
+| 2 | `classify_string("http")` | returns `"url"` |
+- *Mocks: all, is_ascii_digit*
+
+[info] Wrote explore artifact for safe_divide -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_rust_04_errors.rs/00006_safe_divide.json
+## `safe_divide` *(/tmp/shatter-examples.zgl141xd/standalone/rust/04_errors.rs:6-14)*
+
+**1 path(s)** · **0%** coverage (0/9 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `safe_divide(0.0, 0.0)` | throws `runtime_error: input 0 deserialization failed: invalid type: floating point `0.0`, expected a string` |
+- *Mocks: to_string*
+
+[info] Wrote explore artifact for negotiate_language -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_rust_18_accept_language.rs/00101_negotiate_language.json
+## `negotiate_language` *(/tmp/shatter-examples.zgl141xd/standalone/rust/18_accept_language.rs:101-202)*
+
+**2 path(s)** · **0%** coverage (0/102 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `negotiate_language("*", [])` | returns `"single-char"` |
+| 2 | `negotiate_language("", ["*"])` | returns `"empty"` |
+- *Mocks: total_cmp, to_ascii_lowercase, sort_by, starts_with, enumerate, is_empty, then, filter_map, collect, cmp, map, iter, clone*
+
+
+---
+
+**Summary:** 7 path(s) across 4 function(s) · **5%** coverage (7/142 lines)
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 8/11 · Concolic Exploration (Z3)
+  Use the Z3-backed concolic explorer to solve branch constraints
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --concolic --max-iterations 20 --timeout-explore 15 /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:classifyNumber
+
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[info] Found prior explore summary for /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts (1 completed, 0 failed)
+[info] [resumed] classifyNumber: 3 branches, 2.4s (prior run)
+[info] Resumed 1/1 function(s) from prior artifacts for /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts
+[info] Resumed 1 function(s) from prior explore artifacts
+[info] Wrote explore artifact for classifyNumber -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_ts_01-arithmetic.ts/00010_classifyNumber.json
+## `classifyNumber` *(/tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:10-21)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+- *Explorer: concolic (Z3-backed)*
+
+
+---
+
+**Summary:** 4 path(s) across 1 function(s) · **100%** coverage (7/7 lines)
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 9/11 · Behavioral Specification
+  Generate a behavioral spec with equivalence classes and pre/postconditions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter explore --spec --max-iterations 20 --timeout-explore 15 /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:classifyNumber
+
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+# Shatter Explore
+
+[info] Found prior explore summary for /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts (1 completed, 0 failed)
+[info] [resumed] classifyNumber: 3 branches, 2.4s (prior run)
+[info] Resumed 1/1 function(s) from prior artifacts for /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts
+[info] Resumed 1 function(s) from prior explore artifacts
+[info] Wrote explore artifact for classifyNumber -> /tmp/shatter-walkthrough-artifacts.cAxyij/explore-results/tmp_shatter-examples.zgl141xd_standalone_ts_01-arithmetic.ts/00010_classifyNumber.json
+## `classifyNumber` *(/tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:10-21)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+
+# Specification: `classifyNumber`
+
+**Location:** `/tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:10-21`
+
+**Behavioral classes:** 4  
+**Exploration:** 20 iterations, 7/7 lines covered (100%)
+
+---
+
+## Class 1 — returns "zero"
+
+**Preconditions** [observed]:
+- param[0] == 0
+
+**Postcondition** [observed]: returns "zero"
+
+**Example** (7 execution(s) observed):
+```
+classifyNumber(0) -> "zero"
+```
+
+---
+
+## Class 2 — returns "negative"
+
+**Preconditions** [observed]:
+- param[0] == -1
+
+**Postcondition** [observed]: returns "negative"
+
+**Example** (6 execution(s) observed):
+```
+classifyNumber(-1) -> "negative"
+```
+
+---
+
+## Class 3 — returns "positive-even"
+
+**Preconditions** [observed]:
+- param[0] == 2
+
+**Postcondition** [observed]: returns "positive-even"
+
+**Example** (3 execution(s) observed):
+```
+classifyNumber(2) -> "positive-even"
+```
+
+---
+
+## Class 4 — returns "positive-odd"
+
+**Preconditions** [observed]:
+- param[0] == 1
+
+**Postcondition** [observed]: returns "positive-odd"
+
+**Example** (4 execution(s) observed):
+```
+classifyNumber(1) -> "positive-odd"
+```
+
+---
+
+**Summary:** 4 path(s) across 1 function(s) · **100%** coverage (7/7 lines)
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 10/11 · Test Impact Analysis (Dry Run)
+  Show which tests would run for changed files without executing them
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter test --dry-run
+
+1 changed file(s), 3 affected test(s):
+
+Changed files:
+  src/math.rs
+
+Affected tests:
+  math::tests::test_add
+  math::tests::test_add_commutative
+  ops::tests::test_subtract
+
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Step 11/11 · Properties Export
+  Discover and export behavioral properties and invariants
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/target/debug/shatter properties /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:classifyNumber
+
+[info] Exploring /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:classifyNumber for property export...
+[info] Exploring classifyNumber...
+- version: 1
+  file: /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts
+  functions:
+  - function_name: classifyNumber
+    location: /tmp/shatter-examples.zgl141xd/standalone/ts/01-arithmetic.ts:10-21
+    classes:
+    - label: Class 1 — returns "zero"
+      branch_path:
+      - branch_id: 0
+        taken: false
+      - branch_id: 1
+        taken: true
+      preconditions:
+      - !AllEqual
+        param_index: 0
+        value: 0
+      postcondition:
+        kind: returns
+        value: zero
+      examples:
+      - inputs:
+        - 0
+        return_value: zero
+        thrown_error: null
+      sample_count: 33
+      precondition_provenance: observed
+      postcondition_provenance: observed
+      invariants:
+      - property: input is non-null
+        kind: nullability
+        confidence: high
+      - property: input == 0
+        kind: constant_value
+        confidence: high
+      - property: input >= 0
+        kind: numeric_bound
+        confidence: high
+      - property: output is non-null
+        kind: nullability
+        confidence: high
+      - property: output is non-empty string
+        kind: string_constraint
+        confidence: high
+    - label: Class 2 — returns "negative"
+      branch_path:
+      - branch_id: 0
+        taken: true
+      preconditions:
+      - !AllEqual
+        param_index: 0
+        value: -1
+      postcondition:
+        kind: returns
+        value: negative
+      examples:
+      - inputs:
+        - -1
+        return_value: negative
+        thrown_error: null
+      sample_count: 33
+      precondition_provenance: observed
+      postcondition_provenance: observed
+      invariants:
+      - property: input is non-null
+        kind: nullability
+        confidence: high
+      - property: input < 0
+        kind: numeric_bound
+        confidence: high
+      - property: input == -1
+        kind: constant_value
+        confidence: high
+      - property: output is non-null
+        kind: nullability
+        confidence: high
+      - property: output is non-empty string
+        kind: string_constraint
+        confidence: high
+    - label: Class 3 — returns "positive-even"
+      branch_path:
+      - branch_id: 0
+        taken: false
+      - branch_id: 1
+        taken: false
+      - branch_id: 2
+        taken: true
+      preconditions:
+      - !AllEqual
+        param_index: 0
+        value: 2
+      postcondition:
+        kind: returns
+        value: positive-even
+      examples:
+      - inputs:
+        - 2
+        return_value: positive-even
+        thrown_error: null
+      sample_count: 11
+      precondition_provenance: observed
+      postcondition_provenance: observed
+      invariants:
+      - property: input is non-null
+        kind: nullability
+        confidence: high
+      - property: input == 2
+        kind: constant_value
+        confidence: high
+      - property: input > 0
+        kind: numeric_bound
+        confidence: high
+      - property: output is non-null
+        kind: nullability
+        confidence: high
+      - property: output is non-empty string
+        kind: string_constraint
+        confidence: high
+    - label: Class 4 — returns "positive-odd"
+      branch_path:
+      - branch_id: 0
+        taken: false
+      - branch_id: 1
+        taken: false
+      - branch_id: 2
+        taken: false
+      preconditions:
+      - !AllEqual
+        param_index: 0
+        value: 1
+      postcondition:
+        kind: returns
+        value: positive-odd
+      examples:
+      - inputs:
+        - 1
+        return_value: positive-odd
+        thrown_error: null
+      sample_count: 23
+      precondition_provenance: observed
+      postcondition_provenance: observed
+      invariants:
+      - property: input is non-null
+        kind: nullability
+        confidence: high
+      - property: input == 1
+        kind: constant_value
+        confidence: high
+      - property: input > 0
+        kind: numeric_bound
+        confidence: high
+      - property: output is non-null
+        kind: nullability
+        confidence: high
+      - property: output is non-empty string
+        kind: string_constraint
+        confidence: high
+    iterations: 100
+    lines_covered: 7
+    total_lines: 7
+    invariants:
+    - property: input is non-null
+      kind: nullability
+      confidence: high
+    - property: output is non-null
+      kind: nullability
+      confidence: high
+    - property: output is non-empty string
+      kind: string_constraint
+      confidence: high
+
+
+Walkthrough complete. All steps passed.
+### gate=walkthrough exit=0 wall=54s end=2026-09-22T13:48:29-05:00 load=18.08 26.05 46.80

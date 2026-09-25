@@ -1,0 +1,24 @@
+### gate=cli-test cmd=task cli:test start=2026-09-22T13:34:49-05:00 load=63.29 55.74 73.62
+run-heavy: load 63.29 > 48 (nproc=32 × 1.5); waiting 30s
+task: [cli:test] if command -v cargo-nextest >/dev/null 2>&1; then
+  cargo nextest run -p shatter-cli
+else
+  cargo test -p shatter-cli
+fi
+
+   Compiling rusty-fork v0.3.1
+   Compiling shatter-cli v0.1.0 (/home/ketan/.local/share/worktrees/shatter/audit-2026-09-22/shatter-cli)
+   Compiling proptest v1.10.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.72s
+────────────
+ Nextest run ID 8829cbab-b88f-450b-b8b3-4cc9f29fdbae with nextest profile: default
+    Starting 632 tests across 29 binaries
+────────────
+     Summary [ 194.056s] 632 tests run: 632 passed (6 slow), 0 skipped
+        SLOW [  83.754s] ( 42/632) shatter-cli::explore_no_side_effects explore_with_external_output_and_no_cache_no_seeds_writes_no_project_local_dirs
+        SLOW [  85.290s] ( 43/632) shatter-cli::implicit_init_gitignore_test plain_scan_on_uninitialized_project_does_not_touch_tracked_gitignore
+        SLOW [  60.987s] ( 57/632) shatter-cli::run_concolic run_concolic_reaches_narrow_branch_random_cannot
+        SLOW [  73.287s] ( 58/632) shatter-cli::run_coverage_budget_gate run_coverage_budget_gate_exits_with_gate_code
+        SLOW [  64.122s] ( 62/632) shatter-cli::scan_failure_policy scan_summary_names_all_buckets
+        SLOW [  70.106s] ( 63/632) shatter-cli::scan_no_side_effects scan_with_external_output_and_no_cache_no_seeds_writes_no_project_local_dirs
+### gate=cli-test exit=0 wall=254s end=2026-09-22T13:39:03-05:00 load=35.02 48.82 66.70
