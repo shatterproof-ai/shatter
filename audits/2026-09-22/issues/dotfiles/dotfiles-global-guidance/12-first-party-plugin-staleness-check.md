@@ -13,7 +13,7 @@ tracker: "gh -R ketang/dotfiles (GitHub Issues; no .beads in the repo)"
 
 # Warn at SessionStart when an installed first-party plugin is behind its local source checkout
 
-Part of #<epic>. Priority: P2. Type: enhancement. Split from `first-party-plugin-autoupdate`, which fixes the missing `autoUpdate` setting. This issue adds the check that catches the next failure of any kind, including a refresh that silently fails. Cross-references to other drafts use their slugs; the filer posts a slug-to-issue map on the epic.
+Part of #<epic>. Priority: P2. Type: enhancement. The missing `autoUpdate` setting itself was fixed directly on 2026-09-24 (dotfiles commit 8764d01e: `autoUpdate: true` on the `shatterproof` marketplace in `claude/hosts/pontoon/settings.json`). This issue adds the check that catches the next failure of any kind, including a refresh that silently fails. Cross-references to other drafts use their slugs; the filer posts a slug-to-issue map on the epic.
 
 ## Problem
 
@@ -21,7 +21,7 @@ The shatter and refute plugins ran 27 commits and three months stale (0.1.1 inst
 
 ## Evidence
 
-See `first-party-plugin-autoupdate` for the installed and source versions, re-verified on 2026-09-23. No script in dotfiles @ `81f35e1` compares installed plugins with their sources. bento's agent-env doctor (bento-m4y5, `in_progress`, P1, checked with `bd show` on 2026-09-23) is about broken agent wiring, not plugin freshness.
+Installed vs source versions (re-verified 2026-09-23): the `shatterproof` marketplace clone at `~/.claude/plugins/marketplaces/shatterproof` was at `efa5968` (2026-06-18), 27 commits behind shatter-agents HEAD; `known_marketplaces.json` showed its last refresh on 2026-06-19. No script in dotfiles @ `81f35e1` compares installed plugins with their sources. bento's agent-env doctor (bento-m4y5, `in_progress`, P1, checked with `bd show` on 2026-09-23) is about broken agent wiring, not plugin freshness.
 
 ## Acceptance criteria
 
@@ -39,7 +39,7 @@ The closing comment includes the pytest output, and the script's output against 
 
 ## Out of scope
 
-- The `autoUpdate` setting (`first-party-plugin-autoupdate`).
+- The `autoUpdate` setting (already enabled, dotfiles 8764d01e).
 - Extending bento's agent-env doctor (bento-m4y5). It could adopt this check later.
 
 ## Maintainer decisions that apply
@@ -48,7 +48,7 @@ D6: nothing from this audit is filed by agents; the maintainer runs the filer.
 
 ## Dependencies
 
-None blocking. Related: `first-party-plugin-autoupdate`, `hooks-dotfiles-env-unset` (use `$HOME/dotfiles` paths).
+None blocking. Related: dotfiles 8764d01e (autoUpdate enabled), `hooks-dotfiles-env-unset` (use `$HOME/dotfiles` paths).
 
 ## Source
 

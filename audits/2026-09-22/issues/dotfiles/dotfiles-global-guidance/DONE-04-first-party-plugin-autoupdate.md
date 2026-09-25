@@ -1,3 +1,4 @@
+<!-- DONE 2026-09-24: landed directly in dotfiles as 8764d01e (+ 89468c43 overlay adopt) and rendered live; not filed. -->
 ---
 slug: first-party-plugin-autoupdate
 kind: new
