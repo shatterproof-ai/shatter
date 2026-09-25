@@ -156,7 +156,7 @@ mod tests {
         };
         write_path_predicate_bundle(&path, &bundle).expect("write");
         let loaded = read_path_predicate_bundle(&path).expect("read");
-        let mut expected = bundle;
+        let mut expected = bundle.clone();
         expected
             .predicates
             .sort_by(|a, b| a.predicate_id.cmp(&b.predicate_id));
@@ -166,6 +166,19 @@ mod tests {
                 .predicates
                 .windows(2)
                 .all(|pair| pair[0].predicate_id < pair[1].predicate_id)
+        );
+        let mut unsorted = expected.clone();
+        unsorted.predicates.reverse();
+        fs::write(&path, serde_json::to_vec(&unsorted).expect("unsorted JSON"))
+            .expect("unsorted fixture");
+        assert_eq!(
+            read_path_predicate_bundle(&path).expect("unsorted read"),
+            unsorted
+        );
+        write_path_predicate_bundle(&path, &unsorted).expect("normalize order");
+        assert_eq!(
+            read_path_predicate_bundle(&path).expect("sorted read"),
+            expected
         );
     }
 
@@ -195,6 +208,34 @@ mod tests {
         assert!(matches!(
             write_path_predicate_bundle(&path, &bundle),
             Err(PathPredicateStoreError::InvalidPredicate(_))
+        ));
+        let mut bad_id = original.clone();
+        bad_id.predicate_id = "incorrect".into();
+        let invalid_write = PathPredicateBundle {
+            predicates: vec![bad_id],
+            ..bundle.clone()
+        };
+        assert!(matches!(
+            write_path_predicate_bundle(&path, &invalid_write),
+            Err(PathPredicateStoreError::InvalidPredicate(_))
+        ));
+        let mut bad_version = original.clone();
+        bad_version.schema_version = 2;
+        let invalid_write = PathPredicateBundle {
+            predicates: vec![bad_version],
+            ..bundle.clone()
+        };
+        assert!(matches!(
+            write_path_predicate_bundle(&path, &invalid_write),
+            Err(PathPredicateStoreError::InvalidPredicate(_))
+        ));
+        let invalid_write = PathPredicateBundle {
+            schema_version: 2,
+            predicates: vec![],
+        };
+        assert!(matches!(
+            write_path_predicate_bundle(&path, &invalid_write),
+            Err(PathPredicateStoreError::UnsupportedVersion)
         ));
         let unknown = serde_json::json!({"schema_version": 1, "predicates": [], "extra": true});
         fs::write(&path, unknown.to_string()).expect("fixture");
