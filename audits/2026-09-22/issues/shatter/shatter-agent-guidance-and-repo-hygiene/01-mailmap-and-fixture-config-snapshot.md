@@ -1,7 +1,7 @@
 ---
 slug: mailmap-and-fixture-config-snapshot
 kind: new
-title: "Map the leaked fixture identity (test@example.com) to the real author via .mailmap, and make test_git_fixture_isolation.py guard the real checkout's .git/config"
+title: "Map the leaked fixture identities (test@example.com, demo@shatter) to the real author via .mailmap, and make test_git_fixture_isolation.py guard the real checkout's .git/config"
 priority: P1
 type: bug
 labels: [agents, git, tooling, audit-2026-09-22]
@@ -11,7 +11,7 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Map the leaked fixture identity (test@example.com) to the real author via .mailmap, and make test_git_fixture_isolation.py guard the real checkout's .git/config
+# Map the leaked fixture identities (test@example.com, demo@shatter) to the real author via .mailmap, and make test_git_fixture_isolation.py guard the real checkout's .git/config
 
 ## Problem
 
@@ -50,6 +50,13 @@ The repo-state check (FAIL on local identity override, `*@example.com`,
 `core.bare=true`, local `core.hooksPath`) is **not** in this issue. `core.bare`
 and `core.hooksPath` landed in str-qwua7.1 (closed 2026-09-24); the identity checks are the new
 issue `qwua7-1-git-state-check`.
+
+**Recurrence (2026-09-24).** A second fixture identity leaked the same way. `demo/walkthrough.sh`
+sets `user.name "Shatter Demo"` / `user.email "demo@shatter"` on its throwaway TIA repo; run from a
+hook with an inherited `GIT_DIR`, it wrote them into the real shared `.git/config`. The fix
+(c6cb2927, 2026-09-24 10:20) is itself the first commit authored `Shatter Demo`, and 22 commits on
+origin/main through ee5f0a28 carry that identity. The section was removed again on 2026-09-24
+(backup kept by the maintainer's session). The mailmap must cover both identities.
 
 ## Evidence
 
@@ -104,11 +111,12 @@ Re-verified 2026-09-23 in the audit worktree
    ```
    Ketan Gangatirkar <33678+ketang@users.noreply.github.com> Test <test@example.com>
    Ketan Gangatirkar <33678+ketang@users.noreply.github.com> Test User <test@example.com>
+   Ketan Gangatirkar <33678+ketang@users.noreply.github.com> Shatter Demo <demo@shatter>
    ```
 2. Proof in the close reason:
-   `git check-mailmap 'Test <test@example.com>' 'Test User <test@example.com>'`
-   prints the real identity twice, and
-   `git log --use-mailmap --format='%aN <%aE>' origin/main | grep -c example.com`
+   `git check-mailmap 'Test <test@example.com>' 'Test User <test@example.com>' 'Shatter Demo <demo@shatter>'`
+   prints the real identity three times, and
+   `git log --use-mailmap --format='%aN <%aE>' origin/main | grep -cE 'example.com|demo@shatter'`
    prints `0`.
 3. **Guarded key set, not a whole-file hash.** The test reads the real
    config (`git config --file <common-dir>/config --list`, common dir resolved
