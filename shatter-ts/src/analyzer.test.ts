@@ -809,6 +809,9 @@ describe("analyzeFile", () => {
         variants: [{ kind: "str" }],
         enum_values: ["RED", "GREEN", "BLUE"],
       });
+      expect(JSON.parse(JSON.stringify(fn.params[0]!.type))).toEqual(
+        fn.params[0]!.type,
+      );
     });
 
     it("emits forward numeric member values for a numeric enum parameter", () => {
