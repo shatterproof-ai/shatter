@@ -1,7 +1,7 @@
 ---
 slug: unknown-config-keys-warn
 kind: new
-title: "Config is not validated: a .shatter/config.yaml that fails to parse is accepted, and unknown keys and --set typos are silently ignored"
+title: "Warn on unknown config keys and --set key typos (currently silently ignored)"
 priority: P2
 type: feature
 labels: [config, cli, usability, audit]
@@ -11,13 +11,11 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Config is not validated: unparseable config is accepted; unknown keys and --set typos are silently ignored
+# Warn on unknown config keys and --set key typos (currently silently ignored)
 
 ## Problem
 
-**Unparseable config.** A `.shatter/config.yaml` that is not valid YAML (for example `foo: [unclosed`) is not reported by any command: `shatter list-targets` exits 0, and `shatter doctor` only checks that the file exists (`shatter-cli/src/commands/doctor.rs:266`, `yaml: ...is_file()`), never parsing it. The user's whole config is then ignored or partly applied with no signal. Found during the 2026-09-22 audit's shatter-agents plugin revision (`issues/shatter-agents/shatter-agents-plugin/REVISION.md`, "Engine-side gaps").
-
-**Unknown keys.** Shatter type-checks config values but not config keys. A typo such as `--set defaults.max_iteratons=5`, or a misspelled key in `.shatter/config.yaml` or `shatter.config.json`, is silently dropped. The run continues with the default value, exits 0, and prints no warning. The user believes the setting took effect. The Go frontend's config loader already warns on unknown top-level keys, so the core is inconsistent with it as well.
+Shatter type-checks config values but not config keys. A typo such as `--set defaults.max_iteratons=5`, or a misspelled key in `.shatter/config.yaml` or `shatter.config.json`, is silently dropped. The run continues with the default value, exits 0, and prints no warning. The user believes the setting took effect. The Go frontend's config loader already warns on unknown top-level keys, so the core is inconsistent with it as well.
 
 A related silent drop: `--set` is a global flag, but only `explore` applies it (`main.rs:437` is the only reader of `cli.set_overrides`). `scan --set ...` and `run --set ...` accept the flag and ignore it entirely, so even a correctly spelled key has no effect there. help-hides-execution-flags removes `--set` from those commands; until it lands, this issue makes the drop visible.
 
@@ -37,7 +35,6 @@ Re-verified against `audit-2026-09-22` (source at `56c86168`):
 
 ## Acceptance criteria
 
-- [ ] **Parse failures are errors.** Every command that reads `.shatter/config.yaml` or `shatter.config.json` (at least explore, scan, run, list-targets, observe) exits 2 when a config file in the resolution chain fails to parse, naming the file, line and column. `shatter doctor` parses every config file it reports and marks an unparseable one as a failing check (non-zero exit), not just "present". Tests: `foo: [unclosed` in `.shatter/config.yaml` makes `list-targets` exit 2 (it exits 0 on main; record both runs) and makes `doctor` report a failure; a valid config is unaffected.
 - [ ] An unknown key in `.shatter/config.yaml`, in `shatter.config.json`, or in a `--set KEY=VALUE` override produces exactly one warning on stderr per key per run, at every load site listed above (per-function config and LLM config). The warning names the source (file path or `--set`), the full dotted key path and, when a known key is close, a "did you mean `defaults.max_iterations`?" suggestion.
 - [ ] A strict mode turns those warnings into a usage error (exit 2). Pick one form (`--strict-config` flag, config key, or env var), document it in the config reference, and test it.
 - [ ] `parse_set_overrides_unknown_field_is_ignored_by_serde` is replaced by tests that assert (a) the warning and suggestion for a typo in `--set` on `explore`, (b) the same for a typo in a YAML config file, (c) exit 2 in strict mode, and (d) no warning for a valid config (use the repo's own example configs and `demo/` configs as a no-false-positive check). Tests (a) and (b) fail before the change; the close comment records both runs.
@@ -60,7 +57,6 @@ Wrap the deserializer at each config load site, and in `parse_set_overrides`, wi
 ## Dependencies
 
 - Blocked by: none.
-- Parse-failure handling does not depend on the unknown-key work; they may land in either order within this issue.
 - Related: str-qwua7.21.1, str-9ee5, help-hides-execution-flags (scopes `--set` to explore).
 
 ## Source
