@@ -1,0 +1,80 @@
+956:- Cluster 3: throws Error: Teardown scope mismatch: expected undefined, got 0 (inputs: "0", "s")
+957:- Cluster 4: throws Error: Teardown scope mismatch: expected undefined, got test (inputs: "test", 9223372036854775807)
+1038:- `computeArea`: 6 uncovered branch(es) (10.0% coverage)
+1055:- `classifyWithChecksum`: 0 uncovered branch(es) (90.0% coverage)
+1056:- `teardown`: 0 uncovered branch(es) (75.0% coverage)
+2049:- "0", "s" -> **error:** Error: Teardown scope mismatch: expected undefined, got 0
+2052:- "test", 9223372036854775807 -> **error:** Error: Teardown scope mismatch: expected undefined, got test
+2056:- "stywkrhmntywafgyvda", true -> **error:** Error: Teardown scope mismatch: expected undefined, got stywkrhmntywafgyvda
+2059:- "bbf", "test" -> **error:** Error: Teardown scope mismatch: expected undefined, got bbf
+2060:- "test", -331 -> **error:** Error: Teardown scope mismatch: expected undefined, got test
+2062:- "cd", -41.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got cd
+2063:- "ggyxfxqedvlteitew", -1.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got ggyxfxqedvlteitew
+2070:- "0", true -> **error:** Error: Teardown scope mismatch: expected undefined, got 0
+2071:- "null", 1 -> **error:** Error: Teardown scope mismatch: expected undefined, got null
+2073:- "cehkbc", true -> **error:** Error: Teardown scope mismatch: expected undefined, got cehkbc
+2074:- "tespwtaqjvubqqva", -1.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got tespwtaqjvubqqva
+2075:- " ", -0.5 -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2081:- "hhyjadfytr", "hello" -> **error:** Error: Teardown scope mismatch: expected undefined, got hhyjadfytr
+2083:- " ", -1 -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2088:- "hello", -768 -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2091:- "", "" -> **error:** Error: Teardown scope mismatch: expected undefined, got 
+2092:- "hello", true -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2096:- "true", false -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2097:- "xoixmwmmwtncwhpho", -2.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got xoixmwmmwtncwhpho
+2099:- "null", -1.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got null
+2100:- "null", false -> **error:** Error: Teardown scope mismatch: expected undefined, got null
+2101:- "uzrkyctgqxibflqcjq", -117.39791583733529 -> **error:** Error: Teardown scope mismatch: expected undefined, got uzrkyctgqxibflqcjq
+2102:- "xmvwlchhix", -1 -> **error:** Error: Teardown scope mismatch: expected undefined, got xmvwlchhix
+2103:- "test", false -> **error:** Error: Teardown scope mismatch: expected undefined, got test
+2104:- "test", true -> **error:** Error: Teardown scope mismatch: expected undefined, got test
+2105:- "ngffdxtd", false -> **error:** Error: Teardown scope mismatch: expected undefined, got ngffdxtd
+2106:- "", -1.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got 
+2107:- "hello", -446.07783309991817 -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2108:- " ", 439 -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2109:- "test", -541.3716948860441 -> **error:** Error: Teardown scope mismatch: expected undefined, got test
+2110:- " ", -207.2410175065222 -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2111:- "", false -> **error:** Error: Teardown scope mismatch: expected undefined, got 
+2112:- "ji", true -> **error:** Error: Teardown scope mismatch: expected undefined, got ji
+2113:- "hello", -32 -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2114:- "qxvieib", false -> **error:** Error: Teardown scope mismatch: expected undefined, got qxvieib
+2115:- " ", false -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2116:- "null", "0" -> **error:** Error: Teardown scope mismatch: expected undefined, got null
+2117:- "spddbhzh", 0.5 -> **error:** Error: Teardown scope mismatch: expected undefined, got spddbhzh
+2118:- "hello", false -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2119:- "zhrncc", -0.5 -> **error:** Error: Teardown scope mismatch: expected undefined, got zhrncc
+2120:- "", -422.1266951320217 -> **error:** Error: Teardown scope mismatch: expected undefined, got 
+2121:- "true", "ukopeczvgusrkvqqr" -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2122:- "hello", 418.67867722346864 -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2123:- "llxbxxixkvyrbhd", 223 -> **error:** Error: Teardown scope mismatch: expected undefined, got llxbxxixkvyrbhd
+2124:- "null", -828 -> **error:** Error: Teardown scope mismatch: expected undefined, got null
+2125:- "true", " " -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2126:- " ", "null" -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2127:- "gbfsqbfbswlrrcd", 37.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got gbfsqbfbswlrrcd
+2128:- "boqjfhwnzo", -458.08610003900174 -> **error:** Error: Teardown scope mismatch: expected undefined, got boqjfhwnzo
+2129:- "true", "odkbr" -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2130:- "0", "afts" -> **error:** Error: Teardown scope mismatch: expected undefined, got 0
+2131:- " ", 1 -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2132:- " ", " " -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2133:- "aizcbawcvvvlztweb", 1 -> **error:** Error: Teardown scope mismatch: expected undefined, got aizcbawcvvvlztweb
+2134:- " ", 0.5 -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2135:- "dddwsfbgzvvnxzavhjkg", -9223372036854775808 -> **error:** Error: Teardown scope mismatch: expected undefined, got dddwsfbgzvvnxzavhjkg
+2136:- "null", 223.08117148819565 -> **error:** Error: Teardown scope mismatch: expected undefined, got null
+2137:- "wcvzepcvnrsopuqtfte", 787.3721165148329 -> **error:** Error: Teardown scope mismatch: expected undefined, got wcvzepcvnrsopuqtfte
+2138:- "gntdoxt", 186 -> **error:** Error: Teardown scope mismatch: expected undefined, got gntdoxt
+2139:- "velv", false -> **error:** Error: Teardown scope mismatch: expected undefined, got velv
+2140:- " ", -389 -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2341:- "", -9223372036854775808 -> **error:** Error: Teardown scope mismatch: expected undefined, got 
+2350:- " ", "hello" -> **error:** Error: Teardown scope mismatch: expected undefined, got  
+2351:- "", 0.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got 
+2353:- "test", false -> **error:** Error: Teardown scope mismatch: expected undefined, got test
+2354:- "true", 0 -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2355:- "", false -> **error:** Error: Teardown scope mismatch: expected undefined, got 
+2357:- "0", "hello" -> **error:** Error: Teardown scope mismatch: expected undefined, got 0
+2362:- "hello", 10.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2366:- "hello", 283 -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2367:- "true", 845 -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2368:- "hello", 0.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got hello
+2370:- "true", 0.5 -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2374:- "true", 1 -> **error:** Error: Teardown scope mismatch: expected undefined, got true
+2377:- "0", -24.0 -> **error:** Error: Teardown scope mismatch: expected undefined, got 0

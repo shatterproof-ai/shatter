@@ -1,0 +1,21 @@
+  Created  .shatter/
+  Created  .shatter/config.yaml  (detected language: unknown)
+  Created  .gitignore  (4 generated path(s) ignored)
+Initialized Shatter project at /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj
+# Shatter Explore
+
+## `classifyNumber` *(arithmetic-v1.ts:11-22)*
+
+**4 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `classifyNumber(0)` | returns `"zero"` |
+| 2 | `classifyNumber(-1)` | returns `"negative"` |
+| 3 | `classifyNumber(2)` | returns `"positive-even"` |
+| 4 | `classifyNumber(1)` | returns `"positive-odd"` |
+
+
+---
+
+**Summary:** 4 path(s) across 1 function(s) · **100%** coverage (7/7 lines)

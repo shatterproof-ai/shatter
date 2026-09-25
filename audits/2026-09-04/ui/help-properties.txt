@@ -1,0 +1,116 @@
+Discover and export behavioral properties and invariants as a YAML spec.
+
+Runs analysis and exploration on the given targets to discover invariants, then outputs the behavioral spec enriched with property descriptions.
+
+Usage: shatter properties [OPTIONS] <TARGETS>...
+
+Arguments:
+  <TARGETS>...
+          Target files or functions (e.g. src/math.ts or src/math.ts:add). Quoted glob patterns over file paths (e.g. 'src/**/*.ts') are expanded against the filesystem and filtered to supported source extensions; globs in the <function> portion are rejected
+
+Options:
+      --log-level <LOG_LEVEL>
+          Log verbosity level: error, warn, info (default), debug, trace
+          
+          [default: info]
+
+  -o, --output <OUTPUT>
+          Write output to FILE instead of stdout
+
+      --output-format <OUTPUT_FORMAT>
+          Output format (currently only 'yaml' is supported)
+          
+          [default: yaml]
+
+  -v, --verbose...
+          Increase verbosity (-v = debug, -vv = trace)
+
+      --max-iterations <MAX_ITERATIONS>
+          Maximum exploration iterations per function
+          
+          [default: 100]
+
+  -q, --quiet
+          Decrease verbosity to warnings and errors only
+
+      --timeout <TIMEOUT>
+          Overall timeout in seconds
+          
+          [default: 60]
+
+      --timing <TIMING>
+          Timing output mode
+          
+          [default: off]
+          [possible values: off, summary, detailed]
+
+      --scope <SCOPE>
+          Path to a scope configuration YAML file
+
+      --timing-format <TIMING_FORMAT>
+          Format for timing output. `json` and `both` are intended for persisted artifacts
+          
+          [default: text]
+          [possible values: text, json, both]
+
+      --request-timeout <REQUEST_TIMEOUT>
+          Per-request timeout in seconds (how long to wait for a single frontend response)
+          
+          [default: 30]
+
+      --timing-output <PATH>
+          Write one timing artifact JSON file to this path
+
+      --exec-timeout <EXEC_TIMEOUT>
+          Execution timeout in seconds for each function invocation in the frontend
+          
+          [default: 10]
+
+      --timing-output-dir <DIR>
+          Write timing artifact JSON files into this directory
+
+      --build-timeout <BUILD_TIMEOUT>
+          Build timeout in seconds for compiling instrumented code in the frontend
+          
+          [default: 30]
+
+      --project-dir <DIR>
+          Override auto-detected project root directory
+
+      --allow-host-writes
+          Permit executing target functions on the host without an OS sandbox.
+          
+          By default (str-gg9v) Shatter refuses to execute target functions when no sandbox backend is configured, because a target can create, modify, or delete files by relative path in the invoking repository. Pass this flag (or set `SHATTER_ALLOW_HOST_WRITES=1`) to opt in. Even with the opt-in, targets still run in a throwaway working directory so relative-path writes do not land in the repo. Configuring `SHATTER_SANDBOX_BACKEND=docker|bwrap` is the safer alternative and does not require this flag.
+
+      --release
+          Compile harnesses in release mode (optimized but slower compilation). Default is debug mode for faster compilation
+          
+          [env: SHATTER_HARNESS_RELEASE=]
+
+      --memory-limit <MEMORY_LIMIT>
+          Memory limit in MB for the frontend process
+
+      --set <KEY=VALUE>
+          Override config values using dotted-path key=value pairs (repeatable).
+          
+          Example: `--set defaults.max_iterations=200 --set defaults.exploration.adaptive=false`
+          
+          Keys follow the `.shatter/config.yaml` YAML structure. Values are parsed as YAML scalars (integers, floats, booleans, strings). Precedence: above any `.shatter/config.yaml` file but below dedicated flags like `--max-iterations`.
+
+      --color <WHEN>
+          When to use terminal colors: always, auto (default), or never. Respects the NO_COLOR environment variable (auto treats it as never)
+          
+          [default: auto]
+          [possible values: always, auto, never]
+
+      --render <MODE>
+          Terminal rendering mode: md (default, rendered via termimad) or plain (legacy ANSI)
+
+          Possible values:
+          - md:    Markdown rendered via termimad (default). Use `--color never` for raw Markdown
+          - plain: Legacy plain ANSI text output (deprecated)
+          
+          [default: md]
+
+  -h, --help
+          Print help (see a summary with '-h')

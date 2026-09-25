@@ -1,0 +1,15 @@
+# Shatter Explore
+
+## `Categorize` *(05-conditional-merge.go:16-27)*
+
+**2 path(s)** · **100%** coverage (7/7 lines)
+
+| # | Call | Outcome |
+|---|---|---|
+| 1 | `Categorize(0)` | returns `0` |
+| 2 | `Categorize(1)` | returns `2` |
+
+
+---
+
+**Summary:** 2 path(s) across 1 function(s) · **100%** coverage (7/7 lines)

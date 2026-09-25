@@ -1,0 +1,6 @@
+No .shatter/ found — initializing project
+[info] Spawned 1 frontend session(s) for 1 target(s) (16 parallel worker(s))
+[progress] starting 1/1: classifyNumber
+[progress] completed 1/1: classifyNumber (4.4s)
+[batch 1/1] classifyNumber: 20 iters, 4 paths, 3/3 branches, 4.6s (ok)
+[info] Wrote explore artifact for classifyNumber -> /tmp/claude-1000/-home-ketan-project-shatter/884b07cc-17f4-4a7c-9b4d-04b8b9e21315/scratchpad/ui/proj/shatter-artifacts/explore-results/arithmetic-v1.ts/00011_classifyNumber.json
