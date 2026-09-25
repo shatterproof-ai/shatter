@@ -13,7 +13,27 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 # Epic: integer width and signedness end-to-end
 
-This epic is a child of the shatter audit epic "Epic: Audit 2026-09-22 findings". Its four children name it as their parent.
+This epic sits under the shatter audit epic "Epic: Audit 2026-09-22 findings". Its children are
+`int-unsigned64-clamp`, `core-int-range-i128`, `go-int-width-sign-emission` and the deferred
+cleanup `go-uint-alias-removal`. Each names this epic through `parent_slug`.
+
+All paths are relative to the shatter repository root (github.com/shatterproof-ai/shatter). Line
+numbers were verified at commit 16794cef.
+
+## Tracker status (checked 2026-09-24)
+
+These drafts are new. `bd search` for `int_range`, `int_width`, `int8`, `i128`, `go_uint` and
+`boundary_dict` finds nothing. `unsigned` and `usize` find only the two closed predecessors below.
+The audit parent epic is created in the same filing batch as these drafts.
+
+| id | status | relation |
+|---|---|---|
+| str-ddxe | closed (P2 bug) | Added `int_width`/`int_signed` and `int_range`, but left 64/128-bit unconstrained. This epic finishes that work. |
+| str-cfsa | closed (P1 bug) | Introduced Go's `go_uint` complex kind. Retired by `go-int-width-sign-emission`. |
+| str-ieuc | closed (P1 bug) | Introduced Go's `go_byte` value coercion. Retired by `go-int-width-sign-emission`. |
+| str-79nvf | closed (P2 task) | Planner recognizes `[]byte` from a `go_byte` element. Must keep working after `go_byte` is retired. |
+| str-4yc9w | open, started (P1 bug) | Go param-decode failures are classified as completed runs. Related to reporting, not a child. |
+| str-qwua7.14 | closed (P1 bug) | Rust walkthrough analyzer and harness param-type disagreement. Background only. |
 
 ## Why
 
@@ -22,44 +42,66 @@ optional `int_width` (8/16/32/64/128) and `int_signed`
 (`protocol/schemas/type-info.schema.json:18-25`, added by str-ddxe). The rest of the system does not
 use that information consistently:
 
-- **The core cannot represent the ranges.** Integer ranges and values are `i64` throughout
-  (`shatter-core/src/types.rs:315` and `:332`, `int_range() -> Option<(i64, i64)>`;
-  `SymExpr::Const(Int(i64))`; the solver's `Int(i64)`). `int_range` returns `None` for 64- and 128-bit
-  widths, and every consumer reads `None` as "any i64". The consumers are generation, mutation and
-  shrinking (`input_gen.rs:128, 225, 1955, 3576, 4020`) and the Z3 range assertion
-  (`solver.rs:170-179`). As a result, `usize`/`u64`/`u128` parameters get negative inputs: the
-  Rust harness rejects them at deserialization, and the rejections are reported as target
-  `throws runtime_error`.
+- **The core cannot represent the ranges.** `TypeInfo::int_range() -> Option<(i64, i64)>`
+  (`shatter-core/src/types.rs:315`, `:332`) returns `None` for 64- and 128-bit widths, and every
+  consumer reads `None` as "any i64". So `usize`/`u64`/`u128` parameters get negative inputs.
+- **Boundary seeding ignores the range entirely.** `boundary_dict::get_boundary_values`
+  (`shatter-core/src/boundary_dict.rs:54`) returns the same `int_boundaries()` list (`:109`) for
+  every `Int`, including `-1`, `-2` and `i64::MIN`. So even a `u8` parameter gets `-1` today.
 - **Frontends disagree on how to say it.** The Rust analyzer emits `int_width`/`int_signed`
-  (`shatter-rust/src/analyzer.rs:791`, `:1290`). The Go analyzer never does. It maps unsigned types
-  to separate complex kinds, `go_uint` and `go_byte` (`shatter-go/protocol/analyzer.go:1490-1502`,
-  `:1555-1565`), each with its own generator and mutator in the core (`input_gen.rs:997`, `:2992`).
-  It maps every signed Go integer (`int8`, `int16`, `int32`/`rune`, `int64`, `int`) to a bare
-  `{"kind":"int"}` with no width, so `int8`/`int16`/`int32` parameters also get out-of-range values.
-  TS has no integer types (`number` is float; `bigint` is the `big_int` complex kind).
+  (`shatter-rust/src/analyzer.rs:791`, `:1290`). The Go analyzer maps unsigned types to the
+  complex kinds `go_uint`/`go_byte` (`shatter-go/protocol/analyzer.go:1496`, `:1502`, `:1558`,
+  `:1565`). It maps every signed integer to a bare `{"kind":"int"}` (`:1489`, `:1506`, `:1561`), so
+  `int8`/`int16`/`int32` get values that `json.Unmarshal` rejects. TS has no integer types.
+
+These are the baselines on 16794cef (debug builds, default random explorer, 60 iterations). The
+fixtures and commands are in the children:
+
+- Rust: 41 of 360 executed inputs were out of bounds. Examples are `usize`/`u64`/`u128` values of
+  -1, -8, -946 and `i64::MIN`, and `u8` values of -1 and -2.
+- Go: 80 of 360 executed inputs were out of bounds. Examples are `int8` values of 128, 671 and
+  `i64::MIN`; `uint16` values of 65536 and `u64::MAX`; `byte` 256; `int16` `i64::MAX`; and
+  `null` for `uint16`/`uint64`.
 
 ## Children, in dependency order
 
-1. `int-unsigned64-clamp`: clamp unsigned ≥ 64-bit to `[0, i64::MAX]` on the existing i64 path.
-   This fixes the negative `usize` inputs now.
-2. `core-int-range-i128`: widen core integer ranges and values to `i128` so that `u64` and `i64` are
-   fully representable, including the `u64::MAX` boundary. Blocked by 1.
-3. `go-int-width-sign-emission`: Go emits `int_width`/`int_signed` for every integer kind and retires
-   `go_uint`/`go_byte`, with a one-release alias. A parity-matrix row and conformance tests are added.
-   Blocked by 2, because `go_uint` already generates `u64::MAX`, and moving Go onto the plain int path
-   before the core can represent that value would regress Go boundary coverage.
-4. `rust-input-deserialize-classification` (existing draft): inputs a harness cannot deserialize
-   are recorded as input rejections, not target behaviours. It stands alone and is defence in depth,
-   so any future type-mapping gap costs budget instead of polluting the spec.
+1. `int-unsigned64-clamp` (P2): on the existing i64 path, clamp unsigned 64/128-bit to
+   `[0, i64::MAX]` and make boundary seeding respect `int_range`. This fixes negative inputs now.
+2. `core-int-range-i128` (P3, blocked by 1): carry parameter ranges and values as `i128` so that
+   every width up to 64 bits gets its exact range, including `u64::MAX`.
+3. `go-int-width-sign-emission` (P2, blocked by 2): Go emits `int_width`/`int_signed` for every
+   integer kind. The core keeps `go_uint`/`go_byte` only as deprecated aliases. This step adds a
+   parity-matrix row and conformance cases. It is blocked by 2 because `go_uint` already generates
+   `u64::MAX`, and moving Go to the plain int path earlier would lose that boundary.
+4. `go-uint-alias-removal` (P3, blocked by 3): remove the aliases once the compatibility window has
+   passed. This is a deferred cleanup with its own release-based trigger. It is not part of
+   "Done when".
+
+## Related, not a child
+
+`rust-input-deserialize-classification` (bucket shatter-frontend-rust) makes inputs that a harness
+cannot deserialize be recorded as input rejections, not as target `throws`. It is standalone
+defence in depth under the audit epic. This epic neither waits for it nor depends on its
+reporting. Every proof here asserts on the generated input values themselves.
 
 ## Done when
 
-All children are closed with their own proof. Then a single known-answer E2E per frontend (Rust
-`usize`/`u8`/`i8`, Go `uint64`/`int8`/`byte`) shows zero out-of-range inputs and exercises the
-type's min and max boundary values. The run output is pasted in the close reason.
+- `int-unsigned64-clamp`, `core-int-range-i128` and `go-int-width-sign-emission` are closed, each
+  with its own proof.
+- On the branch that closes `go-int-width-sign-emission`, the bounds checkers from children 1 and
+  3 report `out of bounds: 0` over the committed fixtures `examples/rust/int-width` and
+  `examples/go/int-width`, with both the default and the `--concolic` explorer. Paste the four
+  summary lines in the epic close reason.
+
+`go-uint-alias-removal` may still be open when the epic closes, because it waits on a release
+window. If `bd close` refuses to close an epic with an open child, re-parent that child to the
+audit epic first and say so in the close reason.
 
 ## Out of scope
 
-Wrapping and overflow arithmetic semantics (Z3 bit-vectors), and 128-bit values beyond `i128`. On
-the wire, 128-bit values may need to travel as decimal strings. That is deferred until a target needs
-full `u128` range; `core-int-range-i128` records the decision.
+- Wrapping and overflow arithmetic semantics (Z3 bit-vectors).
+- Values outside the 64-bit ranges: full `u128`/`i128`, and the wire string encoding they would
+  need. `core-int-range-i128` records that decision.
+- Integer `ConstValue` literals above `i64::MAX` in path constraints.
+- Z3 range assertions for integers nested inside objects or arrays. Today only top-level params are
+  asserted (`solver.rs:172-180`).
