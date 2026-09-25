@@ -1041,9 +1041,7 @@ pub fn evaluate_path_predicate(
 ) -> PredicateEvaluation {
     use NotApplicableReason as Reason;
     let inapplicable = |reason| PredicateEvaluation::NotApplicable { reason };
-    if validate_path_predicate(predicate).is_err()
-        || !observation.inputs.iter().all(valid_json_numeric_ranges)
-    {
+    if validate_path_predicate(predicate).is_err() {
         return inapplicable(Reason::UnsupportedSchema);
     }
     if predicate.scope.observation_point != observation.observation_point {
@@ -1091,18 +1089,6 @@ pub fn evaluate_path_predicate(
         PredicateEvaluation::Holds
     } else {
         PredicateEvaluation::Violated
-    }
-}
-
-fn valid_json_numeric_ranges(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Number(number) => {
-            number.as_i64().is_some()
-                || (number.as_u64().is_none() && number.as_f64().is_some_and(f64::is_finite))
-        }
-        serde_json::Value::Array(items) => items.iter().all(valid_json_numeric_ranges),
-        serde_json::Value::Object(fields) => fields.values().all(valid_json_numeric_ranges),
-        _ => true,
     }
 }
 
@@ -1452,8 +1438,20 @@ mod tests {
         assert_eq!(
             evaluate_path_predicate(&predicate, &observation),
             PredicateEvaluation::NotApplicable {
+                reason: Reason::ContextUnavailable
+            }
+        );
+        observation.context_fingerprint = Some("context-v1".into());
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
                 reason: Reason::UnsupportedSchema
             }
+        );
+        observation.inputs = vec![json!({"values": [1, 2], "unrelated": u64::MAX})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Holds
         );
     }
 
