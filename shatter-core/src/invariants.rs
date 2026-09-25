@@ -897,6 +897,9 @@ pub struct PredicateEvidence {
     pub refuting_witnesses: Vec<String>,
 }
 
+/// Maximum retained witness references in each evidence category.
+pub const MAX_PATH_PREDICATE_WITNESSES: usize = 16;
+
 /// One already-parsed execution observation for the input-only evaluator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -964,6 +967,17 @@ pub enum PredicateValidationError {
     Serialization(#[from] serde_json::Error),
 }
 
+/// A rejected evidence update leaves the record unchanged.
+#[derive(Debug, thiserror::Error)]
+pub enum PredicateEvidenceError {
+    #[error("invalid path predicate: {0}")]
+    InvalidRecord(#[from] PredicateValidationError),
+    #[error("witness reference must not be empty")]
+    EmptyWitness,
+    #[error("evidence counter overflow")]
+    Overflow,
+}
+
 /// Parse a complete version-1 record, rejecting malformed tags and identity.
 pub fn parse_path_predicate(raw: &str) -> Result<PathPredicateRecord, PredicateParseError> {
     let record: PathPredicateRecord = serde_json::from_str(raw)?;
@@ -996,6 +1010,90 @@ pub fn validate_path_predicate(
         return Err(PredicateValidationError::InvalidId);
     }
     Ok(())
+}
+
+/// Apply the stricter evidence-store rules without changing v1 record parsing.
+pub(crate) fn validate_path_predicate_stored_evidence(
+    predicate: &PathPredicateRecord,
+) -> Result<(), PredicateValidationError> {
+    validate_path_predicate(predicate)?;
+    let evidence = &predicate.evidence;
+    if !valid_witnesses(&evidence.supporting_witnesses, evidence.holds)
+        || !valid_witnesses(&evidence.refuting_witnesses, evidence.violated)
+    {
+        return Err(PredicateValidationError::InvalidEvidence);
+    }
+    Ok(())
+}
+
+fn valid_witnesses(witnesses: &[String], observations: u32) -> bool {
+    witnesses.len() <= MAX_PATH_PREDICATE_WITNESSES
+        && witnesses.len() <= observations as usize
+        && witnesses.iter().all(|witness| !witness.is_empty())
+        && witnesses
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == witnesses.len()
+}
+
+/// Evaluate one observation and atomically update its evidence counters.
+/// References are opaque, deduplicated, and retained in first-seen order.
+pub fn record_path_predicate_observation(
+    record: &mut PathPredicateRecord,
+    observation: &PathObservation,
+    witness: Option<&str>,
+) -> Result<PredicateEvaluation, PredicateEvidenceError> {
+    validate_path_predicate_stored_evidence(record)?;
+    if witness == Some("") {
+        return Err(PredicateEvidenceError::EmptyWitness);
+    }
+    let result = evaluate_path_predicate(record, observation);
+    let mut evidence = record.evidence.clone();
+    match result {
+        PredicateEvaluation::Holds => {
+            evidence.holds = evidence
+                .holds
+                .checked_add(1)
+                .ok_or(PredicateEvidenceError::Overflow)?;
+            evidence.eligible = evidence
+                .eligible
+                .checked_add(1)
+                .ok_or(PredicateEvidenceError::Overflow)?;
+            if let Some(reference) = witness {
+                retain_witness(&mut evidence.supporting_witnesses, reference);
+            }
+        }
+        PredicateEvaluation::Violated => {
+            evidence.violated = evidence
+                .violated
+                .checked_add(1)
+                .ok_or(PredicateEvidenceError::Overflow)?;
+            evidence.eligible = evidence
+                .eligible
+                .checked_add(1)
+                .ok_or(PredicateEvidenceError::Overflow)?;
+            if let Some(reference) = witness {
+                retain_witness(&mut evidence.refuting_witnesses, reference);
+            }
+        }
+        PredicateEvaluation::NotApplicable { .. } => {
+            evidence.not_applicable = evidence
+                .not_applicable
+                .checked_add(1)
+                .ok_or(PredicateEvidenceError::Overflow)?;
+        }
+    }
+    record.evidence = evidence;
+    Ok(result)
+}
+
+fn retain_witness(witnesses: &mut Vec<String>, reference: &str) {
+    if witnesses.len() < MAX_PATH_PREDICATE_WITNESSES
+        && !witnesses.iter().any(|existing| existing == reference)
+    {
+        witnesses.push(reference.to_owned());
+    }
 }
 
 /// SHA-256 of compact JSON after recursively sorting object keys and removing
@@ -1194,6 +1292,173 @@ mod tests {
             context_fingerprint: Some("context-v1".into()),
             outcome: PathOutcome::Return { value: json!(null) },
         }
+    }
+
+    #[test]
+    fn record_path_predicate_observation_counts_each_result() {
+        let mut record = scalar_predicate(PathCompareOp::Eq);
+        let holding = scalar_observation(json!(4), json!(4));
+        let violating = scalar_observation(json!(4), json!(5));
+        let mut inapplicable = holding.clone();
+        inapplicable.context_fingerprint = None;
+
+        assert_eq!(
+            record_path_predicate_observation(&mut record, &holding, Some("witness-1"))
+                .expect("holding observation"),
+            PredicateEvaluation::Holds
+        );
+        assert_eq!(
+            record_path_predicate_observation(&mut record, &violating, Some("witness-2"))
+                .expect("violating observation"),
+            PredicateEvaluation::Violated
+        );
+        assert!(matches!(
+            record_path_predicate_observation(&mut record, &inapplicable, Some("witness-3")),
+            Ok(PredicateEvaluation::NotApplicable { .. })
+        ));
+        assert_eq!(record.evidence.eligible, 2);
+        assert_eq!(record.evidence.holds, 1);
+        assert_eq!(record.evidence.violated, 1);
+        assert_eq!(record.evidence.not_applicable, 1);
+        assert_eq!(record.evidence.supporting_witnesses, ["witness-1"]);
+        assert_eq!(record.evidence.refuting_witnesses, ["witness-2"]);
+    }
+
+    #[test]
+    fn record_path_predicate_observation_preserves_state_on_error() {
+        let holding = scalar_observation(json!(1), json!(1));
+        let mut record = scalar_predicate(PathCompareOp::Eq);
+        let original = record.clone();
+        assert!(matches!(
+            record_path_predicate_observation(&mut record, &holding, Some("")),
+            Err(PredicateEvidenceError::EmptyWitness)
+        ));
+        assert_eq!(record, original);
+
+        record.evidence.eligible = u32::MAX;
+        record.evidence.holds = u32::MAX;
+        let original = record.clone();
+        assert!(matches!(
+            record_path_predicate_observation(&mut record, &holding, None),
+            Err(PredicateEvidenceError::Overflow)
+        ));
+        assert_eq!(record, original);
+
+        record.evidence.eligible = 0;
+        let original = record.clone();
+        assert!(matches!(
+            record_path_predicate_observation(&mut record, &holding, None),
+            Err(PredicateEvidenceError::InvalidRecord(_))
+        ));
+        assert_eq!(record, original);
+    }
+
+    #[test]
+    fn legacy_v1_parser_still_accepts_witness_metadata_rejected_by_accumulation() {
+        let mut record = scalar_predicate(PathCompareOp::Eq);
+        record.evidence.eligible = 2;
+        record.evidence.holds = 2;
+        record.evidence.supporting_witnesses = vec!["duplicate".into(), "duplicate".into()];
+        let json = serde_json::to_string(&record).expect("serialize");
+        assert_eq!(parse_path_predicate(&json).expect("legacy parse"), record);
+        let original = record.clone();
+        let observation = scalar_observation(json!(1), json!(1));
+        assert!(matches!(
+            record_path_predicate_observation(&mut record, &observation, None),
+            Err(PredicateEvidenceError::InvalidRecord(_))
+        ));
+        assert_eq!(record, original);
+    }
+
+    #[test]
+    fn record_path_predicate_observation_bounds_witnesses_and_preserves_lifecycle() {
+        let holding = scalar_observation(json!(1), json!(1));
+        let mut record = scalar_predicate(PathCompareOp::Eq);
+        record.lifecycle = PredicateLifecycle::Frozen;
+        for index in 0..(MAX_PATH_PREDICATE_WITNESSES + 2) {
+            let reference = format!("witness-{index}");
+            record_path_predicate_observation(&mut record, &holding, Some(&reference))
+                .expect("observation");
+        }
+        record_path_predicate_observation(&mut record, &holding, Some("witness-0"))
+            .expect("repeat");
+        assert_eq!(record.evidence.eligible, 19);
+        assert_eq!(
+            record.evidence.supporting_witnesses.len(),
+            MAX_PATH_PREDICATE_WITNESSES
+        );
+        assert_eq!(record.evidence.supporting_witnesses[0], "witness-0");
+        assert_eq!(record.evidence.supporting_witnesses[15], "witness-15");
+        assert_eq!(record.lifecycle, PredicateLifecycle::Frozen);
+    }
+
+    #[test]
+    fn record_path_predicate_observation_tracks_inapplicable_without_witness() {
+        let mut record = scalar_predicate(PathCompareOp::Eq);
+        record.lifecycle = PredicateLifecycle::Stale;
+        let mut observation = scalar_observation(json!(1), json!(1));
+        observation.context_fingerprint = None;
+        record_path_predicate_observation(&mut record, &observation, Some("unused"))
+            .expect("inapplicable");
+        assert_eq!(record.evidence.not_applicable, 1);
+        assert_eq!(record.evidence.eligible, 0);
+        assert!(record.evidence.supporting_witnesses.is_empty());
+        assert_eq!(record.lifecycle, PredicateLifecycle::Stale);
+    }
+
+    #[test]
+    fn record_path_predicate_observation_accepts_every_lifecycle() {
+        let observation = scalar_observation(json!(1), json!(1));
+        for lifecycle in [
+            PredicateLifecycle::Candidate,
+            PredicateLifecycle::Frozen,
+            PredicateLifecycle::Refuted,
+            PredicateLifecycle::Stale,
+        ] {
+            let mut record = scalar_predicate(PathCompareOp::Eq);
+            record.lifecycle = lifecycle;
+            assert_eq!(
+                record_path_predicate_observation(&mut record, &observation, None)
+                    .expect("observation"),
+                PredicateEvaluation::Holds
+            );
+            assert_eq!(record.lifecycle, lifecycle);
+        }
+    }
+
+    #[test]
+    fn record_path_predicate_observation_matches_count_model() {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, RngSeed, TestRunner};
+
+        let mut runner = TestRunner::new(Config {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(0x5a77_2027),
+            ..Config::default()
+        });
+        runner
+            .run(&proptest::collection::vec(0u8..3, 0..100), |sequence| {
+                let mut record = scalar_predicate(PathCompareOp::Eq);
+                let mut expected = [0u32; 3];
+                for status in sequence {
+                    let mut observation = match status {
+                        0 => scalar_observation(json!(1), json!(1)),
+                        _ => scalar_observation(json!(1), json!(2)),
+                    };
+                    if status == 2 {
+                        observation.context_fingerprint = None;
+                    }
+                    record_path_predicate_observation(&mut record, &observation, None)
+                        .expect("bounded sequence");
+                    expected[usize::from(status)] += 1;
+                }
+                prop_assert_eq!(record.evidence.holds, expected[0]);
+                prop_assert_eq!(record.evidence.violated, expected[1]);
+                prop_assert_eq!(record.evidence.not_applicable, expected[2]);
+                prop_assert_eq!(record.evidence.eligible, expected[0] + expected[1]);
+                Ok(())
+            })
+            .expect("property holds");
     }
 
     #[test]

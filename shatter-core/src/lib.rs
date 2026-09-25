@@ -58,6 +58,7 @@ pub mod observe;
 pub mod oracle;
 pub mod decision;
 pub mod orchestrator;
+pub mod path_predicate_store;
 pub mod pipeline;
 pub mod pipeline_orchestrator;
 pub mod planner_consumer;
