@@ -5151,9 +5151,21 @@ fn generate_crate_bridge_wrapper(
     // shatter_run_harness: the stable entry point called by the driver binary.
     w.push_str("/// Stable entry point called by the crate-bridge driver binary.\n");
     w.push_str("/// Reads `{\"function\": \"name\", \"inputs\": [...]}` lines from stdin,\n");
-    w.push_str("/// dispatches to the appropriate wrapper, and writes JSON results to stdout.\n");
+    w.push_str("/// dispatches to the appropriate wrapper, and writes JSON results to the\n");
+    w.push_str("/// protocol channel. User stdout/stderr is captured as console_output.\n");
     w.push_str("pub fn shatter_run_harness() {\n");
     w.push_str("    use std::io::BufRead;\n");
+    // str-49drv.116: responses must not share stdout with user code, so the
+    // channel moves user-visible stdout/stderr onto capture files first.
+    w.push_str(
+        "    let mut __channel = match shatter_rust_runtime::ProtocolChannel::install() {\n",
+    );
+    w.push_str("        Ok(channel) => channel,\n");
+    w.push_str("        Err(e) => {\n");
+    w.push_str("            eprintln!(\"shatter crate_bridge: cannot isolate the protocol channel from user output: {e}\");\n");
+    w.push_str("            std::process::exit(1);\n");
+    w.push_str("        }\n");
+    w.push_str("    };\n");
     w.push_str(&format!("    let mocks_json = r#\"{}\"#;\n", mocks_json));
     w.push_str(
         "    let mocks: Vec<Value> = serde_json::from_str(mocks_json).unwrap_or_default();\n",
@@ -5182,7 +5194,7 @@ fn generate_crate_bridge_wrapper(
         "        let mut inputs = req[\"inputs\"].as_array().cloned().unwrap_or_default();\n",
     );
     w.push_str("        for __input in inputs.iter_mut() { shatter_rust_runtime::materialize_complex(__input); }\n");
-    w.push_str("        let exec_result = match function_name {\n");
+    w.push_str("        let mut exec_result = match function_name {\n");
     for fn_info in fns {
         let fn_name = &fn_info.name;
         w.push_str(&format!(
@@ -5192,8 +5204,11 @@ fn generate_crate_bridge_wrapper(
     }
     w.push_str("            unknown => serde_json::json!({\"return_value\": null, \"thrown_error\": {\"error_type\": \"not_supported\", \"message\": format!(\"function not in crate_bridge dispatch table: {}\", unknown)}, \"branch_path\": [], \"lines_executed\": [], \"calls_to_external\": [], \"path_constraints\": [], \"side_effects\": [], \"performance\": {\"wall_time_ms\": 0.0, \"cpu_time_us\": 0, \"heap_used_bytes\": 0, \"heap_allocated_bytes\": 0}}),\n");
     w.push_str("        };\n");
-    w.push_str("        println!(\"{}\", serde_json::to_string(&exec_result).unwrap());\n");
-    w.push_str("        let _ = std::io::Write::flush(&mut std::io::stdout());\n");
+    w.push_str("        let __console = __channel.take_console_output();\n");
+    w.push_str(
+        "        shatter_rust_runtime::attach_console_output(&mut exec_result, __console);\n",
+    );
+    w.push_str("        if __channel.respond(&exec_result).is_err() { break; }\n");
     w.push_str("    }\n");
     w.push_str("}\n");
 
@@ -13446,6 +13461,205 @@ fn task_names(include: bool) -> ApiResult<Vec<String>> {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── str-49drv.116: crate-bridge user output vs. the protocol channel ──
+    //
+    // The crate-bridge driver used to println! its JSON response onto the same
+    // stdout the target function prints to, so any printing target was
+    // reported as an output-parse internal_error. Each case runs a sequence of
+    // requests against ONE persistent crate-bridge harness process.
+
+    const NOISY_BRIDGE_SOURCE: &str = r#"pub fn noisy(n: i64) -> i64 {
+    println!("hello from user code {n}");
+    n + 1
+}
+
+pub fn partial(n: i64) -> i64 {
+    print!("no newline {n}");
+    n * 2
+}
+
+pub fn imposter(n: i64) -> i64 {
+    println!("{{\"return_value\":99}}");
+    println!("{{\"return_value\":99,\"thrown_error\":null,\"branch_path\":[],\"lines_executed\":[],\"calls_to_external\":[],\"path_constraints\":[],\"side_effects\":[],\"performance\":{{\"wall_time_ms\":0.0,\"cpu_time_us\":0,\"heap_used_bytes\":0,\"heap_allocated_bytes\":0}}}}");
+    n - 1
+}
+
+pub fn to_stderr(n: i64) -> i64 {
+    eprintln!("warning from user code {n}");
+    eprint!("partial err {n}");
+    n + 10
+}
+
+pub fn quiet(n: i64) -> i64 {
+    n + 100
+}
+"#;
+
+    /// Run `calls` (function, input) in order through one crate-bridge harness
+    /// over a fresh copy of [`NOISY_BRIDGE_SOURCE`]. Returns `None` when cargo
+    /// is unavailable. Asserts every call was served by the same process.
+    fn run_noisy_bridge_sequence(tag: &str, calls: &[(&str, i64)]) -> Option<Vec<ExecuteResult>> {
+        let dir = unique_tmp_dir(tag);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"shatter-noisy-bridge-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        )
+        .unwrap();
+        let target = dir.join("src/lib.rs");
+        std::fs::write(&target, NOISY_BRIDGE_SOURCE).unwrap();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+
+        let mut results = Vec::new();
+        let mut harness_pid = None;
+        for (function, input) in calls {
+            let result = execute_function_with_timing(
+                target.to_str().unwrap(),
+                function,
+                &[serde_json::json!(input)],
+                &[],
+                120_000,
+                Some("crate_bridge"),
+                None,
+                &cache,
+                &crate_cache,
+                &bridge_cache,
+            );
+            match result {
+                Ok(r) => results.push(r),
+                Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                    eprintln!("skipping crate-bridge stdout regression: cargo unavailable ({msg})");
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return None;
+                }
+                Err(e) => panic!("{function}({input}) through crate_bridge failed: {e:?}"),
+            }
+            let pid = {
+                let map = bridge_cache.lock().unwrap();
+                assert_eq!(
+                    map.len(),
+                    1,
+                    "all calls must share one crate-bridge harness"
+                );
+                map.values().next().unwrap().harness.child.id()
+            };
+            assert_eq!(
+                *harness_pid.get_or_insert(pid),
+                pid,
+                "{function}({input}) must be served by the same persistent harness process"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        Some(results)
+    }
+
+    fn console_messages(r: &ExecuteResult, level: &str) -> Vec<String> {
+        r.side_effects
+            .iter()
+            .filter(|se| se["kind"] == "console_output" && se["level"] == level)
+            .map(|se| se["message"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn crate_bridge_println_before_return_keeps_return_value() {
+        let Some(results) = run_noisy_bridge_sequence("bridge-println", &[("noisy", 1)]) else {
+            return;
+        };
+        let r = &results[0];
+        assert_eq!(r.thrown_error, None, "noisy(1) must not error: {r:?}");
+        assert_eq!(r.return_value, Some(serde_json::json!(2)));
+        assert_eq!(console_messages(r, "log"), vec!["hello from user code 1"]);
+    }
+
+    #[test]
+    fn crate_bridge_print_without_newline_keeps_return_value() {
+        let Some(results) =
+            run_noisy_bridge_sequence("bridge-partial", &[("partial", 3), ("quiet", 4)])
+        else {
+            return;
+        };
+        assert_eq!(
+            results[0].thrown_error, None,
+            "partial(3): {:?}",
+            results[0]
+        );
+        assert_eq!(results[0].return_value, Some(serde_json::json!(6)));
+        assert_eq!(console_messages(&results[0], "log"), vec!["no newline 3"]);
+        // The unterminated print! must not bleed into the next response.
+        assert_eq!(results[1].return_value, Some(serde_json::json!(104)));
+        assert!(
+            console_messages(&results[1], "log").is_empty(),
+            "{:?}",
+            results[1]
+        );
+    }
+
+    #[test]
+    fn crate_bridge_user_output_imitating_a_response_is_not_the_response() {
+        let Some(results) = run_noisy_bridge_sequence("bridge-imposter", &[("imposter", 5)]) else {
+            return;
+        };
+        let r = &results[0];
+        assert_eq!(r.thrown_error, None, "imposter(5): {r:?}");
+        assert_eq!(
+            r.return_value,
+            Some(serde_json::json!(4)),
+            "user output that looks like an execute result must not be taken as the response"
+        );
+        assert_eq!(console_messages(r, "log").len(), 2, "{r:?}");
+        assert_eq!(console_messages(r, "log")[0], "{\"return_value\":99}");
+    }
+
+    #[test]
+    fn crate_bridge_stderr_writes_keep_return_value() {
+        let Some(results) = run_noisy_bridge_sequence("bridge-stderr", &[("to_stderr", 1)]) else {
+            return;
+        };
+        let r = &results[0];
+        assert_eq!(r.thrown_error, None, "to_stderr(1): {r:?}");
+        assert_eq!(r.return_value, Some(serde_json::json!(11)));
+        assert_eq!(
+            console_messages(r, "error"),
+            vec!["warning from user code 1", "partial err 1"]
+        );
+    }
+
+    #[test]
+    fn crate_bridge_alternating_printing_calls_do_not_shift_responses() {
+        let Some(results) = run_noisy_bridge_sequence(
+            "bridge-alternating",
+            &[
+                ("noisy", 1),
+                ("quiet", 1),
+                ("noisy", 2),
+                ("quiet", 2),
+                ("partial", 5),
+            ],
+        ) else {
+            return;
+        };
+        let returns: Vec<_> = results.iter().map(|r| r.return_value.clone()).collect();
+        assert_eq!(
+            returns,
+            vec![
+                Some(serde_json::json!(2)),
+                Some(serde_json::json!(101)),
+                Some(serde_json::json!(3)),
+                Some(serde_json::json!(102)),
+                Some(serde_json::json!(10)),
+            ],
+            "each request must receive its own response"
+        );
+        assert!(
+            results.iter().all(|r| r.thrown_error.is_none()),
+            "{results:?}"
+        );
     }
 
     #[test]

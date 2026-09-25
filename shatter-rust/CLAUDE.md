@@ -18,11 +18,13 @@ Can deserialize `ite` SymExpr nodes (`SymExpr::Ite` in `protocol.rs`) but does n
 
 ## Side Effect Parity Contract
 
-Rust captures 3 of 7 canonical kinds. Capture lives in the generated harness code (standalone + dispatch modes). Crate-bridge harness captures `thrown_error` and `global_state_change` but not `console_output` (cannot inject libc dep into the user crate).
+Rust captures 3 of 7 canonical kinds. Capture lives in the generated harness code (standalone, dispatch, and crate-bridge modes).
 
-Captured: `console_output` (fd redirection via libc dup/dup2 in standalone/dispatch harness, stdout→"log" stderr→"error", max 4096 chars/message, crate-bridge skips), `global_state_change` (mutable static variable snapshots via serde, tracks `static mut` variables with `Serialize` derive), `thrown_error` (`catch_unwind` in harness, `error_type: "runtime_error"`, `stack: null`). Not captured: `global_mutation`, `file_write`, `network_request`, `environment_read`.
+Captured: `console_output` (fd redirection via libc dup/dup2 in standalone/dispatch harness; crate-bridge uses `shatter_rust_runtime::ProtocolChannel`, see below; stdout→"log" stderr→"error", max 4096 chars/message), `global_state_change` (mutable static variable snapshots via serde, tracks `static mut` variables with `Serialize` derive), `thrown_error` (`catch_unwind` in harness, `error_type: "runtime_error"`, `stack: null`). Not captured: `global_mutation`, `file_write`, `network_request`, `environment_read`.
 
 Authoritative matrix: `protocol/parity-matrix.yaml` `allowed_divergences: rust-side-effects-not-captured` (status: resolved).
+
+**Crate-bridge protocol channel (str-49drv.116).** The crate-bridge driver runs inside the user's crate, so it cannot add `libc`. At startup `shatter_run_harness` calls `shatter_rust_runtime::ProtocolChannel::install()` (`shatter-rust-runtime/src/protocol_channel.rs`, std-only): it keeps a close-on-exec clone of the original stdout for responses, then points stdout/stderr at capture files for the life of the process — `dup2` via a local `extern "C"` declaration on Unix, `SetStdHandle` on Windows (Rust's `Stdout`/`Stderr` re-read the std handle on every write). Capture files are unlinked on open (Unix) or delete-on-close (Windows). Per request, `take_console_output()` drains both files into `console_output` side effects (prepended, so order matches standalone), and `respond()` writes the JSON line to the private handle. User `print!`/`println!`/`eprint!`/`std::io::stdout()` can therefore never reach the protocol pipe — including a partial `print!` or output that imitates a response. If `install()` fails, the driver exits with a stderr message rather than falling back to the shared stdout. Locked by the `crate_bridge_*` stdout regression tests in `executor.rs` and `e2e_rust_crate_bridge_printing_target` in `shatter-core/tests/e2e_concolic_rust.rs`. Windows harness execution is not exercised in CI (tracked by str-49drv.209); the generated crate-bridge crate is only verified with `cargo check --target x86_64-pc-windows-msvc`.
 
 ## Crate-Bridge Dispatch Contract (str-303gg)
 
