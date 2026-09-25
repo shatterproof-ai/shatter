@@ -7,6 +7,7 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::execution_record::ExecutionRecord;
 
@@ -779,6 +780,366 @@ pub fn records_from_raw_results(
         .collect()
 }
 
+/// Wire schema supported by path predicates.
+pub const PATH_PREDICATE_SCHEMA_VERSION: u32 = 1;
+/// Scalar comparison semantics supported by this schema.
+pub const PATH_PREDICATE_SEMANTICS_VERSION: &str = "json-scalars-v1";
+
+/// A path-scoped, context-bound input predicate. Evidence and lifecycle do not
+/// contribute to its identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathPredicateRecord {
+    pub schema_version: u32,
+    pub predicate_id: String,
+    pub target: PathPredicateTarget,
+    pub scope: PathPredicateScope,
+    pub expression: PathExpression,
+    pub semantics_version: String,
+    pub lifecycle: PredicateLifecycle,
+    #[serde(default)]
+    pub evidence: PredicateEvidence,
+}
+
+/// The function and source version to which a predicate belongs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathPredicateTarget {
+    pub qualified_function: String,
+    pub frontend: String,
+    pub source_fingerprint: String,
+}
+
+/// The exact ordered branch sequence and caller-supplied execution context.
+/// Each pair projects a `BranchDecision` to `(branch_id, taken)`, retaining
+/// repeated loop decisions while omitting source lines and constraints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathPredicateScope {
+    pub path_prefix: Vec<(u32, bool)>,
+    pub observation_point: ObservationPoint,
+    pub context_fingerprint: String,
+}
+
+/// The point at which an input predicate is evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationPoint {
+    Entry,
+}
+
+/// A comparison between two paths into function inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PathExpression {
+    Compare {
+        op: PathCompareOp,
+        left: InputPath,
+        right: InputPath,
+    },
+}
+
+/// An exact numeric comparison operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathCompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// A parameter and zero or more tagged field or array segments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputPath {
+    pub kind: InputPathKind,
+    pub parameter: u32,
+    pub path: Vec<PathSegment>,
+}
+
+/// The sole supported operand source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputPathKind {
+    InputPath,
+}
+
+/// A typed segment in an input path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PathSegment {
+    Field { value: String },
+    Index { value: u64 },
+}
+
+/// The current evidence lifecycle; evaluation never changes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredicateLifecycle {
+    Candidate,
+    Frozen,
+    Refuted,
+    Stale,
+}
+
+/// Read-only evidence metadata. `eligible` must equal `holds + violated`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PredicateEvidence {
+    pub eligible: u32,
+    pub holds: u32,
+    pub violated: u32,
+    pub not_applicable: u32,
+    pub supporting_witnesses: Vec<String>,
+    pub refuting_witnesses: Vec<String>,
+}
+
+/// One already-parsed execution observation for the input-only evaluator.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathObservation {
+    pub inputs: Vec<serde_json::Value>,
+    pub branch_path: Vec<(u32, bool)>,
+    pub observation_point: ObservationPoint,
+    pub context_fingerprint: Option<String>,
+    pub outcome: PathOutcome,
+}
+
+/// Outcome is retained even though the return value is not compared.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PathOutcome {
+    Return { value: serde_json::Value },
+    Thrown,
+    Unavailable,
+}
+
+/// Exact predicate evaluation result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PredicateEvaluation {
+    Holds,
+    Violated,
+    NotApplicable { reason: NotApplicableReason },
+}
+
+/// Why an observation cannot support or refute a predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotApplicableReason {
+    MissingValue,
+    ExplicitNull,
+    WrongType,
+    ThrownOutcome,
+    ScopeMismatch,
+    UnsupportedOperation,
+    UnsupportedSchema,
+    ContextUnavailable,
+}
+
+/// Failure to deserialize or validate a predicate record.
+#[derive(Debug, thiserror::Error)]
+pub enum PredicateParseError {
+    #[error("invalid path predicate JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("invalid path predicate: {0}")]
+    Validation(#[from] PredicateValidationError),
+}
+
+/// A structural or identity error in a predicate record.
+#[derive(Debug, thiserror::Error)]
+pub enum PredicateValidationError {
+    #[error("unsupported schema or scalar semantics version")]
+    UnsupportedVersion,
+    #[error("required predicate field is empty")]
+    EmptyField,
+    #[error("evidence counts are inconsistent")]
+    InvalidEvidence,
+    #[error("predicate ID does not match canonical content")]
+    InvalidId,
+    #[error("cannot serialize predicate identity: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
+/// Parse a complete version-1 record, rejecting malformed tags and identity.
+pub fn parse_path_predicate(raw: &str) -> Result<PathPredicateRecord, PredicateParseError> {
+    let record: PathPredicateRecord = serde_json::from_str(raw)?;
+    validate_path_predicate(&record)?;
+    Ok(record)
+}
+
+/// Validate a constructed or deserialized record before evaluation.
+pub fn validate_path_predicate(
+    predicate: &PathPredicateRecord,
+) -> Result<(), PredicateValidationError> {
+    if predicate.schema_version != PATH_PREDICATE_SCHEMA_VERSION
+        || predicate.semantics_version != PATH_PREDICATE_SEMANTICS_VERSION
+    {
+        return Err(PredicateValidationError::UnsupportedVersion);
+    }
+    let target = &predicate.target;
+    if target.qualified_function.is_empty()
+        || target.frontend.is_empty()
+        || target.source_fingerprint.is_empty()
+        || predicate.scope.context_fingerprint.is_empty()
+    {
+        return Err(PredicateValidationError::EmptyField);
+    }
+    let evidence = &predicate.evidence;
+    if evidence.holds.checked_add(evidence.violated) != Some(evidence.eligible) {
+        return Err(PredicateValidationError::InvalidEvidence);
+    }
+    if predicate.predicate_id != canonical_path_predicate_id(predicate)? {
+        return Err(PredicateValidationError::InvalidId);
+    }
+    Ok(())
+}
+
+/// SHA-256 of compact JSON after recursively sorting object keys and removing
+/// identity-excluded fields. Arrays, including branch decisions, retain order.
+pub fn canonical_path_predicate_id(
+    predicate: &PathPredicateRecord,
+) -> Result<String, PredicateValidationError> {
+    let mut value = serde_json::to_value(predicate)?;
+    if let serde_json::Value::Object(fields) = &mut value {
+        fields.remove("predicate_id");
+        fields.remove("evidence");
+        fields.remove("lifecycle");
+    }
+    let canonical = sort_json_objects(value);
+    let bytes = serde_json::to_vec(&canonical)?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn sort_json_objects(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let sorted: std::collections::BTreeMap<_, _> = fields
+                .into_iter()
+                .map(|(key, value)| (key, sort_json_objects(value)))
+                .collect();
+            serde_json::Value::Object(sorted.into_iter().collect())
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(sort_json_objects).collect())
+        }
+        other => other,
+    }
+}
+
+/// Evaluate a scalar input predicate with strict schema, context, path, and
+/// outcome precedence. Lexical integer and float JSON categories are distinct;
+/// mixed-category operands are inapplicable under `json-scalars-v1`. The caller
+/// supplies the context binding; target and lifecycle are record metadata.
+/// No evidence or lifecycle fields are mutated.
+pub fn evaluate_path_predicate(
+    predicate: &PathPredicateRecord,
+    observation: &PathObservation,
+) -> PredicateEvaluation {
+    use NotApplicableReason as Reason;
+    let inapplicable = |reason| PredicateEvaluation::NotApplicable { reason };
+    if validate_path_predicate(predicate).is_err() {
+        return inapplicable(Reason::UnsupportedSchema);
+    }
+    if predicate.scope.observation_point != observation.observation_point {
+        return inapplicable(Reason::ScopeMismatch);
+    }
+    if observation.context_fingerprint.as_deref()
+        != Some(predicate.scope.context_fingerprint.as_str())
+    {
+        return inapplicable(Reason::ContextUnavailable);
+    }
+    if predicate.scope.path_prefix != observation.branch_path {
+        return inapplicable(Reason::ScopeMismatch);
+    }
+    match observation.outcome {
+        PathOutcome::Thrown => return inapplicable(Reason::ThrownOutcome),
+        PathOutcome::Unavailable => return inapplicable(Reason::MissingValue),
+        PathOutcome::Return { .. } => {}
+    }
+    let PathExpression::Compare { op, left, right } = &predicate.expression;
+    let left = match resolve_input_path(&observation.inputs, left).and_then(scalar_number) {
+        Ok(value) => value,
+        Err(reason) => return inapplicable(reason),
+    };
+    let right = match resolve_input_path(&observation.inputs, right).and_then(scalar_number) {
+        Ok(value) => value,
+        Err(reason) => return inapplicable(reason),
+    };
+    let ordering = match (left, right) {
+        (ScalarNumber::Integer(a), ScalarNumber::Integer(b)) => a.partial_cmp(&b),
+        (ScalarNumber::Float(a), ScalarNumber::Float(b)) => a.partial_cmp(&b),
+        _ => return inapplicable(Reason::UnsupportedOperation),
+    };
+    let Some(ordering) = ordering else {
+        return inapplicable(Reason::UnsupportedSchema);
+    };
+    let holds = match op {
+        PathCompareOp::Eq => ordering.is_eq(),
+        PathCompareOp::Ne => !ordering.is_eq(),
+        PathCompareOp::Lt => ordering.is_lt(),
+        PathCompareOp::Le => !ordering.is_gt(),
+        PathCompareOp::Gt => ordering.is_gt(),
+        PathCompareOp::Ge => !ordering.is_lt(),
+    };
+    if holds {
+        PredicateEvaluation::Holds
+    } else {
+        PredicateEvaluation::Violated
+    }
+}
+
+fn resolve_input_path<'a>(
+    inputs: &'a [serde_json::Value],
+    path: &InputPath,
+) -> Result<&'a serde_json::Value, NotApplicableReason> {
+    use NotApplicableReason as Reason;
+    let mut value = inputs
+        .get(path.parameter as usize)
+        .ok_or(Reason::MissingValue)?;
+    for segment in &path.path {
+        value = match (segment, value) {
+            (PathSegment::Field { value: key }, serde_json::Value::Object(fields)) => {
+                fields.get(key).ok_or(Reason::MissingValue)?
+            }
+            (PathSegment::Index { value: index }, serde_json::Value::Array(items)) => {
+                let index = usize::try_from(*index).map_err(|_| Reason::MissingValue)?;
+                items.get(index).ok_or(Reason::MissingValue)?
+            }
+            (_, serde_json::Value::Null) => return Err(Reason::ExplicitNull),
+            _ => return Err(Reason::WrongType),
+        };
+    }
+    Ok(value)
+}
+
+enum ScalarNumber {
+    Integer(i64),
+    Float(f64),
+}
+
+fn scalar_number(value: &serde_json::Value) -> Result<ScalarNumber, NotApplicableReason> {
+    use NotApplicableReason as Reason;
+    match value {
+        serde_json::Value::Null => Err(Reason::ExplicitNull),
+        serde_json::Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                Ok(ScalarNumber::Integer(integer))
+            } else if number.as_u64().is_some() {
+                Err(Reason::UnsupportedSchema)
+            } else if let Some(float) = number.as_f64().filter(|value| value.is_finite()) {
+                Ok(ScalarNumber::Float(float))
+            } else {
+                Err(Reason::UnsupportedSchema)
+            }
+        }
+        _ => Err(Reason::WrongType),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -789,6 +1150,397 @@ mod tests {
 
     use super::*;
     use crate::execution_record::ExecutionRecord;
+
+    fn scalar_predicate(op: PathCompareOp) -> PathPredicateRecord {
+        let mut record = PathPredicateRecord {
+            schema_version: PATH_PREDICATE_SCHEMA_VERSION,
+            predicate_id: String::new(),
+            target: PathPredicateTarget {
+                qualified_function: "example.compare".into(),
+                frontend: "synthetic".into(),
+                source_fingerprint: "source-v1".into(),
+            },
+            scope: PathPredicateScope {
+                path_prefix: vec![(0, true), (0, false)],
+                observation_point: ObservationPoint::Entry,
+                context_fingerprint: "context-v1".into(),
+            },
+            expression: PathExpression::Compare {
+                op,
+                left: InputPath {
+                    kind: InputPathKind::InputPath,
+                    parameter: 0,
+                    path: vec![PathSegment::Field { value: "a".into() }],
+                },
+                right: InputPath {
+                    kind: InputPathKind::InputPath,
+                    parameter: 0,
+                    path: vec![PathSegment::Field { value: "b".into() }],
+                },
+            },
+            semantics_version: PATH_PREDICATE_SEMANTICS_VERSION.into(),
+            lifecycle: PredicateLifecycle::Candidate,
+            evidence: PredicateEvidence::default(),
+        };
+        record.predicate_id = canonical_path_predicate_id(&record).expect("canonical ID");
+        record
+    }
+
+    fn scalar_observation(a: serde_json::Value, b: serde_json::Value) -> PathObservation {
+        PathObservation {
+            inputs: vec![json!({ "a": a, "b": b })],
+            branch_path: vec![(0, true), (0, false)],
+            observation_point: ObservationPoint::Entry,
+            context_fingerprint: Some("context-v1".into()),
+            outcome: PathOutcome::Return { value: json!(null) },
+        }
+    }
+
+    #[test]
+    fn path_predicate_reasons_and_precedence_are_exact() {
+        use NotApplicableReason as Reason;
+        let predicate = scalar_predicate(PathCompareOp::Eq);
+        let mut observation = scalar_observation(json!(4), json!(4));
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Holds
+        );
+        observation.inputs[0]["b"] = json!(5);
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Violated
+        );
+
+        observation.inputs[0]
+            .as_object_mut()
+            .expect("object")
+            .remove("a");
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::MissingValue
+            }
+        );
+        observation.inputs[0]["a"] = json!(null);
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::ExplicitNull
+            }
+        );
+        observation.inputs[0]["a"] = json!("4");
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::WrongType
+            }
+        );
+        observation.inputs[0]["a"] = json!(4.0);
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::UnsupportedOperation
+            }
+        );
+
+        observation.outcome = PathOutcome::Thrown;
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::ThrownOutcome
+            }
+        );
+        observation.branch_path.push((1, true));
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::ScopeMismatch
+            }
+        );
+        observation.context_fingerprint = None;
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::ContextUnavailable
+            }
+        );
+        let mut invalid = predicate.clone();
+        invalid.schema_version = 2;
+        assert_eq!(
+            evaluate_path_predicate(&invalid, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::UnsupportedSchema
+            }
+        );
+    }
+
+    #[test]
+    fn path_predicate_identity_is_canonical_and_excludes_metadata() {
+        let record = scalar_predicate(PathCompareOp::Eq);
+        let json = serde_json::to_string(&record).expect("serialize");
+        assert_eq!(parse_path_predicate(&json).expect("parse"), record);
+        let mut identity = serde_json::to_value(&record).expect("value");
+        let fields = identity.as_object_mut().expect("object");
+        fields.remove("predicate_id");
+        fields.remove("lifecycle");
+        fields.remove("evidence");
+        let bytes = serde_json::to_string(&sort_json_objects(identity)).expect("canonical JSON");
+        assert_eq!(
+            bytes,
+            r#"{"expression":{"kind":"compare","left":{"kind":"input_path","parameter":0,"path":[{"kind":"field","value":"a"}]},"op":"eq","right":{"kind":"input_path","parameter":0,"path":[{"kind":"field","value":"b"}]}},"schema_version":1,"scope":{"context_fingerprint":"context-v1","observation_point":"entry","path_prefix":[[0,true],[0,false]]},"semantics_version":"json-scalars-v1","target":{"frontend":"synthetic","qualified_function":"example.compare","source_fingerprint":"source-v1"}}"#
+        );
+        assert_eq!(
+            record.predicate_id,
+            "9314ff78ee46e35614bd04db9fe9114813076239c77473d8b5ac16bea6efb99e"
+        );
+        assert_eq!(
+            record.predicate_id,
+            hex::encode(Sha256::digest(bytes.as_bytes()))
+        );
+        let mut changed = record.clone();
+        changed.lifecycle = PredicateLifecycle::Frozen;
+        changed.evidence.not_applicable = 5;
+        assert_eq!(
+            canonical_path_predicate_id(&changed).expect("ID"),
+            record.predicate_id
+        );
+        changed.target.frontend.push('x');
+        assert_ne!(
+            canonical_path_predicate_id(&changed).expect("ID"),
+            record.predicate_id
+        );
+        changed = record.clone();
+        changed.scope.path_prefix.reverse();
+        assert_ne!(
+            canonical_path_predicate_id(&changed).expect("ID"),
+            record.predicate_id
+        );
+        changed = record.clone();
+        changed.scope.context_fingerprint.push('x');
+        assert_ne!(
+            canonical_path_predicate_id(&changed).expect("ID"),
+            record.predicate_id
+        );
+        changed = record.clone();
+        changed.expression = scalar_predicate(PathCompareOp::Ne).expression;
+        assert_ne!(
+            canonical_path_predicate_id(&changed).expect("ID"),
+            record.predicate_id
+        );
+        changed = record.clone();
+        changed.semantics_version.push('x');
+        assert_ne!(
+            canonical_path_predicate_id(&changed).expect("ID"),
+            record.predicate_id
+        );
+    }
+
+    #[test]
+    fn path_predicate_parsing_rejects_malformed_records() {
+        let record = scalar_predicate(PathCompareOp::Eq);
+        let mut value = serde_json::to_value(record).expect("value");
+        value["schema_version"] = json!(2);
+        assert!(parse_path_predicate(&value.to_string()).is_err());
+        value["schema_version"] = json!(1);
+        value["expression"]["op"] = json!("bogus");
+        assert!(parse_path_predicate(&value.to_string()).is_err());
+        value["expression"]["op"] = json!("eq");
+        value["evidence"]["eligible"] = json!(1);
+        assert!(parse_path_predicate(&value.to_string()).is_err());
+        value["evidence"] = json!(null);
+        assert!(parse_path_predicate(&value.to_string()).is_err());
+
+        let mut overflow = scalar_predicate(PathCompareOp::Eq);
+        overflow.evidence.holds = u32::MAX;
+        overflow.evidence.violated = 1;
+        overflow.evidence.eligible = u32::MAX;
+        assert!(matches!(
+            validate_path_predicate(&overflow),
+            Err(PredicateValidationError::InvalidEvidence)
+        ));
+    }
+
+    #[test]
+    fn path_predicate_resolves_typed_nested_paths_and_number_boundaries() {
+        use NotApplicableReason as Reason;
+        let mut predicate = scalar_predicate(PathCompareOp::Lt);
+        let PathExpression::Compare { left, right, .. } = &mut predicate.expression;
+        left.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Index { value: 0 },
+        ];
+        right.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Index { value: 1 },
+        ];
+        predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+        let mut observation = scalar_observation(json!(0), json!(0));
+        observation.inputs = vec![json!({"values": [1.25, 2.5]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Holds
+        );
+        observation.inputs = vec![json!({"values": [i64::MAX - 1, i64::MAX]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Holds
+        );
+        observation.inputs = vec![json!({"values": [null, 2]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::ExplicitNull
+            }
+        );
+        observation.inputs = vec![json!({"values": [1]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::MissingValue
+            }
+        );
+        observation.inputs = vec![json!({"values": {"0": 1, "1": 2}})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::WrongType
+            }
+        );
+        observation.inputs = vec![json!({"values": [1, 2]})];
+        let PathExpression::Compare { left, .. } = &mut predicate.expression;
+        left.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Field { value: "0".into() },
+        ];
+        predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::WrongType
+            }
+        );
+        let PathExpression::Compare { left, .. } = &mut predicate.expression;
+        left.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Index { value: 0 },
+        ];
+        predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+        observation.inputs = vec![json!({"values": [u64::MAX, 2]})];
+        observation.context_fingerprint = None;
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::ContextUnavailable
+            }
+        );
+        observation.context_fingerprint = Some("context-v1".into());
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::UnsupportedSchema
+            }
+        );
+        observation.inputs = vec![json!({"values": [1, 2], "unrelated": u64::MAX})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Holds
+        );
+    }
+
+    #[test]
+    fn path_predicate_matches_reference_on_one_thousand_deterministic_cases() {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, RngSeed, TestRunner};
+        let config = Config {
+            cases: 1_000,
+            rng_seed: RngSeed::Fixed(0x5a77_2026),
+            ..Config::default()
+        };
+        let mut runner = TestRunner::new(config);
+        let strategy = (
+            -1000i64..=1000,
+            -1000i64..=1000,
+            0u8..6,
+            0u8..3,
+            any::<bool>(),
+        );
+        runner
+            .run(&strategy, |(a, b, index, category, nested)| {
+                let op = match index {
+                    0 => PathCompareOp::Eq,
+                    1 => PathCompareOp::Ne,
+                    2 => PathCompareOp::Lt,
+                    3 => PathCompareOp::Le,
+                    4 => PathCompareOp::Gt,
+                    _ => PathCompareOp::Ge,
+                };
+                let expected = match index {
+                    0 => a == b,
+                    1 => a != b,
+                    2 => a < b,
+                    3 => a <= b,
+                    4 => a > b,
+                    _ => a >= b,
+                };
+                let predicate = scalar_predicate(op);
+                let mut predicate = predicate;
+                let (left, right) = match category {
+                    0 => (json!(a), json!(b)),
+                    1 => (json!(a as f64 + 0.5), json!(b as f64 + 0.5)),
+                    _ => (json!(a), json!(b as f64 + 0.5)),
+                };
+                let mut observation = scalar_observation(left.clone(), right.clone());
+                if nested {
+                    let PathExpression::Compare {
+                        left: lhs,
+                        right: rhs,
+                        ..
+                    } = &mut predicate.expression;
+                    lhs.path = vec![
+                        PathSegment::Field {
+                            value: "values".into(),
+                        },
+                        PathSegment::Index { value: 0 },
+                    ];
+                    rhs.path = vec![
+                        PathSegment::Field {
+                            value: "values".into(),
+                        },
+                        PathSegment::Index { value: 1 },
+                    ];
+                    predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+                    observation.inputs = vec![json!({"values": [left, right]})];
+                }
+                let actual = evaluate_path_predicate(&predicate, &observation);
+                if category == 2 {
+                    prop_assert_eq!(
+                        actual,
+                        PredicateEvaluation::NotApplicable {
+                            reason: NotApplicableReason::UnsupportedOperation
+                        }
+                    );
+                    return Ok(());
+                }
+                prop_assert_eq!(
+                    actual,
+                    if expected {
+                        PredicateEvaluation::Holds
+                    } else {
+                        PredicateEvaluation::Violated
+                    }
+                );
+                Ok(())
+            })
+            .expect("reference evaluator property");
+    }
 
     /// Build a minimal execution record with the given parameters and return value.
     fn make_record(
