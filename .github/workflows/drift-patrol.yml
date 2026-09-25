@@ -82,7 +82,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: shatter-go/go.mod
+          cache-dependency-path: shatter-go/go.sum
 
       - name: Setup Task
         uses: arduino/setup-task@v2
@@ -94,6 +95,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # Same system packages as ci.yml: the frontend/core builds need libclang
+      # and z3 headers.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev z3
 
       - name: Install Python protocol tooling
         run: python3 -m pip install --user jsonschema pyyaml
@@ -115,6 +123,9 @@ jobs:
       - name: Build frontends
         run: task ts:build go:build rust-fe:build
 
+      # Tracker data: without `bd` (as here) the patrol reads the committed
+      # .beads/issues.jsonl. That data source is owned by
+      # beads-jsonl-consumers-drop-bd-sync (D4); do not change it here.
       - name: Run drift patrol
         id: patrol
         run: |
