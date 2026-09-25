@@ -2,7 +2,7 @@
 slug: core-int-range-i128
 kind: new
 title: "Core: exact integer ranges for every width up to 64 bits (u64 = [0, u64::MAX]) via an i128 IntRange carrier on the parameter-value paths"
-priority: P3
+priority: P2
 type: feature
 labels: [input-generation, solver, protocol, audit-2026-09-22]
 parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
@@ -38,8 +38,8 @@ dropped. The run fell back to `0` and a `-1` boundary seed, and the `upper-half`
 reached.
 
 Go avoids this today only through the separate `go_uint` complex kind, whose generator emits raw
-`u64` JSON (`input_gen.rs:997-1010`). `go-int-width-sign-emission` retires that kind, which is safe
-only once this issue lands.
+`u64` JSON (`input_gen.rs:997-1010`). `core-go-alias-int-range` routes that kind onto the plain
+int path, which is safe only once this issue lands.
 
 ## Contract
 

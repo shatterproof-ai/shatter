@@ -30,3 +30,37 @@ Other changes in this revision:
 - `DRY_RUN=1 bash file-all.sh` reports "dry run clean". The 5 warnings are the pre-existing ones
   from other buckets. The epic and its four children file under `DRY:int-width-signedness-epic`,
   with dependencies 01 ← 02 ← 03 ← 04.
+
+## Revision 5
+
+This revision applies `crosscheck/shatter-int-width-signedness.codex.md` (the round-4 review,
+2026-09-24). Code facts were re-checked against the audit checkout; no non-audit file differs
+between 16794cef and its HEAD, so the 16794cef line numbers still hold.
+
+| Codex finding | Change |
+|---|---|
+| MAJOR: the epic's child relationships contradict each other | `00` now says its children are exactly the drafts with `parent_slug: int-width-signedness-epic` (01-04). `go-uint-alias-removal` is described everywhere as a follow-up parented to the audit epic; the "each names this epic" wording that included it is gone, and its own intro no longer calls it a step of the epic. "Done when" lists all four children and says the epic closes without the follow-up. |
+| MAJOR: the Go issue bundles a migration across several surfaces | The old `03-go-int-width-sign-emission` is split in two, each with its own owner and proof. New `03-core-go-alias-int-range` (shatter-core, P3, S, blocked by `core-int-range-i128`): the core treats incoming `go_uint`/`go_byte` TypeInfo as `Int { 64, false }`/`Int { 8, false }` on the `int_range` path, with no Go change; proof is a golden compatibility test on today's `shatter-go` handshake and analyze payloads plus a bounds proptest and a boundary unit test. `04-go-int-width-sign-emission` (shatter-go, P2, M upper end, now blocked by `core-go-alias-int-range`): analyzer emission for every Go integer kind plus planner, handler, handshake, registry, parity-matrix, conformance, SPEC §8 deprecation row, fixture, checker, E2E, and default and `--concolic` reruns; no core source changes. |
+| MINOR: a superseded Rust draft remains in the audit materials | `00` gains a "Superseded material" section: the `drafts/` tree is superseded (SUPERSEDED banners on each `drafts/*/INDEX.md`; nothing there is filed), and `drafts/shatter-code/82-rust-usize-negative-inputs.md` is replaced by `int-unsigned64-clamp`. `01`'s References say the same. |
+
+Other changes in this revision:
+
+- Files renumbered: `03-go-int-width-sign-emission.md` → `04-…`, `04-go-uint-alias-removal.md` →
+  `05-…`. Slugs are unchanged. `05` stays `blocked_by: [go-int-width-sign-emission]` and now also
+  removes the core normalization and replaces its golden test with a rejection test.
+- Slug references updated: `01` (out of scope now names `core-go-alias-int-range` for the Go
+  aliases) and `02` (the `go_uint` note now points at `core-go-alias-int-range`). No other draft
+  outside this bucket references the Go slugs. `DECISIONS-2026-09-23.md` D11 is a historical
+  record and was left as written.
+- Facts verified for the split, 2026-09-24: today's `shatter-go` (audit checkout
+  `shatter-go/bin/shatter-go`, protocol `0.1.0`) emits `go_uint` for `uint64`, `go_byte` for
+  `byte`, `array` of `go_byte` for `[]byte` and bare `int` for `int8`, and its handshake declares
+  `complex_type:go_byte`. No request schema carries TypeInfo, so core-side normalization is
+  invisible to the Go planner. The Go `TypeInfo` struct (`shatter-go/protocol/types.go:329`) has
+  no width/sign fields yet. `typeInfoFromAST` has no `uintptr` case. `export.rs:513`/`:589` key on
+  a `__complex_type: "go_byte"` value tag that `concrete_to_json` never emits, so neither split
+  issue has to change export; generated bindings are regenerated only by `go-uint-alias-removal`.
+- `04`'s baseline no longer promises the 16794cef count on its branch base: after the three core
+  children land the out-of-bounds count changes but stays non-zero.
+- `BUNDLE.md` regenerated as revision 5 (00-05 plus the related
+  `shatter-frontend-rust/15-rust-input-deserialize-classification.md`).

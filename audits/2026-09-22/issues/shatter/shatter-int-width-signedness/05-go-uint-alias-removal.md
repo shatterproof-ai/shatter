@@ -13,14 +13,17 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 # Remove the deprecated go_uint/go_byte TypeInfo aliases
 
-Step 4 of epic `int-width-signedness-epic`. This is a deferred cleanup. All paths are relative to
-the shatter repo root (github.com/shatterproof-ai/shatter).
+A deferred follow-up to epic `int-width-signedness-epic`. It is not a child of that epic: it is
+parented to the audit epic and does not hold the integer epic open. All paths are relative to the
+shatter repo root (github.com/shatterproof-ai/shatter).
 
 ## Why
 
-`go-int-width-sign-emission` moves the Go analyzer to `{"kind":"int","int_width","int_signed"}`. It
-keeps `go_uint`/`go_byte` as deprecated wire aliases in the core, so that an older installed
-`shatter-go` binary still works with a newer core. After the compatibility window, the aliases are
+`core-go-alias-int-range` makes the core treat `go_uint`/`go_byte` as unsigned `Int` on the
+`int_range` path, and `go-int-width-sign-emission` moves the Go analyzer to
+`{"kind":"int","int_width","int_signed"}`. The core keeps accepting `go_uint`/`go_byte` as
+deprecated wire aliases so that an older installed `shatter-go` binary still works with a newer
+core. After the compatibility window, the aliases are
 dead code and a second way of saying the same thing, which is the exact divergence the epic
 removes.
 
@@ -56,7 +59,9 @@ comment with the date of the oldest qualifying release.
 - [ ] `ComplexKind::GoUint`/`GoByte` and their generators, mutators and serializer branches are
   removed from the core: `input_gen.rs` (`generate_go_uint`, `generate_go_byte`, `mutate_go_uint`,
   `mutate_go_byte`, dispatch arms), `orchestrator.rs` (`concrete_to_json` arms), `types.rs`,
-  `export.rs`, `test_arbitraries.rs`. Regenerate the bindings (`shatter-rust/src/protocol.rs`,
+  `export.rs`, `test_arbitraries.rs`, and the alias normalization added by
+  `core-go-alias-int-range`. That issue's golden compatibility test is replaced by the rejection
+  test below. Regenerate the bindings (`shatter-rust/src/protocol.rs`,
   `shatter-ts/src/protocol.ts`) from the schema; never hand-edit them. Remove the entries from
   `protocol/registry.yaml` and `protocol/parity-matrix.yaml`.
 - [ ] `git grep -n 'go_uint\|go_byte\|GoUint\|GoByte' -- . ':!audits' ':!.beads' ':!docs/perf'`
@@ -80,7 +85,8 @@ S
 
 ## References
 
-- `go-int-width-sign-emission`: introduces the aliases.
+- `core-go-alias-int-range`: turns `go_uint`/`go_byte` into core-side aliases of unsigned `Int`.
+- `go-int-width-sign-emission`: stops the Go frontend emitting them; its merge starts the window.
 - str-cfsa (closed): `go_uint`.
 - str-ieuc (closed): `go_byte`.
 - No existing tracker issue covers the removal.

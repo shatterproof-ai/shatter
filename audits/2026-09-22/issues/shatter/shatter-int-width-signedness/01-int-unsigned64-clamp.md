@@ -251,7 +251,8 @@ implies a width of 32 bits or less.
 
 - Classifying harness deserialization failures (`rust-input-deserialize-classification`, str-4yc9w).
 - Values above `i64::MAX` for `u64`/`u128` (`core-int-range-i128`).
-- Go's `go_uint`/`go_byte` kinds and bare signed `int` (`go-int-width-sign-emission`).
+- Go's `go_uint`/`go_byte` kinds (`core-go-alias-int-range`) and Go's bare signed `int`
+  (`go-int-width-sign-emission`).
 - Z3 range assertions for ints nested in objects. Only top-level params are asserted today.
 
 ## Size
@@ -260,8 +261,9 @@ S–M
 
 ## References
 
-- Finding goals-15 (audit 2026-09-22). This supersedes the old draft
-  `drafts/shatter-code/82-rust-usize-negative-inputs.md`.
+- Finding goals-15 (audit 2026-09-22). This replaces the old unfiled draft
+  `drafts/shatter-code/82-rust-usize-negative-inputs.md`; the whole `drafts/` tree is superseded
+  (SUPERSEDED banners on each `drafts/*/INDEX.md`) and must not be filed.
 - str-ddxe (closed): introduced `int_range` and the 64-bit exclusion. See also the note draft
   `rust-usize-reopen-note`.
 - str-4yc9w (open): Go misclassification of decode failures.

@@ -1,11 +1,11 @@
-# Bundle: two engine gaps added 2026-09-24 (repo shatter)
+# Bundle: engine gaps added 2026-09-24 (repo shatter), revision 2
 
-All paths are relative to the shatter repo root (github: shatterproof-ai/shatter), checkout at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22. Both drafts live in bucket shatter-cli-flags-and-help: 07 (extended with parse-failure handling) and 20 (new).
+All paths are relative to the shatter repo root (github: shatterproof-ai/shatter), checkout at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22. All three drafts live in bucket shatter-cli-flags-and-help. 07 (unknown-config-keys-warn) is included for context only: it is restored, unchanged, to its content before commit 3c394596, because the parse-failure extension was wrong (explore already exits 2 on a config YAML parse error, and list-targets never reads .shatter/config.yaml). 20 (list-targets-selects-shatter-cache) is narrowed to excluding Shatter-managed .shatter/ output from TargetManifest selection. 21 (doctor-parses-config) is new and carries the one real parse-failure gap: doctor reports an unparseable config as present.
 
 ---
 slug: unknown-config-keys-warn
 kind: new
-title: "Config is not validated: a .shatter/config.yaml that fails to parse is accepted, and unknown keys and --set typos are silently ignored"
+title: "Warn on unknown config keys and --set key typos (currently silently ignored)"
 priority: P2
 type: feature
 labels: [config, cli, usability, audit]
@@ -15,13 +15,11 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Config is not validated: unparseable config is accepted; unknown keys and --set typos are silently ignored
+# Warn on unknown config keys and --set key typos (currently silently ignored)
 
 ## Problem
 
-**Unparseable config.** A `.shatter/config.yaml` that is not valid YAML (for example `foo: [unclosed`) is not reported by any command: `shatter list-targets` exits 0, and `shatter doctor` only checks that the file exists (`shatter-cli/src/commands/doctor.rs:266`, `yaml: ...is_file()`), never parsing it. The user's whole config is then ignored or partly applied with no signal. Found during the 2026-09-22 audit's shatter-agents plugin revision (`issues/shatter-agents/shatter-agents-plugin/REVISION.md`, "Engine-side gaps").
-
-**Unknown keys.** Shatter type-checks config values but not config keys. A typo such as `--set defaults.max_iteratons=5`, or a misspelled key in `.shatter/config.yaml` or `shatter.config.json`, is silently dropped. The run continues with the default value, exits 0, and prints no warning. The user believes the setting took effect. The Go frontend's config loader already warns on unknown top-level keys, so the core is inconsistent with it as well.
+Shatter type-checks config values but not config keys. A typo such as `--set defaults.max_iteratons=5`, or a misspelled key in `.shatter/config.yaml` or `shatter.config.json`, is silently dropped. The run continues with the default value, exits 0, and prints no warning. The user believes the setting took effect. The Go frontend's config loader already warns on unknown top-level keys, so the core is inconsistent with it as well.
 
 A related silent drop: `--set` is a global flag, but only `explore` applies it (`main.rs:437` is the only reader of `cli.set_overrides`). `scan --set ...` and `run --set ...` accept the flag and ignore it entirely, so even a correctly spelled key has no effect there. help-hides-execution-flags removes `--set` from those commands; until it lands, this issue makes the drop visible.
 
@@ -41,7 +39,6 @@ Re-verified against `audit-2026-09-22` (source at `56c86168`):
 
 ## Acceptance criteria
 
-- [ ] **Parse failures are errors.** Every command that reads `.shatter/config.yaml` or `shatter.config.json` (at least explore, scan, run, list-targets, observe) exits 2 when a config file in the resolution chain fails to parse, naming the file, line and column. `shatter doctor` parses every config file it reports and marks an unparseable one as a failing check (non-zero exit), not just "present". Tests: `foo: [unclosed` in `.shatter/config.yaml` makes `list-targets` exit 2 (it exits 0 on main; record both runs) and makes `doctor` report a failure; a valid config is unaffected.
 - [ ] An unknown key in `.shatter/config.yaml`, in `shatter.config.json`, or in a `--set KEY=VALUE` override produces exactly one warning on stderr per key per run, at every load site listed above (per-function config and LLM config). The warning names the source (file path or `--set`), the full dotted key path and, when a known key is close, a "did you mean `defaults.max_iterations`?" suggestion.
 - [ ] A strict mode turns those warnings into a usage error (exit 2). Pick one form (`--strict-config` flag, config key, or env var), document it in the config reference, and test it.
 - [ ] `parse_set_overrides_unknown_field_is_ignored_by_serde` is replaced by tests that assert (a) the warning and suggestion for a typo in `--set` on `explore`, (b) the same for a typo in a YAML config file, (c) exit 2 in strict mode, and (d) no warning for a valid config (use the repo's own example configs and `demo/` configs as a no-false-positive check). Tests (a) and (b) fail before the change; the close comment records both runs.
@@ -64,20 +61,18 @@ Wrap the deserializer at each config load site, and in `parse_set_overrides`, wi
 ## Dependencies
 
 - Blocked by: none.
-- Parse-failure handling does not depend on the unknown-key work; they may land in either order within this issue.
 - Related: str-qwua7.21.1, str-9ee5, help-hides-execution-flags (scopes `--set` to explore).
 
 ## Source
 
 Audit 2026-09-22 finding cli-ux-09 (areas/cli-ux.md F9); old draft `drafts/shatter-code/31-unknown-config-keys-warn.md`.
 
-
 ---
 
 ---
 slug: list-targets-selects-shatter-cache
 kind: new
-title: "list-targets (TargetManifest) selects Shatter's own generated harness sources under .shatter/cache/ because its default excludes omit .shatter, .git and build"
+title: "list-targets (TargetManifest) selects Shatter's own generated harness sources under .shatter/ when the project's .gitignore does not exclude it"
 priority: P2
 type: bug
 labels: [cli, discovery, scan, audit-2026-09-22]
@@ -87,46 +82,80 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# list-targets selects Shatter's own generated harness sources under .shatter/cache/
+# list-targets selects Shatter's own generated harness sources under .shatter/
 
 ## Problem
+
+Shatter-managed output under `.shatter/` must never be selected as a scan target, whatever the
+user's `.gitignore` says. Today it is selected unless the user's ignore file happens to exclude it.
 
 `shatter list-targets` builds its file list with `TargetManifest::build`
 (`shatter-cli/src/commands/list_targets.rs:31` → `shatter-core/src/target_manifest.rs:137`). Its
 `DEFAULT_EXCLUDES` (`shatter-core/src/target_manifest.rs:28-37`) covers `node_modules`, `vendor`,
-`dist`, `target`, tests and `.d.ts`, but not `.shatter`, `.git` or `build`. After any Rust
+`dist`, `target`, `__tests__`, test files and `.d.ts`, but not `.shatter`. After any Rust
 exploration, the project contains generated harness sources under `.shatter/cache/harness/` (for
-example `.shatter/cache/harness/src/lib.rs`), and `list-targets` selects them as targets.
+example `.shatter/cache/harness/src/lib.rs`), and `list-targets` selects them.
 
-The native glob walker used for positional wildcard targets already excludes these directories
-(`GLOB_WALK_EXCLUDE_DIRS`, `shatter-cli/src/args.rs:2023-2030`: `.git`, `node_modules`, `target`,
-`.shatter`, `dist`, `build`). The two discovery paths therefore disagree. Anything that consumes the
-manifest, including the shatter plugin's `run-shatter` target discovery, can end up exploring
-Shatter's own harness instead of the user's code.
+The walker honours the project's `.gitignore` and `.shatterignore`
+(`target_manifest.rs:155-156`), so a project whose `.gitignore` already lists `.shatter/` hides the
+bug. It shows in projects without that line, for example before `shatter init` or in any repo whose
+`.gitignore` predates it. Anything that consumes the manifest, including the shatter plugin's
+`run-shatter` target discovery, can then explore Shatter's own harness instead of the user's code.
 
-The walker does honour the project's `.gitignore` and `.shatterignore` (`target_manifest.rs:155-156`), so a project that already ignores `.shatter/` hides the bug. It shows in projects and fixtures without that ignore line, for example before `shatter init` or in any repo whose `.gitignore` predates it. Discovery must not depend on the user's ignore file for Shatter's own output.
+Precedent: the native glob walker used for positional wildcard targets already skips `.shatter`
+(`GLOB_WALK_EXCLUDE_DIRS`, `shatter-cli/src/args.rs:2023-2030`). The two paths use different
+matching (directory names in `shatter-cli` versus glob patterns in `shatter-core`), so this issue
+does not require them to share one constant.
 
 Found during the 2026-09-22 audit's shatter-agents plugin revision
-(`audits/2026-09-22/issues/shatter-agents/shatter-agents-plugin/REVISION.md`, "Engine-side gaps"):
-on a project with an existing `.shatter/cache/harness/src/lib.rs`, `list-targets` listed it.
+(`audits/2026-09-22/issues/shatter-agents/shatter-agents-plugin/REVISION.md`, "Engine-side gaps").
+
+## Evidence
+
+Reproduced 2026-09-24 with the audit checkout's debug binary
+(`target/debug/shatter`, built 2026-09-22) on a fresh fixture with no `.gitignore`, no
+`.shatterignore` and no `.git`, containing only `src/lib.rs` and
+`.shatter/cache/harness/src/lib.rs`:
+
+```
+$ shatter list-targets .
+Target manifest — <fixture>
+  config hash:      170de33e...
+  source set hash:  07aae94e...
+
+Selected (2):
+  .shatter/cache/harness/src/lib.rs  [rust, 1 lines]
+  src/lib.rs  [rust, 1 lines]
+```
+
+Exit status 0.
 
 ## Acceptance criteria
 
-- [ ] Reproduce on main first: a test fixture directory containing `src/lib.rs` plus
-  `.shatter/cache/harness/src/lib.rs`, `.git/hooks/x.rs` and `build/gen.rs`. `list-targets` on it
-  selects only `src/lib.rs`. The test fails on main (record the failing assertion), and it lives in
-  `shatter-core` (`TargetManifest::build`) so every manifest consumer is covered, not only the CLI.
-- [ ] Both discovery paths use one shared exclusion list (one constant, referenced by
-  `TargetManifest` and the glob walker), so they cannot drift again. A unit test asserts that the
-  glob walker and `TargetManifest` exclude the same directory names.
-- [ ] Excluded generated paths are silent, like the existing defaults: they do not appear in the
+- [ ] Reproduce on main first with a `shatter-core` test on `TargetManifest::build`, so every
+  manifest consumer is covered, not only the CLI. Fixture: `src/lib.rs` plus
+  `.shatter/cache/harness/src/lib.rs`, with no `.gitignore` or `.shatterignore`. Assert that only
+  `src/lib.rs` is selected. The test fails on main; the close comment records the failing assertion.
+- [ ] `TargetManifest` excludes everything under `.shatter/` by default, regardless of the
+  project's `.gitignore`/`.shatterignore`.
+- [ ] The exclusion is silent, like the existing defaults: `.shatter/` paths do not appear in the
   manifest's `excluded` list.
-- [ ] `shatter scan <dir>` on the same fixture explores no file under `.shatter/`.
+- [ ] `shatter list-targets` on the fixture above lists only `src/lib.rs`.
 - [ ] `task affected` passes, with `Gates selected` recorded.
+
+## Optional consideration
+
+The glob walker also skips `.git` and `build`, which `DEFAULT_EXCLUDES` does not. Whether the
+manifest should skip them too is a separate decision (`build/` can hold user sources in some
+projects). Not required here; if the implementer adds them, note it in the close comment and add
+test cases for each.
 
 ## Out of scope
 
 - Changing user-configurable include/exclude semantics.
+- Unifying the glob walker's and the manifest's exclusion lists.
+- `shatter scan`'s own file discovery. In the audit checkout, the only non-test caller of
+  `TargetManifest::build` is `list_targets.rs` (`:31`, `:222`); scan does not go through it.
 - The shatter plugin's own local pruning in `run_targets.py` (tracked in shatter-agents).
 
 ## Related
@@ -134,6 +163,92 @@ on a project with an existing `.shatter/cache/harness/src/lib.rs`, `list-targets
 str-qwua7.56 (closed; lifecycle-export exclusion in target discovery). The shatter-agents drafts
 that note this engine gap.
 
+---
+
+---
+slug: doctor-parses-config
+kind: new
+title: "shatter doctor reports .shatter/config.yaml as \"present\" even when it fails to parse"
+priority: P3
+type: bug
+labels: [cli, config, doctor, audit-2026-09-22]
+parent_epic: "Epic: Audit 2026-09-22 findings"
+blocked_by: []
+existing_id: ""
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# shatter doctor reports an unparseable config as "present"
+
+## Problem
+
+`shatter doctor` is the command a user runs to check a Shatter setup, but its "Project
+configuration" section only checks that each config file exists. It never parses them.
+`detect_config_presence` (`shatter-cli/src/commands/doctor.rs:261-268`) sets
+`yaml: root.join(".shatter").join("config.yaml").is_file()` (`:266`) and
+`project_json: ...PROJECT_CONFIG_FILENAME).is_file()` (`:263-265`), and `config_report_lines`
+(`:274`) prints `present` or `not found`. A `.shatter/config.yaml` with a YAML syntax error is
+therefore reported as `present` while `explore` refuses to run with it. `doctor` exits 0 if its
+other checks pass.
+
+The parsers already exist and report errors: `shatter_core::config::parse_config`
+(`shatter-core/src/config.rs:1164`, returns `ConfigError::Parse` for invalid YAML) and
+`find_project_config` (`config.rs:642`, returns `ConfigError::ProjectConfigParse` for invalid JSON).
+
+Found while re-checking the 2026-09-22 audit's engine-gap drafts (Codex review
+`audits/2026-09-22/issues/crosscheck/shatter-engine-gaps-0924.codex.md`). The earlier draft claimed
+other commands also accept an unparseable config; that was wrong (see Evidence), and this issue is
+limited to `doctor`.
+
+## Evidence
+
+Reproduced 2026-09-24 with the audit checkout's debug binary (`target/debug/shatter`, built
+2026-09-22). Fixture: `src/lib.rs`, `.shatter/config.yaml` containing `foo: [unclosed`, and a
+`.gitignore` covering the generated paths so doctor's gitignore check passes.
+
+```
+$ shatter doctor --directory <fixture>
+...
+Project configuration
+  shatter.config.json:   not found  scan-global: ...
+  .shatter/config.yaml:  present    per-function: ...
+...
+Generated-path gitignore: all configured output paths are ignored.
+```
+
+Exit status 0.
+
+```
+$ shatter explore src/lib.rs:f --allow-host-writes
+Error: failed to parse config YAML '.shatter/config.yaml': did not find expected ',' or ']' at line 2 column 1, while parsing a flow sequence at line 1 column 6
+```
+
+Exit status 2.
+
+## Acceptance criteria
+
+- [ ] `doctor` parses each config file it reports, reusing `shatter_core::config::parse_config`
+  for `.shatter/config.yaml` and `find_project_config` (or the same `serde_json` parse it uses)
+  for `shatter.config.json`. It does not add a second parser.
+- [ ] A file that fails to parse is shown as `invalid: <error>` in place of `present`. The error
+  text includes the line and column from the parser.
+- [ ] An invalid config makes `doctor` exit non-zero, like its existing failing checks
+  (`run_doctor` returns `Ok(false)`).
+- [ ] Tests with a fixture: (a) `foo: [unclosed` in `.shatter/config.yaml` gives `invalid:` with
+  line/column and a failing result; (b) invalid JSON in `shatter.config.json` does the same;
+  (c) valid configs are still reported as `present` and do not fail. Test (a) fails on main; the
+  close comment records both runs.
+- [ ] No behaviour change in any other command.
+- [ ] `task affected` passes, with `Gates selected` recorded.
+
+## Out of scope
+
+- Unknown-key warnings and `--set` typo handling (unknown-config-keys-warn).
+- Semantic validation of config values beyond what the existing parsers do.
+
+## Related
+
+unknown-config-keys-warn (same audit bucket). str-mktn (added the config-presence report).
 
 ---
 

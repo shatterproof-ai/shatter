@@ -1,6 +1,6 @@
-# Bundle: shatter-int-width-signedness (repo shatter), revision 4
+# Bundle: shatter-int-width-signedness (repo shatter), revision 5
 
-All paths are relative to the shatter repo root (github: shatterproof-ai/shatter), checkout at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22; code line numbers verified at 16794cef. Drafts 00-03 are the epic and its three children. 04 (go-uint-alias-removal) is a follow-up parented to the audit epic. The last draft (rust-input-deserialize-classification) is related, not a child.
+All paths are relative to the shatter repo root (github: shatterproof-ai/shatter), checkout at /home/ketan/.local/share/worktrees/shatter/audit-2026-09-22; code line numbers verified at 16794cef. 00 is the epic; 01-04 are its children (parent_slug); 05 is a follow-up under the audit epic; the last draft is related, not a child.
 
 ---
 slug: int-width-signedness-epic
@@ -18,8 +18,9 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 # Epic: integer width and signedness end-to-end
 
 This epic sits under the shatter audit epic "Epic: Audit 2026-09-22 findings". Its children are
-`int-unsigned64-clamp`, `core-int-range-i128`, `go-int-width-sign-emission` and the deferred
-cleanup `go-uint-alias-removal`. Each names this epic through `parent_slug`.
+exactly the four drafts that name it through `parent_slug`: `int-unsigned64-clamp`,
+`core-int-range-i128`, `core-go-alias-int-range` and `go-int-width-sign-emission`. The deferred
+cleanup `go-uint-alias-removal` is a follow-up, not a child: it is parented to the audit epic.
 
 All paths are relative to the shatter repository root (github.com/shatterproof-ai/shatter). Line
 numbers were verified at commit 16794cef.
@@ -33,8 +34,8 @@ The audit parent epic is created in the same filing batch as these drafts.
 | id | status | relation |
 |---|---|---|
 | str-ddxe | closed (P2 bug) | Added `int_width`/`int_signed` and `int_range`, but left 64/128-bit unconstrained. This epic finishes that work. |
-| str-cfsa | closed (P1 bug) | Introduced Go's `go_uint` complex kind. Retired by `go-int-width-sign-emission`. |
-| str-ieuc | closed (P1 bug) | Introduced Go's `go_byte` value coercion. Retired by `go-int-width-sign-emission`. |
+| str-cfsa | closed (P1 bug) | Introduced Go's `go_uint` complex kind. Made a core-side alias by `core-go-alias-int-range`; no longer emitted after `go-int-width-sign-emission`; deleted by `go-uint-alias-removal`. |
+| str-ieuc | closed (P1 bug) | Introduced Go's `go_byte` value coercion. Same path as `go_uint`. |
 | str-79nvf | closed (P2 task) | Planner recognizes `[]byte` from a `go_byte` element. Must keep working after `go_byte` is retired. |
 | str-4yc9w | open, started (P1 bug) | Go param-decode failures are classified as completed runs. Related to reporting, not a child. |
 | str-qwua7.14 | closed (P1 bug) | Rust walkthrough analyzer and harness param-type disagreement. Background only. |
@@ -69,17 +70,27 @@ fixtures and commands are in the children:
 
 ## Children, in dependency order
 
-1. `int-unsigned64-clamp` (P2): on the existing i64 path, clamp unsigned 64/128-bit to
-   `[0, i64::MAX]` and make boundary seeding respect `int_range`. This fixes negative inputs now.
-2. `core-int-range-i128` (P3, blocked by 1): carry parameter ranges and values as `i128` so that
-   every width up to 64 bits gets its exact range, including `u64::MAX`.
-3. `go-int-width-sign-emission` (P2, blocked by 2): Go emits `int_width`/`int_signed` for every
-   integer kind. The core keeps `go_uint`/`go_byte` only as deprecated aliases. This step adds a
-   parity-matrix row and conformance cases. It is blocked by 2 because `go_uint` already generates
-   `u64::MAX`, and moving Go to the plain int path earlier would lose that boundary.
-Follow-up, not a child: `go-uint-alias-removal` (P3, blocked by 3, parented to the audit epic)
-removes the aliases once the compatibility window has passed. It is a deferred cleanup with its own
-release-based trigger, so it is kept out of this epic and cannot hold the epic open.
+1. `int-unsigned64-clamp` (P2, shatter-core): on the existing i64 path, clamp unsigned 64/128-bit
+   to `[0, i64::MAX]` and make boundary seeding respect `int_range`. This fixes negative inputs
+   now.
+2. `core-int-range-i128` (P2, shatter-core, blocked by 1): carry parameter ranges and values as
+   `i128` so that every width up to 64 bits gets its exact range, including `u64::MAX`.
+3. `core-go-alias-int-range` (P2, shatter-core, blocked by 2): the core treats incoming
+   `go_uint`/`go_byte` TypeInfo as `Int { 64, false }`/`Int { 8, false }` on the `int_range` path.
+   No Go change. Proof: a golden compatibility test on today's `shatter-go` analyze and handshake
+   payloads, plus a bounds property test. It is blocked by 2 because `go_uint` already generates
+   `u64::MAX`, and routing it onto the int path before that is representable would lose the
+   boundary.
+4. `go-int-width-sign-emission` (P2, shatter-go, blocked by 3): the Go analyzer emits
+   `int_width`/`int_signed` for every integer kind; the planner, handler, handshake, registry,
+   parity matrix and conformance cases adapt. Proof: the repo-local Go fixture and bounds checker,
+   an E2E test, and default and `--concolic` reruns. It is blocked by 3 so that the core already
+   accepts both wire forms when the Go output changes.
+
+Follow-up, not a child: `go-uint-alias-removal` (P3, blocked by 4, parented to the audit epic)
+removes the aliases from the core once the compatibility window has passed. It is a deferred
+cleanup with its own release-based trigger, so it is kept out of this epic and cannot hold the
+epic open.
 
 ## Related, not a child
 
@@ -90,13 +101,13 @@ reporting. Every proof here asserts on the generated input values themselves.
 
 ## Done when
 
-- `int-unsigned64-clamp`, `core-int-range-i128` and `go-int-width-sign-emission` are closed, each
-  with its own proof.
+- All four children are closed, each with its own proof: `int-unsigned64-clamp`,
+  `core-int-range-i128`, `core-go-alias-int-range` and `go-int-width-sign-emission`.
 - On the branch that closes `go-int-width-sign-emission`, the bounds checkers from children 1 and
-  3 report `out of bounds: 0` over the committed fixtures `examples/rust/int-width` and
+  4 report `out of bounds: 0` over the committed fixtures `examples/rust/int-width` and
   `examples/go/int-width`, with both the default and the `--concolic` explorer. Paste the four
   summary lines in the epic close reason.
-
+- `go-uint-alias-removal` is not required; the epic closes without it.
 
 ## Out of scope
 
@@ -106,6 +117,14 @@ reporting. Every proof here asserts on the generated input values themselves.
 - Integer `ConstValue` literals above `i64::MAX` in path constraints.
 - Z3 range assertions for integers nested inside objects or arrays. Today only top-level params are
   asserted (`solver.rs:172-180`).
+
+## Superseded material
+
+- The audit's older `audits/2026-09-22/drafts/` tree is superseded by `audits/2026-09-22/issues/`.
+  Each `drafts/*/INDEX.md` opens with a SUPERSEDED banner, and nothing under `drafts/` has been or
+  will be filed.
+- `drafts/shatter-code/82-rust-usize-negative-inputs.md` (the original negative-`usize` finding,
+  goals-15) is replaced by `int-unsigned64-clamp`. Do not file it.
 
 
 ---
@@ -363,7 +382,8 @@ implies a width of 32 bits or less.
 
 - Classifying harness deserialization failures (`rust-input-deserialize-classification`, str-4yc9w).
 - Values above `i64::MAX` for `u64`/`u128` (`core-int-range-i128`).
-- Go's `go_uint`/`go_byte` kinds and bare signed `int` (`go-int-width-sign-emission`).
+- Go's `go_uint`/`go_byte` kinds (`core-go-alias-int-range`) and Go's bare signed `int`
+  (`go-int-width-sign-emission`).
 - Z3 range assertions for ints nested in objects. Only top-level params are asserted today.
 
 ## Size
@@ -372,8 +392,9 @@ S–M
 
 ## References
 
-- Finding goals-15 (audit 2026-09-22). This supersedes the old draft
-  `drafts/shatter-code/82-rust-usize-negative-inputs.md`.
+- Finding goals-15 (audit 2026-09-22). This replaces the old unfiled draft
+  `drafts/shatter-code/82-rust-usize-negative-inputs.md`; the whole `drafts/` tree is superseded
+  (SUPERSEDED banners on each `drafts/*/INDEX.md`) and must not be filed.
 - str-ddxe (closed): introduced `int_range` and the 64-bit exclusion. See also the note draft
   `rust-usize-reopen-note`.
 - str-4yc9w (open): Go misclassification of decode failures.
@@ -388,7 +409,7 @@ S–M
 slug: core-int-range-i128
 kind: new
 title: "Core: exact integer ranges for every width up to 64 bits (u64 = [0, u64::MAX]) via an i128 IntRange carrier on the parameter-value paths"
-priority: P3
+priority: P2
 type: feature
 labels: [input-generation, solver, protocol, audit-2026-09-22]
 parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
@@ -424,8 +445,8 @@ dropped. The run fell back to `0` and a `-1` boundary seed, and the `upper-half`
 reached.
 
 Go avoids this today only through the separate `go_uint` complex kind, whose generator emits raw
-`u64` JSON (`input_gen.rs:997-1010`). `go-int-width-sign-emission` retires that kind, which is safe
-only once this issue lands.
+`u64` JSON (`input_gen.rs:997-1010`). `core-go-alias-int-range` routes that kind onto the plain
+int path, which is safe only once this issue lands.
 
 ## Contract
 
@@ -572,12 +593,12 @@ M–L
 ---
 
 ---
-slug: go-int-width-sign-emission
+slug: core-go-alias-int-range
 kind: new
-title: "Go analyzer: emit int_width/int_signed for every integer kind and demote go_uint/go_byte to deprecated aliases; int8/int16/uint16/byte params currently get out-of-range values"
+title: "Core: treat incoming go_uint/go_byte TypeInfo as Int{64,unsigned}/Int{8,unsigned} on the int_range path (no Go frontend change)"
 priority: P2
-type: bug
-labels: [go-frontend, protocol, parity, input-generation, audit-2026-09-22]
+type: task
+labels: [input-generation, solver, protocol, go-frontend, audit-2026-09-22]
 parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
 parent_slug: int-width-signedness-epic
 blocked_by: [core-int-range-i128]
@@ -585,9 +606,139 @@ existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Go analyzer: emit int_width/int_signed for every integer kind; demote go_uint/go_byte to aliases
+# Core: treat incoming go_uint/go_byte TypeInfo as unsigned Int on the int_range path
 
-Step 3 of epic `int-width-signedness-epic`. Removing the aliases is the separate deferred issue
+Step 3 of epic `int-width-signedness-epic`. Owner: `shatter-core`. This issue changes no Go code
+and no protocol-visible frontend output. All paths are relative to the shatter repo root
+(github.com/shatterproof-ai/shatter). Line numbers were verified at 16794cef; no non-audit file
+has changed between 16794cef and the audit checkout's HEAD.
+
+## Problem
+
+Today's `shatter-go` describes unsigned integers with two Go-only complex kinds instead of the
+protocol's `int_width`/`int_signed` fields. Observed on 2026-09-24 by sending `analyze` over stdio
+to the audit checkout's `shatter-go/bin/shatter-go`:
+
+- `func AtMaxUint64(n uint64)` → `{"name":"n","type":{"kind":"complex","complex_kind":"go_uint"}}`
+- `func AtMaxByte(b byte)` → `{"name":"b","type":{"kind":"complex","complex_kind":"go_byte"}}`
+- `func FirstByte(b []byte)` → `{"kind":"array","element":{"kind":"complex","complex_kind":"go_byte"}}`
+- `func AtMaxInt8(n int8)` → bare `{"kind":"int"}` (signed kinds; not this issue)
+- the handshake declares `complex_type:go_byte` (also `protocol/conformance/golden/handshake/go.json:9`,
+  `shatter-go/protocol/handler.go:306`).
+
+In the core these kinds (`ComplexKind::GoByte`/`GoUint`, `shatter-core/src/types.rs:106`, `:113`)
+have their own generators, mutators and serializer branches (`input_gen.rs:677-678`, `:979`,
+`:997-1010`, `:2563-2564`, `:2976`, `:2992`; `orchestrator.rs:1151-1175`). They sit outside
+`TypeInfo::int_range()`, boundary seeding (`boundary_dict.rs:54`) and the solver's range
+assertion (`solver.rs:172`). Any fix to the int path (`int-unsigned64-clamp`,
+`core-int-range-i128`) does not reach them, and they carry their own clamping rules
+(`go_byte` wraps with `rem_euclid(256)`; `go_uint` floors negatives to 0).
+
+After `core-int-range-i128`, `Int { int_width: 64, int_signed: false }` has the exact range
+`[0, u64::MAX]`, so the plain int path can represent everything `go_uint` does. This issue routes
+the two aliases onto that path in the core. The Go frontend keeps emitting them unchanged. That
+lets `go-int-width-sign-emission` change the Go analyzer later without any core work, and keeps an
+older installed `shatter-go` working with a newer core.
+
+Requests from core to frontend carry no TypeInfo (`protocol/schemas/request.schema.json`: no
+request references `type-info`, `param-info` or `function-analysis`; `value_requirement` has only
+a `type_name` string). So normalizing on the core side cannot change what the Go planner sees.
+
+## Contract
+
+- A frontend TypeInfo `{"kind":"complex","complex_kind":"go_uint"}` is treated by the core as
+  `Int { int_width: Some(64), int_signed: Some(false) }`; `go_byte` as
+  `Int { int_width: Some(8), int_signed: Some(false) }`. This applies wherever such a TypeInfo
+  appears, including as an array element (`[]byte` arrives as an array of `go_byte`) and inside
+  object fields.
+- The normalization happens once, where frontend TypeInfo is ingested, so no generator, mutator,
+  shrinker, boundary seeder or solver call sees `ComplexKind::GoUint`/`GoByte`. Doing it in
+  `TypeInfo` deserialization (for example a `#[serde(from = ...)]` shim) also covers cached
+  analyses; if it is done elsewhere, cached analyses must be covered explicitly.
+- Wire values for these params stay plain JSON integers, as today: `concrete_to_json` already
+  emits `ConcreteValue::Int` as a bare number.
+- `ComplexKind::GoUint`/`GoByte` stay in the enum so existing payloads and the
+  `complex_type:go_byte` handshake capability still parse. Their generator and serializer
+  branches become unreachable from frontend input; removing them is `go-uint-alias-removal`.
+- `go_duration` is unchanged.
+
+## Acceptance criteria
+
+- [ ] **Golden compatibility test.** Capture today's `shatter-go` payloads into a core test
+  fixture (for example `shatter-core/tests/fixtures/go-alias/`): the `handshake` response and the
+  `analyze` responses for a `uint64` param, a `byte` param and a `[]byte` param. Capture recipe
+  (protocol version `0.1.0`; `widths.go` holds `AtMaxUint64(n uint64)`, `AtMaxByte(b byte)` and a
+  `[]byte` function):
+  ```bash
+  cd shatter-go && go build -buildvcs=false -o bin/shatter-go . && cd ..
+  P='"protocol_version":"0.1.0"'
+  { printf '{%s,"id":0,"command":"handshake","capabilities":[]}\n' "$P"
+    for f in AtMaxUint64 AtMaxByte <BytesFn>; do
+      printf '{%s,"id":1,"command":"analyze","file":"%s","function":"%s","project_root":"%s"}\n' \
+        "$P" "$dir/widths.go" "$f" "$dir"
+    done; } | shatter-go/bin/shatter-go
+  ```
+  Record the capture commit in the fixture's README or header. The test asserts that the core
+  accepts the handshake, deserializes each analysis, and that the resulting param TypeInfo is
+  `Int { 64, false }`, `Int { 8, false }` and `Array { Int { 8, false } }`. The test fails on the
+  branch base (record the failing assertion).
+- [ ] **Bounds property test** (proptest, per `/formal-methods-policy`): for params deserialized
+  from the golden `go_uint` and `go_byte` TypeInfo, every value produced by generation, mutation,
+  shrinking, boundary seeding and solver model extraction is an integer in `[0, u64::MAX]` and
+  `[0, 255]` respectively.
+- [ ] **Boundaries kept.** A unit test asserts boundary seeding for normalized `go_uint` includes
+  `0` and `u64::MAX`, and for `go_byte` includes `0` and `255`. These are what reach
+  `n == 18446744073709551615` and `b == 255` today through the `go_uint`/`go_byte` generators.
+- [ ] Existing Go E2E still passes: `task go:build && cargo test --test e2e_concolic_go`,
+  including the str-79nvf/str-ieuc byte-slice coverage (`examples/go/06-byte-slice.go`). Paste the
+  `test result:` line.
+- [ ] No Go source, `protocol/registry.yaml`, `protocol/parity-matrix.yaml` or handshake golden
+  change. `task affected` passes, with `Gates selected` recorded.
+
+## Out of scope
+
+- Any change to the Go analyzer, planner or handler (`go-int-width-sign-emission`).
+- Deleting the alias kinds and their dead generator code (`go-uint-alias-removal`).
+- Signed Go ints, which arrive as bare `{"kind":"int"}` (`go-int-width-sign-emission`).
+- `export.rs:513`/`:589`: these key on a `__complex_type: "go_byte"` value tag, which
+  `concrete_to_json` never emits for `GoByte` (it returns a plain integer), so they are unaffected.
+
+## Size
+
+S. One ingestion point in `shatter-core`, one golden fixture, one property test and one unit test.
+
+## References
+
+- `core-int-range-i128`: prerequisite. Before it, `Int { 64, false }` is clamped to
+  `[0, i64::MAX]` and routing `go_uint` onto it would lose the `u64::MAX` boundary.
+- str-cfsa (closed): introduced `go_uint`.
+- str-ieuc (closed): `go_byte` coercion.
+- str-79nvf (closed): Go planner `[]byte` detection from a `go_byte` element (Go-side; unaffected).
+- No existing tracker issue covers this (see the epic's tracker table).
+
+
+---
+
+---
+slug: go-int-width-sign-emission
+kind: new
+title: "Go analyzer: emit int_width/int_signed for every integer kind instead of bare int and go_uint/go_byte; int8/int16/uint16 params currently get out-of-range values"
+priority: P2
+type: bug
+labels: [go-frontend, protocol, parity, input-generation, audit-2026-09-22]
+parent_epic: "Epic: integer width and signedness end-to-end (protocol → core ranges → every frontend)"
+parent_slug: int-width-signedness-epic
+blocked_by: [core-go-alias-int-range]
+existing_id: ""
+tracker: "bd in /home/ketan/project/shatter (prefix str)"
+---
+
+# Go analyzer: emit int_width/int_signed for every integer kind
+
+Step 4 of epic `int-width-signedness-epic`. Owner: `shatter-go` (plus the protocol registry,
+parity matrix and conformance files its handshake change touches). The core side, which makes the
+old `go_uint`/`go_byte` wire kinds behave as unsigned ints, is the prerequisite
+`core-go-alias-int-range`. Removing the aliases from the core is the separate deferred follow-up
 `go-uint-alias-removal`. All paths are relative to the shatter repo root
 (github.com/shatterproof-ai/shatter). Line numbers were verified at 16794cef.
 
@@ -595,34 +746,36 @@ Step 3 of epic `int-width-signedness-epic`. Removing the aliases is the separate
 
 The protocol's `kind: "int"` carries `int_width`/`int_signed`
 (`protocol/schemas/type-info.schema.json:18-25`), and the Rust frontend fills them in. The Go
-analyzer does not.
+analyzer does not, and the Go `TypeInfo` struct (`shatter-go/protocol/types.go:329`) has no fields
+for them.
 
 **Signed kinds** (`int8`, `int16`, `int32`/`rune`, `int64`, `int`) map to a bare `{"kind":"int"}`
 (`shatter-go/protocol/analyzer.go:1489`, `:1506` in `basicTypeInfo`; `:1561` in
-`typeInfoFromAST`). The core treats them as full `i64`.
+`typeInfoFromAST`). The core treats them as full `i64`, so `int8` gets 128 and `i64::MIN`, which
+`json.Unmarshal` rejects before the target runs.
 
 **Unsigned kinds** use Go-only complex kinds instead of the protocol fields:
 
-- `uint`, `uint16`, `uint32`, `uint64` and `uintptr` map to `go_uint` (`:1502`, `:1565`);
+- `uint`, `uint16`, `uint32`, `uint64` and `uintptr` map to `go_uint` in `basicTypeInfo`
+  (`:1502`); `typeInfoFromAST` maps `uint`..`uint64` (`:1565`) and has no `uintptr` case;
 - `uint8`/`byte` maps to `go_byte` (`:1496`, `:1558`).
 
-Each has its own core generator and mutator (`shatter-core/src/input_gen.rs:677-678`, `:979`,
-`:997`, `:2563-2564`, `:2976`, `:2992`) and serializer (`orchestrator.rs:1151-1175`). They all sit
-outside the `int_range` path and the solver's range assertion (`solver.rs:172`). So `uint16` gets
-`u32::MAX` and `u64::MAX`, and fixes to one path do not reach the other.
+`go_uint` carries no width, so even after `core-go-alias-int-range` routes it onto
+`Int { 64, false }`, a `uint16` or `uint32` param still gets values up to `u64::MAX`. Only the
+analyzer knows the real width.
 
-`go_uint`/`go_byte` are also referenced by:
+Go-side consumers of the current TypeInfo that must keep working:
 
-- the Go planner: `shatter-go/planner/param.go:692-716` (uint family, and `[]byte` detection from
-  str-79nvf) and `planner/composite.go:213-244`;
-- the Go handler: `protocol/handler.go:306` (the `complex_type:go_byte` capability) and
-  `:2227`, `:2337`;
-- test export: `shatter-core/src/export.rs:513`, `:589`;
-- `protocol/registry.yaml:370`, `:454`;
-- `protocol/parity-matrix.yaml:458`;
-- `protocol/conformance/golden/handshake/go.json:9`;
-- the generated bindings `shatter-rust/src/protocol.rs:50` and `shatter-ts/src/protocol.ts:437`.
-  Regenerate these from the schema; never hand-edit them.
+- the planner: `shatter-go/planner/param.go:692-716` (`go_uint` → `uintFamily`; `[]byte`
+  detection from a `go_byte` element, str-79nvf) and `planner/composite.go:213-244`
+  (unsigned pointer and struct-field zero values);
+- the handler: `protocol/handler.go:306` (declares `complex_type:go_byte`) and the direct-execute
+  checks at `:2227` and `:2337`;
+- `protocol/registry.yaml:454` (Go's declared complex types), `protocol/parity-matrix.yaml:458`
+  (the `go_byte` row) and `protocol/conformance/golden/handshake/go.json:9`.
+
+The core needs no change here: `core-go-alias-int-range` already treats both the old and the new
+wire forms as unsigned ints, and requests from core to frontend carry no TypeInfo.
 
 ## Fixture (commit with this issue's branch)
 
@@ -716,9 +869,11 @@ print(f"checked {seen} executed inputs; out of bounds: {bad}")
 sys.exit(1 if bad or not seen else 0)
 ```
 
-## Baseline (run on main before changing code)
 
-This needs no external examples checkout. Run from the repo root:
+## Baseline (run on the branch base before changing code)
+
+This needs no external examples checkout. Commit the fixture and checker first, then run from the
+repo root:
 
 ```bash
 git rev-parse HEAD
@@ -730,7 +885,7 @@ target/debug/shatter explore "$tmp/int-width/widths.go" --allow-host-writes \
 python3 scripts/check_go_int_width_bounds.py "$tmp/int-width/shatter-artifacts"
 ```
 
-Expected at 16794cef (recorded 2026-09-24): the checker exits 1 with
+Recorded at 16794cef on 2026-09-24, before any epic child landed: the checker exits 1 with
 `checked 360 executed inputs; out of bounds: 80`. Examples:
 
 - `AtMaxInt8`: 128, 671, -303, `i64::MIN`, `i64::MAX`;
@@ -739,38 +894,35 @@ Expected at 16794cef (recorded 2026-09-24): the checker exits 1 with
 - `Label`'s `int16`: `i64::MAX`, `i64::MIN`;
 - `AtMaxUint64`: `null`.
 
-In the report these appear as `throws function_error: param n: json: cannot unmarshal number 128
-into Go value of type int8`. The min/max branches themselves are already reached on main, through
-Z3 on the literals and through `go_uint`'s `u64::MAX`. That coverage must not regress.
+The branch base will already include `int-unsigned64-clamp`, `core-int-range-i128` and
+`core-go-alias-int-range`, so the count will differ. It must still be non-zero: the signed kinds
+are bare `int` and `uint16` is still a width-less `go_uint`. Paste the actual output. In the report
+out-of-range values appear as `throws function_error: param n: json: cannot unmarshal number 128
+into Go value of type int8`. The min/max branches are already reached, through Z3 on the literals
+and the unsigned boundary seeds. That coverage must not regress.
 
 ## Acceptance criteria
 
 - [ ] The fixture and checker are committed. The baseline output is pasted with
   `git rev-parse HEAD`.
-- [ ] Both Go mapping sites (`basicTypeInfo` and `typeInfoFromAST`) emit
-  `{"kind":"int","int_width":W,"int_signed":S}` for every Go integer kind. `int`, `uint` and
-  `uintptr` use width 64, and the comment states the 64-bit-platform assumption. `rune` is
-  `(32, true)`. `byte` is `(8, false)`.
-- [ ] The planner and handler still recognize the uint family and `[]byte` from the new TypeInfo
-  (`planner/param.go`, `planner/composite.go`, `handler.go:2227`, `:2337`). The existing
-  str-79nvf and str-ieuc tests pass unchanged, and new cases cover the int-typed forms. Test export
-  (`export.rs:513`, `:589`) still emits Go `byte`/`uint16` etc. from the new TypeInfo.
-- [ ] **Deprecated aliases.** The core still accepts `go_uint`/`go_byte` on the wire and treats
-  them as `Int { 64, false }` / `Int { 8, false }` on the `int_range` path, not through the
-  separate generators. A deserialization test covers each alias. **Compatibility test:** feed the
-  core an analyze response exactly as today's `shatter-go` emits it (capture one from main for the
-  fixture's `AtMaxUint64`/`AtMaxByte` params into a golden file, with
-  `{"kind":"complex","complex_kind":"go_uint"}` / `"go_byte"` and the old handshake's
-  `complex_type:go_byte` declaration). Assert that the core accepts the handshake, and that every
-  generated input for those params is within `uint64`/`uint8` bounds. SPEC §8 gets a changelog row
-  marking both deprecated, pointing to `go-uint-alias-removal`. The aliases exist so that an older
-  installed `shatter-go` binary still works with a newer core. The Go frontend stops declaring
-  `complex_type:go_byte`. Update `handler.go:306`, the handshake golden and `registry.yaml` to
-  match.
-- [ ] `protocol/parity-matrix.yaml` gains an "integer width and signedness" row: Rust and Go
-  emit it, and TS is n/a because `number` is float and `bigint` is `big_int`. Update the `go_byte`
-  row at `:458`. Add a conformance case per frontend that asserts the emitted TypeInfo for the
-  fixture's params. `task parity` and `task conformance` pass.
+- [ ] **Analyzer.** The Go `TypeInfo` gains `IntWidth`/`IntSigned` (`json:"int_width,omitempty"`,
+  `json:"int_signed,omitempty"`). Both mapping sites (`basicTypeInfo` and `typeInfoFromAST`) emit
+  `{"kind":"int","int_width":W,"int_signed":S}` for every Go integer kind, including `uintptr` in
+  both. `int`, `uint` and `uintptr` use width 64, and a comment states the 64-bit-platform
+  assumption. `rune` is `(32, true)`; `byte` is `(8, false)`. Neither site emits `go_uint` or
+  `go_byte` any more. Analyzer unit tests cover every kind at both sites.
+- [ ] **Planner and handler.** They recognize unsigned ints and `[]byte` from the new TypeInfo
+  (`int_signed: false`; an array whose element is `int_width: 8, int_signed: false`) in
+  `planner/param.go`, `planner/composite.go` and `handler.go:2227`, `:2337`. The existing
+  str-79nvf and str-ieuc tests pass unchanged, and new cases cover the int-typed forms.
+- [ ] **Handshake and registry.** The Go frontend stops declaring `complex_type:go_byte`
+  (`handler.go:306`). Update `protocol/conformance/golden/handshake/go.json` and Go's entry in
+  `protocol/registry.yaml` (`:454`) to match. The `go_byte` kind itself stays in the schema and in
+  the registry's kind list until `go-uint-alias-removal`, so no bindings are regenerated here.
+- [ ] **Parity.** `protocol/parity-matrix.yaml` gains an "integer width and signedness" row: Rust
+  and Go emit it; TS is n/a (`number` is float and `bigint` is `big_int`). Update the `go_byte` row
+  (`:458`) to say Go no longer emits it. Add a conformance case per emitting frontend that asserts
+  the TypeInfo for the fixture's params. `task parity` and `task conformance` pass.
 - [ ] **E2E** `e2e_go_int_width_inputs_in_bounds` in `shatter-core/tests/e2e_concolic_go.rs`,
   using `repo_examples_go_dir().join("int-width").join("widths.go")` and
   `spawn_go_frontend("int-width")`. For every fixture function it seeds with
@@ -783,7 +935,7 @@ Z3 on the literals and through `go_uint`'s `u64::MAX`. That coverage must not re
   It must not assert on error rows. Run it with
   `task go:build && SHATTER_GO_FRONTEND_BIN="$PWD/shatter-go/bin/shatter-go" cargo test --test e2e_concolic_go e2e_go_int_width -- --include-ignored`.
   The case is `#[ignore]`d, and no `SHATTER_EXAMPLES_DIR` is needed for a repo-local fixture.
-  Paste the failing `test result:` line from main and the passing line from the branch.
+  Paste the failing `test result:` line from the branch base and the passing line from the branch.
 - [ ] Re-run the baseline on the branch, once with the default explorer and once with
   `--concolic`, from a fresh copy each time so artifacts from the first run cannot be resumed:
   ```bash
@@ -796,31 +948,40 @@ Z3 on the literals and through `go_uint`'s `u64::MAX`. That coverage must not re
   done
   ```
   Both checker runs print `out of bounds: 0`.
+- [ ] A `SPEC.md` §8 changelog row marks `go_uint`/`go_byte` deprecated: no frontend emits them,
+  the core still accepts them (`core-go-alias-int-range`) so an older installed `shatter-go` keeps
+  working, and removal is `go-uint-alias-removal`.
 - [ ] `shatter-go/CLAUDE.md` documents the protocol-visible change. `task e2e` and
   `task affected` pass, with `Gates selected` recorded.
-- [ ] `go-uint-alias-removal` is filed (it is part of this epic's drafts). Its id goes in this
-  issue's close reason. This issue closes on its own criteria and does not wait for any release.
+- [ ] The close reason links `go-uint-alias-removal` (filed with the audit drafts) and gives the
+  merge commit sha that starts its compatibility window. This issue does not wait for any release.
 
 ## Out of scope
 
-- Removing the aliases (`go-uint-alias-removal`).
+- Any core change (`core-go-alias-int-range`, done before this).
+- Removing the aliases from the core, schema, bindings or registry kind list
+  (`go-uint-alias-removal`).
 - TS integer typing.
 - Go `complex64`/`complex128`.
 - Classifying unmarshal failures as input rejections (str-4yc9w).
 
 ## Size
 
-M
+M, at the upper end. Roughly: analyzer and `TypeInfo` (2 files plus tests), planner (2 files plus
+tests), handler (1 file), registry, parity matrix, handshake golden and conformance cases, the
+fixture and checker, one E2E test, and `shatter-go/CLAUDE.md`. No core source changes. If the
+planner/handler adaptation proves larger than expected, split it out and keep the analyzer change
+behind it, not the other way round: emitting the new TypeInfo before the planner understands it
+would regress `[]byte` handling.
 
 ## References
 
+- `core-go-alias-int-range`: prerequisite; makes the core treat both wire forms as unsigned ints.
 - str-cfsa (closed): introduced `go_uint`.
 - str-ieuc (closed): `go_byte` coercion.
 - str-79nvf (closed): `[]byte` detection.
 - str-ddxe (closed): the protocol fields.
 - str-4yc9w (open): Go decode-failure classification. Related, not blocking.
-- `core-int-range-i128`: the prerequisite. Moving Go to the int path before `u64::MAX` is
-  representable would regress `AtMaxUint64`.
 - No existing tracker issue covers Go int width emission (`bd search go_uint` and `int8` return
   nothing).
 
@@ -842,14 +1003,17 @@ tracker: "bd in /home/ketan/project/shatter (prefix str)"
 
 # Remove the deprecated go_uint/go_byte TypeInfo aliases
 
-Step 4 of epic `int-width-signedness-epic`. This is a deferred cleanup. All paths are relative to
-the shatter repo root (github.com/shatterproof-ai/shatter).
+A deferred follow-up to epic `int-width-signedness-epic`. It is not a child of that epic: it is
+parented to the audit epic and does not hold the integer epic open. All paths are relative to the
+shatter repo root (github.com/shatterproof-ai/shatter).
 
 ## Why
 
-`go-int-width-sign-emission` moves the Go analyzer to `{"kind":"int","int_width","int_signed"}`. It
-keeps `go_uint`/`go_byte` as deprecated wire aliases in the core, so that an older installed
-`shatter-go` binary still works with a newer core. After the compatibility window, the aliases are
+`core-go-alias-int-range` makes the core treat `go_uint`/`go_byte` as unsigned `Int` on the
+`int_range` path, and `go-int-width-sign-emission` moves the Go analyzer to
+`{"kind":"int","int_width","int_signed"}`. The core keeps accepting `go_uint`/`go_byte` as
+deprecated wire aliases so that an older installed `shatter-go` binary still works with a newer
+core. After the compatibility window, the aliases are
 dead code and a second way of saying the same thing, which is the exact divergence the epic
 removes.
 
@@ -885,7 +1049,9 @@ comment with the date of the oldest qualifying release.
 - [ ] `ComplexKind::GoUint`/`GoByte` and their generators, mutators and serializer branches are
   removed from the core: `input_gen.rs` (`generate_go_uint`, `generate_go_byte`, `mutate_go_uint`,
   `mutate_go_byte`, dispatch arms), `orchestrator.rs` (`concrete_to_json` arms), `types.rs`,
-  `export.rs`, `test_arbitraries.rs`. Regenerate the bindings (`shatter-rust/src/protocol.rs`,
+  `export.rs`, `test_arbitraries.rs`, and the alias normalization added by
+  `core-go-alias-int-range`. That issue's golden compatibility test is replaced by the rejection
+  test below. Regenerate the bindings (`shatter-rust/src/protocol.rs`,
   `shatter-ts/src/protocol.ts`) from the schema; never hand-edit them. Remove the entries from
   `protocol/registry.yaml` and `protocol/parity-matrix.yaml`.
 - [ ] `git grep -n 'go_uint\|go_byte\|GoUint\|GoByte' -- . ':!audits' ':!.beads' ':!docs/perf'`
@@ -909,7 +1075,8 @@ S
 
 ## References
 
-- `go-int-width-sign-emission`: introduces the aliases.
+- `core-go-alias-int-range`: turns `go_uint`/`go_byte` into core-side aliases of unsigned `Int`.
+- `go-int-width-sign-emission`: stops the Go frontend emitting them; its merge starts the window.
 - str-cfsa (closed): `go_uint`.
 - str-ieuc (closed): `go_byte`.
 - No existing tracker issue covers the removal.
