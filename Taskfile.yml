@@ -567,6 +567,7 @@ tasks:
   check-integration:
     desc: "check stage 3: expensive integration (core e2e superset, conformance, parity). Core unit-test failures surface here, not stage 2: they ride in core:test-ignored to avoid running the core suite twice per check; stage-1 clippy already catches compile-level core breaks."
     deps:
+      - ts:build
       - go:build
       # The Rust concolic E2E binary loads this frontend directly. The
       # standalone e2e gate builds it; check needs the same explicit input.

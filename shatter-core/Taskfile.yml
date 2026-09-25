@@ -43,6 +43,19 @@ tasks:
       - ../Cargo.lock
       - build.rs
       - ../.config/nextest.toml
+      # Ignored concolic E2E tests execute all three frontends. A frontend
+      # change must invalidate this gate even when shatter-core is unchanged.
+      - ../shatter-ts/src/**/*.ts
+      - ../shatter-ts/package.json
+      - ../shatter-ts/package-lock.json
+      - ../shatter-go/**/*.go
+      - ../shatter-go/go.mod
+      - ../shatter-go/go.sum
+      - ../shatter-rust/src/**/*.rs
+      - ../shatter-rust/Cargo.toml
+      - ../shatter-rust-runtime/src/**/*.rs
+      - ../shatter-rust-runtime/Cargo.toml
+      - ../scripts/examples_checkout.py
     cmds:
       - |
         examples_root="$(python3 ../scripts/examples_checkout.py)"
@@ -77,6 +90,17 @@ tasks:
       - ../Cargo.lock
       - build.rs
       - ../.config/nextest.toml
+      - ../shatter-ts/src/**/*.ts
+      - ../shatter-ts/package.json
+      - ../shatter-ts/package-lock.json
+      - ../shatter-go/**/*.go
+      - ../shatter-go/go.mod
+      - ../shatter-go/go.sum
+      - ../shatter-rust/src/**/*.rs
+      - ../shatter-rust/Cargo.toml
+      - ../shatter-rust-runtime/src/**/*.rs
+      - ../shatter-rust-runtime/Cargo.toml
+      - ../scripts/examples_checkout.py
     cmds:
       - |
         examples_root="$(python3 ../scripts/examples_checkout.py)"
