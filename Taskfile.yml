@@ -568,6 +568,9 @@ tasks:
     desc: "check stage 3: expensive integration (core e2e superset, conformance, parity). Core unit-test failures surface here, not stage 2: they ride in core:test-ignored to avoid running the core suite twice per check; stage-1 clippy already catches compile-level core breaks."
     deps:
       - go:build
+      # The Rust concolic E2E binary loads this frontend directly. The
+      # standalone e2e gate builds it; check needs the same explicit input.
+      - rust-fe:build
     cmds:
       - task: core:test-ignored
       # Keep the public spellings: their nested wrappers pass through the
@@ -674,7 +677,7 @@ tasks:
       - git status --short
 
   pre-completion-e2e:
-    desc: Pre-completion with E2E tests
+    desc: Pre-completion full gate (includes concolic E2E once)
     cmds:
       # check-integration already runs the concolic E2E suites via
       # core:test-ignored. Keep task e2e available as a standalone gate.
