@@ -139,15 +139,16 @@ func basicLitToSymExpr(lit *ast.BasicLit) *symExpr {
 		// Strip quotes
 		s, err := strconv.Unquote(lit.Value)
 		if err != nil {
-			s = lit.Value
+			return &symExpr{Kind: "unknown"}
 		}
 		return &symExpr{Kind: "const", Type: "str", Value: s}
 	case token.CHAR:
-		s, err := strconv.Unquote(lit.Value)
+		// A rune literal is an untyped rune (int32) constant: emit its codepoint.
+		r, _, _, err := strconv.UnquoteChar(lit.Value[1:len(lit.Value)-1], '\'')
 		if err != nil {
-			s = lit.Value
+			return &symExpr{Kind: "unknown"}
 		}
-		return &symExpr{Kind: "const", Type: "str", Value: s}
+		return &symExpr{Kind: "const", Type: "int", Value: int64(r)}
 	default:
 		return &symExpr{Kind: "unknown"}
 	}

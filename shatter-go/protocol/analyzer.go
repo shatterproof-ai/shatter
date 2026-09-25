@@ -767,7 +767,9 @@ func stringBasicLiteral(expr ast.Expr) (string, bool) {
 	}
 	s, err := strconv.Unquote(lit.Value)
 	if err != nil {
-		return strings.Trim(lit.Value, "`\"'"), true
+		// go/parser only yields valid literals, so this is unreachable in
+		// practice; refuse rather than guess a trimmed raw spelling.
+		return "", false
 	}
 	return s, true
 }
@@ -2333,6 +2335,12 @@ func flattenSelector(sel *ast.SelectorExpr) (root string, path []string) {
 	}
 }
 
+// charLitCodepoint decodes a Go rune literal ('x', '\n', '\u00e9') to its codepoint.
+func charLitCodepoint(lit *ast.BasicLit) (int64, error) {
+	v, _, _, err := strconv.UnquoteChar(lit.Value[1:len(lit.Value)-1], '\'')
+	return int64(v), err
+}
+
 func litSymExpr(lit *ast.BasicLit) *SymExpr {
 	switch lit.Kind {
 	case token.INT:
@@ -2347,10 +2355,19 @@ func litSymExpr(lit *ast.BasicLit) *SymExpr {
 			return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 		}
 		return &SymExpr{Kind: "const", Type: "float", Value: f, Args: []SymExpr{}}
-	case token.STRING, token.CHAR:
-		// Strip quotes for the value
-		val := strings.Trim(lit.Value, "`\"'")
+	case token.STRING:
+		val, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
+		}
 		return &SymExpr{Kind: "const", Type: "str", Value: val, Args: []SymExpr{}}
+	case token.CHAR:
+		// A rune literal is an untyped rune (int32) constant: emit its codepoint.
+		r, err := charLitCodepoint(lit)
+		if err != nil {
+			return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
+		}
+		return &SymExpr{Kind: "const", Type: "int", Value: r, Args: []SymExpr{}}
 	default:
 		return &SymExpr{Kind: "unknown", Args: []SymExpr{}}
 	}
@@ -2667,12 +2684,19 @@ func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 				if v, err := strconv.ParseFloat(node.Value, 64); err == nil {
 					add(LiteralValue{Type: "float", Value: v})
 				}
-			case token.STRING, token.CHAR:
-				s, err := strconv.Unquote(node.Value)
-				if err != nil {
-					s = strings.Trim(node.Value, "`\"'")
+			case token.STRING:
+				// Unquote cannot fail on parser-produced literals; skip
+				// (never harvest a trimmed raw spelling) if it ever does.
+				if s, err := strconv.Unquote(node.Value); err == nil {
+					add(LiteralValue{Type: "str", Value: s})
 				}
-				add(LiteralValue{Type: "str", Value: s})
+			case token.CHAR:
+				// Seed both the codepoint (rune/byte params) and the one-char
+				// string (string params ranged over or searched for the rune).
+				if r, err := charLitCodepoint(node); err == nil {
+					add(LiteralValue{Type: "int", Value: r})
+					add(LiteralValue{Type: "str", Value: string(rune(r))})
+				}
 			}
 		case *ast.Ident:
 			switch node.Name {
@@ -2684,11 +2708,9 @@ func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 		case *ast.IndexExpr:
 			// Extract map bracket-access string keys: m["status"]
 			if lit, ok := node.Index.(*ast.BasicLit); ok && (lit.Kind == token.STRING) {
-				s, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					s = strings.Trim(lit.Value, "`\"'")
+				if s, err := strconv.Unquote(lit.Value); err == nil {
+					add(LiteralValue{Type: "str", Value: s})
 				}
-				add(LiteralValue{Type: "str", Value: s})
 			}
 		case *ast.CallExpr:
 			// Detect regexp.Compile("pattern") and regexp.MustCompile("pattern")
@@ -2698,7 +2720,7 @@ func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 						if lit, ok := node.Args[0].(*ast.BasicLit); ok && (lit.Kind == token.STRING) {
 							s, err := strconv.Unquote(lit.Value)
 							if err != nil {
-								s = strings.Trim(lit.Value, "`\"")
+								return true
 							}
 							pkey := "regex:" + s
 							if !seen[pkey] {
@@ -2739,12 +2761,15 @@ func extractLiterals(fn *ast.FuncDecl, file *ast.File) []LiteralValue {
 						if v, err := strconv.ParseFloat(lit.Value, 64); err == nil {
 							add(LiteralValue{Type: "float", Value: v})
 						}
-					case token.STRING, token.CHAR:
-						s, err := strconv.Unquote(lit.Value)
-						if err != nil {
-							s = strings.Trim(lit.Value, "`\"'")
+					case token.STRING:
+						if s, err := strconv.Unquote(lit.Value); err == nil {
+							add(LiteralValue{Type: "str", Value: s})
 						}
-						add(LiteralValue{Type: "str", Value: s})
+					case token.CHAR:
+						if r, err := charLitCodepoint(lit); err == nil {
+							add(LiteralValue{Type: "int", Value: r})
+							add(LiteralValue{Type: "str", Value: string(rune(r))})
+						}
 					}
 				case *ast.UnaryExpr:
 					// Handle negative constants: const MinVal = -100

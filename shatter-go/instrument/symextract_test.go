@@ -1,6 +1,8 @@
 package instrument
 
 import (
+	"strconv"
+	"pgregory.net/rapid"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -423,4 +425,32 @@ func parseAndWalkFirstFunc(t *testing.T, src string) flowMap {
 		fm[name] = &symExpr{Kind: "param", Name: name, Path: []string{}}
 	}
 	return walkStmtsForFlow(fn.Body.List, params, fm)
+}
+
+func TestBasicLitToSymExpr_RuneIsInt(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		r := rapid.Rune().Draw(t, "r")
+		expr, err := parser.ParseExpr(strconv.QuoteRune(r))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := basicLitToSymExpr(expr.(*ast.BasicLit))
+		if got.Kind != "const" || got.Type != "int" || got.Value != int64(r) {
+			t.Fatalf("basicLitToSymExpr(%s) = %+v, want const int %d", strconv.QuoteRune(r), got, r)
+		}
+	})
+}
+
+func TestBasicLitToSymExpr_StringRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		s := rapid.String().Draw(t, "s")
+		expr, err := parser.ParseExpr(strconv.Quote(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := basicLitToSymExpr(expr.(*ast.BasicLit))
+		if got.Type != "str" || got.Value != s {
+			t.Fatalf("got %+v, want str %q", got, s)
+		}
+	})
 }
