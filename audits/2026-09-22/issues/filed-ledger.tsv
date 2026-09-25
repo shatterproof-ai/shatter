@@ -442,3 +442,16 @@ first-party-plugin-staleness-check	#52	dotfiles	2026-09-25T02:39:58.658788Z
 codex-render-composes-core-rules	#53	dotfiles	2026-09-25T02:39:59.776864Z
 dep:codex-render-composes-core-rules>global-guidance-actually-loads	#42	dotfiles	2026-09-25T02:40:00.674524Z
 slugmap:dotfiles	#41	dotfiles	2026-09-25T02:40:01.480803Z
+epic:storystore	ss-drt	storystore	2026-09-25T18:18:26.181527Z
+tracker-migration-and-agents-md	ss-drt.1	storystore	2026-09-25T18:18:35.434687Z
+clap-cobra-extractors	ss-drt.2	storystore	2026-09-25T18:18:38.188120Z
+automatic-version-bump	ss-drt.3	storystore	2026-09-25T18:18:42.381229Z
+tracker-migration-verification	ss-drt.4	storystore	2026-09-25T18:18:45.146467Z
+clap-builder-extractor	ss-drt.5	storystore	2026-09-25T18:18:47.162646Z
+go-cobra-extractor	ss-drt.6	storystore	2026-09-25T18:18:49.646293Z
+coverage-unextracted-language-finding	ss-drt.7	storystore	2026-09-25T18:18:51.842336Z
+dep:clap-builder-extractor>clap-cobra-extractors	ss-drt.2	storystore	2026-09-25T18:18:52.967131Z
+dep:go-cobra-extractor>clap-cobra-extractors	ss-drt.2	storystore	2026-09-25T18:18:54.422603Z
+dep:coverage-unextracted-language-finding>clap-cobra-extractors	ss-drt.2	storystore	2026-09-25T18:18:56.176219Z
+comment:ss-yoa-reopen-note	ss-yoa	storystore	2026-09-25T18:18:57.066304Z
+slugmap:storystore	ss-drt	storystore	2026-09-25T18:18:58.182513Z
