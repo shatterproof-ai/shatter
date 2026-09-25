@@ -8,6 +8,7 @@ use crate::invariants::{
 use crate::path_predicate_store::{PathPredicateBundle, PathPredicateStoreError, validate_bundle};
 
 /// Caller-supplied context and stable witness identity for one raw execution.
+/// The raw tuple does not retain either value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecutionEvidenceMetadata {
     pub context_fingerprint: Option<String>,
@@ -27,7 +28,13 @@ pub enum PathEvidenceCollectionError {
     Evidence(#[from] PredicateEvidenceError),
 }
 
-/// Record each exploration result for predicates with the caller's exact target.
+/// Record every raw result for predicates with the caller's exact target.
+///
+/// The caller must bind `target` to `output`: `function_name` is an
+/// analyzer name and need not equal the qualified target name. This function
+/// does not infer identity from mocks or path hashes. It also does not filter
+/// lifecycle states or deduplicate probe executions; callers choose which
+/// records and raw results to submit. Each record keeps its lifecycle.
 #[must_use = "the updated bundle contains the collected evidence"]
 pub fn collect_path_predicate_evidence(
     bundle: &PathPredicateBundle,
@@ -370,6 +377,43 @@ mod tests {
             ))
         ));
         assert_eq!(bundle, original);
+    }
+
+    #[test]
+    fn collection_preserves_each_record_lifecycle() {
+        let lifecycles = [
+            PredicateLifecycle::Candidate,
+            PredicateLifecycle::Frozen,
+            PredicateLifecycle::Refuted,
+            PredicateLifecycle::Stale,
+        ];
+        let output = ObservationOutput {
+            function_name: "f".into(),
+            raw_results: vec![execution(
+                vec![json!(1), json!(2)],
+                vec![],
+                Some(json!(0)),
+                false,
+            )],
+            ..ObservationOutput::default()
+        };
+        let metadata = [ExecutionEvidenceMetadata {
+            context_fingerprint: Some("context-v1".into()),
+            witness: None,
+        }];
+        for lifecycle in lifecycles {
+            let mut record = predicate(target("module.f"), vec![]);
+            record.lifecycle = lifecycle;
+            let bundle = PathPredicateBundle {
+                schema_version: PATH_PREDICATE_BUNDLE_SCHEMA_VERSION,
+                predicates: vec![record],
+            };
+            let updated =
+                collect_path_predicate_evidence(&bundle, &output, &target("module.f"), &metadata)
+                    .expect("collect evidence");
+            assert_eq!(updated.predicates[0].lifecycle, lifecycle);
+            assert_eq!(updated.predicates[0].evidence.eligible, 1);
+        }
     }
 
     proptest! {
