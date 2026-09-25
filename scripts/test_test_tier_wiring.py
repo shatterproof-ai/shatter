@@ -7,6 +7,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS_BINARIES = {
@@ -168,6 +170,40 @@ class TestTestTierWiring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             tool_dir = Path(temp_dir)
             capture = tool_dir / "cargo-env.log"
+            fixture = tool_dir / "project"
+            fixture.mkdir()
+            root_taskfile = ROOT / "Taskfile.yml"
+            shutil.copy2(root_taskfile, fixture / root_taskfile.name)
+            for included in yaml.safe_load(root_taskfile.read_text())["includes"].values():
+                taskfile = Path(included["taskfile"])
+                destination = fixture / taskfile
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / taskfile, destination)
+            for source in (
+                "Cargo.toml",
+                "shatter-ts/package.json",
+                "shatter-ts/src/main.ts",
+                "shatter-go/go.mod",
+                "shatter-go/wrapper/wrapper.go",
+                "shatter-rust/Cargo.toml",
+                "shatter-rust-runtime/src/lib.rs",
+                "scripts/examples_checkout.py",
+            ):
+                destination = fixture / source
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / source, destination)
+            checksum_dir = ROOT / ".task" / "checksum"
+
+            def checksum_state() -> dict[str, tuple[bytes, int]]:
+                if not checksum_dir.exists():
+                    return {}
+                return {
+                    str(path.relative_to(checksum_dir)): (path.read_bytes(), path.stat().st_mtime_ns)
+                    for path in checksum_dir.rglob("*")
+                    if path.is_file()
+                }
+
+            original_checksums = checksum_state()
             fake_tool = """#!/usr/bin/env bash
 if [[ "$(basename "$0")" == cargo ]]; then
   printf '%s|%s|%s\\n' "$*" "${PROPTEST_CASES:-}" "${SHATTER_FUZZ_CASES:-}" >> "$SHATTER_TEST_ENV_CAPTURE"
@@ -182,6 +218,7 @@ exit 0
             env = os.environ.copy()
             env["PATH"] = f"{tool_dir}:{env['PATH']}"
             env["SHATTER_TEST_ENV_CAPTURE"] = str(capture)
+            env["SHATTER_EXAMPLES_DIR"] = str(fixture)
             # Model a default quick-tier invocation even when this regression
             # runs inside the Full gate, whose ambient budgets intentionally
             # remain valid operator overrides.
@@ -189,7 +226,7 @@ exit 0
             env.pop("SHATTER_FUZZ_CASES", None)
             subprocess.run(
                 [task, "--force", "test-quick"],
-                cwd=ROOT,
+                cwd=fixture,
                 env=env,
                 check=True,
                 capture_output=True,
@@ -200,6 +237,19 @@ exit 0
                 line
                 for line in capture.read_text().splitlines()
                 if line.startswith("test --workspace|")
+            )
+            subprocess.run(
+                [task, "go:vet"],
+                cwd=fixture,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(checksum_state(), original_checksums)
+            self.assertTrue(
+                list((fixture / ".task" / "checksum").glob("*")),
+                "task checksums must be isolated under the fixture directory",
             )
         self.assertEqual(workspace_test, "test --workspace|32|32")
 

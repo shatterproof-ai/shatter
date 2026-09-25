@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +19,16 @@ from scripts.git_sandbox_test_lib import sanitized_git_env
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "affected-gates.py"
 TASKFILE = ROOT / "Taskfile.yml"
+
+
+def list_all_tasks(cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["task", "--list-all", "--json", "--dry"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
 
 
 def load_module():
@@ -201,15 +213,79 @@ class AffectedGateMappingTests(unittest.TestCase):
                 self.assertEqual(set(self.module.select_gates(paths)), expected)
 
     def test_every_emitted_gate_is_a_real_task(self) -> None:
-        completed = subprocess.run(
-            ["task", "--list-all", "--json"],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
+        completed = list_all_tasks(ROOT)
         listed = {task["name"] for task in json.loads(completed.stdout)["tasks"]}
         self.assertEqual(set(self.module.GATE_ORDER) - listed, set())
+
+    def test_listing_does_not_write_checksums_or_cache_a_source_leaf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = Path(temp_dir)
+            leaf_dir = fixture / "leaf"
+            leaf_dir.mkdir()
+            (fixture / "Taskfile.yml").write_text(
+                "version: '3'\nincludes:\n  leaf:\n    taskfile: ./leaf/Taskfile.yml\n    dir: ./leaf\n"
+            )
+            (leaf_dir / "Taskfile.yml").write_text(
+                "version: '3'\ntasks:\n  run:\n    desc: Fixture source leaf\n"
+                "    sources: [source.txt]\n    cmds: [echo LEAF_RAN]\n"
+            )
+            source = leaf_dir / "source.txt"
+            source.write_text("before\n")
+
+            checksum_dir = fixture / ".task" / "checksum"
+
+            def checksums() -> dict[str, bytes]:
+                if not checksum_dir.exists():
+                    return {}
+                return {
+                    str(path.relative_to(checksum_dir)): path.read_bytes()
+                    for path in checksum_dir.rglob("*")
+                    if path.is_file()
+                }
+
+            before = checksums()
+            list_all_tasks(fixture)
+            self.assertEqual(checksums(), before)
+
+            def assert_leaf_runs() -> None:
+                completed = subprocess.run(
+                    ["task", "leaf:run"],
+                    cwd=fixture,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                output = completed.stdout + completed.stderr
+                self.assertIn("task: [leaf:run] echo LEAF_RAN", output)
+                self.assertNotIn('Task "leaf:run" is up to date', output)
+
+            assert_leaf_runs()
+            self.assertTrue(checksums(), "fixture run must write to the observed checksum store")
+            source.write_text("after\n")
+            assert_leaf_runs()
+
+    def test_test_scripts_guard_task_list_commands(self) -> None:
+        unguarded = []
+        for directory in (ROOT / "scripts", ROOT / "demo"):
+            for path in directory.glob("test_*.py"):
+                tree = ast.parse(path.read_text(), filename=str(path))
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.List, ast.Tuple)):
+                        args = [
+                            item.value if isinstance(item, ast.Constant) else None
+                            for item in node.elts
+                        ]
+                        if args and args[0] == "task" and any(
+                            isinstance(arg, str) and arg.startswith("--list")
+                            for arg in args[1:]
+                        ) and "--dry" not in args:
+                            unguarded.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+                    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                        if re.search(r"\btask\s+--list(?:-all)?\b", node.value) and not re.search(
+                            r"(?:^|\s)--dry(?:\s|$)", node.value
+                        ):
+                            unguarded.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+        self.assertEqual(unguarded, [])
 
 
 class AffectedGateWiringTests(unittest.TestCase):
