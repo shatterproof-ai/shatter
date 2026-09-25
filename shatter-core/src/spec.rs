@@ -1018,7 +1018,9 @@ fn format_side_effect(effect: &SideEffect) -> String {
 fn format_value_short(v: &serde_json::Value) -> String {
     let s = v.to_string();
     if s.len() > 40 {
-        format!("{}...", &s[..37])
+        // Keep the 40-byte budget (incl. "...") but cut on a char boundary.
+        let cut = (0..=37).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        format!("{}...", &s[..cut])
     } else {
         s
     }
@@ -2797,12 +2799,101 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
         );
     }
 
+    // ── format_value_short UTF-8 boundary (str-wlban) ────────────────────
+
+    /// Build a spec whose single class returns `value`, exercising the
+    /// full `build_spec` path (format_class_label -> format_value_short).
+    fn build_spec_returning(value: &serde_json::Value) -> FunctionSpec {
+        let result = make_exploration_result("f", 1, 1);
+        let classes = vec![make_eq_class(
+            vec![(0, true)],
+            vec![json!("in")],
+            Some(value.clone()),
+            None,
+            vec![],
+            1,
+        )];
+        build_spec(&result, &classes, None, None, &TypeInfo::Str)
+    }
+
+    #[test]
+    fn format_value_short_multibyte_boundary_does_not_panic() {
+        let value = json!(format!("{}é{}", "a".repeat(35), "b".repeat(10)));
+        let s = value.to_string();
+        assert_eq!(s.len(), 49);
+        assert!(!s.is_char_boundary(37));
+
+        let short = format_value_short(&value);
+        assert!(short.ends_with("..."));
+        assert!(short.len() <= 40);
+        // Greatest boundary <= 37 is 36 (the opening quote + 35 'a's).
+        assert_eq!(short, format!("\"{}...", "a".repeat(35)));
+    }
+
+    #[test]
+    fn format_value_short_ascii_budget_controls() {
+        // Serialized lengths 39, 40 (unchanged) and 41 (truncated).
+        for (inner, truncated) in [(37usize, false), (38, false), (39, true)] {
+            let value = json!("x".repeat(inner));
+            let s = value.to_string();
+            let short = format_value_short(&value);
+            if truncated {
+                assert_eq!(s.len(), 41);
+                assert_eq!(short, format!("{}...", &s[..37]));
+                assert_eq!(short.len(), 40);
+            } else {
+                assert_eq!(short, s);
+            }
+        }
+    }
+
+    #[test]
+    fn build_spec_multibyte_return_preserves_stored_value_and_formats() {
+        let value = json!(format!("{}é{}", "a".repeat(35), "b".repeat(10)));
+        let spec = build_spec_returning(&value);
+        assert_eq!(
+            spec.classes[0].postcondition,
+            Postcondition::Returns { value: value.clone() }
+        );
+        assert_eq!(spec.classes[0].examples[0].return_value, Some(value));
+        assert!(!format_spec_markdown(&spec).is_empty());
+        assert!(format_spec_json(&spec).is_ok());
+        assert!(format_spec_yaml(&spec).is_ok());
+    }
+
     // ── Property-based tests ─────────────────────────────────────────────
 
     mod proptests {
         use super::*;
         use crate::test_arbitraries::{arb_classified_invariant, arb_function_spec};
         use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn build_spec_unicode_return_never_panics_and_is_lossless(
+                text in "\\PC{0,60}",
+            ) {
+                let value = serde_json::json!(text);
+                let spec = build_spec_returning(&value);
+                prop_assert_eq!(
+                    &spec.classes[0].postcondition,
+                    &Postcondition::Returns { value: value.clone() }
+                );
+                prop_assert_eq!(&spec.classes[0].examples[0].return_value, &Some(value.clone()));
+                prop_assert!(!format_spec_markdown(&spec).is_empty());
+                prop_assert!(format_spec_json(&spec).is_ok());
+                prop_assert!(format_spec_yaml(&spec).is_ok());
+
+                let short = format_value_short(&value);
+                let full = value.to_string();
+                if full.len() > 40 {
+                    prop_assert!(short.len() <= 40);
+                    prop_assert!(short.ends_with("..."));
+                } else {
+                    prop_assert_eq!(short, full);
+                }
+            }
+        }
 
         proptest! {
             #[test]
