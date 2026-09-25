@@ -676,8 +676,9 @@ tasks:
   pre-completion-e2e:
     desc: Pre-completion with E2E tests
     cmds:
+      # check-integration already runs the concolic E2E suites via
+      # core:test-ignored. Keep task e2e available as a standalone gate.
       - task: check
-      - task: e2e
       - git status --short
 
   walkthrough:
