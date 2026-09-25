@@ -7,6 +7,8 @@ tasks:
       - src/**/*.rs
       - Cargo.toml
       - Cargo.lock
+    generates:
+      - target/debug/shatter-rust
     cmds:
       - cargo build
 
