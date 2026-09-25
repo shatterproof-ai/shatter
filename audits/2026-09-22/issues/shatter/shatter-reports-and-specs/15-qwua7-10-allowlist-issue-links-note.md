@@ -1,6 +1,6 @@
 ---
 slug: qwua7-10-allowlist-issue-links-note
-kind: note-to-existing
+kind: reopen-note
 title: "Note on str-qwua7.10: require a tracker issue on every gauntlet allowlist entry, not only the two new expiring ones"
 priority: P1
 type: bug

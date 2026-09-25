@@ -1,6 +1,6 @@
 ---
 slug: bgs-3cz-pointer
-kind: note-to-existing
+kind: reopen-note
 title: "Note on closed bgs-3cz: installed cache still 125 MB; see installed-cache-bloat-investigation (do not reopen yet)"
 priority: P3
 type: task

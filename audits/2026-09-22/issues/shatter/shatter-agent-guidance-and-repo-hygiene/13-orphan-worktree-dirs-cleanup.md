@@ -64,5 +64,5 @@ Re-verified 2026-09-23:
 
 ## Dependencies
 
-None. The re-scope comment on str-qwua7.1 (note `qwua7-1-git-state-check`)
-points here.
+None. Detection of dead worktree dirs and stale previews landed in str-qwua7.1 (closed
+2026-09-24, drift-patrol git-state check); this issue is only the operator-confirmed removal.

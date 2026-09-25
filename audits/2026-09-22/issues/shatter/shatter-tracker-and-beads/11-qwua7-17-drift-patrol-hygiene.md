@@ -1,6 +1,6 @@
 ---
 slug: qwua7-17-drift-patrol-hygiene
-kind: note-to-existing
+kind: reopen-note
 title: "Note on str-qwua7.17: drift-patrol tracker-hygiene is red again (stale claims, 4 orphans)"
 priority: P3
 type: task

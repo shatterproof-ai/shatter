@@ -27,14 +27,11 @@ each with evidence. It needs no branch. The recurring detector (a
 landed-not-closed drift-patrol check) is a separate code change:
 landed-not-closed-patrol-check.
 
-## Ordering (no dependency edge)
+## Ordering
 
-Post the qwua7-1-git-state-check note (bucket
-shatter-agent-guidance-and-repo-hygiene) on str-qwua7.1 before working this
-issue, so that .1 is treated as re-scoped rather than closed. This is an
-ordering note only; there is deliberately **no** blocked-by edge, because the
-filer would resolve that note slug to str-qwua7.1 itself and block this sweep
-on the still-open git-state-check work.
+None. (str-qwua7.1 was closed on 2026-09-24 with its git-state check landed, so there is no
+re-scope note to post first. The identity part of that check is the new issue
+`qwua7-1-git-state-check`.)
 
 ## Evidence (re-verified 2026-09-23 with `bd show`; verify each again before acting)
 
@@ -100,7 +97,7 @@ Epic: Audit 2026-09-22 findings (shatter).
 
 ## Dependencies
 
-- Blocked by: none (ordering note above: post qwua7-1-git-state-check first).
+- Blocked by: none.
 - Related: mpgg1-close, exit-codes-qwua7-12-note, qwua7-17-drift-patrol-hygiene,
   landed-not-closed-patrol-check, str-qwua7.62,
   beads-jsonl-consumers-drop-bd-sync.

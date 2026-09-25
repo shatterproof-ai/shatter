@@ -47,8 +47,9 @@ Two things are still missing:
    be narrowed to registered entrypoints.
 
 The repo-state check (FAIL on local identity override, `*@example.com`,
-`core.bare=true`, local `core.hooksPath`) is **not** in this issue. It goes to
-str-qwua7.1 (see the note drafted as `qwua7-1-git-state-check`).
+`core.bare=true`, local `core.hooksPath`) is **not** in this issue. `core.bare`
+and `core.hooksPath` landed in str-qwua7.1 (closed 2026-09-24); the identity checks are the new
+issue `qwua7-1-git-state-check`.
 
 ## Evidence
 

@@ -1,73 +1,55 @@
 ---
 slug: qwua7-1-git-state-check
-kind: note-to-existing
-title: "Note on str-qwua7.1: core.bare is repaired; re-scope to the git-state check (local identity override, *@example.com, core.bare, local hooksPath)"
-priority: P1
+kind: new
+title: "drift-patrol git-state check: also fail on a repo-local git identity override or an example.com author email (the leaked fixture identity went unnoticed for three months)"
+priority: P2
 type: chore
-labels: [agents, git, tooling, drift]
-parent_epic: "(existing issue; parent str-qwua7)"
+labels: [agents, git, tooling, drift-patrol, audit-2026-09-22]
+parent_epic: "Epic: Audit 2026-09-22 findings"
 blocked_by: []
-existing_id: str-qwua7.1
+existing_id: ""
 tracker: "bd in /home/ketan/project/shatter (prefix str)"
 ---
 
-# Note on str-qwua7.1: re-scope to the git-state check
+# drift-patrol git-state check: also fail on a leaked repo-local git identity
 
-Target: **str-qwua7.1** (open, P1, "Repair primary checkout (core.bare=true)
-and add a git-state hygiene check"). Action: `bd comments add str-qwua7.1`
-with the text below. Do not close it and do not change its priority.
+## Problem
 
-## Comment text
+A test fixture's identity (`[user] name = Test`, `email = test@example.com`) leaked into the shared
+repo-local `.git/config` of the primary checkout (the str-jttrf GIT_DIR leak). From mid-June 2026
+until 2026-09-23, commits made there were authored "Test" / "Test User", and bd showed "Owner:
+Test". Nothing flagged it. The maintainer removed the section on 2026-09-23 (audit decision D5).
 
-> Audit 2026-09-22 update (maintainer decision D5, 2026-09-23). Evidence:
-> `audits/2026-09-22/findings.json` agent-repo-01, prior-04, prior-09.
->
-> **Repair half is done or moving elsewhere:**
-> - `core.bare` is already `false` in the primary checkout
->   (`git -C /home/ketan/project/shatter config --get core.bare` -> `false`).
-> - Unregistered /tmp land-work previews: none registered at the time of the
->   audit (`git worktree list` shows none).
-> - The five dead dirs under `~/.local/share/worktrees/shatter/` and the
->   `.claude/worktrees/str-umw3/` orphan still exist. Their operator-confirmed
->   removal (or documented retention) is now tracked by
->   <orphan-worktree-dirs-cleanup>. Drop them from this issue's acceptance.
-> - A second instance of the same damage class was found: the fixture identity
->   `[user] name = Test, email = test@example.com` had leaked into the primary's
->   repo-local `.git/config` (str-jttrf leak). The maintainer removed it
->   2026-09-23. The `.mailmap` and fixture-side config guard are tracked in
->   <mailmap-and-fixture-config-snapshot>.
->
-> **Re-scoped acceptance for this issue (the check only):**
-> - A repo-state check (a new entry in `scripts/drift-patrol.py` `CHECKS`,
->   `:757`, as this issue already chose; optionally surfaced by
->   `scripts/setup-hooks.sh --check`) inspects **the checkout drift-patrol is
->   invoked from** (its repo root, not an arbitrary cwd such as a fixture
->   repo) and FAILs when any of these holds:
->   1. a repo-local `user.name` or `user.email` override exists
->      (`git config --local --get user.email` / `user.name` non-empty);
->   2. the effective `user.email` (any scope) matches `*@example.com` (also
->      `*.invalid` / `example.org`, if cheap);
->   3. `core.bare=true`;
->   4. a repo-local `core.hooksPath` override exists.
-> - **Discovery precedence (this order, tested):** (a) locate the repository
->   with `git rev-parse --git-dir` / `--git-common-dir`, which succeed even
->   when `core.bare=true` makes `--is-inside-work-tree` return false; (b) read
->   the common dir's `config` directly (`git config --file <common>/config`)
->   and evaluate conditions 1-4; (c) only if no git directory can be
->   discovered at all, or the run is in CI, report SKIP. A checkout whose
->   config says `core.bare=true` must never be reported as "not a work tree ->
->   SKIP".
-> - Unit tests in `scripts/test_drift_patrol.py` build a temporary repo per
->   condition and assert FAIL, plus one clean repo asserting PASS, plus one
->   directory with no repository asserting SKIP. One test sets
->   `core.bare=true` on a non-bare checkout and asserts **FAIL, not SKIP**.
->   Include a failing-then-passing run in the close reason.
-> - `python3 scripts/drift-patrol.py` shows the check PASS on the primary
->   checkout. Record the output in the close reason.
-> - The prunable-worktree / stale-preview / non-repo-dir detections from the
->   original body may stay as extra conditions. Keep them only if they are
->   unit-tested the same way.
->
-> This unblocks str-qwua7.18 and str-qwua7.19, which are `blocked_by` .1 only
-> because of the repair premise. Consider removing those edges once this
-> re-scope is accepted.
+str-qwua7.1 (closed 2026-09-24, landed at 0975daf9) added a detection-only git-state check to
+`scripts/drift-patrol.py`. It covers `core.bare=true`, a `core.hooksPath` override, prunable
+worktrees, dead worktree directories and stale preview directories. It has no identity check:
+`git show origin/main:scripts/drift-patrol.py | grep -n 'user.email\|example.com'` finds nothing.
+
+## Acceptance criteria
+
+- [ ] Extend the existing git-state check (do not add a second one) so it FAILs when either holds
+  for the primary checkout it already inspects:
+  1. a repo-local `user.name` or `user.email` exists (`git config --file <common-dir>/config
+     --get user.email`, the same `git config --file` approach the check already uses);
+  2. the effective `user.email` matches `*@example.com`, `*@example.org` or `*.invalid`.
+- [ ] The finding names the file and the values, and the repair text says to remove the section
+  (`git config --file <path> --remove-section user`) and check the fixture that leaked it.
+- [ ] Regression tests next to the existing git-state tests: a temp repo with a local
+  `user.email=test@example.com` FAILs; a temp repo with only a global identity passes. Both tests
+  isolate `HOME`/`GIT_CONFIG_GLOBAL` so the developer's real config cannot affect them. The
+  failing case fails on current main (record it).
+- [ ] Run drift-patrol live against the primary checkout after the fix and paste the git-state
+  section (expected: clean, since the leak was removed on 2026-09-23).
+- [ ] `task affected` passes, with `Gates selected` recorded.
+
+## Out of scope
+
+- The `.mailmap` for historical commits and the fixture-side `.git/config` snapshot guard
+  (`mailmap-and-fixture-config-snapshot`).
+- Anything str-qwua7.1 already covers.
+
+## Related
+
+str-qwua7.1 (closed; the check this extends), str-jttrf (closed; the leak mechanism),
+`mailmap-and-fixture-config-snapshot`. Audit evidence: `audits/2026-09-22/findings.json`
+agent-repo-01.
