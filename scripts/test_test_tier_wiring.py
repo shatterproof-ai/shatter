@@ -168,6 +168,18 @@ class TestTestTierWiring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             tool_dir = Path(temp_dir)
             capture = tool_dir / "cargo-env.log"
+            checksum_dir = ROOT / ".task" / "checksum"
+
+            def checksum_state() -> dict[str, tuple[bytes, int]]:
+                if not checksum_dir.exists():
+                    return {}
+                return {
+                    str(path.relative_to(checksum_dir)): (path.read_bytes(), path.stat().st_mtime_ns)
+                    for path in checksum_dir.rglob("*")
+                    if path.is_file()
+                }
+
+            original_checksums = checksum_state()
             fake_tool = """#!/usr/bin/env bash
 if [[ "$(basename "$0")" == cargo ]]; then
   printf '%s|%s|%s\\n' "$*" "${PROPTEST_CASES:-}" "${SHATTER_FUZZ_CASES:-}" >> "$SHATTER_TEST_ENV_CAPTURE"
@@ -200,6 +212,11 @@ exit 0
                 line
                 for line in capture.read_text().splitlines()
                 if line.startswith("test --workspace|")
+            )
+            self.assertEqual(checksum_state(), original_checksums)
+            self.assertTrue(
+                list((tool_dir / "task-cache" / "checksum").glob("*")),
+                "task checksums must be isolated under the test's temporary directory",
             )
         self.assertEqual(workspace_test, "test --workspace|32|32")
 
