@@ -25,13 +25,21 @@ str-qwua7.1 (closed 2026-09-24, landed at 0975daf9) added a detection-only git-s
 worktrees, dead worktree directories and stale preview directories. It has no identity check:
 `git show origin/main:scripts/drift-patrol.py | grep -n 'user.email\|example.com'` finds nothing.
 
+**Recurrence (2026-09-24).** A second fixture identity leaked the same way. `demo/walkthrough.sh`
+sets `user.name "Shatter Demo"` / `user.email "demo@shatter"` on its throwaway TIA repo; run from a
+hook with an inherited `GIT_DIR`, it wrote them into the real shared `.git/config`. The fix
+(c6cb2927, 2026-09-24 10:20) is itself the first commit authored `Shatter Demo`, and 22 commits on
+origin/main through ee5f0a28 carry that identity. The section was removed again on 2026-09-24
+(backup kept by the maintainer's session). The mailmap must cover both identities.
+
 ## Acceptance criteria
 
 - [ ] Extend the existing git-state check (do not add a second one) so it FAILs when either holds
   for the primary checkout it already inspects:
   1. a repo-local `user.name` or `user.email` exists (`git config --file <common-dir>/config
      --get user.email`, the same `git config --file` approach the check already uses);
-  2. the effective `user.email` matches `*@example.com`, `*@example.org` or `*.invalid`.
+  2. the effective `user.email` matches `*@example.com`, `*@example.org`, `*.invalid` or a
+     domain with no dot (for example `demo@shatter`).
 - [ ] The finding names the file and the values, and the repair text says to remove the section
   (`git config --file <path> --remove-section user`) and check the fixture that leaked it.
 - [ ] Regression tests next to the existing git-state tests: a temp repo with a local
