@@ -2042,5 +2042,4 @@ describe("protocol round-trip", () => {
     expect(parsed.id).toBe(99);
     expect(parsed.protocol_version).toBe(PROTOCOL_VERSION);
   });
-
 });
