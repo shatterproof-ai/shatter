@@ -48,13 +48,16 @@ tasks:
       - ../shatter-ts/src/**/*.ts
       - ../shatter-ts/package.json
       - ../shatter-ts/package-lock.json
+      - ../shatter-ts/tsconfig.json
       - ../shatter-go/**/*.go
       - ../shatter-go/go.mod
       - ../shatter-go/go.sum
       - ../shatter-rust/src/**/*.rs
       - ../shatter-rust/Cargo.toml
+      - ../shatter-rust/Cargo.lock
       - ../shatter-rust-runtime/src/**/*.rs
       - ../shatter-rust-runtime/Cargo.toml
+      - ../shatter-rust-runtime/Cargo.lock
       - ../scripts/examples_checkout.py
     cmds:
       - |
@@ -93,13 +96,16 @@ tasks:
       - ../shatter-ts/src/**/*.ts
       - ../shatter-ts/package.json
       - ../shatter-ts/package-lock.json
+      - ../shatter-ts/tsconfig.json
       - ../shatter-go/**/*.go
       - ../shatter-go/go.mod
       - ../shatter-go/go.sum
       - ../shatter-rust/src/**/*.rs
       - ../shatter-rust/Cargo.toml
+      - ../shatter-rust/Cargo.lock
       - ../shatter-rust-runtime/src/**/*.rs
       - ../shatter-rust-runtime/Cargo.toml
+      - ../shatter-rust-runtime/Cargo.lock
       - ../scripts/examples_checkout.py
     cmds:
       - |

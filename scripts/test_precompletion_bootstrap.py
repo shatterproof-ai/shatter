@@ -64,9 +64,12 @@ class PreCompletionBootstrapTest(unittest.TestCase):
         core_taskfile = CORE_TASKFILE_PATH.read_text(encoding="utf-8")
         for source in (
             "../shatter-ts/src/**/*.ts",
+            "../shatter-ts/tsconfig.json",
             "../shatter-go/**/*.go",
             "../shatter-rust/src/**/*.rs",
+            "../shatter-rust/Cargo.lock",
             "../shatter-rust-runtime/src/**/*.rs",
+            "../shatter-rust-runtime/Cargo.lock",
         ):
             self.assertEqual(core_taskfile.count(f"- {source}"), 2)
 
