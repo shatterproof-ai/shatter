@@ -240,7 +240,7 @@ def ident_of(slug, fake):
     if slug in ledger: return ledger[slug]
     return fake.get(slug)
 
-PH = re.compile(r"<(?:id of )?([A-Za-z0-9][A-Za-z0-9._-]*)>")
+PH = re.compile(r"<(?:id of )?([A-Za-z0-9][A-Za-z0-9._-]*?)(?: id)?>")  # <slug>, <id of slug>, <slug id>
 def substitute(text, d, epic_id, fake):
     missing = []
     def rep(m):
