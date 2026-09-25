@@ -22,7 +22,7 @@ TASKFILE = ROOT / "Taskfile.yml"
 
 def list_all_tasks(cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["task", "--list-all", "--json"],
+        ["task", "--list-all", "--json", "--dry"],
         cwd=cwd,
         text=True,
         capture_output=True,
@@ -254,8 +254,9 @@ class AffectedGateMappingTests(unittest.TestCase):
                 capture_output=True,
                 check=True,
             )
-            self.assertIn("task: [leaf:run] echo LEAF_RAN", completed.stdout)
-            self.assertNotIn('Task "leaf:run" is up to date', completed.stdout)
+            output = completed.stdout + completed.stderr
+            self.assertIn("task: [leaf:run] echo LEAF_RAN", output)
+            self.assertNotIn('Task "leaf:run" is up to date', output)
 
     def test_test_scripts_guard_task_list_commands(self) -> None:
         unguarded = []
