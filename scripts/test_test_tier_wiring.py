@@ -207,12 +207,10 @@ class TestTestTierWiring(unittest.TestCase):
             fake_tool = """#!/usr/bin/env bash
 if [[ "$(basename "$0")" == cargo ]]; then
   printf '%s|%s|%s\\n' "$*" "${PROPTEST_CASES:-}" "${SHATTER_FUZZ_CASES:-}" >> "$SHATTER_TEST_ENV_CAPTURE"
-elif [[ "$(basename "$0")" == python3 ]]; then
-  printf '%s\\n' "$SHATTER_TEST_PROJECT"
 fi
 exit 0
 """
-            for tool_name in ("cargo", "go", "npm", "python3"):
+            for tool_name in ("cargo", "go", "npm"):
                 tool = tool_dir / tool_name
                 tool.write_text(fake_tool)
                 tool.chmod(0o755)
@@ -220,7 +218,7 @@ exit 0
             env = os.environ.copy()
             env["PATH"] = f"{tool_dir}:{env['PATH']}"
             env["SHATTER_TEST_ENV_CAPTURE"] = str(capture)
-            env["SHATTER_TEST_PROJECT"] = str(fixture)
+            env["SHATTER_EXAMPLES_DIR"] = str(fixture)
             # Model a default quick-tier invocation even when this regression
             # runs inside the Full gate, whose ambient budgets intentionally
             # remain valid operator overrides.
