@@ -811,6 +811,8 @@ pub struct PathPredicateTarget {
 }
 
 /// The exact ordered branch sequence and caller-supplied execution context.
+/// Each pair projects a `BranchDecision` to `(branch_id, taken)`, retaining
+/// repeated loop decisions while omitting source lines and constraints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathPredicateScope {
@@ -1029,7 +1031,10 @@ fn sort_json_objects(value: serde_json::Value) -> serde_json::Value {
 }
 
 /// Evaluate a scalar input predicate with strict schema, context, path, and
-/// outcome precedence. No evidence or lifecycle fields are mutated.
+/// outcome precedence. Lexical integer and float JSON categories are distinct;
+/// mixed-category operands are inapplicable under `json-scalars-v1`. The caller
+/// supplies the context binding; target and lifecycle are record metadata.
+/// No evidence or lifecycle fields are mutated.
 pub fn evaluate_path_predicate(
     predicate: &PathPredicateRecord,
     observation: &PathObservation,
@@ -1358,6 +1363,98 @@ mod tests {
         assert!(parse_path_predicate(&value.to_string()).is_err());
         value["evidence"] = json!(null);
         assert!(parse_path_predicate(&value.to_string()).is_err());
+
+        let mut overflow = scalar_predicate(PathCompareOp::Eq);
+        overflow.evidence.holds = u32::MAX;
+        overflow.evidence.violated = 1;
+        overflow.evidence.eligible = u32::MAX;
+        assert!(matches!(
+            validate_path_predicate(&overflow),
+            Err(PredicateValidationError::InvalidEvidence)
+        ));
+    }
+
+    #[test]
+    fn path_predicate_resolves_typed_nested_paths_and_number_boundaries() {
+        use NotApplicableReason as Reason;
+        let mut predicate = scalar_predicate(PathCompareOp::Lt);
+        let PathExpression::Compare { left, right, .. } = &mut predicate.expression;
+        left.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Index { value: 0 },
+        ];
+        right.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Index { value: 1 },
+        ];
+        predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+        let mut observation = scalar_observation(json!(0), json!(0));
+        observation.inputs = vec![json!({"values": [1.25, 2.5]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Holds
+        );
+        observation.inputs = vec![json!({"values": [i64::MAX - 1, i64::MAX]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::Holds
+        );
+        observation.inputs = vec![json!({"values": [null, 2]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::ExplicitNull
+            }
+        );
+        observation.inputs = vec![json!({"values": [1]})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::MissingValue
+            }
+        );
+        observation.inputs = vec![json!({"values": {"0": 1, "1": 2}})];
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::WrongType
+            }
+        );
+        observation.inputs = vec![json!({"values": [1, 2]})];
+        let PathExpression::Compare { left, .. } = &mut predicate.expression;
+        left.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Field { value: "0".into() },
+        ];
+        predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::WrongType
+            }
+        );
+        let PathExpression::Compare { left, .. } = &mut predicate.expression;
+        left.path = vec![
+            PathSegment::Field {
+                value: "values".into(),
+            },
+            PathSegment::Index { value: 0 },
+        ];
+        predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+        observation.inputs = vec![json!({"values": [u64::MAX, 2]})];
+        observation.context_fingerprint = None;
+        assert_eq!(
+            evaluate_path_predicate(&predicate, &observation),
+            PredicateEvaluation::NotApplicable {
+                reason: Reason::UnsupportedSchema
+            }
+        );
     }
 
     #[test]
@@ -1370,9 +1467,15 @@ mod tests {
             ..Config::default()
         };
         let mut runner = TestRunner::new(config);
-        let strategy = (-1000i64..=1000, -1000i64..=1000, 0u8..6);
+        let strategy = (
+            -1000i64..=1000,
+            -1000i64..=1000,
+            0u8..6,
+            0u8..3,
+            any::<bool>(),
+        );
         runner
-            .run(&strategy, |(a, b, index)| {
+            .run(&strategy, |(a, b, index, category, nested)| {
                 let op = match index {
                     0 => PathCompareOp::Eq,
                     1 => PathCompareOp::Ne,
@@ -1390,8 +1493,44 @@ mod tests {
                     _ => a >= b,
                 };
                 let predicate = scalar_predicate(op);
-                let observation = scalar_observation(json!(a), json!(b));
+                let mut predicate = predicate;
+                let (left, right) = match category {
+                    0 => (json!(a), json!(b)),
+                    1 => (json!(a as f64 + 0.5), json!(b as f64 + 0.5)),
+                    _ => (json!(a), json!(b as f64 + 0.5)),
+                };
+                let mut observation = scalar_observation(left.clone(), right.clone());
+                if nested {
+                    let PathExpression::Compare {
+                        left: lhs,
+                        right: rhs,
+                        ..
+                    } = &mut predicate.expression;
+                    lhs.path = vec![
+                        PathSegment::Field {
+                            value: "values".into(),
+                        },
+                        PathSegment::Index { value: 0 },
+                    ];
+                    rhs.path = vec![
+                        PathSegment::Field {
+                            value: "values".into(),
+                        },
+                        PathSegment::Index { value: 1 },
+                    ];
+                    predicate.predicate_id = canonical_path_predicate_id(&predicate).expect("ID");
+                    observation.inputs = vec![json!({"values": [left, right]})];
+                }
                 let actual = evaluate_path_predicate(&predicate, &observation);
+                if category == 2 {
+                    prop_assert_eq!(
+                        actual,
+                        PredicateEvaluation::NotApplicable {
+                            reason: NotApplicableReason::UnsupportedOperation
+                        }
+                    );
+                    return Ok(());
+                }
                 prop_assert_eq!(
                     actual,
                     if expected {
