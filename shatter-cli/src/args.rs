@@ -473,6 +473,43 @@ impl From<TimingFormatArg> for TimingFormat {
     }
 }
 
+/// Help footer for `shatter observe` describing opt-in path evidence collection.
+const PATH_EVIDENCE_EXAMPLE: &str = "\
+Path evidence (opt-in):
+  Fold this run's executions into an existing path predicate bundle:
+
+    shatter observe src/math.ts:compare --allow-host-writes \\
+        --path-predicate-bundle predicates.json \\
+        --path-evidence-provenance provenance.json
+
+  provenance.json: {\"target\": {\"qualified_function\": \"example.compare\",
+  \"frontend\": \"typescript\", \"source_fingerprint\": \"source-v1\"},
+  \"context_fingerprint\": \"context-v1\"}
+
+  The target and context_fingerprint are operator assertions: Shatter does not
+  verify the source fingerprint or the execution context, so use the same
+  identity as the predicate author. qualified_function must exactly equal the
+  analyzed function name and frontend the selected frontend label. A predicate
+  matches only when its full ordered branch sequence equals an execution's.
+  The bundle is replaced atomically, but concurrent updates are not safe:
+  serialize writes to a shared bundle.";
+
+/// Opt-in path predicate evidence collection flags for `shatter observe`.
+/// Flattened so the two flags add one derive node to the `Cli` enum.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub(crate) struct PathEvidenceArgs {
+    /// Existing path predicate bundle to update with this run's evidence.
+    /// Requires --path-evidence-provenance.
+    #[arg(long, value_name = "BUNDLE.json", requires = "path_evidence_provenance")]
+    pub(crate) path_predicate_bundle: Option<PathBuf>,
+
+    /// JSON file asserting the target (qualified_function, frontend,
+    /// source_fingerprint) and a nonempty context_fingerprint for this run.
+    /// Requires --path-predicate-bundle.
+    #[arg(long, value_name = "PROVENANCE.json", requires = "path_predicate_bundle")]
+    pub(crate) path_evidence_provenance: Option<PathBuf>,
+}
+
 /// CLI overrides for the LLM seed oracle. Boxed and `#[command(flatten)]`-ed
 /// into explore-level arg structs to avoid inflating the clap derive stack
 /// (see memory note about `Box<LlmOverrides>`).
@@ -1200,6 +1237,7 @@ pub(crate) enum CliCommand {
     /// Run the observation stage: execute a function with generated inputs and write
     /// ObserveStageOutput JSON to a file or stdout. Use `shatter analyze` to process
     /// the output offline, or `shatter specify` to build a behavioral spec.
+    #[command(after_long_help = PATH_EVIDENCE_EXAMPLE)]
     Observe {
         /// Target: <file>:<function>. The function name is required. Must be
         /// a concrete file path — wildcards are rejected; use `explore` or
@@ -1244,6 +1282,9 @@ pub(crate) enum CliCommand {
         /// Memory limit in MB for the frontend process.
         #[arg(long)]
         memory_limit: Option<u64>,
+
+        #[command(flatten)]
+        path_evidence: PathEvidenceArgs,
     },
 
     /// Solve uncovered branches: read Stage 1 observation output and use Z3 constraint
@@ -3425,6 +3466,24 @@ mod tests {
 
         let result = Cli::try_parse_from(["shatter", "compare", "only-one.json"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_observe_path_evidence_flags_require_each_other() {
+        let base = ["shatter", "observe", "f.ts:fn"];
+        let parse = |extra: &[&str]| Cli::try_parse_from(base.iter().chain(extra));
+        assert!(parse(&[]).is_ok());
+        assert!(parse(&["--path-predicate-bundle", "b.json"]).is_err());
+        assert!(parse(&["--path-evidence-provenance", "p.json"]).is_err());
+        assert!(
+            parse(&[
+                "--path-predicate-bundle",
+                "b.json",
+                "--path-evidence-provenance",
+                "p.json"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

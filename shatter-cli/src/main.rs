@@ -511,6 +511,7 @@ async fn main() -> ExitCode {
             release,
             output,
             memory_limit,
+            path_evidence,
         } => {
             commands::observe::run_observe(
                 &target,
@@ -525,6 +526,9 @@ async fn main() -> ExitCode {
                 log_level,
                 memory_limit,
                 cli.project_dir.as_deref(),
+                path_evidence.path_predicate_bundle.as_deref().zip(
+                    path_evidence.path_evidence_provenance.as_deref(),
+                ),
             )
             .await
         }

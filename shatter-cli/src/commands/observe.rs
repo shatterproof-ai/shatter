@@ -7,6 +7,7 @@ use shatter_core::log_level::LogLevel;
 use shatter_core::pipeline::{self, ObserveStageOutput};
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
 
+use super::observe_path_evidence::PathEvidenceRequest;
 use crate::args::{parse_target, reject_glob_target};
 use crate::helpers::{
     apply_project_storage, frontend_config, resolve_project_root, shutdown_frontend,
@@ -28,6 +29,7 @@ pub(crate) async fn run_observe(
     log_level: LogLevel,
     memory_limit: Option<u64>,
     project_dir: Option<&Path>,
+    path_evidence: Option<(&Path, &Path)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     reject_glob_target(target)?;
     let parsed = parse_target(target)?;
@@ -37,6 +39,11 @@ pub(crate) async fn run_observe(
         .function
         .as_deref()
         .ok_or("target must specify a function: <file>:<function>")?;
+
+    // Validate operator-supplied evidence inputs before spawning a frontend.
+    let evidence_request = path_evidence
+        .map(|(bundle, provenance)| PathEvidenceRequest::load(bundle, provenance))
+        .transpose()?;
 
     let file_str = parsed.file.to_string_lossy().into_owned();
     let project_root_str = resolve_project_root(project_dir, &parsed.file);
@@ -90,6 +97,13 @@ pub(crate) async fn run_observe(
         .find(|f| f.name == function_name)
         .ok_or_else(|| format!("function '{function_name}' not found in {file_str}"))?
         .clone();
+
+    if let Some(request) = &evidence_request
+        && let Err(e) = request.check_binding(&func.name, parsed.language.label())
+    {
+        shutdown_frontend(frontend).await;
+        return Err(e.into());
+    }
 
     log::debug!(
         "Found function '{}' ({} params, {} branches)",
@@ -254,6 +268,10 @@ pub(crate) async fn run_observe(
     shutdown_frontend(frontend).await;
 
     let observation = explore_result.map_err(|e| format!("exploration failed: {e}"))?;
+
+    if let Some(request) = &evidence_request {
+        request.collect_and_write(&observation)?;
+    }
 
     let stage_output = ObserveStageOutput {
         observation,

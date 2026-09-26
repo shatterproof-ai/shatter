@@ -10,6 +10,7 @@ pub(crate) mod init;
 pub(crate) mod list_targets;
 pub(crate) mod nondeterminism;
 pub(crate) mod observe;
+pub(crate) mod observe_path_evidence;
 pub(crate) mod properties;
 pub(crate) mod revalidate;
 pub(crate) mod run;
