@@ -939,6 +939,21 @@ class ReportTest(unittest.TestCase):
         self.assertIn(r"a \| b", report)
 
 
+class DriftPatrolDocTest(unittest.TestCase):
+    def test_every_check_id_is_in_the_what_it_checks_table(self) -> None:
+        doc = (Path(__file__).resolve().parents[1] / "docs" / "DRIFT-PATROL.md").read_text(
+            encoding="utf-8"
+        )
+        section = doc.split("## What it checks", 1)[1].split("\n## ", 1)[0]
+        rows = {
+            line.split("|")[1].strip().strip("`")
+            for line in section.splitlines()
+            if line.startswith("| `")
+        }
+        missing = [c for c in drift_patrol.CHECK_IDS if c not in rows]
+        self.assertEqual(missing, [], f"checks missing from docs/DRIFT-PATROL.md table: {missing}")
+
+
 class CliTest(unittest.TestCase):
     def test_check_ids_cover_every_registered_check(self) -> None:
         self.assertEqual(len(drift_patrol.CHECK_IDS), len(drift_patrol.CHECKS))

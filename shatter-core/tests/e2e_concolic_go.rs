@@ -2598,3 +2598,85 @@ async fn e2e_go_main_run_error_return_is_observed_and_never_void() {
 
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
+
+// ---------------------------------------------------------------------------
+// Tests: rune / byte / quote-containing string literal compares (str-49drv.102).
+//
+// Before the fix both Go SymExpr builders typed rune literals as `str` consts
+// and the analyzer's strings.Trim stripped the quotes of `"'q'"`, so the
+// solver was handed ill-typed / mangled constraints and the matching arm was
+// never reached. Each case seeds only the non-matching input, so the matching
+// arm can be reached only if the solver decodes the literal correctly.
+// ---------------------------------------------------------------------------
+
+async fn assert_literal_arm_reached(function: &str, seed: serde_json::Value, expected_arm: &str) {
+    let file = repo_examples_go_dir().join("rune-literals").join("lit.go");
+    assert!(
+        file.exists(),
+        "fixture missing: {} -- was the worktree set up correctly?",
+        file.display()
+    );
+    let file_str = file.to_string_lossy().into_owned();
+
+    let (mut frontend, _workspace_dir) = spawn_go_frontend("rune-literals").await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, function).await;
+    assert_eq!(analysis.params.len(), 1, "{function} takes 1 param");
+    assert!(
+        !analysis.branches.is_empty(),
+        "analyze should detect a branch in {function}"
+    );
+
+    instrument_function(&mut frontend, &file_str, function).await;
+
+    let config = ExploreConfig {
+        max_iterations: Some(30),
+        max_executions: Some(60),
+        plateau_threshold: 20,
+        ..Default::default()
+    };
+
+    let (result, _) = orchestrator::explore(
+        &mut frontend,
+        function,
+        vec![vec![seed]],
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+
+    let return_values = return_value_set(&result);
+    for expected in ["\"other\"", expected_arm] {
+        assert!(
+            return_values.contains(expected),
+            "{function}: should discover arm returning {expected}; found: {return_values:?}"
+        );
+    }
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_quote_string_literal_compare() {
+    assert_literal_arm_reached("QuoteString", serde_json::json!("zzz"), "\"quoted\"").await;
+}
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_rune_literal_compare() {
+    assert_literal_arm_reached("RuneCompare", serde_json::json!(65), "\"x\"").await;
+}
+
+#[tokio::test]
+#[ignore = "slow: spawns Go frontend subprocess and compiles per-execute harnesses"]
+async fn e2e_go_byte_literal_compare() {
+    assert_literal_arm_reached("ByteCompare", serde_json::json!(65), "\"x\"").await;
+}
