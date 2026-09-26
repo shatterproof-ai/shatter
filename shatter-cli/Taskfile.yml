@@ -29,6 +29,7 @@ tasks:
         else
           cargo test -p shatter-cli
         fi
+      - task: guard-temp-root
 
   # Keep this body in sync with test above. Its distinct checksum identity
   # protects check-fast's reduced property-test budget.
@@ -47,6 +48,20 @@ tasks:
           cargo nextest run -p shatter-cli
         else
           cargo test -p shatter-cli
+        fi
+      - task: guard-temp-root
+
+  # A test that runs shatter with cwd == the temp root triggers implicit init and
+  # leaves <tmp>/.shatter/config.yaml, which poisons every later test and session
+  # (str-49drv.214). Fail loudly, naming the polluter's likely cause.
+  guard-temp-root:
+    internal: true
+    cmds:
+      - |
+        stray="${TMPDIR:-/tmp}/.shatter"
+        if [ -e "$stray" ]; then
+          echo "ERROR: $stray exists after the shatter-cli suite: a test ran shatter with the temp root as cwd (implicit init). Remove it and fix the test (str-49drv.214)." >&2
+          exit 1
         fi
 
   clippy:
