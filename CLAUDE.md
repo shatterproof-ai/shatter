@@ -21,8 +21,8 @@ Per-language standards: `/rust-conventions`, `/ts-conventions`, `/go-conventions
 | Quick | `task test-quick` | During development |
 | Standard | `task test-standard` | Before committing |
 | Affected | `task affected` | Before completing a feature branch; selects gates from its diff |
-| Full | `task check` | Landing, CI, and unknown-path fail-safe |
-| E2E | `task e2e` | After pipeline changes |
+| Full | `task check` | Landing, CI, and unknown-path fail-safe; includes concolic E2E |
+| E2E | `task e2e` | Focused pipeline check without the full suite |
 | Smoke | `task smoke` | Before closing any issue |
 | Walkthrough | `task walkthrough` | After changes to the compact demo path, walkthrough output, or walkthrough example set |
 | Gauntlet | `task gauntlet` | After broad CLI coverage changes or non-demo command additions |
@@ -34,7 +34,7 @@ Per-language standards: `/rust-conventions`, `/ts-conventions`, `/go-conventions
 - `shatter-core/tests/e2e_concolic_rust.rs` — Rust frontend (str-o9rz)
 - `shatter-core/tests/e2e_concolic_go.rs` — Go frontend (str-3op0)
 
-These are the only suites that exercise the full pipeline end-to-end — a module can pass its own unit tests while being silently disconnected from the pipeline, and this project has multiple parallel code paths (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes) where features added to one path are routinely missing from another. Run E2E after any change to solver logic, instrumentor (`buildSymExpr*`), explorer/orchestrator, execute-response protocol types, or CLI wiring. If existing E2E cases don't cover your change, add one before closing.
+These are the only suites that exercise the full pipeline end-to-end — a module can pass its own unit tests while being silently disconnected from the pipeline, and this project has multiple parallel code paths (random explorer vs. concolic orchestrator, `buildSymExpr` vs. `buildSymExprWithFlow`, CLI wiring for different explorer modes) where features added to one path are routinely missing from another. Run `task e2e` after any change to solver logic, instrumentor (`buildSymExpr*`), explorer/orchestrator, execute-response protocol types, or CLI wiring unless `task check` already ran; its `core:test-ignored` step covers the same concolic E2E cases. If existing E2E cases don't cover your change, add one before closing.
 
 **Walkthrough gate.** The walkthrough is a compact 8–15 step demo with language parity across TS/Go/Rust for analyze/explore/scan/reporting. Optimize for a coherent product story, not command coverage. Run after changes to walkthrough output, walkthrough examples, or the compact demo flow.
 
@@ -47,7 +47,7 @@ Before declaring work done:
 1. `task affected` passes and its `Gates selected` output is recorded
 2. **Property tests adequate** — new/modified public functions have proptest/fast-check/rapid coverage of core invariants, not just serialization roundtrips
 3. **Cross-language tests pass** if touching protocol types (Full tier)
-4. **E2E pipeline works** if touching any analyze → instrument → execute → solve component (`cargo test --test e2e_concolic` for TS, `cargo test --test e2e_concolic_rust` for Rust, `cargo test --test e2e_concolic_go` for Go)
+4. **E2E pipeline works** if touching any analyze → instrument → execute → solve component (`task e2e` or the concolic E2E cases within `task check`)
 5. **Walkthrough passes** if touching walkthrough output or examples
 6. **Gauntlet passes** if touching broad CLI coverage or non-demo command behavior
 7. **Parity contract updated** if making a protocol-visible frontend change — update the affected frontend's `CLAUDE.md` and `protocol/parity-matrix.yaml`, then run `task parity` + `task conformance`. Internal refactors that leave JSON output identical do not require parity contract updates.
@@ -61,7 +61,7 @@ their own branch into `main` run the full check before pushing `main`.
 
 - **Never edit generated protocol bindings manually** — regenerate from the schema
 - **Never treat the walkthrough as the catch-all CLI inventory** — add to the walkthrough only if it materially improves the compact demo story; otherwise use the gauntlet, conformance tests, E2E, or targeted command tests
-- **Never close a pipeline feature based on unit tests alone** — run `cargo test --test e2e_concolic` (TS), `cargo test --test e2e_concolic_rust` (Rust), and `cargo test --test e2e_concolic_go` (Go)
+- **Never close a pipeline feature based on unit tests alone** — run `task e2e` or verify that `task check` executed the concolic E2E cases in `core:test-ignored`
 - **Never add a capability to one explorer path without checking the other** — `explorer.rs` (random) and `orchestrator.rs` (concolic) are wired differently in `main.rs`; features added to one are routinely missing from the other (see str-emw6). Grep for the parallel path before declaring done.
 - **Never change protocol-visible frontend behavior without updating the parity contract** — if JSON output, error codes, response fields, or observable behavior changes, update that frontend's `CLAUDE.md` and run `task conformance`
 

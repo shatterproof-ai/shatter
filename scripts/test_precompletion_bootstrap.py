@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TASKFILE_PATH = REPO_ROOT / "Taskfile.yml"
+CORE_TASKFILE_PATH = REPO_ROOT / "shatter-core" / "Taskfile.yml"
+RUST_FRONTEND_TASKFILE_PATH = REPO_ROOT / "shatter-rust" / "Taskfile.yml"
 PRE_COMPLETION_SKILL_PATH = REPO_ROOT / ".claude" / "skills" / "pre-completion" / "SKILL.md"
 
 
@@ -30,6 +34,44 @@ def read_task_block(task_name: str) -> str:
 
 
 class PreCompletionBootstrapTest(unittest.TestCase):
+    def test_rust_frontend_build_rechecks_missing_binary(self) -> None:
+        taskfile = RUST_FRONTEND_TASKFILE_PATH.read_text(encoding="utf-8")
+        self.assertIn("      - cargo build", taskfile)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = Path(temp_dir)
+            (fixture / "src").mkdir()
+            (fixture / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (fixture / "Cargo.toml").write_text("[package]\nname = 'fixture'\n", encoding="utf-8")
+            (fixture / "Cargo.lock").write_text("# fixture\n", encoding="utf-8")
+            fixture_taskfile = fixture / "Taskfile.yml"
+            fixture_taskfile.write_text(
+                taskfile.replace(
+                    "      - cargo build",
+                    "      - mkdir -p target/debug && touch target/debug/shatter-rust",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            build = subprocess.run(
+                ["task", "-t", str(fixture_taskfile), "build"],
+                cwd=fixture,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            (fixture / "target" / "debug" / "shatter-rust").unlink()
+            status = subprocess.run(
+                ["task", "-t", str(fixture_taskfile), "--status", "build"],
+                cwd=fixture,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(status.returncode, 0, status.stdout + status.stderr)
+
     def test_smoke_task_builds_typescript_frontend(self) -> None:
         smoke_block = read_task_block("smoke")
         self.assertIn("deps: [ts:build]", smoke_block)
@@ -50,6 +92,27 @@ class PreCompletionBootstrapTest(unittest.TestCase):
         block = read_task_block("pre-completion")
         self.assertIn("task: affected", block)
         self.assertNotIn("task: check", block)
+
+    def test_full_pre_completion_runs_frontend_e2e_once(self) -> None:
+        block = read_task_block("pre-completion-e2e")
+        self.assertEqual(block.count("- task: check"), 1)
+        self.assertNotIn("- task: e2e", block)
+
+        integration = read_task_block("check-integration")
+        for frontend in ("ts:build", "go:build", "rust-fe:build"):
+            self.assertIn(f"- {frontend}", integration)
+
+        core_taskfile = CORE_TASKFILE_PATH.read_text(encoding="utf-8")
+        for source in (
+            "../shatter-ts/src/**/*.ts",
+            "../shatter-ts/tsconfig.json",
+            "../shatter-go/**/*.go",
+            "../shatter-rust/src/**/*.rs",
+            "../shatter-rust/Cargo.lock",
+            "../shatter-rust-runtime/src/**/*.rs",
+            "../shatter-rust-runtime/Cargo.lock",
+        ):
+            self.assertEqual(core_taskfile.count(f"- {source}"), 2)
 
 
 if __name__ == "__main__":
