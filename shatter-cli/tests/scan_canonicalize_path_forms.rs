@@ -89,12 +89,16 @@ fn function_names(output: &Output) -> Vec<String> {
 /// must not change resolution for any of these directory-argument forms).
 #[test]
 fn scan_resolves_directory_identically_across_path_forms() {
-    let project = tempfile::tempdir().expect("create project tempdir");
+    // Nest the project in a private outer tempdir: case 1 runs with
+    // `cwd = project.parent()`, which must never be the shared temp root, or
+    // implicit init writes `<tmp>/.shatter/config.yaml` (str-49drv.214).
+    let outer = tempfile::tempdir().expect("create outer tempdir");
+    let project = outer.path().join("proj");
+    fs::create_dir(&project).expect("create project dir");
     let command_tmp = tempfile::tempdir().expect("create command tempdir");
-    fs::write(project.path().join("lib.ts"), TS_FIXTURE).expect("write TypeScript fixture");
+    fs::write(project.join("lib.ts"), TS_FIXTURE).expect("write TypeScript fixture");
 
     let canonical_project = project
-        .path()
         .canonicalize()
         .expect("canonicalize project dir");
 
@@ -108,7 +112,7 @@ fn scan_resolves_directory_identically_across_path_forms() {
     assert_eq!(canonical_names, vec!["classify".to_string()]);
 
     // 2. Relative path argument (cwd = project dir itself, directory = ".").
-    let relative_output = run_dry_scan(project.path(), ".", command_tmp.path());
+    let relative_output = run_dry_scan(&project, ".", command_tmp.path());
     let relative_names = function_names(&relative_output);
     assert_eq!(relative_names, canonical_names);
 
