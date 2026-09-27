@@ -61,6 +61,11 @@ tasks:
         stray="${TMPDIR:-/tmp}/.shatter"
         if [ -e "$stray" ]; then
           echo "ERROR: $stray exists after the shatter-cli suite: a test ran shatter with the temp root as cwd (implicit init). Remove it and fix the test (str-49drv.214)." >&2
+          # Remove it so the leftover doesn't also fail every later, unrelated
+          # run in this or any other worktree sharing the same temp root
+          # (this project has hit that self-poisoning pattern before) --
+          # this run still fails to surface the polluter.
+          rm -rf "$stray"
           exit 1
         fi
 
