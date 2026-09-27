@@ -146,6 +146,7 @@ mod tests {
         PathPredicateScope, PredicateEvidence, PredicateLifecycle, canonical_path_predicate_id,
     };
     use shatter_core::path_predicate_store::PATH_PREDICATE_BUNDLE_SCHEMA_VERSION;
+    use proptest::prelude::*;
 
     fn target() -> PathPredicateTarget {
         PathPredicateTarget {
@@ -274,5 +275,46 @@ mod tests {
             .collect_and_write(&ObservationOutput::default())
             .expect("collect");
         read_path_predicate_bundle(&bundle_path).expect("readable after write");
+    }
+
+    proptest::proptest! {
+        /// `load` accepts a provenance file if and only if every field is
+        /// nonempty (untrusted-input boundary; not just the hand-picked cases
+        /// above). The bundle always has a predicate for `target()`, so
+        /// acceptance depends only on the provenance content, not the bundle.
+        #[test]
+        fn load_accepts_iff_all_fields_nonempty(
+            qualified_function in "\\PC{0,12}",
+            frontend in "\\PC{0,12}",
+            source_fingerprint in "\\PC{0,12}",
+            context_fingerprint in "\\PC{0,12}",
+        ) {
+            let provenance = serde_json::json!({
+                "target": {
+                    "qualified_function": qualified_function,
+                    "frontend": frontend,
+                    "source_fingerprint": source_fingerprint,
+                },
+                "context_fingerprint": context_fingerprint,
+            })
+            .to_string();
+            let (_dir, bundle_path, provenance_path) = fixture(&provenance);
+            let all_nonempty = !qualified_function.is_empty()
+                && !frontend.is_empty()
+                && !source_fingerprint.is_empty()
+                && !context_fingerprint.is_empty();
+            // Only the exact target() combination has a matching predicate;
+            // anything else fails on "no predicate for target" instead, which
+            // is also required to be an error.
+            let matches_bundle_target = qualified_function == "example.compare"
+                && frontend == "typescript"
+                && source_fingerprint == "source-v1";
+            let result = PathEvidenceRequest::load(&bundle_path, &provenance_path);
+            if all_nonempty && matches_bundle_target {
+                prop_assert!(result.is_ok());
+            } else {
+                prop_assert!(result.is_err());
+            }
+        }
     }
 }
