@@ -249,6 +249,38 @@ class WorkflowPathContractTests(unittest.TestCase):
         self.assertIn("shatter-go/go.sum", cache)
 
 
+# --- Release publish guard (str-49drv.31) ------------------------------------
+#
+# release.yml has no pull_request trigger, so build fixes are iterated with
+# `gh workflow run release.yml --ref <branch>`. The release job must publish
+# only from a push to main, and must tag the built commit rather than the
+# default branch's HEAD.
+
+RELEASE_WORKFLOW = WORKFLOWS_DIR / "release.yml"
+
+
+class ReleasePublishGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
+        self.release_job = self.workflow["jobs"]["release"]
+
+    def test_release_job_only_runs_for_push_to_main(self):
+        condition = self.release_job.get("if")
+        self.assertIsInstance(condition, str, "release job has no `if:` guard")
+        normalized = re.sub(r"\s+", " ", condition)
+        self.assertIn("github.event_name == 'push'", normalized)
+        self.assertIn("github.ref == 'refs/heads/main'", normalized)
+
+    def test_gh_release_create_targets_built_commit(self):
+        create_runs = [
+            step["run"]
+            for step in self.release_job["steps"]
+            if isinstance(step.get("run"), str) and "gh release create" in step["run"]
+        ]
+        self.assertEqual(len(create_runs), 1, "expected one `gh release create` step")
+        self.assertRegex(create_runs[0], r'--target\s+"\$GITHUB_SHA"')
+
+
 class CheckPathRefsUnitTests(unittest.TestCase):
     def setUp(self):
         import tempfile
