@@ -874,7 +874,11 @@ feature_capabilities:
       constructor (if/if-let/while/for heads, match-arm pattern lines), because
       the runtime's `lines_executed` is the union of `line_hit` lines and
       branch-decision lines. Only the Instrument response populates it;
-      Execute and other Rust responses keep it unset.
+      Execute and other Rust responses keep it unset, and an empty probe set
+      (const fn, unknown function name) is sent as unset so the core falls
+      back to the source span instead of a 0 denominator. With same-named
+      functions (methods in different impl blocks) only the first match in
+      source order counts toward the denominator.
     frontends:
       typescript: supported
       go: supported

@@ -798,7 +798,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                         resp.status = "instrument".to_string();
                         resp.instrumented = Some(true);
                         resp.output_file = Some(output_path);
-                        resp.instrumentable_line_count = Some(result.instrumentable_line_count);
+                        resp.instrumentable_line_count = result.instrumentable_line_count();
                         resp.message = Some(format!(
                             "instrumented {} branch points",
                             result.branch_count
@@ -1972,6 +1972,41 @@ mod tests {
         assert!(resp.output_file.is_some());
 
         // Clean up
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn instrument_reports_line_count_and_execute_leaves_it_unset() {
+        let dir = std::env::temp_dir().join("shatter-test-instrument-line-count");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("counted.rs");
+        std::fs::write(
+            &file,
+            "fn add(a: i32, b: i32) -> i32 {\n    let c = a + b;\n    c\n}\n\nconst fn k() -> i32 {\n    1\n}\n",
+        )
+        .expect("write file");
+        let path = file.display();
+
+        let responses = conversation(&[
+            r#"{"protocol_version":"0.1.0","id":1,"command":"handshake","capabilities":["instrument"]}"#,
+            &format!(
+                r#"{{"protocol_version":"0.1.0","id":2,"command":"instrument","file":"{path}","function":"add"}}"#
+            ),
+            &format!(
+                r#"{{"protocol_version":"0.1.0","id":3,"command":"instrument","file":"{path}","function":"k"}}"#
+            ),
+            &format!(
+                r#"{{"protocol_version":"0.1.0","id":4,"command":"execute","file":"{path}","function":"add","inputs":[1,2],"mocks":[]}}"#
+            ),
+        ]);
+        assert_eq!(responses[1].status, "instrument");
+        // fn entry (1), `let c` (2), `c` (3).
+        assert_eq!(responses[1].instrumentable_line_count, Some(3));
+        // const fn: nothing instrumented, so no denominator (core falls back to the span).
+        assert_eq!(responses[2].status, "instrument");
+        assert_eq!(responses[2].instrumentable_line_count, None);
+        // Execute responses never carry the Instrument-only field.
+        assert_eq!(responses[3].instrumentable_line_count, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
