@@ -14,6 +14,7 @@
 //!   wrap them in a `shatter_rust_runtime::mock_call` check that can intercept
 //!   and replace return values.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use proc_macro2::TokenStream;
@@ -49,6 +50,19 @@ pub struct InstrumentResult {
     pub source: String,
     /// Number of branch points instrumented.
     pub branch_count: u32,
+    /// Distinct real source lines (> 0) that any emitted probe (`line_hit` or
+    /// `branch_hit`) can report as executed. Coverage denominator: the runtime's
+    /// `lines_executed` is a subset of this set.
+    pub instrumentable_lines: BTreeSet<u32>,
+}
+
+impl InstrumentResult {
+    /// Coverage denominator for the Instrument response. `None` when no probe
+    /// was emitted (const fn, unknown function name), so the core falls back to
+    /// the source span instead of treating `0` as a real denominator.
+    pub fn instrumentable_line_count(&self) -> Option<u32> {
+        (!self.instrumentable_lines.is_empty()).then_some(self.instrumentable_lines.len() as u32)
+    }
 }
 
 /// Instrument a Rust source file, optionally targeting a single function.
@@ -102,21 +116,25 @@ pub fn instrument_source_with_timing(
         parse_file(source).map_err(|e| InstrumentError::ParseError(e.to_string()))?
     };
 
-    let (output, branch_count) = if let Some(timing) = timing.as_mut() {
-        timing.record("instrument.transform", |_| {
-            let mut visitor = Instrumentor::new(function_name);
-            visitor.visit_file_mut(&mut syntax);
-            (syntax.to_token_stream().to_string(), visitor.branch_id)
-        })
-    } else {
+    let transform = |syntax: &mut syn::File| {
         let mut visitor = Instrumentor::new(function_name);
-        visitor.visit_file_mut(&mut syntax);
-        (syntax.to_token_stream().to_string(), visitor.branch_id)
+        visitor.visit_file_mut(syntax);
+        (
+            syntax.to_token_stream().to_string(),
+            visitor.branch_id,
+            visitor.instrumentable_lines,
+        )
+    };
+    let (output, branch_count, instrumentable_lines) = if let Some(timing) = timing.as_mut() {
+        timing.record("instrument.transform", |_| transform(&mut syntax))
+    } else {
+        transform(&mut syntax)
     };
 
     Ok(InstrumentResult {
         source: output,
         branch_count,
+        instrumentable_lines,
     })
 }
 
@@ -132,6 +150,15 @@ struct Instrumentor {
     inside_target: bool,
     /// Approximate line number tracker (updated as we traverse).
     current_line: u32,
+    /// Real source lines carried by every emitted `line_hit` / `branch_hit` probe.
+    instrumentable_lines: BTreeSet<u32>,
+    /// Whether probe lines currently count toward `instrumentable_lines`. With a
+    /// target function only the first matching function (source order, the one
+    /// the analyzer/core resolve by name) counts; same-named methods elsewhere
+    /// are still instrumented but must not widen the denominator.
+    counting: bool,
+    /// A target function has already been counted.
+    target_counted: bool,
 }
 
 impl Instrumentor {
@@ -142,6 +169,9 @@ impl Instrumentor {
             target_function: target_function.map(String::from),
             inside_target: target_function.is_none(), // if no target, always active
             current_line: 0,
+            instrumentable_lines: BTreeSet::new(),
+            counting: target_function.is_none(),
+            target_counted: false,
         }
     }
 
@@ -150,6 +180,30 @@ impl Instrumentor {
         let id = self.branch_id;
         self.branch_id += 1;
         id
+    }
+
+    /// Record a probe line; synthetic lines (0) are excluded.
+    fn record_line(&mut self, line: u32) {
+        if self.counting && line > 0 {
+            self.instrumentable_lines.insert(line);
+        }
+    }
+
+    /// Start counting probe lines for the first matching target function.
+    /// Returns whether this call opened the counting scope.
+    fn begin_target_count(&mut self) -> bool {
+        if self.target_function.is_some() && !self.target_counted {
+            self.counting = true;
+            return true;
+        }
+        false
+    }
+
+    fn end_target_count(&mut self, opened: bool) {
+        if opened {
+            self.counting = false;
+            self.target_counted = true;
+        }
     }
 
     /// Allocate and return the next loop ID.
@@ -206,7 +260,13 @@ impl Instrumentor {
             }
         };
 
-        syn::parse2(tokens).unwrap_or_else(|_| cond.clone())
+        match syn::parse2(tokens) {
+            Ok(wrapped) => {
+                self.record_line(line);
+                wrapped
+            }
+            Err(_) => cond.clone(),
+        }
     }
 
     /// Create a branch_hit statement for a match arm body.
@@ -221,18 +281,27 @@ impl Instrumentor {
             shatter_rust_runtime::branch_hit(#id, #line, true, #constraint_json);
         };
 
-        syn::parse2(tokens).unwrap_or_else(|_| {
-            // Fallback: empty statement
-            syn::parse2(quote! { ; }).expect("semicolon should parse")
-        })
+        match syn::parse2(tokens) {
+            Ok(stmt) => {
+                self.record_line(line);
+                stmt
+            }
+            // Fallback: empty statement, no probe emitted.
+            Err(_) => syn::parse2(quote! { ; }).expect("semicolon should parse"),
+        }
     }
 
-    fn line_hit_stmt(&self, line: u32) -> Stmt {
+    fn line_hit_stmt(&mut self, line: u32) -> Stmt {
         let tokens: TokenStream = quote! {
             shatter_rust_runtime::line_hit(#line);
         };
-        syn::parse2(tokens)
-            .unwrap_or_else(|_| syn::parse2(quote! { ; }).expect("semicolon should parse"))
+        match syn::parse2(tokens) {
+            Ok(stmt) => {
+                self.record_line(line);
+                stmt
+            }
+            Err(_) => syn::parse2(quote! { ; }).expect("semicolon should parse"),
+        }
     }
 
     fn loop_enter_stmt(&mut self) -> Stmt {
@@ -285,12 +354,16 @@ impl VisitMut for Instrumentor {
             return;
         }
 
-        let line = self.line_of(node);
+        // Anchor on the ident line (as the analyzer's start_line does), not the item
+        // span start, which includes doc comments/attributes outside the fn range.
+        let counted_here = self.begin_target_count();
+        let line = self.line_of(&node.sig.ident);
         node.block.stmts.insert(0, self.line_hit_stmt(line));
 
         // Visit the function body
         syn::visit_mut::visit_item_fn_mut(self, node);
 
+        self.end_target_count(counted_here);
         self.inside_target = was_inside;
     }
 
@@ -313,11 +386,15 @@ impl VisitMut for Instrumentor {
             return;
         }
 
-        let line = self.line_of(node);
+        // Anchor on the ident line (as the analyzer's start_line does), not the item
+        // span start, which includes doc comments/attributes outside the fn range.
+        let counted_here = self.begin_target_count();
+        let line = self.line_of(&node.sig.ident);
         node.block.stmts.insert(0, self.line_hit_stmt(line));
 
         syn::visit_mut::visit_impl_item_fn_mut(self, node);
 
+        self.end_target_count(counted_here);
         self.inside_target = was_inside;
     }
 
@@ -440,6 +517,7 @@ impl VisitMut for Instrumentor {
             };
 
             if let Ok(new_body) = syn::parse2::<Expr>(tokens) {
+                self.record_line(branch_line);
                 *arm.body = new_body;
             }
         }
@@ -450,10 +528,21 @@ impl VisitMut for Instrumentor {
 
 fn should_record_stmt_line(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Local(_) | Stmt::Macro(_) => true,
-        Stmt::Expr(expr, _) => !is_shatter_runtime_call(expr),
+        Stmt::Local(local) => !is_shatter_cond_ident(&local.pat),
+        Stmt::Macro(_) => true,
+        Stmt::Expr(expr, _) => !is_shatter_runtime_call(expr) && !is_shatter_cond_path(expr),
         Stmt::Item(_) => false,
     }
+}
+
+/// `let __shatter_cond = ..;` from `wrap_condition`: synthetic, carries no real line.
+fn is_shatter_cond_ident(pat: &syn::Pat) -> bool {
+    matches!(pat, syn::Pat::Ident(p) if p.ident == "__shatter_cond")
+}
+
+/// Trailing `__shatter_cond` value expression from `wrap_condition`.
+fn is_shatter_cond_path(expr: &Expr) -> bool {
+    matches!(expr, Expr::Path(p) if p.path.is_ident("__shatter_cond"))
 }
 
 fn is_shatter_runtime_call(expr: &Expr) -> bool {
@@ -1197,5 +1286,164 @@ fn guarded(x: i32) -> &'static str {
 "#;
         let result = instrument(source);
         assert!(result.branch_count >= 3);
+    }
+
+    // -- instrumentable line count (str-49drv.17) ---------------------------
+
+    /// NOTE: depends on proc-macro2's `to_string()` spacing (`line_hit (5u32)`,
+    /// `branch_hit (0u32 , 5u32 , ..)`); if that formatting changes, update the
+    /// needles below.
+    ///
+    /// Extract every line number a probe in the instrumented output can report:
+    /// the argument of `line_hit(..)` and the second argument of `branch_hit(..)`.
+    fn probe_lines(instrumented: &str) -> std::collections::BTreeSet<u32> {
+        fn leading_number(s: &str) -> Option<u32> {
+            let digits: String = s
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            digits.parse().ok()
+        }
+        let mut lines = std::collections::BTreeSet::new();
+        for (needle, skip_commas) in [("line_hit (", 0), ("branch_hit (", 1)] {
+            let mut rest = instrumented;
+            while let Some(pos) = rest.find(needle) {
+                rest = &rest[pos + needle.len()..];
+                let mut arg = rest;
+                for _ in 0..skip_commas {
+                    arg = &arg[arg.find(',').map_or(arg.len(), |i| i + 1)..];
+                }
+                if let Some(n) = leading_number(arg) {
+                    lines.insert(n);
+                }
+            }
+        }
+        lines
+    }
+
+    #[test]
+    fn instrumentable_count_ignores_blank_and_comment_lines() {
+        let source = "fn f(x: i32) -> i32 {\n\n    // comment\n    let a = x\n        + 1;\n\n    a\n}\n";
+        let result = instrument_fn(source, "f");
+        // fn entry (1), `let a` (4), `a` (7): multi-line expr counts once.
+        assert_eq!(result.instrumentable_line_count(), Some(3));
+        assert_eq!(result.instrumentable_lines, probe_lines(&result.source));
+    }
+
+    #[test]
+    fn instrumentable_count_includes_match_arm_pattern_lines() {
+        let source = "fn m(x: i32) -> i32 {\n    match x {\n        0 =>\n            1,\n        1 =>\n            2,\n        _ =>\n            3,\n    }\n}\n";
+        let result = instrument_fn(source, "m");
+        for arm_line in [3, 5, 7] {
+            assert!(
+                result.instrumentable_lines.contains(&arm_line),
+                "arm pattern line {arm_line} missing: {:?}",
+                result.instrumentable_lines
+            );
+        }
+        assert_eq!(result.instrumentable_lines, probe_lines(&result.source));
+        assert_eq!(
+            result.instrumentable_line_count(),
+            Some(result.instrumentable_lines.len() as u32)
+        );
+    }
+
+    #[test]
+    fn synthetic_condition_wrapper_emits_no_line_one_probe() {
+        let source = "\n\nfn c(x: i32) -> i32 {\n    if x > 0 {\n        1\n    } else {\n        2\n    }\n}\n";
+        let result = instrument_fn(source, "c");
+        assert!(
+            !result.instrumentable_lines.contains(&1),
+            "synthetic wrapper statements must not emit line 1: {:?}",
+            result.instrumentable_lines
+        );
+        assert_eq!(result.instrumentable_lines, probe_lines(&result.source));
+        assert!(!probe_lines(&result.source).contains(&1));
+    }
+
+    #[test]
+    fn empty_probe_set_yields_no_instrumentable_count() {
+        let const_fn = instrument_fn("const fn k() -> i32 {\n    1\n}\n", "k");
+        assert!(const_fn.instrumentable_lines.is_empty());
+        assert_eq!(const_fn.instrumentable_line_count(), None);
+
+        let missing = instrument_fn("fn real() -> i32 {\n    1\n}\n", "no_such_fn");
+        assert_eq!(missing.instrumentable_line_count(), None);
+    }
+
+    #[test]
+    fn same_named_methods_count_only_first_match() {
+        let source = "struct A;\nstruct B;\nimpl A {\n    fn go(&self) -> i32 {\n        1\n    }\n}\nimpl B {\n    fn go(&self) -> i32 {\n        let a = 1;\n        a + 1\n    }\n}\n";
+        let result = instrument_fn(source, "go");
+        assert_eq!(
+            result.instrumentable_lines.iter().copied().collect::<Vec<_>>(),
+            vec![4, 5],
+            "only the first `go` (lines 4-6) may widen the denominator"
+        );
+        // Both are still instrumented.
+        assert!(probe_lines(&result.source).contains(&10));
+    }
+
+    #[test]
+    fn function_entry_probe_ignores_doc_comment_and_attribute_lines() {
+        let source = "/// doc\n#[inline]\nfn d(x: i32) -> i32 {\n    x\n}\n";
+        let result = instrument_fn(source, "d");
+        assert_eq!(
+            result.instrumentable_lines.iter().copied().collect::<Vec<_>>(),
+            vec![3, 4],
+            "entry probe must sit on the `fn` ident line, not the doc/attr lines"
+        );
+    }
+
+    #[test]
+    fn instrumentable_count_includes_if_let_and_loop_heads() {
+        let source = "fn g(o: Option<i32>) -> i32 {\n    let mut t = 0;\n    if let Some(v) = o {\n        t += v;\n    }\n    for i in 0..3 {\n        t += i;\n    }\n    t\n}\n";
+        let result = instrument_fn(source, "g");
+        assert_eq!(result.instrumentable_lines, probe_lines(&result.source));
+        assert!(result.instrumentable_lines.contains(&3));
+        assert!(result.instrumentable_lines.contains(&6));
+    }
+
+    mod prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn render(parts: &[(u8, bool)]) -> String {
+            let mut src = String::from("fn f(x: i32) -> i32 {\n    let mut t = x;\n");
+            for (i, (kind, pad)) in parts.iter().enumerate() {
+                if *pad {
+                    src.push_str("\n    // note\n");
+                }
+                match kind % 4 {
+                    0 => src.push_str(&format!("    t += {i};\n")),
+                    1 => src.push_str(&format!(
+                        "    if t > {i} {{\n        t -= 1;\n    }} else {{\n        t += 1;\n    }}\n"
+                    )),
+                    2 => src.push_str(&format!(
+                        "    match t {{\n        {i} =>\n            t += 2,\n        _ =>\n            t += 3,\n    }}\n"
+                    )),
+                    _ => src.push_str(&format!(
+                        "    for k in 0..{i} {{\n        t += k;\n    }}\n"
+                    )),
+                }
+            }
+            src.push_str("    t\n}\n");
+            src
+        }
+
+        proptest! {
+            #[test]
+            fn counted_lines_equal_emitted_probe_lines(
+                parts in proptest::collection::vec((any::<u8>(), any::<bool>()), 0..8)
+            ) {
+                let source = render(&parts);
+                let result = instrument_source(&source, Some("f")).unwrap();
+                let emitted = probe_lines(&result.source);
+                prop_assert!(!result.instrumentable_lines.contains(&0));
+                prop_assert_eq!(&result.instrumentable_lines, &emitted);
+                prop_assert_eq!(result.instrumentable_line_count(), Some(emitted.len() as u32));
+            }
+        }
     }
 }

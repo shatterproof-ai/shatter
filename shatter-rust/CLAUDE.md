@@ -70,6 +70,12 @@ harness binaries cached before this change.
 
 Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map because the runtime hook observes loop entry without a source-level symbolic environment or local flow map.
 
+## Instrumentable Line Count Contract (str-49drv.17)
+
+**Instrumentable line count (str-49drv.17).** The Instrument response carries `instrumentable_line_count` = distinct real lines (> 0) passed to any emitted `line_hit` or `branch_hit` probe (`Instrumentor::instrumentable_lines`, exposed as `InstrumentResult::instrumentable_line_count()`). It must include branch-decision lines (match-arm pattern lines, `if let` heads, loop heads) that have no `line_hit`, because the runtime's `lines_executed` is the union of both and the core clamps coverage with `.max(covered)`. The fn-entry probe sits on the fn ident line (the analyzer's `start_line`), not the doc/attribute span start. An empty set is sent as `None` (const fn, unknown name) so the core falls back to the source span rather than dividing by 0. Execute responses never carry it. Any new probe emitter must call `record_line` only after the probe is actually built.
+
+Known limitation: instrumentation targets by bare ident, so same-named methods in different impl blocks (or a free fn plus a method) are all instrumented, but only the first match in source order counts toward the denominator (the one the analyzer/core resolve by name). Lines executed in later same-named functions fall outside the analyzer range and are ignored by the core.
+
 ## Enum Value-Domain Parity Contract (str-2nfoe)
 
 For a parameter whose type resolves to a **fieldless enum defined in the analyzed file**, the analyzer emits a `TypeInfo::Union` carrying an `enum_values` value domain over a single base variant, matching Go's `union`+`enum_values` wire shape (str-pjlc1). The core input generator (`generate_union`) then draws valid members so validating decoders accept the input and every match arm executes; off-domain probes still come from the base variant.
