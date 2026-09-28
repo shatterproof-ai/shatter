@@ -350,6 +350,20 @@ async fn assert_random_mode_path_accounting(function: &str, expected_paths: usiz
         result.unique_paths, expected_paths,
         "{function}: unique_paths"
     );
+    // Probe executions (float + floor per pair) spend iteration budget via
+    // aggregate(), so iterations covers probe plus main-loop executions and
+    // every aggregated execution is a raw result.
+    let probe_executions = 2 * shatter_core::float_probe::PROBE_COUNT;
+    assert_eq!(
+        result.iterations as usize,
+        result.raw_results.len(),
+        "{function}: iterations == aggregated executions"
+    );
+    assert!(
+        result.iterations as usize >= probe_executions && result.iterations <= 100,
+        "{function}: iterations {} must include {probe_executions} probe executions and stay within max_iterations",
+        result.iterations
+    );
     assert_eq!(
         result.new_path_executions.len(),
         result.unique_paths,

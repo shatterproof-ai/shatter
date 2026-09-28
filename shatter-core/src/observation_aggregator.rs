@@ -116,9 +116,8 @@ impl ObservationAggregator {
         }
     }
 
-    /// Borrow the underlying `ObserveState`. Intended for callers (e.g. float
-    /// probe pre-pass) that bypass the event API and need to update path/line
-    /// tracking directly. Use sparingly — direct mutation does not increment
+    /// Borrow the underlying `ObserveState`. Intended for callers that drive
+    /// `observe_single` and need to update path/line tracking directly. Use sparingly — direct mutation does not increment
     /// `iterations` or feed the discovery bookkeeping.
     pub fn observe_state_mut(&mut self) -> &mut ObserveState {
         &mut self.state
@@ -299,24 +298,9 @@ impl ObservationAggregator {
         outcome
     }
 
-    /// Push a raw result into the aggregated `raw_results` vector without
-    /// counting it as an iteration, recording a discovery, or touching
-    /// `new_path_executions`. Intended only for ancillary passes (float
-    /// probe pre-pass) that maintain their own per-pass counters and need
-    /// the raw result to surface in `ObservationOutput.raw_results` for
-    /// downstream consumers.
-    pub fn push_raw_result(
-        &mut self,
-        inputs: Vec<JsonValue>,
-        mocks: Vec<MockConfig>,
-        result: ExecuteResult,
-    ) {
-        self.raw_results.push((inputs, mocks, result));
-    }
-
     /// Trailing fields supplied by the explorer at finalisation time. These
     /// are owned by the explorer (not the aggregator) because they originate
-    /// from passes outside the per-event loop (float probe, shrink, MC/DC,
+    /// from passes outside the per-event loop (float probe results, shrink, MC/DC,
     /// frontier abandonment, opaque suggestions).
     #[allow(clippy::too_many_arguments)]
     pub fn into_observation_output(

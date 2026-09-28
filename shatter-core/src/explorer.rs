@@ -1297,6 +1297,10 @@ pub async fn explore_function(
                         divergent_values.push(v);
                     }
 
+                    // Probe discoveries are attributed to DiscoveryMethod::Random.
+                    // Probe results are not fed to path_feedback / meta_strategy
+                    // (unchanged from before). They do spend iteration budget:
+                    // each aggregate() call counts one iteration.
                     // Probe executions go through normal aggregation so the
                     // paths they reach count as discovered (unique_paths,
                     // new_path_executions) instead of being pre-marked seen.
