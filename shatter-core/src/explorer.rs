@@ -1291,29 +1291,30 @@ pub async fn explore_function(
                 {
                     total_probes += 1;
 
-                    let fhash = path_hash(float_result, &config.loop_buckets);
-                    let flhash = path_hash(floor_result, &config.loop_buckets);
-                    let obs_state = aggregator.observe_state_mut();
-                    obs_state.seen_paths.insert(fhash);
-                    obs_state.seen_paths.insert(flhash);
-                    for &line in &float_result.lines_executed {
-                        obs_state.all_lines.insert(line);
-                    }
-                    for &line in &floor_result.lines_executed {
-                        obs_state.all_lines.insert(line);
-                    }
-
                     if crate::float_probe::executions_agree(float_result, floor_result) {
                         agreements += 1;
                     } else if let Some(v) = float_inputs.get(idx).and_then(|v| v.as_f64()) {
                         divergent_values.push(v);
                     }
 
-                    aggregator.push_raw_result(
-                        float_inputs.clone(),
-                        config.mocks.clone(),
-                        (**float_result).clone(),
-                    );
+                    // Probe discoveries are attributed to DiscoveryMethod::Random.
+                    // Probe results are not fed to path_feedback / meta_strategy
+                    // (unchanged from before). They do spend iteration budget:
+                    // each aggregate() call counts one iteration.
+                    // Probe executions go through normal aggregation so the
+                    // paths they reach count as discovered (unique_paths,
+                    // new_path_executions) instead of being pre-marked seen.
+                    for (inputs, result) in [
+                        (&float_inputs, float_result),
+                        (&floor_inputs, floor_result),
+                    ] {
+                        aggregator.aggregate(crate::observation_aggregator::ObservationEvent {
+                            inputs: inputs.clone(),
+                            mocks: config.mocks.clone(),
+                            result: (**result).clone(),
+                            discovery_method: DiscoveryMethod::Random,
+                        });
+                    }
                 }
             }
 

@@ -249,3 +249,136 @@ async fn float_probe_skips_non_float_params() {
 
     frontend.shutdown().await.expect("shutdown failed");
 }
+
+// --- Random-explorer path accounting (str-49drv.91) ---
+//
+// The float-probe pre-pass used to insert its path hashes straight into
+// `seen_paths`, so the main loop treated those paths as already seen and they
+// never reached `new_path_executions` (the basis of the explore report's
+// "N path(s)" and rows). The invariant: every path counted in `unique_paths`
+// has a matching `new_path_executions` row.
+
+const PATH_COUNT_FIXTURE: &str = r#"
+export function g(x: number): number {
+    if (x > 1) return 1;
+    return 0;
+}
+
+export function fmt2(n: number): string {
+    if (n > 10) return "big";
+    if (n < 0) return "neg";
+    throw new Error("unformattable");
+}
+"#;
+
+fn random_explorer_config(file: &str) -> shatter_core::explorer::ExploreConfig {
+    use shatter_core::protocol::SetupLevel;
+    shatter_core::explorer::ExploreConfig {
+        file: file.to_string(),
+        execution_profile: None,
+        max_iterations: Some(100),
+        max_executions_override: None,
+        observer_pool: 1,
+        observer_frontend_config: None,
+        candidate_queue_capacity: None,
+        seed: Some(42),
+        mocks: vec![],
+        mock_params: vec![],
+        setup_file: None,
+        setup_level: SetupLevel::Function,
+        value_sources: vec![],
+        capabilities: Default::default(),
+        user_seeds: vec![],
+        candidate_inputs: vec![],
+        pool_seeds: vec![],
+        project_root: None,
+        loop_buckets: Default::default(),
+        timeout_explore: None,
+        meta_config: shatter_core::strategy::MetaConfig::default(),
+        shrink_budget: 0,
+        isolation: shatter_core::explorer::IsolationMode::None,
+        capture_side_effects: false,
+        budget_surplus: None,
+        claim_policy: shatter_core::scan_orchestrator::ClaimPolicy::default(),
+        planner: None,
+        default_execute_plan: None,
+        prepare_id_override: None,
+    }
+}
+
+/// Distinct (branch_id, taken) sequences over the raw results: the ground
+/// truth for how many paths the run actually executed.
+fn distinct_branch_paths(
+    result: &shatter_core::explorer::ObservationOutput,
+) -> std::collections::HashSet<Vec<(u32, bool)>> {
+    result
+        .raw_results
+        .iter()
+        .map(|(_, _, r)| r.branch_path.iter().map(|d| (d.branch_id, d.taken)).collect())
+        .collect()
+}
+
+async fn assert_random_mode_path_accounting(function: &str, expected_paths: usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("path_count_fixture.ts");
+    std::fs::write(&file, PATH_COUNT_FIXTURE).unwrap();
+    let file_str = file.to_string_lossy().to_string();
+
+    let mut frontend = spawn_ts_frontend().await;
+    let analysis = analyze_function(&mut frontend, &file_str, function).await;
+
+    let result = shatter_core::explorer::explore_function(
+        &mut frontend,
+        &analysis,
+        &random_explorer_config(&file_str),
+        None,
+        None,
+    )
+    .await
+    .expect("exploration failed");
+
+    assert!(
+        !result.float_probe_results.is_empty(),
+        "{function}: float probe must run for this fixture to exercise the bug"
+    );
+    assert_eq!(
+        distinct_branch_paths(&result).len(),
+        expected_paths,
+        "{function}: executed distinct paths"
+    );
+    assert_eq!(
+        result.unique_paths, expected_paths,
+        "{function}: unique_paths"
+    );
+    // Probe executions (float + floor per pair) spend iteration budget via
+    // aggregate(), so iterations covers probe plus main-loop executions and
+    // every aggregated execution is a raw result.
+    let probe_executions = 2 * shatter_core::float_probe::PROBE_COUNT;
+    assert_eq!(
+        result.iterations as usize,
+        result.raw_results.len(),
+        "{function}: iterations == aggregated executions"
+    );
+    assert!(
+        result.iterations as usize >= probe_executions && result.iterations <= 100,
+        "{function}: iterations {} must include {probe_executions} probe executions and stay within max_iterations",
+        result.iterations
+    );
+    assert_eq!(
+        result.new_path_executions.len(),
+        result.unique_paths,
+        "{function}: report rows (new_path_executions) must match unique_paths"
+    );
+
+    frontend.shutdown().await.expect("shutdown failed");
+}
+
+#[tokio::test]
+async fn random_mode_float_probe_paths_are_counted_two_branch() {
+    assert_random_mode_path_accounting("g", 2).await;
+}
+
+#[tokio::test]
+async fn random_mode_float_probe_paths_are_counted_fall_through_throw() {
+    assert_random_mode_path_accounting("fmt2", 3).await;
+}
