@@ -868,14 +868,17 @@ feature_capabilities:
       `transformFile`/`transformStmtList` (dedup semantics matching TS),
       guards `line > 0` to exclude synthetic `call_enter`/`call_exit` scope
       markers (which have no real `token.Pos`), and `handler.go` populates
-      `resp.InstrumentableLineCount` from the count. Rust does not populate
-      this field yet (`instrumentable_line_count: None` in all Execute/
-      Instrument response constructors in `protocol.rs`) — no per-line
-      instrumentable-count tracking exists in the Rust instrumentor.
+      `resp.InstrumentableLineCount` from the count. Rust (str-49drv.17)
+      collects a `BTreeSet<u32>` in the `instrument.rs` visitor of every
+      real line (> 0) passed to `line_hit_stmt` AND every `branch_hit`
+      constructor (if/if-let/while/for heads, match-arm pattern lines), because
+      the runtime's `lines_executed` is the union of `line_hit` lines and
+      branch-decision lines. Only the Instrument response populates it;
+      Execute and other Rust responses keep it unset.
     frontends:
       typescript: supported
       go: supported
-      rust: not_supported
+      rust: supported
 
 # --- Adapter capabilities ---
 #

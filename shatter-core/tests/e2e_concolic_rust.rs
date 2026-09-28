@@ -621,6 +621,167 @@ pub fn classify_byte(b: u8) -> &'static str {
     frontend.shutdown().await.expect("frontend shutdown failed");
 }
 
+/// Instrument `function_name` and return the frontend's `instrumentable_line_count`.
+async fn instrument_line_count(frontend: &mut Frontend, file: &str, function_name: &str) -> u32 {
+    let response = frontend
+        .send(ProtoCommand::Instrument {
+            file: file.to_string(),
+            function: function_name.to_string(),
+            mocks: vec![],
+            project_root: None,
+            execution_profile: None,
+        })
+        .await
+        .expect("instrument command failed");
+    match response.result {
+        ResponseResult::Instrument {
+            instrumented,
+            instrumentable_line_count,
+            ..
+        } => {
+            assert!(instrumented, "instrumentation returned false");
+            instrumentable_line_count.expect(
+                "Rust frontend should report instrumentable_line_count on the Instrument response",
+            )
+        }
+        other => panic!("expected Instrument response, got: {other:?}"),
+    }
+}
+
+/// Explore `function_name` with `seeds` and return the raw result plus the set of
+/// distinct lines observed as executed over every execution.
+async fn explore_lines(
+    frontend: &mut Frontend,
+    function_name: &str,
+    analysis: &FunctionAnalysis,
+    seeds: Vec<Vec<serde_json::Value>>,
+) -> (ExploreResult, std::collections::BTreeSet<u32>) {
+    let config = ExploreConfig {
+        max_iterations: Some(40),
+        max_executions: Some(120),
+        plateau_threshold: 25,
+        ..Default::default()
+    };
+    let (result, _) = orchestrator::explore(
+        frontend,
+        function_name,
+        seeds,
+        vec![],
+        &analysis.params,
+        &config,
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .expect("concolic exploration failed");
+    let executed = result
+        .raw_results
+        .iter()
+        .flat_map(|(_, _, r)| r.lines_executed.iter().copied())
+        .collect();
+    (result, executed)
+}
+
+/// str-49drv.17: the Rust Instrument response reports `instrumentable_line_count`
+/// (Go counterpart: `e2e_go_instrumentable_line_count_matches_probed_lines`). A
+/// fully covered `classify_number` must report exactly 100% lines, and the count
+/// must equal the number of distinct probed lines actually executed.
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_instrumentable_line_count_matches_probed_lines() {
+    use shatter_core::explorer::ObservationOutput;
+    use shatter_core::observe::reconcile_observation_coverage;
+
+    let file = rust_examples_dir().join("arithmetic.rs");
+    let file_str = file.to_string_lossy().to_string();
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "classify_number").await;
+    let raw_span = analysis.end_line.saturating_sub(analysis.start_line) + 1;
+    let count = instrument_line_count(&mut frontend, &file_str, "classify_number").await;
+    assert!(
+        count < raw_span,
+        "count ({count}) must be below the raw span ({raw_span}): braces/blank lines are not probed"
+    );
+
+    let seeds = vec![
+        vec![serde_json::json!(7)],
+        vec![serde_json::json!(-3)],
+        vec![serde_json::json!(0)],
+        vec![serde_json::json!(500)],
+    ];
+    let (result, executed) = explore_lines(&mut frontend, "classify_number", &analysis, seeds).await;
+
+    assert_eq!(
+        executed.len() as u32,
+        count,
+        "fully covered function: executed lines {executed:?} must equal the counted probe lines"
+    );
+
+    let mut obs: ObservationOutput = result.into();
+    reconcile_observation_coverage(&mut obs, analysis.start_line, analysis.end_line, Some(count));
+    assert_eq!(obs.total_lines, count);
+    assert_eq!(obs.lines_covered, obs.total_lines as usize, "expected exactly 100%");
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
+/// str-49drv.17: match-arm pattern lines carry `branch_hit` probes but no
+/// `line_hit`. The count must include them, so every executed line is counted
+/// (the core's `.max(covered)` clamp would otherwise hide an overcount).
+#[tokio::test]
+#[ignore = "slow: spawns Rust frontend subprocess and compiles harnesses"]
+async fn e2e_rust_multiline_match_arm_lines_are_counted() {
+    let func_src = r#"
+pub fn pick(x: i64) -> i64 {
+    match x {
+        0 =>
+            10,
+        1 =>
+            20,
+        _ =>
+            30,
+    }
+}
+"#;
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let lib = write_temp_crate(tmp.path(), func_src);
+    let file_str = lib.to_string_lossy().to_string();
+    let mut frontend = spawn_rust_frontend().await;
+
+    let analysis = analyze_function(&mut frontend, &file_str, "pick").await;
+    let count = instrument_line_count(&mut frontend, &file_str, "pick").await;
+
+    let seeds = vec![
+        vec![serde_json::json!(0)],
+        vec![serde_json::json!(1)],
+        vec![serde_json::json!(2)],
+    ];
+    let (_result, executed) = explore_lines(&mut frontend, "pick", &analysis, seeds).await;
+
+    // Arm pattern lines are 4, 6, 8 (1-based within the source above).
+    for arm_line in [4u32, 6, 8] {
+        assert!(
+            executed.contains(&arm_line),
+            "arm pattern line {arm_line} should be reported executed: {executed:?}"
+        );
+    }
+    assert!(
+        executed.len() as u32 <= count,
+        "every executed line must be counted: executed {executed:?}, count {count}"
+    );
+    assert_eq!(
+        executed.len() as u32,
+        count,
+        "all arms explored, so coverage must be exactly 100%"
+    );
+
+    frontend.shutdown().await.expect("frontend shutdown failed");
+}
+
 /// Write a minimal multi-file library crate whose target function
 /// (`src/logic.rs::classify_widget`) takes, BY VALUE, a struct (`Widget`)
 /// defined in a SIBLING module (`src/domain.rs`), whose own field is a struct

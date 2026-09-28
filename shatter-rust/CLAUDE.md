@@ -68,6 +68,8 @@ harness binaries cached before this change.
 
 ## Loop Snapshot Parity Contract
 
+**Instrumentable line count (str-49drv.17).** The Instrument response carries `instrumentable_line_count` = distinct real lines (> 0) passed to any `line_hit` or `branch_hit` probe (`Instrumentor::instrumentable_lines`). It must include branch-decision lines (match-arm pattern lines, `if let` heads, loop heads) that have no `line_hit`, because the runtime's `lines_executed` is the union of both and the core clamps coverage with `.max(covered)`. Execute responses never carry it. Any new probe emitter must call `record_line`.
+
 Rust emits `loop_body_states` from runtime `loop_enter` hooks injected into instrumented `while` and `for` loop bodies. Snapshots use the cross-frontend `loop_id` plus zero-based `iteration` contract. `locals` is currently an empty map because the runtime hook observes loop entry without a source-level symbolic environment or local flow map.
 
 ## Enum Value-Domain Parity Contract (str-2nfoe)

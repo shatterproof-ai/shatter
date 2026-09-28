@@ -798,6 +798,7 @@ impl<R: io::Read, W: io::Write, L: io::Write> Handler<R, W, L> {
                         resp.status = "instrument".to_string();
                         resp.instrumented = Some(true);
                         resp.output_file = Some(output_path);
+                        resp.instrumentable_line_count = Some(result.instrumentable_line_count);
                         resp.message = Some(format!(
                             "instrumented {} branch points",
                             result.branch_count
