@@ -187,6 +187,9 @@ jobs:
   release:
     name: Create continuous GitHub Release
     needs: [build-ts, build]
+    # str-49drv.31: workflow_dispatch accepts any ref, so branch runs build the
+    # matrix but must never publish a continuous-* prerelease.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -299,6 +302,7 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --repo "$REPO" \
             --prerelease \
+            --target "$GITHUB_SHA" \
             --title "Continuous build $RELEASE_TAG" \
             --notes "Continuous Shatter build from main at ${SHORT_SHA}. These binaries are easy to consume and pin, but the build name does not imply semver compatibility." \
             artifacts/shatter-linux-x86_64.tar.gz \
