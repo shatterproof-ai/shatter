@@ -157,7 +157,7 @@ Every command accepts the [global options](#210-global-options) in §2.10.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-o, --output PATH` | stdout | Write a report; format inferred from extension (`.html`, `.md`, `.json`, `.txt`). Repeatable to write several formats. |
+| `-o, --output PATH` | stdout | Write a report; format inferred from extension (`.html`, `.md`, `.json`, `.txt`). A `.json` destination holds the spec bundle (§5), with or without `--spec`/`--spec-out`. Repeatable to write several formats. |
 | `--stdout` | — | Also write to stdout (default when no `-o` given). |
 | `--format FORMAT` | `markdown` | stdout format: `markdown`, `html`, or `text`. (`json` on stdout is not offered — write `-o file.json` instead.) |
 | `--spec` | false | Emit a behavioral specification (markdown by default, JSON with `--spec-json`). |

@@ -3845,8 +3845,55 @@ fn stage_persistence_dir(
 /// spec gets collected into `acc.file_specs`, but that widened form must
 /// not be used here or a `--spec-out` run would wrongly redirect its report
 /// to stderr even though the spec is going to a file, not stdout.
-fn spec_targets_stdout(show_spec: bool, detect_invariants: bool, output_path: Option<&Path>) -> bool {
-    (show_spec || detect_invariants) && output_path.is_none()
+fn spec_targets_stdout(show_spec: bool, detect_invariants: bool, bundle_sink: bool) -> bool {
+    (show_spec || detect_invariants) && !bundle_sink
+}
+
+/// True when this run must collect per-function specs into a spec bundle:
+/// `--spec-out` was given, or an `-o` destination has a `.json` extension
+/// (SPEC §2.1: `-o` infers format from the extension; JSON is the §5 bundle).
+fn bundle_sink_requested(output_path: Option<&Path>, report_outputs: &[PathBuf]) -> bool {
+    output_path.is_some()
+        || report_outputs.iter().any(|p| {
+            matches!(
+                crate::args::infer_output_format(p),
+                Ok(crate::args::StdoutFormat::Json)
+            )
+        })
+}
+
+/// Write `bundle` to `dest`, or the no-target marker when there is none.
+/// Shared by the `-o *.json` and `--spec-out` sinks on both the live and
+/// `--from-artifacts` paths so they cannot drift apart (str-49drv.11).
+fn write_bundle_or_no_target_marker(
+    bundle: Option<FileSpecBundle>,
+    dest: &Path,
+    file_path: &str,
+    summaries: &[ExploreSummary],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bundle = bundle.unwrap_or_else(|| build_no_target_spec_bundle(file_path, summaries));
+    shatter_core::spec::write_file_spec_bundle(&bundle, dest)
+        .map_err(|e| format!("failed to write spec bundle to {}: {e}", dest.display()))?;
+    if matches!(
+        bundle.status,
+        Some(shatter_core::spec::FileSpecBundleStatus::NoTargets)
+    ) {
+        log::info!(
+            "Wrote no-target spec marker (reason={}) to {}",
+            bundle
+                .no_target_reason
+                .map(|r| r.as_token())
+                .unwrap_or("unclassified"),
+            dest.display()
+        );
+    } else {
+        log::info!(
+            "Wrote spec bundle ({} function(s)) to {}",
+            bundle.functions.len(),
+            dest.display()
+        );
+    }
+    Ok(())
 }
 
 /// Finalize an explore run from saved artifacts on disk. Reads per-function
@@ -3900,12 +3947,13 @@ fn finalize_explore(
         shatter_core::report_style::ReportStyle::default()
     };
 
-    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, output_path);
+    let bundle_sink = bundle_sink_requested(output_path, report_outputs);
+    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, bundle_sink);
 
     let empty_fingerprints: HashMap<String, String> = HashMap::new();
     let opts = AssemblyOpts {
-        show_spec: show_spec || detect_invariants || output_path.is_some(),
-        spec_as_json: spec_as_json || output_path.is_some(),
+        show_spec: show_spec || detect_invariants || bundle_sink,
+        spec_as_json: spec_as_json || bundle_sink,
         detect_invariants,
         use_concolic,
         solver_timeout_ms: None,
@@ -3916,7 +3964,7 @@ fn finalize_explore(
         project_root: None,
         deep_fingerprints: &empty_fingerprints,
         persist_stages: None,
-        output_path_set: output_path.is_some(),
+        output_path_set: bundle_sink,
         stdout,
         report_outputs_empty: report_outputs.is_empty(),
         spec_to_stdout,
@@ -4109,20 +4157,16 @@ fn finalize_explore(
                 log::info!("Wrote text report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Json) => {
-                if !acc.file_specs.is_empty() {
-                    let bundle = FileSpecBundle {
-                        file: artifacts
-                            .first()
-                            .map(|a| a.file.clone())
-                            .unwrap_or_default(),
-                        functions: acc.file_specs.clone(),
-                        ..FileSpecBundle::default()
-                    };
-                    shatter_core::spec::write_file_spec_bundle(&bundle, path).map_err(|e| {
-                        format!("failed to write spec bundle to '{}': {e}", path.display())
-                    })?;
-                    log::info!("Wrote spec bundle to {}", path.display());
-                }
+                let file_path = artifacts
+                    .first()
+                    .map(|a| a.file.clone())
+                    .unwrap_or_default();
+                let bundle = (!acc.file_specs.is_empty()).then(|| FileSpecBundle {
+                    file: file_path.clone(),
+                    functions: acc.file_specs.clone(),
+                    ..FileSpecBundle::default()
+                });
+                write_bundle_or_no_target_marker(bundle, path, &file_path, &summaries)?;
             }
             Err(e) => {
                 log::error!("{e}");
@@ -4159,32 +4203,15 @@ fn finalize_explore(
             .first()
             .map(|a| a.file.clone())
             .unwrap_or_default();
-        let bundle = if acc.file_specs.is_empty() {
-            // str-jeen.67: emit a machine-readable no-target marker bundle so
-            // batch tooling can distinguish "file analyzed, nothing to
-            // explore" from "spec output missing / pipeline crashed".
-            build_no_target_spec_bundle(&file_path, &summaries)
-        } else {
-            FileSpecBundle {
-                file: file_path,
-                functions: acc.file_specs,
-                ..FileSpecBundle::default()
-            }
-        };
-        shatter_core::spec::write_file_spec_bundle(&bundle, out)
-            .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
-        if matches!(bundle.status, Some(shatter_core::spec::FileSpecBundleStatus::NoTargets)) {
-            log::info!(
-                "Wrote no-target spec marker (reason={}) to {}",
-                bundle
-                    .no_target_reason
-                    .map(|r| r.as_token())
-                    .unwrap_or("unclassified"),
-                out.display()
-            );
-        } else {
-            log::info!("Wrote spec bundle to {}", out.display());
-        }
+        // str-jeen.67: with no specs, emit a machine-readable no-target
+        // marker bundle so batch tooling can distinguish "file analyzed,
+        // nothing to explore" from "spec output missing / pipeline crashed".
+        let bundle = (!acc.file_specs.is_empty()).then(|| FileSpecBundle {
+            file: file_path.clone(),
+            functions: acc.file_specs,
+            ..FileSpecBundle::default()
+        });
+        write_bundle_or_no_target_marker(bundle, out, &file_path, &summaries)?;
     }
 
     // str-960w: surface a nonzero exit when every attempted target failed,
@@ -4371,7 +4398,12 @@ pub(crate) async fn run_explore(
             use_concolic,
         );
     }
-    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, output_path);
+    // str-49drv.11: `-o *.json` needs the per-function specs too, so the
+    // bundle sink is wider than `--spec-out`.
+    let bundle_sink = bundle_sink_requested(output_path, report_outputs);
+    let spec_to_stdout = spec_targets_stdout(show_spec, detect_invariants, bundle_sink);
+    let show_spec = show_spec || bundle_sink;
+    let spec_as_json = spec_as_json || bundle_sink;
     let _explore_span = tracing::info_span!("core.explore_command").entered();
     let pool_path = if no_seeds {
         None
@@ -6478,7 +6510,7 @@ pub(crate) async fn run_explore(
                         project_root: project_root_str.as_deref(),
                         deep_fingerprints: &deep_fingerprints,
                         persist_stages,
-                        output_path_set: output_path.is_some(),
+                        output_path_set: bundle_sink,
                         stdout,
                         report_outputs_empty: report_outputs.is_empty(),
                         spec_to_stdout,
@@ -6588,7 +6620,7 @@ pub(crate) async fn run_explore(
 
         report_summaries.push(explore_summary.clone());
 
-        if output_path.is_some() {
+        if bundle_sink {
             let current_function_names: HashSet<String> =
                 target_functions.iter().map(|f| f.name.clone()).collect();
 
@@ -6787,42 +6819,20 @@ pub(crate) async fn run_explore(
                 log::info!("Wrote text report to {}", path.display());
             }
             Ok(crate::args::StdoutFormat::Json) => {
-                // JSON output for explore writes spec bundle
-                log::warn!(
-                    "JSON output for explore writes spec bundle; use --spec-out for explicit spec output"
-                );
-                if let Some(first_bundle) = file_spec_bundles.first() {
-                    shatter_core::spec::write_file_spec_bundle(first_bundle, path).map_err(
-                        |e| format!("failed to write spec bundle to '{}': {e}", path.display()),
-                    )?;
-                    log::info!("Wrote spec bundle to {}", path.display());
-                } else {
-                    // str-ni32: analyze/preflight failed before any spec was
-                    // produced. Mirror the --spec-out branch below by
-                    // writing a machine-readable no-target marker bundle so
-                    // `-o file.json` always yields a file on disk, and let
-                    // `decide_explore_exit_status` (extended in str-ni32)
-                    // surface the failure via a nonzero exit.
-                    let file_path = parsed
-                        .first()
-                        .map(|t| t.file.display().to_string())
-                        .unwrap_or_default();
-                    let bundle = build_no_target_spec_bundle(&file_path, &report_summaries);
-                    shatter_core::spec::write_file_spec_bundle(&bundle, path).map_err(|e| {
-                        format!(
-                            "failed to write no-target spec marker to '{}': {e}",
-                            path.display()
-                        )
-                    })?;
-                    log::info!(
-                        "Wrote no-target spec marker (reason={}) to {}",
-                        bundle
-                            .no_target_reason
-                            .map(|r| r.as_token())
-                            .unwrap_or("unclassified"),
-                        path.display()
-                    );
-                }
+                // str-49drv.11: a `.json` -o destination holds the spec
+                // bundle (SPEC §5). When no bundle was collected, fall back
+                // to the no-target marker (str-ni32) and let
+                // `decide_explore_exit_status` surface failure via exit code.
+                let file_path = parsed
+                    .first()
+                    .map(|t| t.file.display().to_string())
+                    .unwrap_or_default();
+                write_bundle_or_no_target_marker(
+                    file_spec_bundles.first().cloned(),
+                    path,
+                    &file_path,
+                    &report_summaries,
+                )?;
             }
             Err(e) => {
                 log::error!("{e}");
@@ -6856,37 +6866,17 @@ pub(crate) async fn run_explore(
     // Write collected file spec bundles to the output path as a single bundle.
     if let Some(out) = output_path {
         let _spec_write_span = tracing::info_span!("spec.write_bundle").entered();
-        if let Some(bundle) = file_spec_bundles.first() {
-            // Single-target is the primary Make use case; write the first bundle.
-            shatter_core::spec::write_file_spec_bundle(bundle, out)
-                .map_err(|e| format!("failed to write spec bundle to {}: {e}", out.display()))?;
-            log::info!(
-                "Wrote spec bundle ({} function(s)) to {}",
-                bundle.functions.len(),
-                out.display()
-            );
-        } else {
-            // str-jeen.67: no targets discovered — emit a machine-readable
-            // marker bundle so batch tooling can classify this run as
-            // skipped/no-target instead of inferring a partial failure from
-            // a missing spec file.
-            let file_path = parsed
-                .first()
-                .map(|t| t.file.display().to_string())
-                .unwrap_or_default();
-            let bundle = build_no_target_spec_bundle(&file_path, &report_summaries);
-            shatter_core::spec::write_file_spec_bundle(&bundle, out).map_err(|e| {
-                format!("failed to write no-target spec marker to {}: {e}", out.display())
-            })?;
-            log::info!(
-                "Wrote no-target spec marker (reason={}) to {}",
-                bundle
-                    .no_target_reason
-                    .map(|r| r.as_token())
-                    .unwrap_or("unclassified"),
-                out.display()
-            );
-        }
+        // Single-target is the primary Make use case; write the first bundle.
+        let file_path = parsed
+            .first()
+            .map(|t| t.file.display().to_string())
+            .unwrap_or_default();
+        write_bundle_or_no_target_marker(
+            file_spec_bundles.first().cloned(),
+            out,
+            &file_path,
+            &report_summaries,
+        )?;
     }
 
     // str-qnp0: emit LLM oracle summary when oracle was active.
