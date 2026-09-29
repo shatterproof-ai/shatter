@@ -13,6 +13,7 @@
 #       directory as seen from where the command runs, e.g. inside a container)
 #       and SCAN_CHECK_ARGS (flags for check_step_output):
 #         --dry-run       executes nothing -> `--no-scan-json` (logged, skipped)
+#         --changed/--since may select no files (no report) -> same
 #         --timeout-total bounds the run by design -> `--expect-interrupted`
 #   check_step_output OUTPUT_FILE STEP
 #       Runs the checker over the captured output (+ scan JSON, when set up),
@@ -27,15 +28,20 @@ scan_step_setup() {
     local host_dir="$1" cmd_dir="$2"
     shift 2
     [[ "${1:-}" == "scan" ]] || return 0
-    local arg dry_run=false bounded=false
+    local arg dry_run=false bounded=false selects=false
     for arg in "$@"; do
         case "$arg" in
             --dry-run) dry_run=true ;;
+            --changed|--since|--since=*) selects=true ;;
             --timeout-total|--timeout-total=*) bounded=true ;;
         esac
     done
     if [[ "$dry_run" == true ]]; then
         SCAN_CHECK_ARGS=(--no-scan-json "--dry-run executes nothing, so no scan JSON is produced")
+        return 0
+    fi
+    if [[ "$selects" == true ]]; then
+        SCAN_CHECK_ARGS=(--no-scan-json "--changed/--since may select no files, in which case scan writes no report")
         return 0
     fi
     local name="shatter-scan-json.$$.${RANDOM}${RANDOM}.json"
