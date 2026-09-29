@@ -1327,6 +1327,15 @@ pub fn parse_candidate_inputs(path: &Path) -> Result<Vec<CandidateInput>, Config
 /// Discover `.shatter/config.yaml` files by walking upward from `start_dir`.
 ///
 /// Returns configs ordered from nearest (highest priority) to farthest (lowest priority).
+///
+/// The upward walk is bounded so a stray `.shatter/config.yaml` in a shared
+/// directory (e.g. `/tmp/.shatter` left by another process) is never picked
+/// up. The walk stops at the first of:
+/// - the git repository root (a directory containing `.git`), inclusive;
+/// - `$HOME`, inclusive (so `~/.shatter/config.yaml` acts as a global config);
+/// - a shared sticky-bit directory such as `/tmp` or `/var/tmp` (Unix),
+///   exclusive: configs in it are never read;
+/// - the filesystem root.
 pub fn discover_configs(start_dir: &Path) -> Result<Vec<ShatterConfig>, ConfigError> {
     let discovered = discover_configs_with_paths(start_dir)?;
     Ok(discovered.into_iter().map(|d| d.config).collect())
@@ -1334,10 +1343,42 @@ pub fn discover_configs(start_dir: &Path) -> Result<Vec<ShatterConfig>, ConfigEr
 
 /// Internal: discover configs with their `.shatter/` directory paths preserved.
 fn discover_configs_with_paths(start_dir: &Path) -> Result<Vec<DiscoveredConfig>, ConfigError> {
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
+    discover_configs_bounded(start_dir, home.as_deref())
+}
+
+/// True for a world-writable sticky directory (`/tmp`-style shared space).
+#[cfg(unix)]
+fn is_shared_sticky_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(dir)
+        .map(|m| {
+            let mode = m.permissions().mode();
+            mode & 0o1000 != 0 && mode & 0o002 != 0
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_shared_sticky_dir(_dir: &Path) -> bool {
+    false
+}
+
+/// Bounded upward config walk; `home` is injected so tests don't depend on `$HOME`.
+fn discover_configs_bounded(
+    start_dir: &Path,
+    home: Option<&Path>,
+) -> Result<Vec<DiscoveredConfig>, ConfigError> {
     let mut configs = Vec::new();
     let mut current = Some(start_dir.to_path_buf());
 
     while let Some(dir) = current {
+        if is_shared_sticky_dir(&dir) {
+            break;
+        }
+
         let shatter_dir = dir.join(".shatter");
         let config_path = shatter_dir.join("config.yaml");
 
@@ -1347,6 +1388,10 @@ fn discover_configs_with_paths(start_dir: &Path) -> Result<Vec<DiscoveredConfig>
                 shatter_dir,
                 config,
             });
+        }
+
+        if dir.join(".git").exists() || home == Some(dir.as_path()) {
+            break;
         }
 
         current = dir.parent().map(Path::to_path_buf);
@@ -2020,6 +2065,71 @@ llm:
             .filter(|d| d.shatter_dir.starts_with(dir.path()))
             .collect();
         assert!(configs.is_empty());
+    }
+
+    fn plant_config(dir: &Path, max_iterations: u32) {
+        let shatter = dir.join(".shatter");
+        fs::create_dir_all(&shatter).unwrap();
+        fs::write(
+            shatter.join("config.yaml"),
+            format!("defaults:\n  max_iterations: {max_iterations}\n"),
+        )
+        .unwrap();
+    }
+
+    fn found_iterations(start: &Path, home: Option<&Path>) -> Vec<Option<u32>> {
+        discover_configs_bounded(start, home)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.config.defaults.max_iterations)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_configs_does_not_cross_sticky_shared_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `shared` stands in for /tmp: world-writable with the sticky bit.
+        let root = TempDir::new().unwrap();
+        let shared = root.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        plant_config(&shared, 999); // stray config directly under the shared dir
+
+        let project = shared.join("project").join("src");
+        fs::create_dir_all(&project).unwrap();
+        plant_config(&shared.join("project"), 7);
+
+        assert_eq!(found_iterations(&project, None), vec![Some(7)]);
+    }
+
+    #[test]
+    fn discover_configs_stops_at_git_root() {
+        let root = TempDir::new().unwrap();
+        plant_config(root.path(), 999); // above the repo: must not be picked up
+
+        let repo = root.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        plant_config(&repo, 50);
+        let sub = repo.join("pkg");
+        fs::create_dir_all(&sub).unwrap();
+        plant_config(&sub, 500);
+
+        assert_eq!(found_iterations(&sub, None), vec![Some(500), Some(50)]);
+    }
+
+    #[test]
+    fn discover_configs_stops_at_home_inclusive() {
+        let root = TempDir::new().unwrap();
+        plant_config(root.path(), 999); // above $HOME: must not be picked up
+
+        let home = root.path().join("home");
+        plant_config(&home, 10); // ~/.shatter/config.yaml is a valid global config
+        let sub = home.join("work").join("proj");
+        fs::create_dir_all(&sub).unwrap();
+
+        assert_eq!(found_iterations(&sub, Some(&home)), vec![Some(10)]);
     }
 
     #[test]
