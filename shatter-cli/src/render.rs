@@ -82,8 +82,14 @@ pub(crate) struct ExploreRenderOpts<'a> {
     pub location: Option<&'a str>,
     /// Mock symbols used (already formatted as simple names).
     pub mocks_used: &'a [String],
+    /// Explorer that produced the result (not the current run's flag).
     pub is_concolic: bool,
+    /// The result was replayed from a prior run (str-49drv.10).
+    pub resumed: bool,
 }
+
+/// Header note for results replayed from a prior explore run.
+pub(crate) const RESUMED_NOTE: &str = "(resumed from prior run; --clean to re-run)";
 
 // ── Builders ─────────────────────────────────────────────────────────────────
 
@@ -142,6 +148,9 @@ pub(crate) fn explore_fn_view(
     }
     if opts.is_concolic {
         extras.push("Explorer: concolic (Z3-backed)".to_string());
+    }
+    if opts.resumed {
+        extras.push(RESUMED_NOTE.to_string());
     }
 
     ExploreFnView {
@@ -329,6 +338,7 @@ mod tests {
                 location: Some("src/math.ts:1-10"),
                 mocks_used: &[],
                 is_concolic: false,
+                resumed: false,
             },
         );
         let md = render_explore_fn(&view);
@@ -347,6 +357,7 @@ mod tests {
                 location: None,
                 mocks_used: &[],
                 is_concolic: false,
+                resumed: false,
             },
         );
         let md = render_explore_fn(&view);
@@ -364,6 +375,7 @@ mod tests {
                 location: None,
                 mocks_used: &mocks,
                 is_concolic: true,
+                resumed: false,
             },
         );
         let md = render_explore_fn(&view);
