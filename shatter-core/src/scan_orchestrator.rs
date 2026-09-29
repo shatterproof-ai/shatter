@@ -480,7 +480,7 @@ fn scan_artifact_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
 }
 
 /// Root directory for the entire scan (parent of `functions/`).
-fn scan_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
+pub fn scan_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
     let root = project_root
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -3989,6 +3989,56 @@ pub async fn parallel_scan_with_progress(
     config: &ScanConfig,
     progress_handler: Option<ProgressHandler>,
 ) -> Result<ParallelScanResult, ScanError> {
+    parallel_scan_phase(
+        frontend_config,
+        analyses,
+        config,
+        progress_handler,
+        ScanPhase::solo(analyses.len()),
+    )
+    .await
+    .map(|(result, _summary)| result)
+}
+
+/// Position of one per-language sub-scan inside a single scan invocation
+/// (str-49drv.13). All sub-scans of one invocation share one artifact
+/// namespace (`scan-results/<id>/`), so later phases continue the artifact
+/// index and summary of earlier ones instead of restarting them.
+pub struct ScanPhase<'a> {
+    /// Functions handled by earlier phases; artifact and progress indexes
+    /// start after this many.
+    pub index_offset: usize,
+    /// Function count across every phase of the invocation.
+    pub global_total: usize,
+    /// Summary accumulated by earlier phases. `None` for the first (or only)
+    /// phase, which is also the one that cleans stale artifacts.
+    pub prior_summary: Option<ScanSummary>,
+    /// Analyses of every phase, for the shared run-status export. Falls back
+    /// to this phase's analyses when `None`.
+    pub all_analyses: Option<&'a [FunctionAnalysis]>,
+}
+
+impl ScanPhase<'_> {
+    /// A scan that is a single phase covering `total` functions.
+    pub fn solo(total: usize) -> Self {
+        ScanPhase {
+            index_offset: 0,
+            global_total: total,
+            prior_summary: None,
+            all_analyses: None,
+        }
+    }
+}
+
+/// Run one phase of a (possibly multi-phase) scan and return its result plus
+/// the cumulative summary to hand to the next phase.
+pub async fn parallel_scan_phase(
+    frontend_config: &FrontendConfig,
+    analyses: &[FunctionAnalysis],
+    config: &ScanConfig,
+    progress_handler: Option<ProgressHandler>,
+    phase: ScanPhase<'_>,
+) -> Result<(ParallelScanResult, ScanSummary), ScanError> {
     let call_graph = CallGraph::from_analyses(analyses);
     let order_entries = call_graph.test_order()?;
 
@@ -4081,8 +4131,8 @@ pub async fn parallel_scan_with_progress(
 
     let scan_start = Instant::now();
     let scan_deadline = total_deadline(scan_start, config.timeout_total);
-    let total_functions = analyses.len();
-    let mut progress_index = 0usize;
+    let total_functions = phase.global_total;
+    let mut progress_index = phase.index_offset;
     // When `config.write_artifacts` is false, every project-local artifact
     // path is suppressed: the per-function `Option<Arc<PathBuf>>` is `None`
     // (which the per-function helpers treat as a no-op), and every
@@ -4092,10 +4142,24 @@ pub async fn parallel_scan_with_progress(
     let artifact_root: Option<Arc<PathBuf>> = write_artifacts
         .then(|| Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id)));
     let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
-    if write_artifacts && config.resume_path.is_none() {
+    // Only the first phase cleans: later phases add to the same directory.
+    if write_artifacts && config.resume_path.is_none() && phase.prior_summary.is_none() {
         prepare_fresh_scan_artifact_root(&scan_root_dir);
     }
-    let mut summary = new_scan_summary(&scan_id, total_functions);
+    let elapsed_base = phase
+        .prior_summary
+        .as_ref()
+        .map_or(Duration::ZERO, |p| Duration::from_secs_f64(p.elapsed_secs));
+    let mut summary = phase
+        .prior_summary
+        .unwrap_or_else(|| new_scan_summary(&scan_id, total_functions));
+    summary.total_functions = total_functions;
+    // A prior phase already finalized its status; this phase re-finalizes over
+    // the cumulative counts. An interrupted scan stays interrupted.
+    if summary.status != ScanRunStatus::Interrupted {
+        summary.status = ScanRunStatus::Running;
+    }
+    summary.source_diff = None;
     // Gating closure used by every summary write in this function so that
     // `--no-cache --no-seeds + -o <external>` runs leave nothing under
     // `<project>/shatter-artifacts/` (str-1wcl).
@@ -5400,7 +5464,7 @@ pub async fn parallel_scan_with_progress(
     // promoted to `StaleSourceSet` rather than `Completed`.
     summary_finalize_with_manifest_check(
         &mut summary,
-        scan_start.elapsed(),
+        elapsed_base + scan_start.elapsed(),
         &run_manifest,
         &manifest_source_paths,
     );
@@ -5411,7 +5475,7 @@ pub async fn parallel_scan_with_progress(
             &scan_root_dir,
             &summary,
             &config.file_map,
-            analyses,
+            phase.all_analyses.unwrap_or(analyses),
         );
         write_scan_status(
             &scan_root_dir,
@@ -5422,15 +5486,18 @@ pub async fn parallel_scan_with_progress(
         );
     }
 
-    Ok(ParallelScanResult {
-        function_results: all_results,
-        test_order,
-        skipped,
-        workers_used: peak_workers,
-        workers_reaped: total_reaped,
-        sampling: None,
-        source_files: run_manifest.source_files,
-    })
+    Ok((
+        ParallelScanResult {
+            function_results: all_results,
+            test_order,
+            skipped,
+            workers_used: peak_workers,
+            workers_reaped: total_reaped,
+            sampling: None,
+            source_files: run_manifest.source_files,
+        },
+        summary,
+    ))
 }
 
 /// Build exploration layers from test order entries and call graph.

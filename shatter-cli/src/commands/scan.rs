@@ -1192,20 +1192,17 @@ pub(crate) async fn run_scan(
             None
         }
         Some(ResumeDirective::Auto) => {
+            // str-49drv.13: the checkpoint lives in the same scan directory as
+            // the summary and artifacts, so it honours SHATTER_ARTIFACT_DIR.
             let sid = compute_scan_id_from_file_map(&file_map);
-            match shatter_core::checkpoint::ScanCheckpoint::auto_discover(
-                project_root_str.as_deref(),
-                &sid,
-            ) {
+            let scan_dir = scan_orchestrator::scan_root(project_root_str.as_deref(), &sid);
+            match shatter_core::checkpoint::ScanCheckpoint::auto_discover(&scan_dir) {
                 Some(p) => {
                     log::info!("auto-discovered checkpoint at {}", p.display());
                     Some(p)
                 }
                 None => {
-                    let default = shatter_core::checkpoint::ScanCheckpoint::default_path(
-                        project_root_str.as_deref(),
-                        &sid,
-                    );
+                    let default = shatter_core::checkpoint::ScanCheckpoint::default_path(&scan_dir);
                     log::info!(
                         "no existing checkpoint found, will create at {}",
                         default.display()
@@ -1282,6 +1279,7 @@ pub(crate) async fn run_scan(
     } else {
         None
     };
+    let all_analyses_snapshot = all_analyses.clone();
     for analysis in all_analyses {
         let lang = analysis_language(&analysis).map(|l| l.as_registry_str())
             .or(fallback_lang_key);
@@ -1303,6 +1301,7 @@ pub(crate) async fn run_scan(
     let is_mixed_language = analyses_by_lang.len() > 1;
     let global_offset = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+    let mut shared_summary: Option<scan_orchestrator::ScanSummary> = None;
     let merge_result = scan_orchestrator::ParallelScanResult {
         function_results: Vec::new(),
         test_order: Vec::new(),
@@ -1327,6 +1326,8 @@ pub(crate) async fn run_scan(
         );
         let mut phase_scan_config = scan_config.clone();
         phase_scan_config.timeout_total = scan_orchestrator_timeout_total(run_deadline);
+        let phase_offset = global_offset.load(std::sync::atomic::Ordering::Relaxed);
+        let phase_count = lang_analyses.len();
 
         // str-4oa1: build a per-language progress handler that maps
         // phase-local counters to global counters and labels the
@@ -1334,20 +1335,23 @@ pub(crate) async fn run_scan(
         // the same shape as before (no language/phase fields).
         let progress_handler: Option<scan_orchestrator::ProgressHandler> = if progress {
             if is_mixed_language {
-                let offset = global_offset.clone();
-                let global_total = total_functions;
+                // Core reports global indexes and totals (the phase continues
+                // the shared artifact index); derive the phase-local counters.
+                let phase_base = phase_offset;
                 let lang_label = key.to_string();
                 Some(Arc::new(move |update: scan_orchestrator::ScanProgressUpdate| {
-                    let global_current =
-                        offset.load(std::sync::atomic::Ordering::Relaxed) + update.current;
                     let event = report::ProgressEvent::with_qualified_status(
                         &update.function_name,
-                        global_current,
-                        global_total,
+                        update.current,
+                        update.total,
                         update.elapsed.as_millis() as u64,
                         update.status.as_str(),
                     )
-                    .with_language_phase(&lang_label, update.current, update.total);
+                    .with_language_phase(
+                        &lang_label,
+                        update.current.saturating_sub(phase_base),
+                        phase_count,
+                    );
                     if let Some(json) = event.to_json() {
                         eprintln!("{json}");
                     }
@@ -1370,14 +1374,26 @@ pub(crate) async fn run_scan(
             None
         };
 
-        let phase_count = lang_analyses.len();
-        let lang_result = scan_orchestrator::parallel_scan_with_progress(
+        // str-49drv.13: every language phase shares one artifact namespace:
+        // the artifact index and summary continue across phases.
+        let phase = scan_orchestrator::ScanPhase {
+            index_offset: phase_offset,
+            global_total: total_functions,
+            prior_summary: shared_summary.take(),
+            all_analyses: Some(&all_analyses_snapshot),
+        };
+        let lang_result = scan_orchestrator::parallel_scan_phase(
             lang_fe_config,
             &lang_analyses,
             &phase_scan_config,
             progress_handler,
+            phase,
         )
-        .await;
+        .await
+        .map(|(result, summary)| {
+            shared_summary = Some(summary);
+            result
+        });
         match (lang_result, &mut merged_or_err) {
             (Ok(lang_result), Ok(merged)) => {
                 // str-4oa1: advance global offset so the next language

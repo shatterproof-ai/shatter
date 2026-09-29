@@ -183,24 +183,22 @@ impl ScanCheckpoint {
         }
     }
 
-    /// Auto-discover a checkpoint file in the standard artifact directory.
+    /// Auto-discover `checkpoint.json` in a scan's own directory.
     ///
-    /// Looks for `checkpoint.json` in
-    /// `<project_root>/shatter-artifacts/scan-results/<scan_id>/`.
-    /// Returns `Some(path)` if found, `None` otherwise.
-    pub fn auto_discover(project_root: Option<&str>, scan_id: &str) -> Option<PathBuf> {
-        let path = Self::default_path(project_root, scan_id);
+    /// `scan_root` is the resolved `<artifact root>/scan-results/<scan_id>/`
+    /// directory, so the checkpoint lives beside the scan's summary and
+    /// per-function artifacts and honours `SHATTER_ARTIFACT_DIR`.
+    /// Checkpoints written by older versions under
+    /// `<project>/shatter-artifacts/scan-results/<first 16 hex of id>/` are
+    /// deliberately not resumed (str-49drv.13): the scan starts fresh.
+    pub fn auto_discover(scan_root: &Path) -> Option<PathBuf> {
+        let path = Self::default_path(scan_root);
         if path.exists() { Some(path) } else { None }
     }
 
-    /// Default checkpoint file path in the artifact directory.
-    pub fn default_path(project_root: Option<&str>, scan_id: &str) -> PathBuf {
-        let root = project_root.unwrap_or(".");
-        PathBuf::from(root)
-            .join("shatter-artifacts")
-            .join("scan-results")
-            .join(&scan_id[..scan_id.len().min(16)])
-            .join("checkpoint.json")
+    /// Default checkpoint file path inside a scan's directory.
+    pub fn default_path(scan_root: &Path) -> PathBuf {
+        scan_root.join("checkpoint.json")
     }
 
     /// Check whether a function should be treated as already completed.
@@ -475,42 +473,41 @@ mod tests {
     #[test]
     fn auto_discover_finds_existing_checkpoint() {
         let dir = tempfile::tempdir().unwrap();
-        let scan_id = "abcdef1234567890abcdef";
-        let truncated = &scan_id[..16];
-
-        // Create the expected directory structure.
-        let checkpoint_dir = dir
-            .path()
-            .join("shatter-artifacts")
-            .join("scan-results")
-            .join(truncated);
-        fs::create_dir_all(&checkpoint_dir).unwrap();
-        fs::write(checkpoint_dir.join("checkpoint.json"), "{}").unwrap();
-
-        let result = ScanCheckpoint::auto_discover(Some(dir.path().to_str().unwrap()), scan_id);
-        assert!(result.is_some());
+        fs::write(dir.path().join("checkpoint.json"), "{}").unwrap();
+        assert_eq!(
+            ScanCheckpoint::auto_discover(dir.path()),
+            Some(dir.path().join("checkpoint.json"))
+        );
     }
 
     #[test]
     fn auto_discover_returns_none_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let result =
-            ScanCheckpoint::auto_discover(Some(dir.path().to_str().unwrap()), "nonexistent");
-        assert!(result.is_none());
+        assert!(ScanCheckpoint::auto_discover(dir.path()).is_none());
     }
 
     #[test]
-    fn default_path_structure() {
-        let path = ScanCheckpoint::default_path(Some("/proj"), "abcdef1234567890rest");
-        assert_eq!(
-            path,
-            PathBuf::from("/proj/shatter-artifacts/scan-results/abcdef1234567890/checkpoint.json")
-        );
+    fn auto_discover_ignores_legacy_sixteen_hex_location() {
+        // Older versions wrote to <project>/shatter-artifacts/scan-results/<16 hex>/.
+        // Those checkpoints are intentionally not resumed.
+        let project = tempfile::tempdir().unwrap();
+        let scan_id = "abcdef1234567890abcdef";
+        let legacy = project
+            .path()
+            .join("shatter-artifacts/scan-results")
+            .join(&scan_id[..16]);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("checkpoint.json"), "{}").unwrap();
+        let scan_root = project
+            .path()
+            .join("shatter-artifacts/scan-results")
+            .join(scan_id);
+        assert!(ScanCheckpoint::auto_discover(&scan_root).is_none());
     }
 
     #[test]
-    fn default_path_with_no_project_root() {
-        let path = ScanCheckpoint::default_path(None, "abcdef1234567890rest");
-        assert!(path.starts_with("./shatter-artifacts"));
+    fn default_path_is_inside_scan_root() {
+        let path = ScanCheckpoint::default_path(Path::new("/art/scan-results/fullid"));
+        assert_eq!(path, PathBuf::from("/art/scan-results/fullid/checkpoint.json"));
     }
 }
