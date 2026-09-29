@@ -329,6 +329,7 @@ func (h *Handler) ensureWorkspace(file string) (*workspace.Workspace, error) {
 		}
 		h.workspace = ws
 		instrument.SetWorkspaceGoEnvProvider(ws.GoEnv)
+		instrument.SetHarnessRuntimeRootProvider(ws.Root)
 	}
 	if err := h.workspace.Ensure(); err != nil {
 		return nil, fmt.Errorf("ensure workspace: %w", err)

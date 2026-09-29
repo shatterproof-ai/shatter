@@ -690,3 +690,20 @@ func startWatcher() string {
 		t.Errorf("ThrownError.Message should reference the goroutine panic, got %q", msg)
 	}
 }
+
+// TestFailureOutcome_HarnessRuntimeUnavailableIsNotBuildFailed pins str-49drv.100:
+// a harness runtime that cannot be materialized surfaces as an infrastructure
+// fault, even though the builder wraps it in "build failed: ...".
+func TestFailureOutcome_HarnessRuntimeUnavailableIsNotBuildFailed(t *testing.T) {
+	err := fmt.Errorf("build failed: build: harness runtime: %s: disk full", instrument.HarnessRuntimeUnavailableMarker)
+	outcome := failureOutcome(err)
+	if outcome.Status == OutcomeStatusBuildFailed {
+		t.Fatalf("status = build_failed, want an infrastructure classification")
+	}
+	if outcome.ThrownError == nil || outcome.ThrownError.ErrorType != "harness_runtime_unavailable" {
+		t.Fatalf("thrown_error = %+v, want error_type harness_runtime_unavailable", outcome.ThrownError)
+	}
+	if outcome.ShortReason == nil || strings.Contains(*outcome.ShortReason, "go build failed") {
+		t.Fatalf("short_reason = %v must not claim a go build failure", outcome.ShortReason)
+	}
+}
