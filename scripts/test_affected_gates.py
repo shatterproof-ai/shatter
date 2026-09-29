@@ -147,6 +147,7 @@ class AffectedGateMappingTests(unittest.TestCase):
         )
         self.assert_gates(["demo/walkthrough.sh"], {"walkthrough"})
         self.assert_gates(["demo/gauntlet-scan-allowlist.yaml"], {"gauntlet"})
+        self.assert_gates(["demo/check_step_lib.sh"], {"walkthrough", "gauntlet"})
         self.assert_gates(["demo/fixtures/arithmetic-v1.ts"], {"gauntlet"})
         self.assert_gates(
             ["benchmarks/sample-manifest.json"],

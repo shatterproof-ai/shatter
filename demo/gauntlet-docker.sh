@@ -81,6 +81,8 @@ fi
 
 # ─── Resolve repo root ───────────────────────────────────────────────
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=demo/check_step_lib.sh
+source "$REPO_ROOT/demo/check_step_lib.sh"
 
 # ─── Build or reuse image ────────────────────────────────────────────
 if [[ -n "$IMAGE" ]]; then
@@ -138,6 +140,7 @@ banner() {
 docker_run() {
     docker run --rm \
         -v "${EXAMPLES_ROOT}:/repo/examples:ro" \
+        ${SCAN_JSON_DIR:+-v "${SCAN_JSON_DIR}:/scan-json"} \
         -v "${CACHE_VOL}:/cache" \
         -e "SHATTER_CACHE_DIR=/cache" \
         "$IMAGE" \
@@ -154,7 +157,12 @@ run_cmd() {
     else
         local output_tmp
         output_tmp="$(mktemp)"
-        if docker_run "$@" </dev/null > >(tee -a "$output_tmp") 2> >(tee -a "$output_tmp" >&2); then
+        # Scan steps also write --format json into a mounted host dir so the
+        # shared checker can read it (str-49drv.149).
+        SCAN_JSON_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shatter-scan-json.XXXXXX")"
+        chmod 777 "$SCAN_JSON_DIR"
+        scan_step_setup "$SCAN_JSON_DIR" /scan-json "$@"
+        if docker_run "$@" ${SCAN_JSON_EXTRA_ARGS[@]+"${SCAN_JSON_EXTRA_ARGS[@]}"} </dev/null > >(tee -a "$output_tmp") 2> >(tee -a "$output_tmp" >&2); then
             true
         else
             local rc=$?
@@ -164,13 +172,9 @@ run_cmd() {
             STEP_ERRORS=$((STEP_ERRORS + 1))
         fi
         wait 2>/dev/null || true
-        local error_pattern='\[error\]|failed to deserialize|panic|SIGSEGV|error: exploration error'
-        if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
-            echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
-            grep -iE "$error_pattern" "$output_tmp" \
-                | sed 's/^/    /' >> "$ERROR_LOG"
-            STEP_ERRORS=$((STEP_ERRORS + 1))
-        fi
+        check_step_output "$output_tmp" "${CURRENT_STEP}"
+        rm -rf "$SCAN_JSON_DIR"
+        SCAN_JSON_DIR=""
         rm -f "$output_tmp"
     fi
     echo ""

@@ -214,6 +214,8 @@ if command -v gcc &>/dev/null; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=demo/check_step_lib.sh
+source "$SCRIPT_DIR/check_step_lib.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 example_path() {
@@ -324,6 +326,14 @@ run_cmd() {
         wants_timing=true
     fi
 
+    SCAN_JSON_FILE=""
+    SCAN_JSON_EXTRA_ARGS=()
+    SCAN_CHECK_ARGS=()
+    if [[ "${1:-}" == "$SHATTER" ]]; then
+        scan_step_setup "${TMPDIR:-/tmp}" "${TMPDIR:-/tmp}" "${@:2}"
+        cmd+=(${SCAN_JSON_EXTRA_ARGS[@]+"${SCAN_JSON_EXTRA_ARGS[@]}"})
+    fi
+
     if [[ "$DRY_RUN" == true ]]; then
         echo "${DIM}  (dry-run: skipped)${RESET}"
     else
@@ -350,35 +360,9 @@ run_cmd() {
         fi
         # Wait for tee subprocesses to flush
         wait 2>/dev/null || true
-        # str-jeen.59: delegate error detection to gauntlet_check_output.py.
-        # The helper handles process-level error markers, scan-report FAIL
-        # rows, and "Scan complete: ... N error(s)" summaries, suppressing
-        # entries listed in demo/gauntlet-scan-allowlist.yaml. Output that
-        # the helper flags is appended to ERROR_LOG verbatim.
-        local check_helper="${SCRIPT_DIR}/gauntlet_check_output.py"
-        local check_allowlist="${SCRIPT_DIR}/gauntlet-scan-allowlist.yaml"
-        if [[ -f "$check_helper" && -f "$check_allowlist" ]]; then
-            local check_out
-            check_out="$(mktemp)"
-            if ! python3 "$check_helper" \
-                --allowlist "$check_allowlist" \
-                --output "$output_tmp" \
-                --step "${CURRENT_STEP}" >"$check_out" 2>&1; then
-                cat "$check_out" >> "$ERROR_LOG"
-                STEP_ERRORS=$((STEP_ERRORS + 1))
-            fi
-            rm -f "$check_out"
-        else
-            # Fallback to the legacy inline regex (str-jeen.57 form) if the
-            # helper or allowlist is missing.
-            local error_pattern='\[error\]|failed to deserialize|deserialization failed|panic|SIGSEGV|error: exploration error|[1-9][0-9]* error\(s\)|\| FAIL \|'
-            if grep -qiE "$error_pattern" "$output_tmp" 2>/dev/null; then
-                echo "  Step ${CURRENT_STEP}: errors detected:" >> "$ERROR_LOG"
-                grep -iE "$error_pattern" "$output_tmp" \
-                    | sed 's/^/    /' >> "$ERROR_LOG"
-                STEP_ERRORS=$((STEP_ERRORS + 1))
-            fi
-        fi
+        # str-jeen.59 / str-49drv.149: shared checker (demo/check_step_lib.sh)
+        # screens process-level markers and, for scan steps, the scan JSON.
+        check_step_output "$output_tmp" "${CURRENT_STEP}"
         if [[ "$wants_timing" == true ]]; then
             latest_timing_file="$(find "$TIMING_DIR" -maxdepth 1 -name '*.timing.json' -type f -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
             if [[ -n "$latest_timing_file" && -f "$latest_timing_file" ]]; then

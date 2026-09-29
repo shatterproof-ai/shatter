@@ -39,63 +39,121 @@ def write_allowlist(td: str, body: str) -> Path:
     return path
 
 
-# A canonical scan-output snippet matching the current gauntlet baseline:
-# 15 allowlisted FAIL rows + a "2 error(s)" summary that matches expected_scan_errors.count.
-BASELINE_OUTPUT = textwrap.dedent(
+FIXTURES = REPO_ROOT / "demo" / "fixtures" / "scan-json"
+FAILED_JSON = FIXTURES / "failed.json"
+INTERRUPTED_JSON = FIXTURES / "interrupted.json"
+
+EMPTY_ALLOWLIST = "expected_failures: []\n"
+
+
+def run_scan_json(
+    scan_json: Path | None,
+    allowlist_body: str = EMPTY_ALLOWLIST,
+    extra_args: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess:
+    """Run the checker against a scan `--format json` report (str-49drv.149)."""
+    with TemporaryDirectory() as td:
+        allowlist = write_allowlist(td, allowlist_body)
+        out = Path(td) / "out.txt"
+        out.write_text("")
+        cmd = [sys.executable, str(SCRIPT), "--allowlist", str(allowlist), "--output", str(out), "--step", "test", "--today", PINNED_TODAY]
+        if scan_json is not None:
+            cmd += ["--scan-json", str(scan_json)]
+        return subprocess.run(cmd + list(extra_args), capture_output=True, text=True, check=False)
+
+
+ALLOW_SPIN = textwrap.dedent(
     """\
-    Scan complete: **43 function(s)** tested, **0 skipped**, **2 error(s)** (16 worker(s))
-    | FAIL | error_only | `computeStats` | /tmp/x/standalone/ts/04-errors.ts | 25.0% | 1/5 | 4/16 | 100 |
-    | FAIL | behavioral | `computeArea` | /tmp/x/standalone/ts/05-unions.ts | 10.0% | 0/6 | 1/10 | 100 |
-    | FAIL | behavioral | `routeRequest` | /tmp/x/standalone/ts/05-unions.ts | 23.1% | 1/8 | 3/13 | 100 |
-    | FAIL | error_only | `processStateMachine` | /tmp/x/standalone/ts/06-nested-control-flow.ts | 13.8% | 1/12 | 4/29 | 100 |
-    | FAIL | behavioral | `authorizeRequest` | /tmp/x/standalone/ts/07-auth-validation.ts | 24.1% | 4/14 | 7/29 | 100 |
-    | FAIL | behavioral | `validateJwt` | /tmp/x/standalone/ts/07-auth-validation.ts | 19.2% | 2/8 | 5/26 | 100 |
-    | FAIL | behavioral | `matchRoute` | /tmp/x/standalone/ts/10-path-router.ts | 24.0% | 4/19 | 12/50 | 100 |
-    | FAIL | error_only | `parseSemver` | /tmp/x/standalone/ts/14-semver.ts | 36.4% | 3/6 | 8/22 | 100 |
-    | FAIL | error_only | `classifyConfigs` | /tmp/x/standalone/ts/17-mock-branches.ts | 25.0% | 1/4 | 3/12 | 100 |
-    | FAIL | error_only | `classifyStatus` | /tmp/x/standalone/ts/17-mock-branches.ts | 12.5% | 0/3 | 1/8 | 100 |
-    | FAIL | behavioral | `loadOrDefault` | /tmp/x/standalone/ts/17-mock-branches.ts | 33.3% | 1/2 | 2/6 | 100 |
-    | FAIL | error_only | `negotiateLanguage` | /tmp/x/standalone/ts/18-accept-language.ts | 7.1% | 1/12 | 2/28 | 100 |
-    | FAIL | behavioral | `evaluateRobotsPolicy` | /tmp/x/standalone/ts/19-robots-policy.ts | 39.3% | 3/9 | 11/28 | 100 |
-    | FAIL | behavioral | `parseDotenv` | /tmp/x/standalone/ts/20-dotenv-parser.ts | 28.9% | 4/12 | 13/45 | 100 |
-    | FAIL | error_only | `classifySecret` | /tmp/x/standalone/ts/21-crypto-boundary.ts | 28.6% | 0/2 | 2/7 | 100 |
+    expected_failures:
+      - file: loop.ts
+        function: spin
+        tracker: str-49drv.149
+        reason: fixture function that never terminates
+        expires: "2099-01-01"
     """
+)
+ALLOW_BOTH = ALLOW_SPIN + textwrap.indent(
+    textwrap.dedent(
+        """\
+        - file: loop.ts
+          function: ok
+          tracker: str-49drv.149
+          reason: fixture function interrupted before it ran
+          expires: "2099-01-01"
+        """
+    ),
+    "  ",
 )
 
 
-class GauntletCheckOutputTest(unittest.TestCase):
-    def test_baseline_passes(self) -> None:
-        result = run_helper(BASELINE_OUTPUT)
+class GauntletCheckScanJsonTest(unittest.TestCase):
+    """Fixtures in demo/fixtures/scan-json/ are real `shatter scan --format
+    json` reports; see regenerate.sh there for the exact commands."""
+
+    def test_failed_function_flagged(self) -> None:
+        result = run_scan_json(FAILED_JSON)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("spin", result.stdout)
+        self.assertIn("timed out", result.stdout)
+        # `ok` completed in that scan; it must never be reported.
+        self.assertNotIn("`ok`", result.stdout)
+
+    def test_allowlisted_failure_passes(self) -> None:
+        result = run_scan_json(FAILED_JSON, ALLOW_SPIN)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout, "")
 
-    def test_unallowlisted_fail_row_flagged(self) -> None:
-        novel = "| FAIL | behavioral | `brandNewFn` | /tmp/x/standalone/ts/99-novel.ts | 0.0% | 0/1 | 0/5 | 100 |\n"
-        result = run_helper(BASELINE_OUTPUT + novel)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("brandNewFn", result.stdout)
+    def test_failure_allowlist_reason_must_match_when_given(self) -> None:
+        body = ALLOW_SPIN.replace(
+            "    reason: fixture", "    reason_contains: panicked\n    reason: fixture"
+        )
+        result = run_scan_json(FAILED_JSON, body)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("spin", result.stdout)
 
-    def test_excess_scan_errors_flagged(self) -> None:
-        bumped = BASELINE_OUTPUT.replace("2 error(s)", "3 error(s)", 1)
-        result = run_helper(bumped)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("error(s)", result.stdout)
+    def test_interrupted_functions_flagged(self) -> None:
+        result = run_scan_json(INTERRUPTED_JSON)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("interrupted", result.stdout)
+        self.assertIn("spin", result.stdout)
+        self.assertIn("ok", result.stdout)
 
-    def test_zero_scan_errors_passes(self) -> None:
-        clean = "Scan complete: **1 function(s)** tested, **0 skipped**, **0 error(s)** (1 worker(s))\n"
-        result = run_helper(clean)
+    def test_allowlisted_interrupted_functions_pass(self) -> None:
+        result = run_scan_json(INTERRUPTED_JSON, ALLOW_BOTH)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_process_level_error_flagged(self) -> None:
-        result = run_helper("[error] frontend crashed\nthread 'main' panicked at 'oops'\n")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("[error]", result.stdout)
-
-    def test_allowlisted_fail_with_different_path_prefix(self) -> None:
-        # Allowlist matches by basename, not full path, so different tmpdir prefixes still match.
-        with_prefix = "| FAIL | error_only | `computeStats` | /var/folders/abc/standalone/ts/04-errors.ts | 25.0% | 1/5 | 4/16 | 100 |\n"
-        result = run_helper(with_prefix + "Scan complete: **1 function(s)** tested, **0 skipped**, **0 error(s)** (1 worker(s))\n")
+    def test_expected_interrupted_step_passes(self) -> None:
+        result = run_scan_json(
+            INTERRUPTED_JSON, extra_args=("--expect-interrupted", "step bounds wall-clock")
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_expected_interrupted_does_not_excuse_failures(self) -> None:
+        result = run_scan_json(FAILED_JSON, extra_args=("--expect-interrupted", "x"))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_missing_scan_json_is_an_error(self) -> None:
+        result = run_scan_json(FIXTURES / "does-not-exist.json")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("scan JSON", result.stdout)
+
+    def test_unparseable_scan_json_is_an_error(self) -> None:
+        with TemporaryDirectory() as td:
+            bad = Path(td) / "bad.json"
+            bad.write_text("not json")
+            result = run_scan_json(bad)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("scan JSON", result.stdout)
+
+    def test_no_scan_json_step_is_skipped_with_logged_reason(self) -> None:
+        result = run_scan_json(None, extra_args=("--no-scan-json", "dry-run executes nothing"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("dry-run executes nothing", result.stderr)
+
+    def test_legacy_markdown_summary_is_no_longer_parsed(self) -> None:
+        # The checker consumes JSON now; prose summaries carry no verdict.
+        text = "Scan complete: **43 function(s)** tested, **0 skipped**, **9 error(s)**\n"
+        self.assertEqual(run_helper(text).returncode, 0)
 
 
 # Captured shape of the walkthrough's Rust step under the analyzer/harness
@@ -191,13 +249,8 @@ class GauntletCheckOutputZeroCoverageTest(unittest.TestCase):
                     expected_failures:
                       - file: 99-novel.ts
                         function: alwaysNull
-                        outcome: FAIL
-                        category: error_only
                         reason: intentionally unsupported fixture
                         expires: "2099-01-01"
-                    expected_scan_errors:
-                      count: 0
-                      expires: "2099-01-01"
                     """
                 ),
             )
@@ -248,9 +301,6 @@ class GauntletCheckOutputLifecycleClusterTest(unittest.TestCase):
                       - class: "Teardown scope mismatch"
                         reason: pending discovery-side fix, str-qwua7.56
                         expires: "2099-01-01"
-                    expected_scan_errors:
-                      count: 0
-                      expires: "2099-01-01"
                     """
                 ),
             )
@@ -364,9 +414,6 @@ class GauntletCheckOutputLiveRegressionTest(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     expected_failures: []
-                    expected_scan_errors:
-                      count: 0
-                      expires: "2099-01-01"
                     """
                 ),
             )
@@ -388,25 +435,19 @@ class GauntletCheckOutputAllowlistExpiryTest(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     expected_failures:
-                      - file: 04-errors.ts
-                        function: computeStats
-                        outcome: FAIL
-                        category: error_only
+                      - file: loop.ts
+                        function: spin
                         reason: stale entry
                         expires: "2000-01-01"
-                    expected_scan_errors:
-                      count: 0
-                      expires: "2099-01-01"
                     """
                 ),
             )
-            row = "| FAIL | error_only | `computeStats` | /tmp/x/standalone/ts/04-errors.ts | 25.0% | 1/5 | 4/16 | 100 |\n"
-            result = run_helper(row, allowlist=allowlist)
+            result = run_scan_json(FAILED_JSON, allowlist.read_text())
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("ALLOWLIST ENTRY EXPIRED", result.stdout)
-            # And, since the entry is no longer active, the row it used to
+            # And, since the entry is no longer active, the failure it used to
             # suppress is flagged too.
-            self.assertIn("computeStats", result.stdout)
+            self.assertIn("spin", result.stdout)
 
     def test_missing_expires_is_a_hard_allowlist_error(self) -> None:
         with TemporaryDirectory() as td:
@@ -417,11 +458,7 @@ class GauntletCheckOutputAllowlistExpiryTest(unittest.TestCase):
                     expected_failures:
                       - file: 04-errors.ts
                         function: computeStats
-                        outcome: FAIL
-                        category: error_only
                         reason: missing expiry
-                    expected_scan_errors:
-                      count: 0
                     """
                 ),
             )

@@ -1,0 +1,328 @@
+{
+  "version": 9,
+  "functions": [
+    {
+      "function_name": "ok",
+      "display_name": "ok",
+      "qualified_id": "/fixture/src/loop.ts::ok",
+      "file_path": "/fixture/src/loop.ts",
+      "source_bucket": "production_ish",
+      "branch_count": 1,
+      "branches_covered": 1,
+      "coverage_pct": 100.0,
+      "discovered_inputs": [
+        {
+          "inputs": [
+            1.7127071455832124
+          ],
+          "return_value": "big",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            8
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1.0
+          ],
+          "return_value": "small",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            9
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            7.579258133211272
+          ],
+          "return_value": "big",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            8
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            7.0
+          ],
+          "return_value": "big",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            8
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            257.47223571195207
+          ],
+          "return_value": "big",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            8
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            257.0
+          ],
+          "return_value": "big",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            8
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -0.3125139762745124
+          ],
+          "return_value": "small",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            9
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -1.0
+          ],
+          "return_value": "small",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            9
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            -0.2217004138038664
+          ],
+          "return_value": "small",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            9
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            2
+          ],
+          "return_value": "big",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            8
+          ],
+          "outcome_status": "completed"
+        },
+        {
+          "inputs": [
+            1
+          ],
+          "return_value": "small",
+          "thrown_error": null,
+          "lines_executed": [
+            8,
+            9
+          ],
+          "outcome_status": "completed"
+        }
+      ],
+      "behavior_clusters": [
+        {
+          "id": 0,
+          "representative_inputs": [
+            1.7127071455832124
+          ],
+          "return_value": "big",
+          "thrown_error": null
+        },
+        {
+          "id": 1,
+          "representative_inputs": [
+            1.0
+          ],
+          "return_value": "small",
+          "thrown_error": null
+        },
+        {
+          "id": 2,
+          "representative_inputs": [
+            7.579258133211272
+          ],
+          "return_value": "big",
+          "thrown_error": null
+        },
+        {
+          "id": 3,
+          "representative_inputs": [
+            7.0
+          ],
+          "return_value": "big",
+          "thrown_error": null
+        },
+        {
+          "id": 4,
+          "representative_inputs": [
+            257.47223571195207
+          ],
+          "return_value": "big",
+          "thrown_error": null
+        },
+        {
+          "id": 5,
+          "representative_inputs": [
+            257.0
+          ],
+          "return_value": "big",
+          "thrown_error": null
+        },
+        {
+          "id": 6,
+          "representative_inputs": [
+            -0.3125139762745124
+          ],
+          "return_value": "small",
+          "thrown_error": null
+        },
+        {
+          "id": 7,
+          "representative_inputs": [
+            -1.0
+          ],
+          "return_value": "small",
+          "thrown_error": null
+        },
+        {
+          "id": 8,
+          "representative_inputs": [
+            -0.2217004138038664
+          ],
+          "return_value": "small",
+          "thrown_error": null
+        },
+        {
+          "id": 9,
+          "representative_inputs": [
+            2
+          ],
+          "return_value": "big",
+          "thrown_error": null
+        },
+        {
+          "id": 10,
+          "representative_inputs": [
+            1
+          ],
+          "return_value": "small",
+          "thrown_error": null
+        }
+      ],
+      "constraint_stats": {
+        "total_constraints": 100,
+        "solver_guided_inputs": 89
+      },
+      "iterations": 100,
+      "lines_covered": 2,
+      "total_lines": 2,
+      "mocks_used": [],
+      "completion_outcome": "behavioral"
+    }
+  ],
+  "codebase": {
+    "attempted_functions": 2,
+    "completed_functions": 1,
+    "completed_with_behavior": 1,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "completed_skipped_by_policy": 0,
+    "failed_functions": 1,
+    "skipped_functions_count": 0,
+    "unsupported_functions": 0,
+    "total_discovered_functions": 2,
+    "total_branches": 1,
+    "overall_coverage": 100.0,
+    "productionish_source_lines": 10,
+    "source_set": {
+      "production_ish": {
+        "file_count": 1,
+        "line_count": 10
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "low_coverage": {
+      "low_coverage_threshold_pct": 10.0,
+      "failed": 1,
+      "unsupported": 0,
+      "zero_coverage_with_branches": 0,
+      "zero_coverage_no_branches": 0,
+      "positive_low_coverage": 0,
+      "top_branch_heavy": [],
+      "by_area": []
+    },
+    "failed": [
+      {
+        "function_name": "spin",
+        "display_name": "spin",
+        "qualified_id": "/fixture/src/loop.ts::spin",
+        "file_path": "/fixture/src/loop.ts",
+        "reason": "timed out during execution after 5s",
+        "language": "typescript",
+        "status": "failed",
+        "error_type": "timeout",
+        "error_message": "timed out during execution after 5s",
+        "failed_at": "exploration"
+      }
+    ],
+    "skipped_functions": [],
+    "budget_total_secs": 300,
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/fixture/src/loop.ts::ok",
+    "/fixture/src/loop.ts::spin"
+  ],
+  "test_order_display_names": [
+    "ok",
+    "spin"
+  ]
+}

@@ -433,6 +433,11 @@ tasks:
       - scripts/test_precompletion_bootstrap.py
       - demo/walkthrough.sh
       - demo/gauntlet.sh
+      - demo/check_step_lib.sh
+      - demo/gauntlet_check_output.py
+      - demo/test_gauntlet_check_output.py
+      - demo/gauntlet-scan-allowlist.yaml
+      - demo/fixtures/scan-json/**/*
       - scripts/test_demo_cache_modes.sh
       - scripts/test_root_cargo_phases.py
       - scripts/test_governed_task_graph.py
@@ -464,6 +469,7 @@ tasks:
       - bash scripts/test_staged_private_key_guard.sh
       - python3 -m unittest scripts.test_git_sandbox_test_lib
       - python3 -m unittest scripts.test_walkthrough_examples_checkout
+      - python3 -m unittest demo.test_gauntlet_check_output
       - python3 -m unittest scripts.test_affected_gates
       - python3 -m unittest scripts.test_gate_receipt
       - python3 -m unittest scripts.test_precompletion_bootstrap

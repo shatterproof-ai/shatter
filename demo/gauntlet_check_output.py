@@ -25,8 +25,15 @@ Checks performed, each already reported (unconditionally) or allowlist-aware:
     through termimad, and those checks cannot see the rendered output; only
     the plain-text process-error markers still apply. The authoritative
     non-TTY runs (git hooks, CI, agents) are unaffected.
-  * `| FAIL |` scan-report rows are reported only when (basename(file),
-    function) is not in the allowlist.
+  * Scan verdicts come from the scan's `--format json` report (`--scan-json`),
+    never from markdown prose (str-49drv.149): every `codebase.failed[]` entry
+    and every `codebase.skipped_functions[]` entry with `category ==
+    "interrupted"` is reported unless (basename(file), function) is in the
+    allowlist (a failure entry may also pin `reason_contains`). A step that
+    legitimately bounds the run (`--timeout-total`) passes
+    `--expect-interrupted REASON`; a step that executes nothing (`--dry-run`)
+    passes `--no-scan-json REASON`, which is logged and skips the check. A
+    missing/unparseable report when one was expected is itself an error.
   * A function block (explore markdown, or a scan summary-table row) at 0%
     coverage with >=1 path/iteration is reported unless (basename(file),
     function) is allowlisted — the same `expected_failures` list used for
@@ -35,12 +42,9 @@ Checks performed, each already reported (unconditionally) or allowlist-aware:
   * A lifecycle/scope-mismatch thrown-error line (e.g. "Teardown scope
     mismatch") is reported unless its class is listed in
     `expected_lifecycle_clusters`.
-  * `Scan complete: ... N error(s)` summaries are reported only when N exceeds
-    the allowlist's `expected_scan_errors.count`.
 
 Allowlist entries require an `expires: YYYY-MM-DD` date (schema is enforced
-for `expected_failures`, `expected_lifecycle_clusters`, and
-`expected_scan_errors`). An entry past its expiry stops suppressing and is
+for `expected_failures` and `expected_lifecycle_clusters`). An entry past its expiry stops suppressing and is
 itself reported as a flagged line, so a stale allowlist entry fails the gate
 rather than silently expiring into a blind spot.
 
@@ -51,11 +55,12 @@ line per flagged item (already indented for ERROR_LOG appending) and exits 1.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
 from datetime import date
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 import yaml
 
@@ -80,12 +85,6 @@ PROCESS_ERROR_RE = re.compile(
 # Interleaved stderr log lines ("[info] ...") that can land between a
 # function heading and its summary line in the combined capture.
 LOG_LINE_RE = re.compile(r"^\s*\[(?:info|warn|warning|debug|trace)\]", re.IGNORECASE)
-SCAN_ERROR_SUMMARY_RE = re.compile(
-    r"Scan complete:.*?\*?\*?(\d+)\*?\*? error\(s\)",
-)
-FAIL_ROW_RE = re.compile(
-    r"^\|\s*FAIL\s*\|\s*[^|]*\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|"
-)
 
 # Matches a `## `function`` explore-markdown heading and, when present, its
 # ` *(file:line-range)*` location suffix (shatter-cli/templates/explore_fn.md).
@@ -132,23 +131,34 @@ def _parse_expiry(entry: dict, context: str, today: date) -> bool:
     return expires < today
 
 
-def load_allowlist(
-    path: str, today: date | None = None
-) -> tuple[set[tuple[str, str]], int, set[str], list[str]]:
-    """Load the allowlist. Returns (failures, expected_scan_errors_count,
-    lifecycle_classes, expired_entry_descriptions)."""
+class Allowlist(NamedTuple):
+    # (basename(file), function) -> reason_contains substrings pinned by its
+    # entries ("" = any reason).
+    failures: dict[tuple[str, str], list[str]]
+    lifecycle: set[str]
+    expired: list[str]
+
+    def allows(self, basename: str, function: str, reason: str = "") -> bool:
+        pins = self.failures.get((basename, function))
+        return pins is not None and any(pin in reason for pin in pins)
+
+
+def load_allowlist(path: str, today: date | None = None) -> Allowlist:
+    """Load the allowlist (failures, lifecycle classes, expired-entry
+    descriptions)."""
     today = today or date.today()
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
 
-    failures: set[tuple[str, str]] = set()
+    failures: dict[tuple[str, str], list[str]] = {}
     expired: list[str] = []
     for entry in data.get("expected_failures", []) or []:
         context = f"expected_failures: {entry.get('file')}::{entry.get('function')}"
         if _parse_expiry(entry, context, today):
             expired.append(context)
             continue
-        failures.add((entry["file"], entry["function"]))
+        key = (entry["file"], entry["function"])
+        failures.setdefault(key, []).append(str(entry.get("reason_contains", "")))
 
     lifecycle: set[str] = set()
     for entry in data.get("expected_lifecycle_clusters", []) or []:
@@ -158,21 +168,49 @@ def load_allowlist(
             continue
         lifecycle.add(str(entry["class"]).strip().lower())
 
-    scan_errors_entry = data.get("expected_scan_errors") or {}
-    expected_errors = int(scan_errors_entry.get("count", 0))
-    if scan_errors_entry:
-        context = "expected_scan_errors"
-        if _parse_expiry(scan_errors_entry, context, today):
-            expired.append(context)
-            expected_errors = 0
+    return Allowlist(failures, lifecycle, expired)
 
-    return failures, expected_errors, lifecycle, expired
+
+def _basename_of_qualified_id(qualified_id: str) -> str:
+    """`/abs/path/file.ts::fn` -> `file.ts` (skipped entries carry no file_path)."""
+    return os.path.basename(qualified_id.rsplit("::", 1)[0]) if "::" in qualified_id else ""
+
+
+def check_scan_json(
+    path: str, allowlist: Allowlist, expect_interrupted: str | None = None
+) -> list[str]:
+    """Flag failed and interrupted functions in a scan `--format json` report."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            codebase = json.load(fh)["codebase"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return [f"scan JSON missing or unparseable ({path}): {exc!r}"]
+
+    flagged: list[str] = []
+    for f in codebase.get("failed") or []:
+        name = f.get("function_name", "?")
+        reason = f.get("reason", "")
+        basename = os.path.basename(f.get("file_path", "")) or _basename_of_qualified_id(
+            f.get("qualified_id", "")
+        )
+        if not allowlist.allows(basename, name, reason):
+            flagged.append(f"scan failure: `{name}` ({basename or 'unknown file'}): {reason}")
+    if expect_interrupted is None:
+        for f in codebase.get("skipped_functions") or []:
+            if f.get("category") != "interrupted":
+                continue
+            name = f.get("function_name", "?")
+            basename = _basename_of_qualified_id(f.get("qualified_id", ""))
+            if not allowlist.allows(basename, name):
+                flagged.append(
+                    f"scan interrupted: `{name}` ({basename or 'unknown file'}): {f.get('reason', '')}"
+                )
+    return flagged
 
 
 def check(
     lines: Iterable[str],
-    allowlist: set[tuple[str, str]],
-    expected_errors: int,
+    allowlist: Allowlist,
     lifecycle_allowlist: frozenset[str] = frozenset(),
 ) -> list[str]:
     flagged: list[str] = []
@@ -192,7 +230,7 @@ def check(
         if m:
             function, file_path = m.group(1), m.group(2)
             basename = os.path.basename(file_path) if file_path else ""
-            current_function = (function, basename, (basename, function) in allowlist)
+            current_function = (function, basename, allowlist.allows(basename, function))
             awaiting_summary = True
             continue
 
@@ -212,24 +250,6 @@ def check(
                 and not HARD_ERROR_RE.search(line)
             )
             if not excused:
-                flagged.append(line)
-            continue
-
-        m = SCAN_ERROR_SUMMARY_RE.search(line)
-        if m:
-            count = int(m.group(1))
-            if count > expected_errors:
-                flagged.append(
-                    f"{line}  [unexpected: {count} > allowlisted {expected_errors}]"
-                )
-            continue
-
-        m = FAIL_ROW_RE.match(line)
-        if m:
-            function = m.group(1)
-            file_path = m.group(2)
-            basename = os.path.basename(file_path)
-            if (basename, function) not in allowlist:
                 flagged.append(line)
             continue
 
@@ -264,7 +284,7 @@ def check(
             function, file_path, pct, iters = m.groups()
             if float(pct) == 0.0 and int(iters) >= 1:
                 basename = os.path.basename(file_path.strip())
-                if (basename, function) not in allowlist:
+                if not allowlist.allows(basename, function):
                     flagged.append(line)
 
     return flagged
@@ -275,6 +295,26 @@ def main() -> int:
     parser.add_argument("--allowlist", required=True)
     parser.add_argument("--output", required=True, help="Captured step output file")
     parser.add_argument("--step", default="", help="Step label included in error log")
+    parser.add_argument(
+        "--scan-json",
+        default=None,
+        help="Scan `--format json` report for this step; failed and interrupted "
+        "functions in it are flagged unless allowlisted",
+    )
+    parser.add_argument(
+        "--expect-interrupted",
+        default=None,
+        metavar="REASON",
+        help="Interrupted functions are expected on this step (e.g. it bounds "
+        "the scan with --timeout-total); failures are still flagged",
+    )
+    parser.add_argument(
+        "--no-scan-json",
+        default=None,
+        metavar="REASON",
+        help="This scan step produces no report (e.g. --dry-run); the scan JSON "
+        "check is skipped and REASON is logged to stderr",
+    )
     parser.add_argument(
         "--today",
         default=None,
@@ -288,17 +328,20 @@ def main() -> int:
     label = f"Step {args.step}" if args.step else "Step"
 
     try:
-        allowlist, expected_errors, lifecycle_allowlist, expired = load_allowlist(
-            args.allowlist, today=today
-        )
+        allowlist = load_allowlist(args.allowlist, today=today)
     except AllowlistError as exc:
         print(f"  {label}: allowlist error: {exc}")
         return 1
 
     with open(args.output, "r", encoding="utf-8", errors="replace") as fh:
-        flagged = check(fh, allowlist, expected_errors, frozenset(lifecycle_allowlist))
+        flagged = check(fh, allowlist, frozenset(allowlist.lifecycle))
 
-    flagged = [f"ALLOWLIST ENTRY EXPIRED: {e}" for e in expired] + flagged
+    if args.scan_json is not None:
+        flagged += check_scan_json(args.scan_json, allowlist, args.expect_interrupted)
+    elif args.no_scan_json is not None:
+        print(f"  {label}: scan JSON check skipped: {args.no_scan_json}", file=sys.stderr)
+
+    flagged = [f"ALLOWLIST ENTRY EXPIRED: {e}" for e in allowlist.expired] + flagged
 
     if not flagged:
         return 0

@@ -1,0 +1,85 @@
+{
+  "version": 9,
+  "functions": [],
+  "codebase": {
+    "attempted_functions": 0,
+    "completed_functions": 0,
+    "completed_with_behavior": 0,
+    "completed_error_only": 0,
+    "completed_dispatch_failed": 0,
+    "completed_skipped_by_policy": 0,
+    "failed_functions": 0,
+    "skipped_functions_count": 2,
+    "unsupported_functions": 0,
+    "total_discovered_functions": 2,
+    "total_branches": 0,
+    "overall_coverage": 0.0,
+    "productionish_source_lines": 10,
+    "source_set": {
+      "production_ish": {
+        "file_count": 1,
+        "line_count": 10
+      },
+      "test_spec": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "generated": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "declaration_only": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "fixture_sample": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "policy_excluded": {
+        "file_count": 0,
+        "line_count": 0
+      },
+      "unsupported": {
+        "file_count": 0,
+        "line_count": 0
+      }
+    },
+    "low_coverage": {
+      "low_coverage_threshold_pct": 10.0,
+      "failed": 0,
+      "unsupported": 0,
+      "zero_coverage_with_branches": 0,
+      "zero_coverage_no_branches": 0,
+      "positive_low_coverage": 0,
+      "top_branch_heavy": [],
+      "by_area": []
+    },
+    "skipped_functions": [
+      {
+        "function_name": "ok",
+        "display_name": "ok",
+        "qualified_id": "/fixture/src/loop.ts::ok",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      },
+      {
+        "function_name": "spin",
+        "display_name": "spin",
+        "qualified_id": "/fixture/src/loop.ts::spin",
+        "reason": "not attempted: total scan budget exceeded",
+        "category": "interrupted"
+      }
+    ],
+    "budget_total_secs": 1,
+    "dependency_graph": []
+  },
+  "test_order": [
+    "/fixture/src/loop.ts::ok",
+    "/fixture/src/loop.ts::spin"
+  ],
+  "test_order_display_names": [
+    "ok",
+    "spin"
+  ]
+}

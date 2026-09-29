@@ -170,6 +170,8 @@ def _classify(path: str) -> set[str] | None:
         return {"rust-rt:test", "rust-rt:clippy", "e2e-rust"}
     if path.startswith("shatter-rust/"):
         return {"rust-fe:test", "rust-fe:clippy", "e2e-rust", "parity", "conformance"}
+    if path == "demo/check_step_lib.sh":
+        return {"walkthrough", "gauntlet"}
     if path.startswith("demo/walkthrough"):
         return {"walkthrough"}
     if (
