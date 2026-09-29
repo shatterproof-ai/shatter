@@ -11,7 +11,9 @@
 <body>
 <h1>Shatter Scan Report</h1>
 <div class="stat-row">
-  <div class="stat"><div class="stat-label">Functions</div><div class="stat-value">{{ total_fn }}</div></div>
+  <div class="stat"><div class="stat-label">Attempted</div><div class="stat-value">{{ attempted_count }}</div></div>
+  <div class="stat"><div class="stat-label">Completed</div><div class="stat-value">{{ total_fn }}</div></div>
+  <div class="stat"><div class="stat-label">Failed</div><div class="stat-value">{{ failed_count }}</div></div>
   <div class="stat"><div class="stat-label">Paths Found</div><div class="stat-value">{{ total_paths }}</div></div>
   <div class="stat"><div class="stat-label">Coverage</div><div class="stat-value" style="font-size:16px">{{ overall_cov_bar_html|safe }}</div></div>
   <div class="stat"><div class="stat-label">Skipped</div><div class="stat-value">{{ skipped_count }}</div></div>
@@ -49,6 +51,19 @@
 {%- endif %}
 </div></details>
 {%- endfor %}
+{%- if !failed.is_empty() %}
+<h2>Failed Functions</h2>
+<div class="card">
+<table>
+<thead><tr><th>Function</th><th>File</th><th>Diagnostic</th><th>Category</th><th>Stage</th></tr></thead>
+<tbody>
+{%- for f in failed %}
+<tr><td><code>{{ f.fn_name|safe }}</code></td><td><code>{{ f.file_path|safe }}</code></td><td>{{ f.diagnostic|safe }}</td><td>{{ f.error_type|safe }}</td><td>{{ f.failed_at|safe }}</td></tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+{%- endif %}
 {%- if !interrupted_note.is_empty() %}
 <h2>Not Attempted</h2>
 <div class="card">

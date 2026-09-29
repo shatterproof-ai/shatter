@@ -301,6 +301,20 @@ pub(crate) struct ScanFnView {
     pub source_code_html: Option<String>,
 }
 
+/// View model for an attempted-but-failed function entry.
+pub(crate) struct FailedView {
+    /// HTML-escaped display name (rendered with `|safe`).
+    pub fn_name: String,
+    /// HTML-escaped source path; empty when unknown.
+    pub file_path: String,
+    /// HTML-escaped diagnostic: `error_message`, falling back to `reason`.
+    pub diagnostic: String,
+    /// HTML-escaped `error_type`, or empty.
+    pub error_type: String,
+    /// HTML-escaped `failed_at` stage, or empty.
+    pub failed_at: String,
+}
+
 /// View model for a skipped function entry.
 pub(crate) struct SkippedView {
     /// HTML-escaped function name (rendered with `|safe` in the template).
@@ -320,11 +334,16 @@ pub(crate) struct ScanReportTemplate {
     pub total_fn: usize,
     pub total_paths: usize,
     pub skipped_count: usize,
+    pub attempted_count: usize,
+    pub failed_count: usize,
+    /// Attempted-but-failed functions (str-hds8u), projected from
+    /// `codebase.failed`.
+    pub failed: Vec<FailedView>,
     /// Pre-rendered overall coverage bar HTML (HTML-safe).
     pub overall_cov_bar_html: String,
     pub functions: Vec<ScanFnView>,
-    /// Functions that were attempted-but-failed or benignly skipped
-    /// (expected/unsupported). Excludes never-attempted (interrupted)
+    /// Benignly skipped functions (expected/unsupported). Attempted failures
+    /// live in `failed`. Excludes never-attempted (interrupted)
     /// entries — see `interrupted_note` (str-jjt2h).
     pub skipped: Vec<SkippedView>,
     /// Pre-formatted, HTML-escaped "N function(s) not attempted (budget
@@ -474,10 +493,26 @@ pub fn render_scan_report(report: &ScanReport, project_root: Option<&Path>) -> S
         ))
     };
 
+    let failed: Vec<FailedView> = report
+        .codebase
+        .failed
+        .iter()
+        .map(|f| FailedView {
+            fn_name: html_escape(report_display_name(&f.display_name, &f.function_name)),
+            file_path: html_escape(&f.file_path),
+            diagnostic: html_escape(f.error_message.as_deref().unwrap_or(&f.reason)),
+            error_type: html_escape(f.error_type.as_deref().unwrap_or("")),
+            failed_at: html_escape(f.failed_at.as_deref().unwrap_or("")),
+        })
+        .collect();
+
     let tmpl = ScanReportTemplate {
         total_fn,
         total_paths,
         skipped_count,
+        attempted_count: report.codebase.attempted_functions,
+        failed_count: report.codebase.failed_functions,
+        failed,
         overall_cov_bar_html,
         functions,
         skipped,
@@ -500,8 +535,8 @@ mod tests {
     use super::*;
     use crate::explorer::{ExecutionSummary, ObservationOutput};
     use crate::report::{
-        CodebaseReport, ConstraintStats, DiscoveredInput, FunctionReport, ScanReport,
-        SkippedFunctionReport,
+        CodebaseReport, ConstraintStats, DiscoveredInput, FailedFunctionReport, FunctionReport,
+        ScanReport, SkippedFunctionReport,
     };
     use proptest::prelude::*;
     use serde_json::json;
@@ -896,5 +931,126 @@ mod tests {
         let report = sample_scan_report("f", None);
         let html = render_scan_report(&report, None);
         assert!(!html.contains("Skipped Functions"));
+    }
+
+    fn checkout_failure() -> FailedFunctionReport {
+        FailedFunctionReport {
+            function_name: "checkout".to_string(),
+            display_name: "checkout".to_string(),
+            qualified_id: "src/checkout.ts::checkout".to_string(),
+            file_path: "src/checkout.ts".to_string(),
+            reason: "build error: AUDIT_FIXTURE_BUILD_FAILURE <missing & module>".to_string(),
+            language: Some("typescript".to_string()),
+            status: Some("failed".to_string()),
+            error_type: Some("build_error".to_string()),
+            error_message: Some("AUDIT_FIXTURE_BUILD_FAILURE <missing & module>".to_string()),
+            failed_at: Some("frontend".to_string()),
+        }
+    }
+
+    fn skipped_entry(name: &str, category: &str) -> SkippedFunctionReport {
+        SkippedFunctionReport {
+            function_name: name.to_string(),
+            display_name: name.to_string(),
+            qualified_id: String::new(),
+            reason: format!("{name} reason"),
+            category: category.to_string(),
+        }
+    }
+
+    fn failed_only_report() -> ScanReport {
+        ScanReport {
+            version: 6,
+            functions: vec![],
+            codebase: CodebaseReport {
+                attempted_functions: 1,
+                completed_functions: 0,
+                failed_functions: 1,
+                total_discovered_functions: 1,
+                failed: vec![checkout_failure()],
+                ..Default::default()
+            },
+            test_order: vec![],
+            test_order_display_names: vec![],
+            cumulative: None,
+        }
+    }
+
+    #[test]
+    fn render_scan_report_shows_failed_only_scan() {
+        let html = render_scan_report(&failed_only_report(), None);
+        assert!(html.contains("Failed Functions"), "no failed section");
+        assert!(html.contains("checkout"));
+        assert!(html.contains("src/checkout.ts"));
+        assert!(html.contains("AUDIT_FIXTURE_BUILD_FAILURE &lt;missing &amp; module&gt;"));
+        assert!(html.contains("build_error"));
+        assert!(html.contains("frontend"));
+        assert!(!html.contains("<missing & module>"), "unescaped diagnostic");
+        assert!(html.contains("Attempted"));
+        assert!(html.contains("Completed"));
+        assert!(html.contains(">Failed<"));
+    }
+
+    #[test]
+    fn render_scan_report_failed_section_matches_markdown_and_json() {
+        let report = failed_only_report();
+        let html = render_scan_report(&report, None);
+        let md = crate::report::format_markdown_report(&report);
+        let json = serde_json::to_string(&report).unwrap();
+        for marker in ["checkout", "src/checkout.ts", "AUDIT_FIXTURE_BUILD_FAILURE"] {
+            assert!(html.contains(marker), "html missing {marker}");
+            assert!(md.contains(marker), "markdown missing {marker}");
+            assert!(json.contains(marker), "json missing {marker}");
+        }
+    }
+
+    #[test]
+    fn render_scan_report_mixed_preserves_skip_and_interrupted_contract() {
+        let mut report = sample_scan_report("done1", None);
+        report.functions.push(sample_function_report("done2"));
+        report.codebase.attempted_functions = 3;
+        report.codebase.completed_functions = 2;
+        report.codebase.failed_functions = 1;
+        report.codebase.failed = vec![checkout_failure()];
+        report.codebase.skipped_functions = vec![
+            skipped_entry("benign", "expected"),
+            skipped_entry("never", "interrupted"),
+        ];
+        let html = render_scan_report(&report, None);
+        assert!(html.contains("done1") && html.contains("done2"));
+        assert!(html.contains("Failed Functions") && html.contains("checkout"));
+        assert!(html.contains("benign reason"));
+        assert!(!html.contains("never reason"));
+        assert!(html.contains("Not Attempted"));
+        assert!(html.contains(
+            r#"<div class="stat-label">Skipped</div><div class="stat-value">2</div>"#
+        ));
+    }
+
+    #[test]
+    fn render_scan_report_failed_falls_back_to_reason_and_display_name() {
+        let mut report = failed_only_report();
+        report.codebase.failed = vec![FailedFunctionReport {
+            function_name: "bare".to_string(),
+            display_name: String::new(),
+            qualified_id: String::new(),
+            file_path: String::new(),
+            reason: "boom <b>".to_string(),
+            language: None,
+            status: None,
+            error_type: None,
+            error_message: None,
+            failed_at: None,
+        }];
+        let html = render_scan_report(&report, None);
+        assert!(html.contains("bare"));
+        assert!(html.contains("boom &lt;b&gt;"));
+        assert!(!html.contains("boom <b>"));
+    }
+
+    #[test]
+    fn render_scan_report_no_failures_has_no_failed_section() {
+        let html = render_scan_report(&sample_scan_report("f", None), None);
+        assert!(!html.contains("Failed Functions"));
     }
 }
