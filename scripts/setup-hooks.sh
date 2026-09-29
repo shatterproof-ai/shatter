@@ -33,7 +33,7 @@ done
 
 BEGIN_MARKER="# --- BEGIN SHATTER QUALITY ---"
 END_MARKER="# --- END SHATTER QUALITY ---"
-QUALITY_VERSION_MARKER="# SHATTER QUALITY TEMPLATE VERSION: 2"
+QUALITY_VERSION_MARKER="# SHATTER QUALITY TEMPLATE VERSION: 3"
 
 has_shatter_section() {
   grep -qF "${BEGIN_MARKER}" "$1" 2>/dev/null &&
@@ -88,8 +88,16 @@ HOOK
   echo "[add]  ${hook_name}: Shatter quality section installed"
 }
 
-# Pre-commit: targeted Rust checks on staged files only
-PRE_COMMIT_BODY='if [ -f "scripts/precommit-rust.sh" ]; then
+# Pre-commit: staged private-key guard, then targeted Rust checks on staged files
+# The staged private-key guard runs first and fails closed (str-0znjr).
+PRE_COMMIT_BODY='if [ -f "scripts/check-staged-private-keys.py" ]; then
+  command -v python3 >/dev/null 2>&1 || {
+    echo "[shatter] python3 required for the private-key guard" >&2
+    exit 1
+  }
+  python3 scripts/check-staged-private-keys.py || exit 1
+fi
+if [ -f "scripts/precommit-rust.sh" ]; then
   scripts/precommit-rust.sh 2>&1 || exit 1
 fi'
 
