@@ -137,8 +137,8 @@ interface InstrumentationContext {
   nextCallSiteId: number;
   /** Counter for crypto boundary IDs — incremented each time a boundary is injected. */
   nextCryptoBoundaryId: number;
-  /** Maps local variable names to their symbolic expressions derived from parameters. */
-  dataFlowMap: Map<string, SymExpr>;
+  /** Flow maps (names → symbolic values) at each branch condition's program point. */
+  branchFlowMaps: BranchFlowMaps;
   /** Unique source lines where __shatter_record() calls were inserted. */
   instrumentableLines: Set<number>;
 }
@@ -184,7 +184,7 @@ export function instrumentFunction(
 
   const finalizeInstrumentation = (): InstrumentResult => {
     const paramNames = extractParamNames(targetFunction, sourceFile);
-    const dataFlowMap = buildDataFlowMap(targetFunction, sourceFile, paramNames);
+    const branchFlowMaps = buildBranchFlowMaps(targetFunction, paramNames);
 
     // Shared mutable branch counter — captured by the transformer closure.
     const branchState = { nextBranchId: 0 };
@@ -195,7 +195,7 @@ export function instrumentFunction(
 
     const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
     const transformed = ts.transform(sourceFile, [
-      createInstrumentationTransformer(functionName, paramNames, branchState, dataFlowMap, mocksBySymbol, instrumentableLines),
+      createInstrumentationTransformer(functionName, paramNames, branchState, branchFlowMaps, mocksBySymbol, instrumentableLines),
     ]);
     const printed = printer.printFile(transformed.transformed[0] as ts.SourceFile);
     transformed.dispose();
@@ -322,196 +322,571 @@ function extractParamNames(
 }
 
 // ---------------------------------------------------------------------------
-// Data flow analysis
+// Data flow analysis (program-point sensitive)
 // ---------------------------------------------------------------------------
 
+const UNKNOWN_SYM: SymExpr = { kind: "unknown" };
+
+/** Maps names in scope to their symbolic value at one program point. */
+type FlowMap = Map<string, SymExpr>;
+
 /**
- * Build a map from local variable names to their symbolic expressions.
- * Scans variable declarations in the function body where the initializer
- * references parameters (directly or transitively through other locals).
+ * Flow maps for every instrumented branch condition, each taken at the
+ * condition's own program point (str-49drv.130). A constraint built from any
+ * other point's bindings can be false for the inputs that actually ran.
  */
-function buildDataFlowMap(
+interface BranchFlowMaps {
+  byCondition: Map<ts.Expression, FlowMap>;
+  /** Conservative map for any condition the walk did not reach. */
+  fallback: FlowMap;
+}
+
+/** Mutable state of the flow walk over one target function body. */
+interface FlowWalk {
+  /** Bindings at the current program point; parameters are seeded as `param`. */
+  flowMap: FlowMap;
+  resolveName: (name: string) => SymExpr | undefined;
+  byCondition: Map<ts.Expression, FlowMap>;
+  /** Names assigned inside nested functions — unknown at every point, since calls are not tracked. */
+  closureAssigned: ReadonlySet<string>;
+  /** Names assigned anywhere in the function, nested functions included. */
+  assignedAnywhere: ReadonlySet<string>;
+}
+
+/**
+ * Walk the target function once, recording the flow map in effect at each
+ * branch condition. Soundness rules:
+ * - a reassignment whose value cannot be resolved kills the old binding;
+ * - every name a loop may assign (condition, body, incrementor) is unknown at
+ *   the loop head, in the body, and after the loop;
+ * - parameters live in the flow map, so a reassigned parameter resolves to
+ *   its current value rather than the input;
+ * - if/else merges produce `ite` only when the condition is fully known.
+ */
+function buildBranchFlowMaps(
   node: ts.FunctionDeclaration | ts.VariableStatement,
-  sourceFile: ts.SourceFile,
   paramNames: Set<string>,
-): Map<string, SymExpr> {
+): BranchFlowMaps {
   const body = extractFunctionBody(node);
+  const byCondition = new Map<ts.Expression, FlowMap>();
   if (!body) {
-    return new Map();
+    return { byCondition, fallback: seedParams(paramNames, new Set()) };
   }
 
-  const flowMap = new Map<string, SymExpr>();
-
-  // Create a combined lookup: params + already-resolved locals
-  const resolveName = (name: string): SymExpr | undefined => {
-    if (paramNames.has(name)) {
-      return { kind: "param", name, path: [] };
-    }
-    return flowMap.get(name);
+  const assignedAnywhere = collectAssignedNames(body, { includeNestedFunctions: true });
+  const rebound = new Set([...assignedAnywhere, ...collectBoundNames(body)]);
+  const walk: FlowWalk = {
+    flowMap: seedParams(paramNames, new Set()),
+    resolveName: (name) => (walk.closureAssigned.has(name) ? UNKNOWN_SYM : walk.flowMap.get(name)),
+    byCondition,
+    closureAssigned: collectClosureAssignedNames(body),
+    assignedAnywhere,
   };
+  walkStatements(body.statements, walk);
+  return { byCondition, fallback: seedParams(paramNames, rebound) };
+}
 
-  visitStatementsForDataFlow(body.statements, resolveName, flowMap);
+/** Seed parameters as symbolic inputs; any name in `killed` starts unknown. */
+function seedParams(paramNames: Set<string>, killed: ReadonlySet<string>): FlowMap {
+  const flowMap: FlowMap = new Map();
+  for (const name of paramNames) {
+    flowMap.set(name, killed.has(name) ? UNKNOWN_SYM : { kind: "param", name, path: [] });
+  }
   return flowMap;
 }
 
-/**
- * Walk statements collecting variable declarations whose initializers
- * can be resolved to symbolic expressions.
- */
-function visitStatementsForDataFlow(
-  statements: ts.NodeArray<ts.Statement> | ReadonlyArray<ts.Statement>,
-  resolveName: (name: string) => SymExpr | undefined,
-  flowMap: Map<string, SymExpr>,
-): void {
-  const stmtArray = Array.from(statements);
-  for (let i = 0; i < stmtArray.length; i++) {
-    const stmt = stmtArray[i]!;
-    if (ts.isVariableStatement(stmt)) {
-      for (const decl of stmt.declarationList.declarations) {
-        if (ts.isIdentifier(decl.name) && decl.initializer) {
-          const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
-          if (symExpr.kind !== "unknown") {
-            flowMap.set(decl.name.text, symExpr);
-          }
-        } else if ((ts.isObjectBindingPattern(decl.name) || ts.isArrayBindingPattern(decl.name)) && decl.initializer) {
-          const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
-          if (symExpr.kind !== "unknown") {
-            registerDestructuredBindings(decl.name, symExpr, flowMap);
-          }
-        }
-      }
-    }
-    // Track reassignment expressions: x = expr
-    if (ts.isExpressionStatement(stmt)) {
-      visitExpressionForDataFlow(stmt.expression, resolveName, flowMap);
-    }
-    // SSA-style merge for if/else: snapshot flowMap, visit each branch,
-    // then merge divergent entries as ite(condition, then_value, else_value).
-    if (ts.isIfStatement(stmt)) {
-      const condSym = buildSymExprWithFlow(stmt.expression, resolveName);
-      const snapshot = new Map(flowMap);
+function walkStatements(statements: ReadonlyArray<ts.Statement>, walk: FlowWalk): void {
+  for (const stmt of statements) {
+    walkStatement(stmt, walk);
+  }
+}
 
-      // Visit then-branch
-      visitStatementsForDataFlow(
-        statementsFromBranch(stmt.thenStatement),
-        resolveName,
-        flowMap,
-      );
-      const thenMap = new Map(flowMap);
+function walkStatement(stmt: ts.Statement, walk: FlowWalk): void {
+  if (ts.isVariableStatement(stmt)) {
+    recordClosureBranches(stmt, walk);
+    walkDeclarationList(stmt.declarationList, walk);
+    return;
+  }
+  if (ts.isExpressionStatement(stmt)) {
+    recordClosureBranches(stmt, walk);
+    walkAssignmentEffects(stmt.expression, walk);
+    return;
+  }
+  if (ts.isIfStatement(stmt)) {
+    walkIf(stmt, walk);
+    return;
+  }
+  if (isLoopStatement(stmt)) {
+    walkLoop(stmt, walk);
+    return;
+  }
+  if (ts.isBlock(stmt)) {
+    walkScoped(stmt.statements, walk);
+    return;
+  }
+  if (ts.isSwitchStatement(stmt)) {
+    walkSwitch(stmt, walk);
+    return;
+  }
+  if (ts.isTryStatement(stmt)) {
+    walkTry(stmt, walk);
+    return;
+  }
+  if (ts.isLabeledStatement(stmt)) {
+    walkStatement(stmt.statement, walk);
+    return;
+  }
+  // return/throw and anything else: keep closure branches, kill what it assigns.
+  recordClosureBranches(stmt, walk);
+  havoc(walk, collectAssignedNames(stmt));
+}
 
-      // Restore snapshot for else-branch
-      flowMap.clear();
-      for (const [k, v] of snapshot) flowMap.set(k, v);
+type LoopStatement =
+  | ts.ForStatement
+  | ts.WhileStatement
+  | ts.DoStatement
+  | ts.ForInStatement
+  | ts.ForOfStatement;
 
-      if (stmt.elseStatement) {
-        if (ts.isIfStatement(stmt.elseStatement)) {
-          visitStatementsForDataFlow([stmt.elseStatement], resolveName, flowMap);
-        } else {
-          visitStatementsForDataFlow(
-            statementsFromBranch(stmt.elseStatement),
-            resolveName,
-            flowMap,
-          );
-        }
-      }
-      const elseMap = new Map(flowMap);
+function isLoopStatement(stmt: ts.Statement): stmt is LoopStatement {
+  return ts.isForStatement(stmt) || ts.isWhileStatement(stmt) || ts.isDoStatement(stmt) ||
+    ts.isForInStatement(stmt) || ts.isForOfStatement(stmt);
+}
 
-      // Merge: produce ite for variables that diverge between branches
-      mergeFlowMaps(condSym, snapshot, thenMap, elseMap, flowMap);
+function walkDeclarationList(declarationList: ts.VariableDeclarationList, walk: FlowWalk): void {
+  for (const decl of declarationList.declarations) {
+    const value = decl.initializer ? evaluateWithEffects(decl.initializer, walk) : UNKNOWN_SYM;
+    if (ts.isIdentifier(decl.name)) {
+      walk.flowMap.set(decl.name.text, value);
+      continue;
     }
-    if (ts.isForStatement(stmt)) {
-      visitForInitializerForDataFlow(stmt.initializer, resolveName, flowMap);
-      visitStatementsForDataFlow(statementsFromBranch(stmt.statement), resolveName, flowMap);
-      if (stmt.incrementor) {
-        visitExpressionForDataFlow(stmt.incrementor, resolveName, flowMap);
-      }
+    for (const name of bindingNames(decl.name)) {
+      walk.flowMap.set(name, UNKNOWN_SYM);
     }
-    if (ts.isWhileStatement(stmt) || ts.isDoStatement(stmt) || ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)) {
-      visitStatementsForDataFlow(statementsFromBranch(stmt.statement), resolveName, flowMap);
-    }
-    if (ts.isBlock(stmt)) {
-      visitStatementsForDataFlow(stmt.statements, resolveName, flowMap);
-    }
-
-    // Detect closures that capture mutable variables reassigned after this point.
-    // Poison those variables to {kind: 'unknown'} so the solver doesn't use stale links.
-    const closures = findClosuresInNode(stmt);
-    for (const closure of closures) {
-      const freeVars = collectFreeIdentifiers(closure);
-      for (const varName of freeVars) {
-        if (!flowMap.has(varName)) continue;
-        if (isConstDeclaration(varName, stmtArray)) continue;
-        if (hasReassignmentInStatements(varName, stmtArray, i + 1)) {
-          flowMap.set(varName, { kind: "unknown" });
-        }
-      }
+    if (value.kind !== "unknown") {
+      registerDestructuredBindings(decl.name, value, walk.flowMap);
     }
   }
+}
+
+/**
+ * Resolve an expression's value, applying the assignments it performs. An
+ * expression that assigns anything is itself treated as unknown, because its
+ * sub-expressions may read the values it overwrites.
+ */
+function evaluateWithEffects(expr: ts.Expression, walk: FlowWalk): SymExpr {
+  const assigned = collectAssignedNames(expr);
+  if (assigned.size > 0) {
+    havoc(walk, assigned);
+    return UNKNOWN_SYM;
+  }
+  return buildSymExprWithFlow(expr, walk.resolveName);
+}
+
+/** Apply a statement-level expression's assignments to the flow map. */
+function walkAssignmentEffects(expr: ts.Expression, walk: FlowWalk): void {
+  if (ts.isParenthesizedExpression(expr)) {
+    walkAssignmentEffects(expr.expression, walk);
+    return;
+  }
+  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    walkAssignmentEffects(expr.left, walk);
+    walkAssignmentEffects(expr.right, walk);
+    return;
+  }
+  if (ts.isBinaryExpression(expr) && isAssignmentOperator(expr.operatorToken.kind) && ts.isIdentifier(expr.left)) {
+    const nested = collectAssignedNames(expr.right);
+    if (nested.size > 0) {
+      havoc(walk, nested);
+      walk.flowMap.set(expr.left.text, UNKNOWN_SYM);
+      return;
+    }
+    walk.flowMap.set(
+      expr.left.text,
+      buildMutatedIdentifierExpr(expr.left.text, expr.operatorToken.kind, expr.right, walk.resolveName),
+    );
+    return;
+  }
+  if ((ts.isPrefixUnaryExpression(expr) || ts.isPostfixUnaryExpression(expr)) && ts.isIdentifier(expr.operand)) {
+    walk.flowMap.set(expr.operand.text, buildUpdatedSymExpr(expr.operand.text, expr.operator, walk.resolveName));
+    return;
+  }
+  havoc(walk, collectAssignedNames(expr));
+}
+
+function walkIf(stmt: ts.IfStatement, walk: FlowWalk): void {
+  recordClosureBranches(stmt.expression, walk);
+  // Built before the condition's own side effects: it is a predicate over the
+  // inputs, so it stays valid as the merge selector afterwards.
+  const condSym = buildSymExprWithFlow(stmt.expression, walk.resolveName);
+  recordBranch(stmt.expression, walk);
+  havoc(walk, collectAssignedNames(stmt.expression));
+
+  const before = new Map(walk.flowMap);
+  walkScoped(statementsFromBranch(stmt.thenStatement), walk);
+  const thenMap = new Map(walk.flowMap);
+
+  replaceFlowMap(walk, before);
+  if (stmt.elseStatement) {
+    walkScoped(statementsFromBranch(stmt.elseStatement), walk);
+  }
+  const elseMap = new Map(walk.flowMap);
+
+  mergeFlowMaps(condSym, thenMap, elseMap, walk.flowMap);
+}
+
+function walkLoop(stmt: LoopStatement, walk: FlowWalk): void {
+  const beforeLoop = new Map(walk.flowMap);
+  let loopScoped: string[] = [];
+
+  if (ts.isForStatement(stmt) && stmt.initializer) {
+    recordClosureBranches(stmt.initializer, walk);
+    if (ts.isVariableDeclarationList(stmt.initializer)) {
+      walkDeclarationList(stmt.initializer, walk);
+      loopScoped = lexicalDeclarationNames(stmt.initializer);
+    } else {
+      walkAssignmentEffects(stmt.initializer, walk);
+    }
+  }
+  if (ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)) {
+    recordClosureBranches(stmt.expression, walk);
+    havoc(walk, collectAssignedNames(stmt.expression));
+    if (ts.isVariableDeclarationList(stmt.initializer)) {
+      loopScoped = lexicalDeclarationNames(stmt.initializer);
+    }
+  }
+
+  const loopAssigned = collectLoopAssignedNames(stmt);
+  havoc(walk, loopAssigned);
+
+  const condition = ts.isForStatement(stmt)
+    ? stmt.condition
+    : ts.isWhileStatement(stmt) || ts.isDoStatement(stmt) ? stmt.expression : undefined;
+  if (condition) {
+    recordClosureBranches(condition, walk);
+    recordBranch(condition, walk);
+  }
+  if (ts.isForStatement(stmt) && stmt.incrementor) {
+    recordClosureBranches(stmt.incrementor, walk);
+  }
+
+  walkScoped(statementsFromBranch(stmt.statement), walk);
+  // The body may run zero or more times: no binding it produced survives.
+  havoc(walk, loopAssigned);
+  restoreNames(walk, loopScoped, beforeLoop);
+}
+
+/** Every name a loop can assign across iterations: condition, body, incrementor and loop variable. */
+function collectLoopAssignedNames(stmt: LoopStatement): Set<string> {
+  const names = collectAssignedNames(stmt.statement, { includeDeclarations: true });
+  const addFrom = (node: ts.Node | undefined): void => {
+    if (!node) return;
+    for (const name of collectAssignedNames(node, { includeDeclarations: true })) names.add(name);
+  };
+  if (ts.isForStatement(stmt)) {
+    addFrom(stmt.condition);
+    addFrom(stmt.incrementor);
+  } else if (ts.isWhileStatement(stmt) || ts.isDoStatement(stmt)) {
+    addFrom(stmt.expression);
+  } else if (ts.isVariableDeclarationList(stmt.initializer)) {
+    addFrom(stmt.initializer);
+  } else {
+    for (const name of assignmentTargetNames(stmt.initializer)) names.add(name);
+  }
+  return names;
+}
+
+function walkSwitch(stmt: ts.SwitchStatement, walk: FlowWalk): void {
+  recordClosureBranches(stmt.expression, walk);
+  havoc(walk, collectAssignedNames(stmt.expression));
+
+  // Fallthrough lets a clause start from any earlier clause's state: every
+  // name any clause assigns is unknown at clause entry and after the switch.
+  const beforeSwitch = new Map(walk.flowMap);
+  havoc(walk, collectAssignedNames(stmt.caseBlock, { includeDeclarations: true }));
+  const atClauseEntry = new Map(walk.flowMap);
+  for (const clause of stmt.caseBlock.clauses) {
+    replaceFlowMap(walk, atClauseEntry);
+    walkStatements(clause.statements, walk);
+  }
+  replaceFlowMap(walk, atClauseEntry);
+  const caseScoped = stmt.caseBlock.clauses.flatMap((clause) => lexicallyScopedNames(clause.statements));
+  restoreNames(walk, caseScoped, beforeSwitch);
+}
+
+function walkTry(stmt: ts.TryStatement, walk: FlowWalk): void {
+  const beforeTry = new Map(walk.flowMap);
+  const tryAssigned = collectAssignedNames(stmt.tryBlock, { includeDeclarations: true });
+  walkScoped(stmt.tryBlock.statements, walk);
+
+  // An exception can leave the try block at any point.
+  replaceFlowMap(walk, beforeTry);
+  havoc(walk, tryAssigned);
+  if (stmt.catchClause) {
+    const catchScoped = stmt.catchClause.variableDeclaration
+      ? bindingNames(stmt.catchClause.variableDeclaration.name)
+      : [];
+    const atCatchEntry = new Map(walk.flowMap);
+    for (const name of catchScoped) walk.flowMap.set(name, UNKNOWN_SYM);
+    walkScoped(stmt.catchClause.block.statements, walk);
+    replaceFlowMap(walk, atCatchEntry);
+    havoc(walk, collectAssignedNames(stmt.catchClause.block, { includeDeclarations: true }));
+  }
+
+  if (stmt.finallyBlock) {
+    walkScoped(stmt.finallyBlock.statements, walk);
+  }
+}
+
+/** Walk a block's statements, then drop the block's own let/const/class bindings. */
+function walkScoped(statements: ReadonlyArray<ts.Statement>, walk: FlowWalk): void {
+  const before = new Map(walk.flowMap);
+  walkStatements(statements, walk);
+  restoreNames(walk, lexicallyScopedNames(statements), before);
+}
+
+/** Put each name back to its binding in `before`, or remove it if it had none. */
+function restoreNames(walk: FlowWalk, names: ReadonlyArray<string>, before: FlowMap): void {
+  for (const name of names) {
+    const previous = before.get(name);
+    if (previous) {
+      walk.flowMap.set(name, previous);
+    } else {
+      walk.flowMap.delete(name);
+    }
+  }
+}
+
+function replaceFlowMap(walk: FlowWalk, source: FlowMap): void {
+  walk.flowMap.clear();
+  for (const [name, expr] of source) walk.flowMap.set(name, expr);
+}
+
+function havoc(walk: FlowWalk, names: Iterable<string>): void {
+  for (const name of names) {
+    walk.flowMap.set(name, UNKNOWN_SYM);
+  }
+}
+
+/** Snapshot the current flow map for a branch condition evaluated here. */
+function recordBranch(condition: ts.Expression, walk: FlowWalk): void {
+  const snapshot = new Map(walk.flowMap);
+  for (const name of walk.closureAssigned) snapshot.set(name, UNKNOWN_SYM);
+  walk.byCondition.set(condition, snapshot);
+}
+
+/**
+ * Record flow maps for branch conditions inside closures created by `node`.
+ * A closure can run at any later point, so every name assigned anywhere in the
+ * function is unknown inside it, as is every name the closure itself binds.
+ */
+function recordClosureBranches(node: ts.Node, walk: FlowWalk): void {
+  const closures = ts.isArrowFunction(node) || ts.isFunctionExpression(node) ? [node] : findClosuresInNode(node);
+  for (const closure of closures) {
+    const snapshot = new Map(walk.flowMap);
+    for (const name of walk.assignedAnywhere) snapshot.set(name, UNKNOWN_SYM);
+    for (const name of collectBoundNames(closure)) snapshot.set(name, UNKNOWN_SYM);
+    for (const condition of collectBranchConditions(closure)) {
+      walk.byCondition.set(condition, snapshot);
+    }
+  }
+}
+
+/** Every if/loop condition inside `root`, nested functions included. */
+function collectBranchConditions(root: ts.Node): ts.Expression[] {
+  const conditions: ts.Expression[] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isIfStatement(n) || ts.isWhileStatement(n) || ts.isDoStatement(n)) {
+      conditions.push(n.expression);
+    } else if (ts.isForStatement(n) && n.condition) {
+      conditions.push(n.condition);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(root);
+  return conditions;
+}
+
+/**
+ * Merge flow maps from then/else branches using SSA phi-node semantics.
+ * Divergent bindings become ite(cond, then, else) when the condition is fully
+ * known and both sides are known; otherwise the merged binding is unknown.
+ */
+function mergeFlowMaps(
+  condSym: SymExpr,
+  thenMap: FlowMap,
+  elseMap: FlowMap,
+  flowMap: FlowMap,
+): void {
+  const conditionKnown = !containsUnknownSym(condSym);
+  const allNames = new Set([...thenMap.keys(), ...elseMap.keys()]);
+  flowMap.clear();
+
+  for (const name of allNames) {
+    const thenVal = thenMap.get(name);
+    const elseVal = elseMap.get(name);
+    if (thenVal === undefined || elseVal === undefined) {
+      // Bound on one path only (e.g. `var` declared in one branch).
+      flowMap.set(name, UNKNOWN_SYM);
+    } else if (thenVal === elseVal || JSON.stringify(thenVal) === JSON.stringify(elseVal)) {
+      flowMap.set(name, thenVal);
+    } else if (conditionKnown && thenVal.kind !== "unknown" && elseVal.kind !== "unknown") {
+      flowMap.set(name, { kind: "ite", condition: condSym, then_expr: thenVal, else_expr: elseVal });
+    } else {
+      flowMap.set(name, UNKNOWN_SYM);
+    }
+  }
+}
+
+function containsUnknownSym(expr: SymExpr): boolean {
+  switch (expr.kind) {
+    case "unknown":
+      return true;
+    case "bin_op":
+      return containsUnknownSym(expr.left) || containsUnknownSym(expr.right);
+    case "un_op":
+      return containsUnknownSym(expr.operand);
+    case "ite":
+      return containsUnknownSym(expr.condition) ||
+        containsUnknownSym(expr.then_expr) ||
+        containsUnknownSym(expr.else_expr);
+    case "call":
+      return (expr.receiver !== null && containsUnknownSym(expr.receiver)) ||
+        expr.args.some(containsUnknownSym);
+    default:
+      return false;
+  }
+}
+
+function statementsFromBranch(stmt: ts.Statement): ReadonlyArray<ts.Statement> {
+  if (ts.isBlock(stmt)) {
+    return stmt.statements;
+  }
+  return [stmt];
+}
+
+// ---------------------------------------------------------------------------
+// Assignment and binding collection
+// ---------------------------------------------------------------------------
+
+function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
+  return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+/**
+ * Names `root` may assign: assignment targets (including destructuring) and
+ * ++/-- operands, plus declared names when `includeDeclarations` is set.
+ * Nested function bodies are skipped unless `includeNestedFunctions` is set.
+ */
+function collectAssignedNames(
+  root: ts.Node,
+  options: { includeDeclarations?: boolean; includeNestedFunctions?: boolean } = {},
+): Set<string> {
+  const names = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (n !== root && ts.isFunctionLike(n) && !options.includeNestedFunctions) {
+      return;
+    }
+    if (ts.isBinaryExpression(n) && isAssignmentOperator(n.operatorToken.kind)) {
+      for (const name of assignmentTargetNames(n.left)) names.add(name);
+    } else if (
+      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+      for (const name of assignmentTargetNames(n.operand)) names.add(name);
+    } else if ((ts.isForInStatement(n) || ts.isForOfStatement(n)) && !ts.isVariableDeclarationList(n.initializer)) {
+      for (const name of assignmentTargetNames(n.initializer)) names.add(name);
+    } else if (options.includeDeclarations && ts.isVariableDeclaration(n)) {
+      for (const name of bindingNames(n.name)) names.add(name);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(root);
+  return names;
+}
+
+/** Identifiers written by an assignment target, including destructuring patterns. */
+function assignmentTargetNames(target: ts.Node): string[] {
+  if (ts.isIdentifier(target)) {
+    return [target.text];
+  }
+  if (ts.isParenthesizedExpression(target) || ts.isSpreadElement(target) || ts.isSpreadAssignment(target)) {
+    return assignmentTargetNames(target.expression);
+  }
+  if (ts.isArrayLiteralExpression(target)) {
+    return target.elements.flatMap(assignmentTargetNames);
+  }
+  if (ts.isObjectLiteralExpression(target)) {
+    return target.properties.flatMap((property) => {
+      if (ts.isPropertyAssignment(property)) return assignmentTargetNames(property.initializer);
+      if (ts.isShorthandPropertyAssignment(property)) return [property.name.text];
+      if (ts.isSpreadAssignment(property)) return assignmentTargetNames(property.expression);
+      return [];
+    });
+  }
+  if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    // Destructuring default: `[x = 1] = arr`.
+    return assignmentTargetNames(target.left);
+  }
+  return [];
+}
+
+function bindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) {
+    return [name.text];
+  }
+  return name.elements.flatMap((element) =>
+    ts.isOmittedExpression(element) ? [] : bindingNames(element.name),
+  );
+}
+
+/** Names bound by let/const declarations in a declaration list (block-scoped). */
+function lexicalDeclarationNames(declarationList: ts.VariableDeclarationList): string[] {
+  if ((declarationList.flags & ts.NodeFlags.BlockScoped) === 0) {
+    return [];
+  }
+  return declarationList.declarations.flatMap((decl) => bindingNames(decl.name));
+}
+
+/** Names a statement list binds in its own block scope: let/const, classes and functions. */
+function lexicallyScopedNames(statements: ReadonlyArray<ts.Statement>): string[] {
+  return statements.flatMap((stmt) => {
+    if (ts.isVariableStatement(stmt)) return lexicalDeclarationNames(stmt.declarationList);
+    if ((ts.isClassDeclaration(stmt) || ts.isFunctionDeclaration(stmt)) && stmt.name) return [stmt.name.text];
+    return [];
+  });
+}
+
+/** Every name bound anywhere under `root`: parameters, variables, functions, classes, catch variables. */
+function collectBoundNames(root: ts.Node): Set<string> {
+  const names = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isParameter(n) || ts.isVariableDeclaration(n) || ts.isBindingElement(n)) {
+      for (const name of bindingNames(n.name)) names.add(name);
+    } else if ((ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n) || ts.isFunctionExpression(n)) && n.name) {
+      names.add(n.name.text);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(root);
+  return names;
+}
+
+/** Names assigned inside any function nested in `body`. */
+function collectClosureAssignedNames(body: ts.Block): Set<string> {
+  const names = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionLike(n)) {
+      for (const name of collectAssignedNames(n, { includeNestedFunctions: true })) names.add(name);
+      return;
+    }
+    ts.forEachChild(n, visit);
+  };
+  ts.forEachChild(body, visit);
+  return names;
 }
 
 const SUPPORTED_MUTATION_DELTA = 1;
-
-function visitForInitializerForDataFlow(
-  initializer: ts.ForInitializer | undefined,
-  resolveName: (name: string) => SymExpr | undefined,
-  flowMap: Map<string, SymExpr>,
-): void {
-  if (!initializer) {
-    return;
-  }
-
-  if (ts.isVariableDeclarationList(initializer)) {
-    visitVariableDeclarationListForDataFlow(initializer, resolveName, flowMap);
-    return;
-  }
-
-  visitExpressionForDataFlow(initializer, resolveName, flowMap);
-}
-
-function visitVariableDeclarationListForDataFlow(
-  declarationList: ts.VariableDeclarationList,
-  resolveName: (name: string) => SymExpr | undefined,
-  flowMap: Map<string, SymExpr>,
-): void {
-  for (const decl of declarationList.declarations) {
-    if (ts.isIdentifier(decl.name) && decl.initializer) {
-      const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
-      if (symExpr.kind !== "unknown") {
-        flowMap.set(decl.name.text, symExpr);
-      }
-    } else if ((ts.isObjectBindingPattern(decl.name) || ts.isArrayBindingPattern(decl.name)) && decl.initializer) {
-      const symExpr = buildSymExprWithFlow(decl.initializer, resolveName);
-      if (symExpr.kind !== "unknown") {
-        registerDestructuredBindings(decl.name, symExpr, flowMap);
-      }
-    }
-  }
-}
-
-function visitExpressionForDataFlow(
-  expr: ts.Expression,
-  resolveName: (name: string) => SymExpr | undefined,
-  flowMap: Map<string, SymExpr>,
-): void {
-  if (ts.isBinaryExpression(expr) && ts.isIdentifier(expr.left)) {
-    const nextExpr = buildMutatedIdentifierExpr(expr.left.text, expr.operatorToken.kind, expr.right, resolveName);
-    if (nextExpr.kind !== "unknown") {
-      flowMap.set(expr.left.text, nextExpr);
-    }
-    return;
-  }
-
-  if ((ts.isPrefixUnaryExpression(expr) || ts.isPostfixUnaryExpression(expr)) && ts.isIdentifier(expr.operand)) {
-    const nextExpr = buildUpdatedSymExpr(
-      expr.operand.text,
-      expr.operator,
-      resolveName,
-    );
-    if (nextExpr.kind !== "unknown") {
-      flowMap.set(expr.operand.text, nextExpr);
-    }
-  }
-}
 
 function buildMutatedIdentifierExpr(
   name: string,
@@ -562,88 +937,6 @@ function buildUpdatedSymExpr(
 }
 
 /**
- * Merge flow maps from then/else branches using SSA phi-node semantics.
- * For variables that differ between branches, produces an ite(cond, then_val, else_val).
- * Falls back to last-writer-wins when the condition is unknown.
- */
-function mergeFlowMaps(
-  condSym: SymExpr,
-  snapshot: Map<string, SymExpr>,
-  thenMap: Map<string, SymExpr>,
-  elseMap: Map<string, SymExpr>,
-  flowMap: Map<string, SymExpr>,
-): void {
-  // If condition is unknown, the solver cannot reason about ite —
-  // fall back to keeping the else-branch state (last-writer-wins behavior).
-  if (condSym.kind === "unknown") {
-    flowMap.clear();
-    for (const [k, v] of elseMap) flowMap.set(k, v);
-    // Also include variables only defined in then-branch
-    for (const [k, v] of thenMap) {
-      if (!flowMap.has(k)) flowMap.set(k, v);
-    }
-    return;
-  }
-
-  // Collect all variable names across both branches
-  const allVars = new Set([...thenMap.keys(), ...elseMap.keys()]);
-  flowMap.clear();
-
-  for (const name of allVars) {
-    const thenVal = thenMap.get(name);
-    const elseVal = elseMap.get(name);
-    const preVal = snapshot.get(name);
-
-    // Both branches have the same value (or both undefined) — no divergence
-    if (thenVal === elseVal) {
-      if (thenVal) flowMap.set(name, thenVal);
-      continue;
-    }
-
-    // Deep equality check for structurally identical SymExprs
-    if (thenVal && elseVal && JSON.stringify(thenVal) === JSON.stringify(elseVal)) {
-      flowMap.set(name, thenVal);
-      continue;
-    }
-
-    // Variable only introduced in one branch (not in pre-if snapshot) —
-    // conditionally defined, not reassigned. Keep whichever branch defined it.
-    if (!preVal && (!thenVal || !elseVal)) {
-      const val = thenVal ?? elseVal;
-      if (val) flowMap.set(name, val);
-      continue;
-    }
-
-    // Divergent values: produce ite
-    const thenExpr = thenVal ?? preVal;
-    const elseExpr = elseVal ?? preVal;
-    if (thenExpr && elseExpr) {
-      flowMap.set(name, {
-        kind: "ite",
-        condition: condSym,
-        then_expr: thenExpr,
-        else_expr: elseExpr,
-      });
-    } else if (thenExpr) {
-      flowMap.set(name, thenExpr);
-    } else if (elseExpr) {
-      flowMap.set(name, elseExpr);
-    }
-  }
-}
-
-function statementsFromBranch(stmt: ts.Statement): ReadonlyArray<ts.Statement> {
-  if (ts.isBlock(stmt)) {
-    return stmt.statements;
-  }
-  return [stmt];
-}
-
-// ---------------------------------------------------------------------------
-// Closure mutable-capture detection helpers
-// ---------------------------------------------------------------------------
-
-/**
  * Find all arrow functions and function expressions directly contained in a node.
  * Does NOT recurse into nested function bodies.
  */
@@ -660,152 +953,6 @@ function findClosuresInNode(node: ts.Node): ts.Node[] {
   }
   ts.forEachChild(node, walk);
   return result;
-}
-
-/**
- * Collect all free identifier references in a closure node.
- * Skips the closure's own parameters, local variable declarations inside the
- * closure, property names in property access expressions, and parameters of
- * nested closures (they shadow, not capture).
- */
-function collectFreeIdentifiers(closureNode: ts.Node): Set<string> {
-  const freeVars = new Set<string>();
-  const localDecls = new Set<string>();
-
-  // Collect the closure's own parameter names
-  const closureParams = new Set<string>();
-  if (ts.isArrowFunction(closureNode) || ts.isFunctionExpression(closureNode)) {
-    for (const param of closureNode.parameters) {
-      if (ts.isIdentifier(param.name)) {
-        closureParams.add(param.name.text);
-      }
-    }
-  }
-
-  function walk(n: ts.Node): void {
-    // Skip nested function params (they shadow)
-    if (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) {
-      if (n !== closureNode) return; // don't recurse into nested closures
-    }
-
-    // Track local variable declarations inside the closure
-    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) {
-      localDecls.add(n.name.text);
-    }
-
-    // Skip property names in property access (x.foo — 'foo' is not a free var)
-    if (ts.isPropertyAccessExpression(n)) {
-      walk(n.expression);
-      // Skip n.name — it's a property, not a free identifier
-      return;
-    }
-
-    if (ts.isIdentifier(n)) {
-      const name = n.text;
-      if (!closureParams.has(name) && !localDecls.has(name)) {
-        freeVars.add(name);
-      }
-      return;
-    }
-
-    ts.forEachChild(n, walk);
-  }
-
-  // Walk the closure body
-  if (ts.isArrowFunction(closureNode) || ts.isFunctionExpression(closureNode)) {
-    if (closureNode.body) {
-      walk(closureNode.body);
-    }
-  }
-
-  return freeVars;
-}
-
-/**
- * Check if a variable is reassigned in statements starting from startIndex.
- * Recursively checks nested blocks, if/else branches, and loops.
- */
-function hasReassignmentInStatements(
-  varName: string,
-  statements: ReadonlyArray<ts.Statement>,
-  startIndex: number,
-): boolean {
-  for (let j = startIndex; j < statements.length; j++) {
-    if (hasReassignmentInNode(varName, statements[j]!)) return true;
-  }
-  return false;
-}
-
-function hasReassignmentInNode(varName: string, node: ts.Node): boolean {
-  // Simple assignment: x = expr
-  if (ts.isBinaryExpression(node)) {
-    const assignOps = [
-      ts.SyntaxKind.EqualsToken,
-      ts.SyntaxKind.PlusEqualsToken,
-      ts.SyntaxKind.MinusEqualsToken,
-      ts.SyntaxKind.AsteriskEqualsToken,
-      ts.SyntaxKind.SlashEqualsToken,
-      ts.SyntaxKind.PercentEqualsToken,
-      ts.SyntaxKind.AmpersandEqualsToken,
-      ts.SyntaxKind.BarEqualsToken,
-      ts.SyntaxKind.CaretEqualsToken,
-      ts.SyntaxKind.LessThanLessThanEqualsToken,
-      ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
-      ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
-    ];
-    if (assignOps.includes(node.operatorToken.kind) && ts.isIdentifier(node.left) && node.left.text === varName) {
-      return true;
-    }
-  }
-  // Prefix/postfix increment/decrement: ++x, x++, --x, x--
-  if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
-    const op = node.operator;
-    if ((op === ts.SyntaxKind.PlusPlusToken || op === ts.SyntaxKind.MinusMinusToken) &&
-        ts.isIdentifier(node.operand) && node.operand.text === varName) {
-      return true;
-    }
-  }
-  // Don't recurse into nested function bodies — they have their own scope
-  if (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-    return false;
-  }
-  let found = false;
-  ts.forEachChild(node, (child) => {
-    if (!found && hasReassignmentInNode(varName, child)) {
-      found = true;
-    }
-  });
-  return found;
-}
-
-/**
- * Check if a variable was declared with `const` in the given statements.
- */
-function isConstDeclaration(
-  varName: string,
-  statements: ReadonlyArray<ts.Statement>,
-): boolean {
-  for (const stmt of statements) {
-    if (ts.isVariableStatement(stmt)) {
-      const isConst = (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0;
-      if (isConst) {
-        for (const decl of stmt.declarationList.declarations) {
-          if (ts.isIdentifier(decl.name) && decl.name.text === varName) {
-            return true;
-          }
-          // Check destructured bindings
-          if (ts.isObjectBindingPattern(decl.name) || ts.isArrayBindingPattern(decl.name)) {
-            for (const el of decl.name.elements) {
-              if (ts.isBindingElement(el) && ts.isIdentifier(el.name) && el.name.text === varName) {
-                return true;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  return false;
 }
 
 /**
@@ -1053,7 +1200,7 @@ function createInstrumentationTransformer(
   targetFunctionName: string,
   paramNames: Set<string>,
   branchState: { nextBranchId: number },
-  dataFlowMap: Map<string, SymExpr> = new Map(),
+  branchFlowMaps: BranchFlowMaps,
   mockLookup: MockLookup = new Map(),
   instrumentableLines: Set<number> = new Set(),
 ): ts.TransformerFactory<ts.SourceFile> {
@@ -1067,7 +1214,7 @@ function createInstrumentationTransformer(
         nextLoopId: 0,
         nextCallSiteId: 0,
         nextCryptoBoundaryId: 0,
-        dataFlowMap,
+        branchFlowMaps,
         instrumentableLines,
       };
 
@@ -1707,12 +1854,13 @@ function wrapBranchCondition(
   ctx: InstrumentationContext,
 ): ts.Expression {
   const branchId = ctx.nextBranchId++;
-  const symExpr = buildSymExpr(condition, ctx.paramNames, ctx.dataFlowMap);
+  const flowMap = ctx.branchFlowMaps.byCondition.get(condition) ?? ctx.branchFlowMaps.fallback;
+  const symExpr = buildSymExpr(condition, ctx.paramNames, flowMap);
   const symExprLiteral = valueToAstLiteral(symExpr, ctx.factory);
 
   // MC/DC path: compound && or || chain
   if (isMcdcEnabled()) {
-    const flattened = flattenConditions(condition, ctx.paramNames, ctx.dataFlowMap);
+    const flattened = flattenConditions(condition, ctx.paramNames, flowMap);
     if (flattened !== null) {
       return buildMcdcBranchCall(branchId, line, condition, flattened, symExprLiteral, ctx);
     }
@@ -1869,18 +2017,20 @@ export function buildSymExpr(
   }
 
   if (ts.isIdentifier(expr)) {
-    if (paramNames.has(expr.text)) {
-      return { kind: "param", name: expr.text, path: [] };
-    }
+    // The flow map holds the binding at this program point, including for
+    // reassigned parameters, so it takes precedence over the input name.
     const flowExpr = dataFlowMap.get(expr.text);
     if (flowExpr) {
       return flowExpr;
+    }
+    if (paramNames.has(expr.text)) {
+      return { kind: "param", name: expr.text, path: [] };
     }
     return { kind: "unknown" };
   }
 
   if (ts.isPropertyAccessExpression(expr)) {
-    const chain = resolvePropertyChain(expr, paramNames);
+    const chain = resolvePropertyChain(expr, paramNames, dataFlowMap);
     if (chain) {
       return { kind: "param", name: chain.name, path: chain.path };
     }
@@ -1962,6 +2112,7 @@ export function buildSymExpr(
 function resolvePropertyChain(
   expr: ts.PropertyAccessExpression,
   paramNames: Set<string>,
+  dataFlowMap: Map<string, SymExpr>,
 ): { name: string; path: string[] } | null {
   const path: string[] = [];
   let current: ts.Expression = expr;
@@ -1971,7 +2122,14 @@ function resolvePropertyChain(
     current = current.expression;
   }
 
-  if (ts.isIdentifier(current) && paramNames.has(current.text)) {
+  if (!ts.isIdentifier(current)) {
+    return null;
+  }
+  const bound = dataFlowMap.get(current.text);
+  if (bound) {
+    return bound.kind === "param" ? { name: bound.name, path: [...bound.path, ...path] } : null;
+  }
+  if (paramNames.has(current.text)) {
     return { name: current.text, path };
   }
   return null;

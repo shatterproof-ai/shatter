@@ -1472,9 +1472,9 @@ describe("closure over mutable state", () => {
     });
   });
 
-  it("poisons let variable captured by closure when mutated after", () => {
-    // let y captured by closure, then y++ (compound mutation not tracked by flowMap)
-    // Poisoning marks y as unknown so the stale symbolic link isn't used
+  it("tracks let variable captured by a read-only closure at the branch's program point", () => {
+    // f only reads y, so the outer branch sees y's value at that point (x + 1 + 1).
+    // Conditions inside closures get their own conservative map (str-49drv.130).
     const source = `function check(x: number): boolean {
   let y = x + 1;
   const f = () => y;
@@ -1486,13 +1486,65 @@ describe("closure over mutable state", () => {
     if ("error" in result) throw new Error(result.error);
 
     const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: {
+            kind: "bin_op",
+            op: "add",
+            left: { kind: "param", name: "x", path: [] },
+            right: { kind: "const", type: "int", value: 1 },
+          },
+          right: { kind: "const", type: "int", value: 1 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
+  });
+
+  it("treats a reassigned variable as unknown inside a closure that reads it", () => {
+    const source = `function check(x: number): boolean {
+  let y = x + 1;
+  let hit = false;
+  [1].forEach(() => { if (y > 10) { hit = true; } });
+  y++;
+  return hit;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
     const expr = branches[0]!.constraint;
     expect(expr.kind).toBe("expr");
-    if (expr.kind === "expr") {
-      expect(expr.expr.kind).toBe("bin_op");
-      if (expr.expr.kind === "bin_op") {
-        expect(expr.expr.left.kind).toBe("unknown");
-      }
+    if (expr.kind === "expr" && expr.expr.kind === "bin_op") {
+      expect(expr.expr.left.kind).toBe("unknown");
+    } else {
+      throw new Error(`expected bin_op constraint, got ${JSON.stringify(expr)}`);
+    }
+  });
+
+  it("treats a variable assigned inside a closure as unknown in the outer body", () => {
+    const source = `function check(x: number): boolean {
+  let y = x + 1;
+  const reset = () => { y = 0; };
+  reset();
+  if (y > 10) return true;
+  return false;
+}`;
+    const result = instrumentFunction(source, "check");
+    if ("error" in result) throw new Error(result.error);
+
+    const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
+    const expr = branches[0]!.constraint;
+    if (expr.kind === "expr" && expr.expr.kind === "bin_op") {
+      expect(expr.expr.left.kind).toBe("unknown");
+    } else {
+      throw new Error(`expected bin_op constraint, got ${JSON.stringify(expr)}`);
     }
   });
 
@@ -1524,8 +1576,7 @@ describe("closure over mutable state", () => {
     });
   });
 
-  it("poisons var variable captured by closure when mutated after", () => {
-    // var y captured, then y += 5 (compound assignment, not tracked by flowMap)
+  it("tracks var variable captured by a read-only closure through a compound assignment", () => {
     const source = `function check(x: number): boolean {
   var y = x + 1;
   const f = () => y;
@@ -1537,14 +1588,25 @@ describe("closure over mutable state", () => {
     if ("error" in result) throw new Error(result.error);
 
     const { branches } = executeAndCollect(result.instrumentedSource, "check", [20]);
-    const expr = branches[0]!.constraint;
-    expect(expr.kind).toBe("expr");
-    if (expr.kind === "expr") {
-      expect(expr.expr.kind).toBe("bin_op");
-      if (expr.expr.kind === "bin_op") {
-        expect(expr.expr.left.kind).toBe("unknown");
-      }
-    }
+    expect(branches[0]!.constraint).toEqual({
+      kind: "expr",
+      expr: {
+        kind: "bin_op",
+        op: "gt",
+        left: {
+          kind: "bin_op",
+          op: "add",
+          left: {
+            kind: "bin_op",
+            op: "add",
+            left: { kind: "param", name: "x", path: [] },
+            right: { kind: "const", type: "int", value: 1 },
+          },
+          right: { kind: "const", type: "int", value: 5 },
+        },
+        right: { kind: "const", type: "int", value: 10 },
+      },
+    });
   });
 
   it("only poisons the captured-and-mutated variable, not unaffected ones", () => {
@@ -1645,7 +1707,7 @@ describe("flow tracking for mutated locals", () => {
     });
   });
 
-  it("tracks canonical for-loop incrementors for later branches", () => {
+  it("havocs a for-loop-incremented variable for later branches (str-49drv.130)", () => {
     const source = `function check(n: number): boolean {
   let i = 0;
   for (; i < n; i++) {
@@ -1663,18 +1725,13 @@ describe("flow tracking for mutated locals", () => {
       expr: {
         kind: "bin_op",
         op: "gt",
-        left: {
-          kind: "bin_op",
-          op: "add",
-          left: { kind: "const", type: "int", value: 0 },
-          right: { kind: "const", type: "int", value: 1 },
-        },
+        left: { kind: "unknown" },
         right: { kind: "const", type: "int", value: 0 },
       },
     });
   });
 
-  it("keeps loop-body accumulator updates symbolic for later branches", () => {
+  it("havocs a loop-body accumulator for later branches (str-49drv.130)", () => {
     const source = `function check(n: number): boolean {
   let total = 0;
   for (let i = 0; i < n; i++) {
@@ -1693,12 +1750,7 @@ describe("flow tracking for mutated locals", () => {
       expr: {
         kind: "bin_op",
         op: "gt",
-        left: {
-          kind: "bin_op",
-          op: "add",
-          left: { kind: "const", type: "int", value: 0 },
-          right: { kind: "const", type: "int", value: 0 },
-        },
+        left: { kind: "unknown" },
         right: { kind: "const", type: "int", value: 0 },
       },
     });
