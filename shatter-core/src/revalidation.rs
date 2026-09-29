@@ -4,8 +4,8 @@
 //! version of a function, these types classify what changed and why.
 //! The [`revalidate_behaviors`] function drives the loop: for each behavior
 //! in a [`BehaviorMap`], it replays the input via a frontend subprocess,
-//! compares observed vs. recorded branch paths (masking nondeterministic
-//! fields), and emits a [`RevalidationReport`] with a verdict.
+//! compares observed vs. recorded branch paths and outputs (masking
+//! nondeterministic fields), and emits a [`RevalidationReport`] with a verdict.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -15,14 +15,14 @@ use crate::behavior::BehaviorMap;
 use crate::execution_record::BranchDecision;
 use crate::frontend::{Frontend, FrontendError};
 use crate::interesting_pool::{Severity, classify_severity};
-use crate::nondeterminism::NondeterministicField;
+use crate::nondeterminism::{NondeterministicField, outputs_match};
 use crate::protocol::{Command as ProtoCommand, ResponseResult};
 
 /// Classification of what happened when replaying a previously-interesting input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RevalidationVerdict {
-    /// Behavior unchanged — same branch path and severity.
+    /// Behavior unchanged — same branch path, severity and output.
     Confirmed,
     /// Code fingerprint changed and behavior changed — expected drift.
     ExpectedDrift,
@@ -34,6 +34,9 @@ pub enum RevalidationVerdict {
     SeverityDowngrade,
     /// Behavior became more severe (potential new bug).
     SeverityUpgrade,
+    /// Same severity, but the return value or thrown error differs from the
+    /// recorded one (after nondeterminism masking). Always a regression.
+    OutputChanged,
 }
 
 impl fmt::Display for RevalidationVerdict {
@@ -45,6 +48,7 @@ impl fmt::Display for RevalidationVerdict {
             Self::PotentialRegression => write!(f, "potential regression"),
             Self::SeverityDowngrade => write!(f, "severity downgrade"),
             Self::SeverityUpgrade => write!(f, "severity upgrade"),
+            Self::OutputChanged => write!(f, "output changed"),
         }
     }
 }
@@ -64,10 +68,55 @@ pub struct RevalidationReport {
     pub expected_severity: Severity,
     /// Severity observed during revalidation, or `None` if the behavior vanished.
     pub observed_severity: Option<Severity>,
+    /// Whether the observed return value / thrown error matched the recorded
+    /// one after nondeterminism masking.
+    #[serde(default = "default_output_matches")]
+    pub output_matches: bool,
     /// Classification of the revalidation outcome.
     pub verdict: RevalidationVerdict,
     /// Milliseconds since Unix epoch when the revalidation was performed.
     pub timestamp_epoch_ms: u64,
+}
+
+fn default_output_matches() -> bool {
+    true
+}
+
+/// Aggregate verdict counts for a set of [`RevalidationReport`]s.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevalidationSummary {
+    /// Behaviors with verdict [`RevalidationVerdict::Confirmed`].
+    pub confirmed: usize,
+    /// Behaviors with verdict [`RevalidationVerdict::ExpectedDrift`].
+    pub expected_drift: usize,
+    /// Behaviors with any other verdict (regressions and flakiness).
+    pub regressed: usize,
+    /// Total behaviors replayed.
+    pub total: usize,
+}
+
+impl RevalidationSummary {
+    /// Count verdicts across `reports`.
+    pub fn from_reports(reports: &[RevalidationReport]) -> Self {
+        let mut summary = Self {
+            total: reports.len(),
+            ..Self::default()
+        };
+        for r in reports {
+            match r.verdict {
+                RevalidationVerdict::Confirmed => summary.confirmed += 1,
+                RevalidationVerdict::ExpectedDrift => summary.expected_drift += 1,
+                _ => summary.regressed += 1,
+            }
+        }
+        summary
+    }
+
+    /// Whether revalidation passes (exit 0). Regressions always fail; expected
+    /// drift fails unless `allow_drift` is set.
+    pub fn passes(&self, allow_drift: bool) -> bool {
+        self.regressed == 0 && (allow_drift || self.expected_drift == 0)
+    }
 }
 
 /// Returns the current time as milliseconds since Unix epoch.
@@ -80,13 +129,16 @@ pub fn now_epoch_ms() -> u64 {
 
 /// Classify a revalidation outcome into a verdict.
 ///
-/// Priority order: severity changes take precedence over path changes when
-/// both the path and severity differ, because severity shifts have more
-/// actionable signal. When only the path changed, we distinguish code-change
-/// drift from flaky nondeterminism.
+/// Priority order: severity changes take precedence over output and path
+/// changes, because severity shifts have more actionable signal. A changed
+/// output (`output_matches == false`) at the same severity is always
+/// [`RevalidationVerdict::OutputChanged`], whether or not the path or code
+/// changed. When only the path changed, we distinguish code-change drift from
+/// flaky nondeterminism.
 pub fn classify_verdict(
     code_changed: bool,
     path_matches: bool,
+    output_matches: bool,
     expected_severity: Severity,
     observed_severity: Option<Severity>,
 ) -> RevalidationVerdict {
@@ -107,7 +159,10 @@ pub fn classify_verdict(
             if observed > expected_severity {
                 return RevalidationVerdict::SeverityUpgrade;
             }
-            // Same severity — classify based on path match.
+            if !output_matches {
+                return RevalidationVerdict::OutputChanged;
+            }
+            // Same severity, same output — classify based on path match.
             if path_matches {
                 RevalidationVerdict::Confirmed
             } else if code_changed {
@@ -159,7 +214,7 @@ pub fn branch_paths_match(
 /// `current_fingerprint` is the freshly-computed fingerprint of the function's
 /// source. If it differs from `behavior_map.fingerprint`, the code has changed.
 /// Nondeterministic fields from the behavior map are used to mask expected
-/// flakiness in branch path comparisons.
+/// flakiness in branch path and output comparisons.
 ///
 /// Returns one [`RevalidationReport`] per behavior. Frontend errors during
 /// individual executions produce a `None` observed_severity (behavior vanished).
@@ -194,22 +249,29 @@ pub async fn revalidate_behaviors(
             })
             .await;
 
-        let (observed_branch_path, observed_severity) = match exec_result {
+        let (observed_branch_path, observed_severity, output_matches) = match exec_result {
             Ok(response) => match response.result {
                 ResponseResult::Execute(exec) => {
                     let sev = classify_severity(exec.thrown_error.as_ref(), false);
-                    (exec.branch_path.clone(), Some(sev))
+                    let output_ok = outputs_match(
+                        behavior.return_value.as_ref(),
+                        behavior.thrown_error.as_ref(),
+                        exec.return_value.as_ref(),
+                        exec.thrown_error.as_ref(),
+                        nondet_fields,
+                    );
+                    (exec.branch_path.clone(), Some(sev), output_ok)
                 }
                 ResponseResult::Error { .. } => {
                     // Frontend returned a protocol-level error — behavior vanished.
-                    (vec![], None)
+                    (vec![], None, true)
                 }
                 // Other response types are unexpected for an Execute command.
-                _ => (vec![], None),
+                _ => (vec![], None, true),
             },
             Err(_) => {
                 // Communication failure — treat as behavior vanished.
-                (vec![], None)
+                (vec![], None, true)
             }
         };
 
@@ -219,6 +281,7 @@ pub async fn revalidate_behaviors(
         let verdict = classify_verdict(
             code_changed,
             path_matches,
+            output_matches,
             expected_severity,
             observed_severity,
         );
@@ -230,6 +293,7 @@ pub async fn revalidate_behaviors(
             observed_branch_path,
             expected_severity,
             observed_severity,
+            output_matches,
             verdict,
             timestamp_epoch_ms: now_epoch_ms(),
         });
@@ -245,13 +309,20 @@ mod tests {
 
     #[test]
     fn confirmed_when_nothing_changed() {
-        let v = classify_verdict(false, true, Severity::RarePath, Some(Severity::RarePath));
+        let v = classify_verdict(
+            false,
+            true,
+            true,
+            Severity::RarePath,
+            Some(Severity::RarePath),
+        );
         assert_eq!(v, RevalidationVerdict::Confirmed);
     }
 
     #[test]
     fn confirmed_when_code_changed_but_behavior_identical() {
         let v = classify_verdict(
+            true,
             true,
             true,
             Severity::HandledError,
@@ -262,25 +333,37 @@ mod tests {
 
     #[test]
     fn expected_drift_when_code_changed_and_path_differs() {
-        let v = classify_verdict(true, false, Severity::RarePath, Some(Severity::RarePath));
+        let v = classify_verdict(
+            true,
+            false,
+            true,
+            Severity::RarePath,
+            Some(Severity::RarePath),
+        );
         assert_eq!(v, RevalidationVerdict::ExpectedDrift);
     }
 
     #[test]
     fn flaky_when_code_unchanged_but_path_differs() {
-        let v = classify_verdict(false, false, Severity::RarePath, Some(Severity::RarePath));
+        let v = classify_verdict(
+            false,
+            false,
+            true,
+            Severity::RarePath,
+            Some(Severity::RarePath),
+        );
         assert_eq!(v, RevalidationVerdict::Flaky);
     }
 
     #[test]
     fn potential_regression_when_code_changed_and_behavior_vanished() {
-        let v = classify_verdict(true, false, Severity::UnhandledError, None);
+        let v = classify_verdict(true, false, true, Severity::UnhandledError, None);
         assert_eq!(v, RevalidationVerdict::PotentialRegression);
     }
 
     #[test]
     fn flaky_when_code_unchanged_and_behavior_vanished() {
-        let v = classify_verdict(false, false, Severity::Crash, None);
+        let v = classify_verdict(false, false, true, Severity::Crash, None);
         assert_eq!(v, RevalidationVerdict::Flaky);
     }
 
@@ -289,6 +372,7 @@ mod tests {
         let v = classify_verdict(
             true,
             false,
+            true,
             Severity::UnhandledError,
             Some(Severity::RarePath),
         );
@@ -297,7 +381,7 @@ mod tests {
 
     #[test]
     fn severity_upgrade() {
-        let v = classify_verdict(false, true, Severity::RarePath, Some(Severity::Crash));
+        let v = classify_verdict(false, true, true, Severity::RarePath, Some(Severity::Crash));
         assert_eq!(v, RevalidationVerdict::SeverityUpgrade);
     }
 
@@ -306,6 +390,7 @@ mod tests {
         // Even though path matches, severity increased — report as upgrade.
         let v = classify_verdict(
             false,
+            true,
             true,
             Severity::HandledError,
             Some(Severity::UnhandledError),
@@ -316,7 +401,13 @@ mod tests {
     #[test]
     fn severity_downgrade_takes_precedence_over_drift() {
         // Code changed and path differs, but severity decreased — report as downgrade.
-        let v = classify_verdict(true, false, Severity::Crash, Some(Severity::HandledError));
+        let v = classify_verdict(
+            true,
+            false,
+            true,
+            Severity::Crash,
+            Some(Severity::HandledError),
+        );
         assert_eq!(v, RevalidationVerdict::SeverityDowngrade);
     }
 
@@ -340,6 +431,10 @@ mod tests {
             RevalidationVerdict::SeverityUpgrade.to_string(),
             "severity upgrade"
         );
+        assert_eq!(
+            RevalidationVerdict::OutputChanged.to_string(),
+            "output changed"
+        );
     }
 
     #[test]
@@ -351,6 +446,7 @@ mod tests {
             RevalidationVerdict::PotentialRegression,
             RevalidationVerdict::SeverityDowngrade,
             RevalidationVerdict::SeverityUpgrade,
+            RevalidationVerdict::OutputChanged,
         ];
         for v in &verdicts {
             let json = serde_json::to_string(v).expect("serialize verdict");
@@ -387,6 +483,7 @@ mod tests {
             }],
             expected_severity: Severity::RarePath,
             observed_severity: Some(Severity::HandledError),
+            output_matches: true,
             verdict: RevalidationVerdict::SeverityUpgrade,
             timestamp_epoch_ms: 1_700_000_000_000,
         };
@@ -556,6 +653,213 @@ mod tests {
         };
         assert_eq!(severity_from_behavior(&b), Severity::HandledError);
     }
+    // -- output comparison tests (str-49drv.14) --
+
+    use crate::execution_record::ErrorInfo;
+    use crate::nondeterminism::{
+        Confidence, NondeterministicField, detect_within_run_nondeterminism,
+    };
+    use serde_json::json;
+
+    fn mask(path: &str) -> NondeterministicField {
+        NondeterministicField {
+            field_path: path.into(),
+            evidence: vec![],
+            confidence: Confidence::High,
+        }
+    }
+
+    fn err(t: &str, m: &str, stack: Option<&str>) -> ErrorInfo {
+        ErrorInfo {
+            error_type: t.into(),
+            message: m.into(),
+            stack: stack.map(Into::into),
+            error_category: None,
+        }
+    }
+
+    #[test]
+    fn output_changed_when_path_matches_and_output_differs() {
+        for code_changed in [false, true] {
+            let v = classify_verdict(
+                code_changed,
+                true,
+                false,
+                Severity::RarePath,
+                Some(Severity::RarePath),
+            );
+            assert_eq!(v, RevalidationVerdict::OutputChanged);
+        }
+    }
+
+    #[test]
+    fn changed_primitive_return_is_a_mismatch() {
+        let (a, b) = (json!("zero"), json!("nil"));
+        assert!(!outputs_match(Some(&a), None, Some(&b), None, &[]));
+    }
+
+    #[test]
+    fn return_mask_hides_primitive_return_change() {
+        let (a, b) = (json!("zero"), json!("nil"));
+        assert!(outputs_match(
+            Some(&a),
+            None,
+            Some(&b),
+            None,
+            &[mask("return")]
+        ));
+    }
+
+    #[test]
+    fn return_field_mask_hides_only_that_field() {
+        let a = json!({"id": 1, "name": "x"});
+        let b = json!({"id": 2, "name": "x"});
+        assert!(outputs_match(
+            Some(&a),
+            None,
+            Some(&b),
+            None,
+            &[mask("return.id")]
+        ));
+        assert!(!outputs_match(
+            Some(&a),
+            None,
+            Some(&b),
+            None,
+            &[mask("return.name")]
+        ));
+    }
+
+    #[test]
+    fn return_field_mask_does_not_hide_other_field_change() {
+        let a = json!({"id": 1, "name": "x"});
+        let b = json!({"id": 2, "name": "y"});
+        assert!(!outputs_match(
+            Some(&a),
+            None,
+            Some(&b),
+            None,
+            &[mask("return.id")]
+        ));
+    }
+
+    #[test]
+    fn thrown_error_mask_hides_message_change_only_when_present() {
+        let (a, b) = (err("E", "one", None), err("E", "two", None));
+        assert!(!outputs_match(None, Some(&a), None, Some(&b), &[]));
+        assert!(outputs_match(
+            None,
+            Some(&a),
+            None,
+            Some(&b),
+            &[mask("thrown_error")]
+        ));
+    }
+
+    #[test]
+    fn errors_with_different_stacks_are_equal() {
+        let a = err("E", "boom", Some("at a.ts:1"));
+        let b = err("E", "boom", Some("at b.ts:99"));
+        assert!(outputs_match(None, Some(&a), None, Some(&b), &[]));
+    }
+
+    #[test]
+    fn outcome_flip_needs_outcome_mask() {
+        let v = json!(1);
+        let e = err("E", "boom", None);
+        assert!(!outputs_match(Some(&v), None, None, Some(&e), &[]));
+        assert!(!outputs_match(
+            Some(&v),
+            None,
+            None,
+            Some(&e),
+            &[mask("return")]
+        ));
+        assert!(outputs_match(
+            Some(&v),
+            None,
+            None,
+            Some(&e),
+            &[mask("<outcome>")]
+        ));
+    }
+
+    #[test]
+    fn producer_written_masks_are_honoured_by_consumer() {
+        use crate::protocol::ExecuteResult;
+        fn exec(ret: Option<serde_json::Value>) -> ExecuteResult {
+            ExecuteResult {
+                return_value: ret,
+                ..ExecuteResult::default()
+            }
+        }
+        let original = exec(Some(json!({"ts": 1, "v": 7})));
+        let reexecs = vec![exec(Some(json!({"ts": 2, "v": 7})))];
+        let report = detect_within_run_nondeterminism(&[(original, reexecs)]);
+        assert_eq!(report.nondeterministic_fields.len(), 1);
+        let expected = json!({"ts": 10, "v": 7});
+        let same_v = json!({"ts": 99, "v": 7});
+        let changed_v = json!({"ts": 99, "v": 8});
+        let fields = &report.nondeterministic_fields;
+        assert!(outputs_match(
+            Some(&expected),
+            None,
+            Some(&same_v),
+            None,
+            fields
+        ));
+        assert!(!outputs_match(
+            Some(&expected),
+            None,
+            Some(&changed_v),
+            None,
+            fields
+        ));
+    }
+
+    #[test]
+    fn summary_counts_and_pass_policy() {
+        fn rep(v: RevalidationVerdict) -> RevalidationReport {
+            RevalidationReport {
+                function_name: "f".into(),
+                input_vector: vec![],
+                expected_branch_path: vec![],
+                observed_branch_path: vec![],
+                expected_severity: Severity::RarePath,
+                observed_severity: Some(Severity::RarePath),
+                output_matches: true,
+                verdict: v,
+                timestamp_epoch_ms: 0,
+            }
+        }
+        let clean = RevalidationSummary::from_reports(&[rep(RevalidationVerdict::Confirmed)]);
+        assert!(clean.passes(false) && clean.passes(true));
+
+        let drift = RevalidationSummary::from_reports(&[
+            rep(RevalidationVerdict::Confirmed),
+            rep(RevalidationVerdict::ExpectedDrift),
+        ]);
+        assert_eq!(
+            (
+                drift.confirmed,
+                drift.expected_drift,
+                drift.regressed,
+                drift.total
+            ),
+            (1, 1, 0, 2)
+        );
+        assert!(!drift.passes(false), "drift-only fails by default");
+        assert!(drift.passes(true), "allow_drift restores exit 0");
+
+        let changed = RevalidationSummary::from_reports(&[
+            rep(RevalidationVerdict::ExpectedDrift),
+            rep(RevalidationVerdict::OutputChanged),
+        ]);
+        assert!(
+            !changed.passes(true),
+            "output change fails even with allow_drift"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -580,7 +884,7 @@ mod proptests {
             code_changed in any::<bool>(),
             severity in arb_severity(),
         ) {
-            let v = classify_verdict(code_changed, true, severity, Some(severity));
+            let v = classify_verdict(code_changed, true, true, severity, Some(severity));
             prop_assert_eq!(v, RevalidationVerdict::Confirmed);
         }
 
@@ -590,7 +894,7 @@ mod proptests {
             code_changed in any::<bool>(),
             path_matches in any::<bool>(),
         ) {
-            let v = classify_verdict(code_changed, path_matches, Severity::RarePath, Some(Severity::Crash));
+            let v = classify_verdict(code_changed, path_matches, true, Severity::RarePath, Some(Severity::Crash));
             prop_assert_eq!(v, RevalidationVerdict::SeverityUpgrade);
         }
 
@@ -600,7 +904,7 @@ mod proptests {
             code_changed in any::<bool>(),
             path_matches in any::<bool>(),
         ) {
-            let v = classify_verdict(code_changed, path_matches, Severity::Crash, Some(Severity::RarePath));
+            let v = classify_verdict(code_changed, path_matches, true, Severity::Crash, Some(Severity::RarePath));
             prop_assert_eq!(v, RevalidationVerdict::SeverityDowngrade);
         }
 
@@ -610,7 +914,7 @@ mod proptests {
             code_changed in any::<bool>(),
             severity in arb_severity(),
         ) {
-            let v = classify_verdict(code_changed, false, severity, None);
+            let v = classify_verdict(code_changed, false, true, severity, None);
             prop_assert_ne!(v, RevalidationVerdict::Confirmed);
         }
 
@@ -631,6 +935,63 @@ mod proptests {
             let mut b = a.clone();
             b.push(extra);
             prop_assert!(!branch_paths_match(&a, &b, &[]));
+        }
+
+        /// A changed output at unchanged severity is always OutputChanged.
+        #[test]
+        fn output_change_at_same_severity_is_output_changed(
+            code_changed in any::<bool>(),
+            path_matches in any::<bool>(),
+            severity in arb_severity(),
+        ) {
+            let v = classify_verdict(code_changed, path_matches, false, severity, Some(severity));
+            prop_assert_eq!(v, RevalidationVerdict::OutputChanged);
+        }
+
+        /// Confirmed is only reachable when the output matches.
+        #[test]
+        fn confirmed_implies_output_matches(
+            code_changed in any::<bool>(),
+            path_matches in any::<bool>(),
+            output_matches in any::<bool>(),
+            expected in arb_severity(),
+            observed in arb_severity(),
+        ) {
+            let v = classify_verdict(code_changed, path_matches, output_matches, expected, Some(observed));
+            if v == RevalidationVerdict::Confirmed {
+                prop_assert!(output_matches && path_matches && expected == observed);
+            }
+        }
+
+        /// A value always matches itself, and a whole-return mask hides any
+        /// difference between two returns.
+        #[test]
+        fn outputs_match_reflexive_and_return_mask_total(
+            a in any::<i64>(),
+            b in any::<i64>(),
+        ) {
+            let (va, vb) = (serde_json::json!(a), serde_json::json!(b));
+            prop_assert!(outputs_match(Some(&va), None, Some(&va), None, &[]));
+            let mask = crate::nondeterminism::NondeterministicField {
+                field_path: "return".into(),
+                evidence: vec![],
+                confidence: crate::nondeterminism::Confidence::High,
+            };
+            prop_assert!(outputs_match(Some(&va), None, Some(&vb), None, &[mask]));
+            prop_assert_eq!(outputs_match(Some(&va), None, Some(&vb), None, &[]), a == b);
+        }
+
+        /// Summary passes(allow_drift=false) implies passes(true); regressions
+        /// fail under both policies.
+        #[test]
+        fn summary_policy_monotone(
+            confirmed in 0usize..5,
+            drift in 0usize..5,
+            regressed in 0usize..5,
+        ) {
+            let s = RevalidationSummary { confirmed, expected_drift: drift, regressed, total: confirmed + drift + regressed };
+            if s.passes(false) { prop_assert!(s.passes(true)); }
+            if regressed > 0 { prop_assert!(!s.passes(true)); }
         }
     }
 }

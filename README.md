@@ -190,6 +190,7 @@ built-in defaults. CLI flags always override config file values.
 | `no_cache` | `boolean` | Disable caching entirely |
 | `seeds_dir` | `string` | Cross-function seed pool directory |
 | `capture_side_effects` | `boolean` | Enable rich side-effect capture |
+| `allow_drift` | `boolean` | `shatter revalidate`: treat expected drift as passing (same as `--allow-drift`) |
 
 ### `.shatter/config.yaml` — hierarchical per-function settings
 

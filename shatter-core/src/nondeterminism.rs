@@ -489,6 +489,9 @@ pub const FIELD_PATH_OUTCOME: &str = "<outcome>";
 /// Field path used when thrown error type or message varies across re-executions.
 pub const FIELD_PATH_THROWN_ERROR: &str = "thrown_error";
 
+/// Field path used when the return value (or the whole primitive) varies.
+pub const FIELD_PATH_RETURN: &str = "return";
+
 /// Result of the within-run nondeterminism detection phase.
 #[derive(Debug, Clone, Default)]
 pub struct ReexecutionReport {
@@ -521,51 +524,13 @@ pub fn detect_within_run_nondeterminism(
         total_reexecutions += reexecutions.len();
 
         for reexec in reexecutions {
-            // Check outcome type mismatch (return vs throw).
-            let orig_returns = original.return_value.is_some() || original.thrown_error.is_none();
-            let reexec_returns = reexec.return_value.is_some() || reexec.thrown_error.is_none();
-
-            if orig_returns != reexec_returns {
-                // One returns normally, the other throws (or vice versa).
-                let entry = field_stats
-                    .entry(FIELD_PATH_OUTCOME.to_string())
-                    .or_insert((0, 0));
-                entry.0 += 1;
-                entry.1 += 1;
-                continue;
-            }
-
-            // Both returned normally — compare return values.
-            if let (Some(orig_val), Some(reexec_val)) =
-                (&original.return_value, &reexec.return_value)
-            {
-                let sim = structural_similarity(orig_val, reexec_val);
-                for path in &sim.changed_paths {
-                    let field_path = if path.is_empty() {
-                        "return".to_string()
-                    } else {
-                        format!("return.{path}")
-                    };
-                    let entry = field_stats.entry(field_path).or_insert((0, 0));
-                    entry.0 += 1;
-                    entry.1 += 1;
-                }
-                // Count non-changed comparisons too.
-                if sim.changed_paths.is_empty() {
-                    // No changes — record that this comparison was clean.
-                    // We don't add to field_stats since no paths changed.
-                }
-            }
-
-            // Both threw — compare error type and message.
-            if let (Some(orig_err), Some(reexec_err)) =
-                (&original.thrown_error, &reexec.thrown_error)
-                && (orig_err.error_type != reexec_err.error_type
-                    || orig_err.message != reexec_err.message)
-            {
-                let entry = field_stats
-                    .entry(FIELD_PATH_THROWN_ERROR.to_string())
-                    .or_insert((0, 0));
+            for field_path in changed_output_fields(
+                original.return_value.as_ref(),
+                original.thrown_error.as_ref(),
+                reexec.return_value.as_ref(),
+                reexec.thrown_error.as_ref(),
+            ) {
+                let entry = field_stats.entry(field_path).or_insert((0, 0));
                 entry.0 += 1;
                 entry.1 += 1;
             }
@@ -611,6 +576,84 @@ pub fn detect_within_run_nondeterminism(
         inputs_sampled: total_samples,
         reexecutions_performed: total_reexecutions,
     }
+}
+
+/// Output fields that differ between two executions of the same input.
+///
+/// This is the single definition of the output field-path vocabulary shared by
+/// the producer ([`detect_within_run_nondeterminism`]) and the consumer
+/// ([`outputs_match`], used by revalidation), so a mask written by one is
+/// honoured by the other:
+///
+/// - [`FIELD_PATH_OUTCOME`] — one execution returned and the other threw.
+/// - `return` / `return.<path>` — the return value differs (whole value, or the
+///   nested path reported by [`structural_similarity`]).
+/// - [`FIELD_PATH_THROWN_ERROR`] — both threw but `error_type` or `message`
+///   differ. Stack traces and locations are never compared.
+pub fn changed_output_fields(
+    a_return: Option<&Value>,
+    a_error: Option<&crate::execution_record::ErrorInfo>,
+    b_return: Option<&Value>,
+    b_error: Option<&crate::execution_record::ErrorInfo>,
+) -> Vec<String> {
+    let a_returns = a_return.is_some() || a_error.is_none();
+    let b_returns = b_return.is_some() || b_error.is_none();
+    if a_returns != b_returns {
+        return vec![FIELD_PATH_OUTCOME.to_string()];
+    }
+
+    let mut fields = Vec::new();
+    if let (Some(a), Some(b)) = (a_return, b_return) {
+        for path in structural_similarity(a, b).changed_paths {
+            fields.push(if path.is_empty() {
+                FIELD_PATH_RETURN.to_string()
+            } else {
+                format!("{FIELD_PATH_RETURN}.{path}")
+            });
+        }
+    }
+    if let (Some(a), Some(b)) = (a_error, b_error)
+        && (a.error_type != b.error_type || a.message != b.message)
+    {
+        fields.push(FIELD_PATH_THROWN_ERROR.to_string());
+    }
+    fields
+}
+
+/// Whether `field` (a path from [`changed_output_fields`]) is covered by the
+/// declared nondeterministic `mask`. `return` masks every `return.<path>`; a
+/// `return.<path>` mask covers that path and anything nested beneath it.
+fn output_field_masked(field: &str, nondeterministic_fields: &[NondeterministicField]) -> bool {
+    nondeterministic_fields.iter().any(|m| {
+        let mask = m.field_path.as_str();
+        field == mask
+            || (mask == FIELD_PATH_RETURN && field.starts_with("return."))
+            || (field.starts_with(mask)
+                && mask.starts_with("return.")
+                && matches!(field.as_bytes().get(mask.len()), Some(b'.' | b'[')))
+    })
+}
+
+/// Compare an expected (recorded) output against an observed one, ignoring
+/// differences explained by `nondeterministic_fields`.
+///
+/// Returns `true` when every differing field per [`changed_output_fields`] is
+/// masked. Errors are compared by `error_type` and `message` only.
+pub fn outputs_match(
+    expected_return: Option<&Value>,
+    expected_error: Option<&crate::execution_record::ErrorInfo>,
+    observed_return: Option<&Value>,
+    observed_error: Option<&crate::execution_record::ErrorInfo>,
+    nondeterministic_fields: &[NondeterministicField],
+) -> bool {
+    changed_output_fields(
+        expected_return,
+        expected_error,
+        observed_return,
+        observed_error,
+    )
+    .iter()
+    .all(|f| output_field_masked(f, nondeterministic_fields))
 }
 
 /// Select up to `max_samples` input indices from an equivalence class's inputs.

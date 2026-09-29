@@ -1191,7 +1191,24 @@ async fn main() -> ExitCode {
             release,
             memory_limit,
             output_format,
+            allow_drift,
         } => {
+            let project_cfg_root = cli
+                .project_dir
+                .as_deref()
+                .map(std::path::Path::new)
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let project_cfg = shatter_core::config::load_project_config(&project_cfg_root)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to load project config: {e}");
+                    None
+                });
+            let allow_drift = allow_drift
+                || project_cfg
+                    .as_ref()
+                    .and_then(|c| c.allow_drift)
+                    .unwrap_or(false);
             match commands::revalidate::run_revalidate(
                 &source,
                 cache_dir.as_deref(),
@@ -1203,6 +1220,7 @@ async fn main() -> ExitCode {
                 memory_limit,
                 log_level,
                 cli.project_dir.as_deref(),
+                allow_drift,
             )
             .await
             {
