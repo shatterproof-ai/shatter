@@ -462,9 +462,34 @@ rejected.
 
 Re-execute cached behaviors for a source file: load behavior maps from the cache,
 replay each recorded input through a fresh frontend, and compare observed against
-cached behavior. Exit `0` = no regressions, `1` = issues found, `2` = tool error
-(e.g. the cache or frontend couldn't be reached, §2.11). `<SOURCE>` must be a
-concrete file path.
+cached behavior. `<SOURCE>` must be a concrete file path.
+
+**What is compared.** For each replayed input: the branch path (`branch_id` and
+`taken`; constraint text is ignored), the error severity, the return value, and
+the thrown error's `error_type` and `message`. Stack traces, file paths and line
+numbers are never compared.
+
+**Nondeterminism masks.** The behavior map's recorded nondeterministic fields
+(written by within-run re-execution sampling) mask output differences using the
+same field paths: `return` masks the whole return value, `return.<path>` masks
+that nested path (and anything beneath it), `thrown_error` masks the error's
+type and message, and `<outcome>` masks a return-vs-throw flip. `branch` masks
+the branch path.
+
+**Verdicts.** `confirmed`; `expected drift` (branch path changed after a code
+change, outputs and severity unchanged); `output changed` (return value or
+thrown error differs at the same severity, whether or not the path or code
+changed); `severity upgrade` / `severity downgrade`; `potential regression`
+(behavior vanished after a code change); `flaky` (behavior changed with the code
+unchanged). Text output ends with `N confirmed, D expected drift, R regressed of
+M behaviors.`; JSON output carries the same counts under `summary`
+(`confirmed`, `expected_drift`, `regressed`, `total`).
+
+**Exit codes.** `0` = every behavior confirmed; `1` = issues found, meaning any
+verdict other than `confirmed`, including expected drift; `2` = tool error (e.g.
+the cache or frontend couldn't be reached, §2.11). `--allow-drift` (or
+`allow_drift: true` in `shatter.config.json`) makes drift-only results exit `0`;
+`output changed` and every other regression verdict still exit `1`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -473,6 +498,7 @@ concrete file path.
 | `--release` | false | Compile harnesses in release mode. |
 | `--memory-limit MB` | — | Frontend memory cap. |
 | `--output-format FORMAT` | `text` | `text` or `json`. |
+| `--allow-drift` | false | Treat expected drift as passing (config: `allow_drift`). |
 
 ### 2.8 `shatter init`
 

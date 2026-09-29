@@ -563,6 +563,12 @@ pub struct ProjectConfig {
     /// Optional broad-run coverage budget gates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage_budget_gates: Option<CoverageBudgetGates>,
+
+    /// `shatter revalidate`: treat expected drift (branch path changed after a
+    /// code change, outputs unchanged) as passing. Equivalent to
+    /// `--allow-drift`. Output changes and other regressions still fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_drift: Option<bool>,
 }
 
 /// Optional broad-run coverage budget gates.
@@ -3769,6 +3775,7 @@ defaults:
                 coverage_budget_gates: None,
                 observer_pool: None,
                 candidate_queue_capacity: None,
+                allow_drift: Some(true),
             };
             let json = serde_json::to_string(&config).unwrap();
             let restored: ProjectConfig = serde_json::from_str(&json).unwrap();

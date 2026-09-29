@@ -5,14 +5,16 @@ use shatter_core::cache::BehaviorMapCache;
 use shatter_core::frontend::Frontend;
 use shatter_core::log_level::LogLevel;
 use shatter_core::protocol::{Command as ProtoCommand, ResponseResult};
+use shatter_core::revalidation::{RevalidationSummary, RevalidationVerdict};
 
 use crate::args::*;
 use crate::helpers::*;
 
 /// Revalidate cached behaviors: replay recorded inputs and classify drift.
 ///
-/// Returns `Ok(true)` if all behaviors are confirmed (no regressions),
-/// `Ok(false)` if any issues were found.
+/// Returns `Ok(true)` if there are no regressions and no unallowed drift,
+/// `Ok(false)` if any issues were found. Expected drift counts as an issue
+/// unless `allow_drift` is set; output changes always do.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_revalidate(
     source: &str,
@@ -25,6 +27,7 @@ pub(crate) async fn run_revalidate(
     memory_limit: Option<u64>,
     log_level: LogLevel,
     project_dir: Option<&Path>,
+    allow_drift: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     reject_glob_target(source)?;
     let target = parse_target(source)?;
@@ -91,7 +94,9 @@ pub(crate) async fn run_revalidate(
     if behavior_maps.is_empty() {
         shutdown_frontend(frontend).await;
         if format == "json" {
-            println!("{{\"reports\":[],\"all_confirmed\":true}}");
+            println!(
+                "{{\"reports\":[],\"summary\":{{\"confirmed\":0,\"expected_drift\":0,\"regressed\":0,\"total\":0}},\"all_confirmed\":true}}"
+            );
         } else {
             println!("No cached behaviors found for {file_str}. Nothing to revalidate.");
         }
@@ -129,7 +134,6 @@ pub(crate) async fn run_revalidate(
 
     // Revalidate each behavior map.
     let mut all_reports = Vec::new();
-    let mut has_issues = false;
 
     for bm in &behavior_maps {
         let func_name = bm.function_id.rsplit(':').next().unwrap_or(&bm.function_id);
@@ -139,24 +143,20 @@ pub(crate) async fn run_revalidate(
             shatter_core::revalidation::revalidate_behaviors(&mut frontend, bm, current_fp)
                 .await
                 .map_err(|e| format!("revalidation failed for {}: {e}", bm.function_id))?;
-
-        for report in &reports {
-            if report.verdict != shatter_core::revalidation::RevalidationVerdict::Confirmed
-                && report.verdict != shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
-            {
-                has_issues = true;
-            }
-        }
         all_reports.extend(reports);
     }
 
     shutdown_frontend(frontend).await;
 
+    let summary = RevalidationSummary::from_reports(&all_reports);
+    let passed = summary.passes(allow_drift);
+
     // Output results.
     if format == "json" {
         let output = serde_json::json!({
             "reports": all_reports,
-            "all_confirmed": !has_issues,
+            "summary": summary,
+            "all_confirmed": passed,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if all_reports.is_empty() {
@@ -164,26 +164,38 @@ pub(crate) async fn run_revalidate(
     } else {
         for report in &all_reports {
             let icon = match report.verdict {
-                shatter_core::revalidation::RevalidationVerdict::Confirmed => "ok",
-                shatter_core::revalidation::RevalidationVerdict::ExpectedDrift => "drift",
-                shatter_core::revalidation::RevalidationVerdict::Flaky => "FLAKY",
-                shatter_core::revalidation::RevalidationVerdict::PotentialRegression => {
-                    "REGRESSION"
-                }
-                shatter_core::revalidation::RevalidationVerdict::SeverityDowngrade => "DOWNGRADE",
-                shatter_core::revalidation::RevalidationVerdict::SeverityUpgrade => "UPGRADE",
+                RevalidationVerdict::Confirmed => "ok",
+                RevalidationVerdict::ExpectedDrift => "drift",
+                RevalidationVerdict::Flaky => "FLAKY",
+                RevalidationVerdict::PotentialRegression => "REGRESSION",
+                RevalidationVerdict::SeverityDowngrade => "DOWNGRADE",
+                RevalidationVerdict::SeverityUpgrade => "UPGRADE",
+                RevalidationVerdict::OutputChanged => "CHANGED",
             };
-            println!("  [{icon}] {} ({})", report.function_name, report.verdict,);
+            println!(
+                "  [{icon}] {}({}) ({})",
+                report.function_name,
+                format_input(&report.input_vector),
+                report.verdict,
+            );
         }
-        let confirmed = all_reports
-            .iter()
-            .filter(|r| {
-                r.verdict == shatter_core::revalidation::RevalidationVerdict::Confirmed
-                    || r.verdict == shatter_core::revalidation::RevalidationVerdict::ExpectedDrift
-            })
-            .count();
-        println!("\n{}/{} behaviors confirmed.", confirmed, all_reports.len());
+        println!(
+            "\n{} confirmed, {} expected drift, {} regressed of {} behaviors.",
+            summary.confirmed, summary.expected_drift, summary.regressed, summary.total
+        );
+        if !passed && summary.regressed == 0 {
+            println!("Expected drift fails by default; pass --allow-drift to accept it.");
+        }
     }
 
-    Ok(!has_issues)
+    Ok(passed)
+}
+
+/// Render an input vector as a comma-separated argument list.
+fn format_input(inputs: &[serde_json::Value]) -> String {
+    inputs
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

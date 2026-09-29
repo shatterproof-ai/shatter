@@ -1675,6 +1675,13 @@ pub(crate) enum CliCommand {
         /// Output format: "text" (default) or "json".
         #[arg(long = "output-format", default_value = "text")]
         output_format: String,
+
+        /// Treat expected drift (branch path changed after a code change,
+        /// outputs unchanged) as passing. Drift fails by default. Output
+        /// changes and other regressions always fail. Config key:
+        /// `allow_drift` in shatter.config.json.
+        #[arg(long)]
+        allow_drift: bool,
     },
 
     /// Run tests with impact analysis: only execute tests affected by changed files.
