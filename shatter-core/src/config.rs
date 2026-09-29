@@ -1327,6 +1327,16 @@ pub fn parse_candidate_inputs(path: &Path) -> Result<Vec<CandidateInput>, Config
 /// Discover `.shatter/config.yaml` files by walking upward from `start_dir`.
 ///
 /// Returns configs ordered from nearest (highest priority) to farthest (lowest priority).
+///
+/// The upward walk is bounded so a stray `.shatter/config.yaml` in a shared
+/// directory (e.g. `/tmp/.shatter` left by another process) is never picked
+/// up. The walk stops at the first of:
+/// - the git repository root (a directory containing `.git`), inclusive;
+/// - `$HOME`, inclusive (so `~/.shatter/config.yaml` acts as a global config;
+///   it is also read when a git root below `$HOME` ends the walk earlier);
+/// - a shared sticky-bit directory such as `/tmp` or `/var/tmp` (Unix),
+///   exclusive: configs in it are never read;
+/// - the filesystem root.
 pub fn discover_configs(start_dir: &Path) -> Result<Vec<ShatterConfig>, ConfigError> {
     let discovered = discover_configs_with_paths(start_dir)?;
     Ok(discovered.into_iter().map(|d| d.config).collect())
@@ -1334,25 +1344,86 @@ pub fn discover_configs(start_dir: &Path) -> Result<Vec<ShatterConfig>, ConfigEr
 
 /// Internal: discover configs with their `.shatter/` directory paths preserved.
 fn discover_configs_with_paths(start_dir: &Path) -> Result<Vec<DiscoveredConfig>, ConfigError> {
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
+    discover_configs_bounded(start_dir, home.as_deref())
+}
+
+/// True for a world-writable sticky directory (`/tmp`-style shared space).
+#[cfg(unix)]
+fn is_shared_sticky_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(dir)
+        .map(|m| {
+            let mode = m.permissions().mode();
+            mode & 0o1000 != 0 && mode & 0o002 != 0
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_shared_sticky_dir(_dir: &Path) -> bool {
+    false
+}
+
+/// Bounded upward config walk; `home` is injected so tests don't depend on `$HOME`.
+fn discover_configs_bounded(
+    start_dir: &Path,
+    home: Option<&Path>,
+) -> Result<Vec<DiscoveredConfig>, ConfigError> {
+    // Canonicalize so a symlinked `$HOME` or a relative/non-canonical
+    // `start_dir` can't slip past the lexical `$HOME` comparison.
+    let start = std::fs::canonicalize(start_dir).unwrap_or_else(|_| start_dir.to_path_buf());
+    let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
+
     let mut configs = Vec::new();
-    let mut current = Some(start_dir.to_path_buf());
+    let mut current = Some(start.clone());
+    let mut stopped_at_git_root = None;
 
     while let Some(dir) = current {
-        let shatter_dir = dir.join(".shatter");
-        let config_path = shatter_dir.join("config.yaml");
+        if is_shared_sticky_dir(&dir) {
+            return Ok(configs);
+        }
 
-        if config_path.is_file() {
-            let config = parse_config(&config_path)?;
-            configs.push(DiscoveredConfig {
-                shatter_dir,
-                config,
-            });
+        read_config_dir(&dir, &mut configs)?;
+
+        if home.as_deref() == Some(dir.as_path()) {
+            return Ok(configs);
+        }
+        if dir.join(".git").exists() {
+            stopped_at_git_root = Some(dir);
+            break;
         }
 
         current = dir.parent().map(Path::to_path_buf);
     }
 
+    // Stopped at a git root below `$HOME`: the global `~/.shatter/config.yaml`
+    // still applies as the lowest-priority config.
+    if let (Some(root), Some(home)) = (stopped_at_git_root, home)
+        && root != home
+        && start.starts_with(&home)
+        && !is_shared_sticky_dir(&home)
+    {
+        read_config_dir(&home, &mut configs)?;
+    }
+
     Ok(configs)
+}
+
+/// Append `dir/.shatter/config.yaml` to `configs` if it exists.
+fn read_config_dir(dir: &Path, configs: &mut Vec<DiscoveredConfig>) -> Result<(), ConfigError> {
+    let shatter_dir = dir.join(".shatter");
+    let config_path = shatter_dir.join("config.yaml");
+    if config_path.is_file() {
+        let config = parse_config(&config_path)?;
+        configs.push(DiscoveredConfig {
+            shatter_dir,
+            config,
+        });
+    }
+    Ok(())
 }
 
 /// Merge multiple configs where the first config in the slice has highest priority.
@@ -2020,6 +2091,120 @@ llm:
             .filter(|d| d.shatter_dir.starts_with(dir.path()))
             .collect();
         assert!(configs.is_empty());
+    }
+
+    fn plant_config(dir: &Path, max_iterations: u32) {
+        let shatter = dir.join(".shatter");
+        fs::create_dir_all(&shatter).unwrap();
+        fs::write(
+            shatter.join("config.yaml"),
+            format!("defaults:\n  max_iterations: {max_iterations}\n"),
+        )
+        .unwrap();
+    }
+
+    fn found_iterations(start: &Path, home: Option<&Path>) -> Vec<Option<u32>> {
+        discover_configs_bounded(start, home)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.config.defaults.max_iterations)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_configs_does_not_cross_sticky_shared_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `shared` stands in for /tmp: world-writable with the sticky bit.
+        let root = TempDir::new().unwrap();
+        let shared = root.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        plant_config(&shared, 999); // stray config directly under the shared dir
+
+        let project = shared.join("project").join("src");
+        fs::create_dir_all(&project).unwrap();
+        plant_config(&shared.join("project"), 7);
+
+        assert_eq!(found_iterations(&project, None), vec![Some(7)]);
+    }
+
+    #[test]
+    fn discover_configs_stops_at_git_root() {
+        let root = TempDir::new().unwrap();
+        plant_config(root.path(), 999); // above the repo: must not be picked up
+
+        let repo = root.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        plant_config(&repo, 50);
+        let sub = repo.join("pkg");
+        fs::create_dir_all(&sub).unwrap();
+        plant_config(&sub, 500);
+
+        assert_eq!(found_iterations(&sub, None), vec![Some(500), Some(50)]);
+    }
+
+    #[test]
+    fn discover_configs_stops_at_home_inclusive() {
+        let root = TempDir::new().unwrap();
+        plant_config(root.path(), 999); // above $HOME: must not be picked up
+
+        let home = root.path().join("home");
+        plant_config(&home, 10); // ~/.shatter/config.yaml is a valid global config
+        let sub = home.join("work").join("proj");
+        fs::create_dir_all(&sub).unwrap();
+
+        assert_eq!(found_iterations(&sub, Some(&home)), vec![Some(10)]);
+    }
+
+    #[test]
+    fn discover_configs_reads_global_home_config_below_git_root() {
+        let root = TempDir::new().unwrap();
+        plant_config(root.path(), 999); // above $HOME: must not be picked up
+
+        let home = root.path().join("home");
+        plant_config(&home, 10); // global
+        let repo = home.join("work").join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        plant_config(&repo, 50);
+        let sub = repo.join("pkg");
+        fs::create_dir_all(&sub).unwrap();
+
+        assert_eq!(
+            found_iterations(&sub, Some(&home)),
+            vec![Some(50), Some(10)]
+        );
+    }
+
+    #[test]
+    fn discover_configs_home_is_git_root_not_read_twice() {
+        let root = TempDir::new().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir_all(home.join(".git")).unwrap();
+        plant_config(&home, 10);
+
+        assert_eq!(found_iterations(&home, Some(&home)), vec![Some(10)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_configs_home_bound_survives_symlinked_home() {
+        let root = TempDir::new().unwrap();
+        plant_config(root.path(), 999);
+        let real_home = root.path().join("real_home");
+        plant_config(&real_home, 10);
+        let link = root.path().join("home_link");
+        std::os::unix::fs::symlink(&real_home, &link).unwrap();
+        let sub = real_home.join("proj");
+        fs::create_dir_all(&sub).unwrap();
+
+        // $HOME given via the symlink, start dir via the real path (and vice versa).
+        assert_eq!(found_iterations(&sub, Some(&link)), vec![Some(10)]);
+        assert_eq!(
+            found_iterations(&link.join("proj"), Some(&real_home)),
+            vec![Some(10)]
+        );
     }
 
     #[test]
