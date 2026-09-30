@@ -16,7 +16,11 @@ interface CorpusFunction {
   name: string;
   params: readonly string[];
   source: string;
+  /** Build the call arguments from generated integers (default: the integers themselves). */
+  toArgs?: (ints: readonly number[]) => unknown[];
 }
+
+const objectArg = (ints: readonly number[]): unknown[] => [{ x: ints[0] }, ints[1]];
 
 const OPAQUE_HELPER = `function opaque(): number { return 42; }`;
 
@@ -205,6 +209,68 @@ const CORPUS: readonly CorpusFunction[] = [
 }`,
   },
   {
+    name: "propertyWrite",
+    params: ["p", "b"],
+    toArgs: objectArg,
+    source: `function propertyWrite(p: { x: number }, b: number): number {
+  p.x = b;
+  if (p.x > 3) { return 1; }
+  return 0;
+}`,
+  },
+  {
+    name: "aliasWrite",
+    params: ["p", "b"],
+    toArgs: objectArg,
+    source: `function aliasWrite(p: { x: number }, b: number): number {
+  const o = p;
+  o.x = b;
+  if (p.x > 3) { return 1; }
+  return 0;
+}`,
+  },
+  {
+    name: "elementCompoundWrite",
+    params: ["p", "b"],
+    toArgs: objectArg,
+    source: `function elementCompoundWrite(p: { x: number }, b: number): number {
+  p["x"] = b;
+  p.x += 1;
+  p.x++;
+  if (p.x > 3) { return 1; }
+  return 0;
+}`,
+  },
+  {
+    name: "closurePropertyWrite",
+    params: ["p", "b"],
+    toArgs: objectArg,
+    source: `function closurePropertyWrite(p: { x: number }, b: number): number {
+  const o = p;
+  [b].forEach((v) => { o.x = v; });
+  if (p.x > 3) { return 1; }
+  return 0;
+}`,
+  },
+  {
+    name: "conditionAssign",
+    params: ["a", "b"],
+    source: `function conditionAssign(a: number, b: number): number {
+  let y = b;
+  if ((y = 1) && a > y) { return 1; }
+  return 0;
+}`,
+  },
+  {
+    name: "conditionAssignOpaque",
+    params: ["a"],
+    source: `function conditionAssignOpaque(a: number): number {
+  let n = a;
+  if ((n = opaque()) && n > 3) { return 1; }
+  return 0;
+}`,
+  },
+  {
     name: "closureMutation",
     params: ["a"],
     source: `function closureMutation(a: number): number {
@@ -225,7 +291,7 @@ function instrumentCorpus(fn: CorpusFunction): string {
   }).outputText;
 }
 
-function runAndCollectBranches(js: string, fn: CorpusFunction, args: readonly number[]): BranchDecision[] {
+function runAndCollectBranches(js: string, fn: CorpusFunction, args: readonly unknown[]): BranchDecision[] {
   const branches: BranchDecision[] = [];
   const run = new Function(
     RECORD_FUNCTION,
@@ -400,7 +466,7 @@ describe("flow-map-program-point", () => {
         fc.array(fc.integer({ min: -20, max: 20 }), { minLength: 2, maxLength: 2 }),
         (index, rawArgs) => {
           const { fn, js } = compiled[index]!;
-          const args = rawArgs.slice(0, fn.params.length);
+          const args = (fn.toArgs ?? ((ints) => [...ints]))(rawArgs).slice(0, fn.params.length);
           const env = new Map(fn.params.map((name, i) => [name, args[i]]));
           for (const branch of runAndCollectBranches(js, fn, args)) {
             const constraint = knownConstraint(branch);
@@ -409,7 +475,7 @@ describe("flow-map-program-point", () => {
             if (value === UNEVALUABLE) continue;
             if (Boolean(value) !== branch.taken) {
               throw new Error(
-                `${fn.name}(${args.join(", ")}): branch ${branch.branch_id} taken=${branch.taken} ` +
+                `${fn.name}(${JSON.stringify(args)}): branch ${branch.branch_id} taken=${branch.taken} ` +
                 `but constraint evaluates to ${String(value)}: ${JSON.stringify(constraint)}`,
               );
             }
@@ -441,5 +507,28 @@ describe("flow-map-program-point", () => {
         expect(buildSymExpr(parse(`${name}.${prop}`), paramNames, killed)).toEqual({ kind: "unknown" });
       }),
     );
+  });
+
+  it("property, element and alias writes kill the written parameter", () => {
+    for (const name of ["propertyWrite", "aliasWrite", "elementCompoundWrite", "closurePropertyWrite"]) {
+      const fn = CORPUS.find((c) => c.name === name)!;
+      const branches = runAndCollectBranches(instrumentCorpus(fn), fn, objectArg([10, 0]));
+      expect([name, knownConstraint(branches[0]!)]).toEqual([name, undefined]);
+    }
+  });
+
+  it("an if-condition's own assignments are applied before its constraint is recorded", () => {
+    // The whole constraint is partly unknown (the `=` node), but its known
+    // sub-terms must not read the binding the condition overwrote.
+    const cases = [
+      ["conditionAssign", [5, 9], "b"],
+      ["conditionAssignOpaque", [0], "a"],
+    ] as const;
+    for (const [name, args, staleParam] of cases) {
+      const fn = CORPUS.find((c) => c.name === name)!;
+      const branches = runAndCollectBranches(instrumentCorpus(fn), fn, args);
+      const recorded = JSON.stringify(branches[0]!.constraint);
+      expect([name, recorded.includes(`"name":"${staleParam}"`)]).toEqual([name, false]);
+    }
   });
 });

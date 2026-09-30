@@ -347,10 +347,19 @@ interface FlowWalk {
   flowMap: FlowMap;
   resolveName: (name: string) => SymExpr | undefined;
   byCondition: Map<ts.Expression, FlowMap>;
-  /** Names assigned inside nested functions — unknown at every point, since calls are not tracked. */
-  closureAssigned: ReadonlySet<string>;
-  /** Names assigned anywhere in the function, nested functions included. */
-  assignedAnywhere: ReadonlySet<string>;
+  /** Writes inside nested functions — unknown at every point, since calls are not tracked. */
+  closureWrites: Writes;
+  /** Writes anywhere in the function, nested functions included. */
+  writesAnywhere: Writes;
+}
+
+/**
+ * What a piece of code may write: rebound names, and names whose object is
+ * mutated through a property or element write (`o.x = 1`, `o[k]++`).
+ */
+interface Writes {
+  names: Set<string>;
+  objectRoots: Set<string>;
 }
 
 /**
@@ -373,17 +382,22 @@ function buildBranchFlowMaps(
     return { byCondition, fallback: seedParams(paramNames, new Set()) };
   }
 
-  const assignedAnywhere = collectAssignedNames(body, { includeNestedFunctions: true });
-  const rebound = new Set([...assignedAnywhere, ...collectBoundNames(body)]);
+  const writesAnywhere = collectWrites(body, { includeNestedFunctions: true });
+  const rebound = new Set([...writesAnywhere.names, ...writesAnywhere.objectRoots, ...collectBoundNames(body)]);
+  // A write through a local may alias any parameter object; without bindings, kill them all.
+  const untrackedObjectWrite = [...writesAnywhere.objectRoots].some((root) => !paramNames.has(root));
   const walk: FlowWalk = {
     flowMap: seedParams(paramNames, new Set()),
-    resolveName: (name) => (walk.closureAssigned.has(name) ? UNKNOWN_SYM : walk.flowMap.get(name)),
+    resolveName: (name) => (isClosureWritten(walk, name) ? UNKNOWN_SYM : walk.flowMap.get(name)),
     byCondition,
-    closureAssigned: collectClosureAssignedNames(body),
-    assignedAnywhere,
+    closureWrites: collectClosureWrites(body),
+    writesAnywhere,
   };
   walkStatements(body.statements, walk);
-  return { byCondition, fallback: seedParams(paramNames, rebound) };
+  return {
+    byCondition,
+    fallback: seedParams(paramNames, untrackedObjectWrite ? paramNames : rebound),
+  };
 }
 
 /** Seed parameters as symbolic inputs; any name in `killed` starts unknown. */
@@ -438,7 +452,7 @@ function walkStatement(stmt: ts.Statement, walk: FlowWalk): void {
   }
   // return/throw and anything else: keep closure branches, kill what it assigns.
   recordClosureBranches(stmt, walk);
-  havoc(walk, collectAssignedNames(stmt));
+  havoc(walk, collectWrites(stmt));
 }
 
 type LoopStatement =
@@ -475,9 +489,9 @@ function walkDeclarationList(declarationList: ts.VariableDeclarationList, walk: 
  * sub-expressions may read the values it overwrites.
  */
 function evaluateWithEffects(expr: ts.Expression, walk: FlowWalk): SymExpr {
-  const assigned = collectAssignedNames(expr);
-  if (assigned.size > 0) {
-    havoc(walk, assigned);
+  const writes = collectWrites(expr);
+  if (hasWrites(writes)) {
+    havoc(walk, writes);
     return UNKNOWN_SYM;
   }
   return buildSymExprWithFlow(expr, walk.resolveName);
@@ -495,8 +509,8 @@ function walkAssignmentEffects(expr: ts.Expression, walk: FlowWalk): void {
     return;
   }
   if (ts.isBinaryExpression(expr) && isAssignmentOperator(expr.operatorToken.kind) && ts.isIdentifier(expr.left)) {
-    const nested = collectAssignedNames(expr.right);
-    if (nested.size > 0) {
+    const nested = collectWrites(expr.right);
+    if (hasWrites(nested)) {
       havoc(walk, nested);
       walk.flowMap.set(expr.left.text, UNKNOWN_SYM);
       return;
@@ -511,16 +525,16 @@ function walkAssignmentEffects(expr: ts.Expression, walk: FlowWalk): void {
     walk.flowMap.set(expr.operand.text, buildUpdatedSymExpr(expr.operand.text, expr.operator, walk.resolveName));
     return;
   }
-  havoc(walk, collectAssignedNames(expr));
+  havoc(walk, collectWrites(expr));
 }
 
 function walkIf(stmt: ts.IfStatement, walk: FlowWalk): void {
   recordClosureBranches(stmt.expression, walk);
-  // Built before the condition's own side effects: it is a predicate over the
-  // inputs, so it stays valid as the merge selector afterwards.
+  // The condition's own writes happen before (some of) its reads, so kill
+  // them before building the constraint and the merge selector.
+  havoc(walk, collectWrites(stmt.expression));
   const condSym = buildSymExprWithFlow(stmt.expression, walk.resolveName);
   recordBranch(stmt.expression, walk);
-  havoc(walk, collectAssignedNames(stmt.expression));
 
   const before = new Map(walk.flowMap);
   walkScoped(statementsFromBranch(stmt.thenStatement), walk);
@@ -550,13 +564,13 @@ function walkLoop(stmt: LoopStatement, walk: FlowWalk): void {
   }
   if (ts.isForInStatement(stmt) || ts.isForOfStatement(stmt)) {
     recordClosureBranches(stmt.expression, walk);
-    havoc(walk, collectAssignedNames(stmt.expression));
+    havoc(walk, collectWrites(stmt.expression));
     if (ts.isVariableDeclarationList(stmt.initializer)) {
       loopScoped = lexicalDeclarationNames(stmt.initializer);
     }
   }
 
-  const loopAssigned = collectLoopAssignedNames(stmt);
+  const loopAssigned = collectLoopWrites(stmt);
   havoc(walk, loopAssigned);
 
   const condition = ts.isForStatement(stmt)
@@ -576,12 +590,11 @@ function walkLoop(stmt: LoopStatement, walk: FlowWalk): void {
   restoreNames(walk, loopScoped, beforeLoop);
 }
 
-/** Every name a loop can assign across iterations: condition, body, incrementor and loop variable. */
-function collectLoopAssignedNames(stmt: LoopStatement): Set<string> {
-  const names = collectAssignedNames(stmt.statement, { includeDeclarations: true });
+/** Everything a loop can write across iterations: condition, body, incrementor and loop variable. */
+function collectLoopWrites(stmt: LoopStatement): Writes {
+  const writes = collectWrites(stmt.statement, { includeDeclarations: true });
   const addFrom = (node: ts.Node | undefined): void => {
-    if (!node) return;
-    for (const name of collectAssignedNames(node, { includeDeclarations: true })) names.add(name);
+    if (node) mergeWrites(writes, collectWrites(node, { includeDeclarations: true }));
   };
   if (ts.isForStatement(stmt)) {
     addFrom(stmt.condition);
@@ -591,19 +604,20 @@ function collectLoopAssignedNames(stmt: LoopStatement): Set<string> {
   } else if (ts.isVariableDeclarationList(stmt.initializer)) {
     addFrom(stmt.initializer);
   } else {
-    for (const name of assignmentTargetNames(stmt.initializer)) names.add(name);
+    for (const name of assignmentTargetNames(stmt.initializer)) writes.names.add(name);
+    for (const root of mutatedObjectRoots(stmt.initializer)) writes.objectRoots.add(root);
   }
-  return names;
+  return writes;
 }
 
 function walkSwitch(stmt: ts.SwitchStatement, walk: FlowWalk): void {
   recordClosureBranches(stmt.expression, walk);
-  havoc(walk, collectAssignedNames(stmt.expression));
+  havoc(walk, collectWrites(stmt.expression));
 
   // Fallthrough lets a clause start from any earlier clause's state: every
   // name any clause assigns is unknown at clause entry and after the switch.
   const beforeSwitch = new Map(walk.flowMap);
-  havoc(walk, collectAssignedNames(stmt.caseBlock, { includeDeclarations: true }));
+  havoc(walk, collectWrites(stmt.caseBlock, { includeDeclarations: true }));
   const atClauseEntry = new Map(walk.flowMap);
   for (const clause of stmt.caseBlock.clauses) {
     replaceFlowMap(walk, atClauseEntry);
@@ -616,7 +630,7 @@ function walkSwitch(stmt: ts.SwitchStatement, walk: FlowWalk): void {
 
 function walkTry(stmt: ts.TryStatement, walk: FlowWalk): void {
   const beforeTry = new Map(walk.flowMap);
-  const tryAssigned = collectAssignedNames(stmt.tryBlock, { includeDeclarations: true });
+  const tryAssigned = collectWrites(stmt.tryBlock, { includeDeclarations: true });
   walkScoped(stmt.tryBlock.statements, walk);
 
   // An exception can leave the try block at any point.
@@ -630,7 +644,7 @@ function walkTry(stmt: ts.TryStatement, walk: FlowWalk): void {
     for (const name of catchScoped) walk.flowMap.set(name, UNKNOWN_SYM);
     walkScoped(stmt.catchClause.block.statements, walk);
     replaceFlowMap(walk, atCatchEntry);
-    havoc(walk, collectAssignedNames(stmt.catchClause.block, { includeDeclarations: true }));
+    havoc(walk, collectWrites(stmt.catchClause.block, { includeDeclarations: true }));
   }
 
   if (stmt.finallyBlock) {
@@ -662,16 +676,54 @@ function replaceFlowMap(walk: FlowWalk, source: FlowMap): void {
   for (const [name, expr] of source) walk.flowMap.set(name, expr);
 }
 
-function havoc(walk: FlowWalk, names: Iterable<string>): void {
-  for (const name of names) {
+/** Kill rebound names, and every binding that may alias a mutated object. */
+function havoc(walk: FlowWalk, writes: Writes): void {
+  for (const name of [...writes.names, ...aliasesOf(walk.flowMap, writes.objectRoots)]) {
     walk.flowMap.set(name, UNKNOWN_SYM);
   }
+}
+
+/**
+ * The roots themselves plus every name bound to the same parameter object
+ * (any path), since a write through one alias is visible through the others.
+ */
+function aliasesOf(flowMap: FlowMap, roots: ReadonlySet<string>): Set<string> {
+  const aliases = new Set(roots);
+  const paramObjects = new Set<string>();
+  for (const root of roots) {
+    const bound = flowMap.get(root);
+    if (bound?.kind === "param") paramObjects.add(bound.name);
+  }
+  if (paramObjects.size > 0) {
+    for (const [name, expr] of flowMap) {
+      if (expr.kind === "param" && paramObjects.has(expr.name)) aliases.add(name);
+    }
+  }
+  return aliases;
+}
+
+/** Whether a nested function may have written `name` (directly or through an alias). */
+function isClosureWritten(walk: FlowWalk, name: string): boolean {
+  if (walk.closureWrites.names.has(name)) return true;
+  if (walk.closureWrites.objectRoots.size === 0) return false;
+  return aliasesOf(walk.flowMap, walk.closureWrites.objectRoots).has(name);
+}
+
+function hasWrites(writes: Writes): boolean {
+  return writes.names.size > 0 || writes.objectRoots.size > 0;
+}
+
+function mergeWrites(into: Writes, from: Writes): void {
+  for (const name of from.names) into.names.add(name);
+  for (const root of from.objectRoots) into.objectRoots.add(root);
 }
 
 /** Snapshot the current flow map for a branch condition evaluated here. */
 function recordBranch(condition: ts.Expression, walk: FlowWalk): void {
   const snapshot = new Map(walk.flowMap);
-  for (const name of walk.closureAssigned) snapshot.set(name, UNKNOWN_SYM);
+  for (const name of snapshot.keys()) {
+    if (isClosureWritten(walk, name)) snapshot.set(name, UNKNOWN_SYM);
+  }
   walk.byCondition.set(condition, snapshot);
 }
 
@@ -684,7 +736,8 @@ function recordClosureBranches(node: ts.Node, walk: FlowWalk): void {
   const closures = ts.isArrowFunction(node) || ts.isFunctionExpression(node) ? [node] : findClosuresInNode(node);
   for (const closure of closures) {
     const snapshot = new Map(walk.flowMap);
-    for (const name of walk.assignedAnywhere) snapshot.set(name, UNKNOWN_SYM);
+    for (const name of walk.writesAnywhere.names) snapshot.set(name, UNKNOWN_SYM);
+    for (const name of aliasesOf(walk.flowMap, walk.writesAnywhere.objectRoots)) snapshot.set(name, UNKNOWN_SYM);
     for (const name of collectBoundNames(closure)) snapshot.set(name, UNKNOWN_SYM);
     for (const condition of collectBranchConditions(closure)) {
       walk.byCondition.set(condition, snapshot);
@@ -774,35 +827,76 @@ function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
 }
 
 /**
- * Names `root` may assign: assignment targets (including destructuring) and
+ * What `root` may write: assignment targets (including destructuring) and
  * ++/-- operands, plus declared names when `includeDeclarations` is set.
+ * Property/element targets (`o.x = 1`, `o[k]++`) record their root object.
  * Nested function bodies are skipped unless `includeNestedFunctions` is set.
  */
-function collectAssignedNames(
+function collectWrites(
   root: ts.Node,
   options: { includeDeclarations?: boolean; includeNestedFunctions?: boolean } = {},
-): Set<string> {
-  const names = new Set<string>();
+): Writes {
+  const writes: Writes = { names: new Set(), objectRoots: new Set() };
+  const addTarget = (target: ts.Node): void => {
+    for (const name of assignmentTargetNames(target)) writes.names.add(name);
+    for (const name of mutatedObjectRoots(target)) writes.objectRoots.add(name);
+  };
   const visit = (n: ts.Node): void => {
     if (n !== root && ts.isFunctionLike(n) && !options.includeNestedFunctions) {
       return;
     }
     if (ts.isBinaryExpression(n) && isAssignmentOperator(n.operatorToken.kind)) {
-      for (const name of assignmentTargetNames(n.left)) names.add(name);
+      addTarget(n.left);
     } else if (
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
       (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
-      for (const name of assignmentTargetNames(n.operand)) names.add(name);
+      addTarget(n.operand);
     } else if ((ts.isForInStatement(n) || ts.isForOfStatement(n)) && !ts.isVariableDeclarationList(n.initializer)) {
-      for (const name of assignmentTargetNames(n.initializer)) names.add(name);
+      addTarget(n.initializer);
     } else if (options.includeDeclarations && ts.isVariableDeclaration(n)) {
-      for (const name of bindingNames(n.name)) names.add(name);
+      for (const name of bindingNames(n.name)) writes.names.add(name);
     }
     ts.forEachChild(n, visit);
   };
   visit(root);
-  return names;
+  return writes;
+}
+
+/** Root identifiers of property/element targets inside an assignment target (`o.a.b`, `o[k]`, `[o.x] = …`). */
+function mutatedObjectRoots(target: ts.Node): string[] {
+  if (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) {
+    const root = accessRoot(target.expression);
+    return root ? [root] : [];
+  }
+  if (ts.isParenthesizedExpression(target) || ts.isSpreadElement(target) || ts.isSpreadAssignment(target) ||
+      ts.isNonNullExpression(target)) {
+    return mutatedObjectRoots(target.expression);
+  }
+  if (ts.isArrayLiteralExpression(target)) {
+    return target.elements.flatMap(mutatedObjectRoots);
+  }
+  if (ts.isObjectLiteralExpression(target)) {
+    return target.properties.flatMap((property) =>
+      ts.isPropertyAssignment(property) ? mutatedObjectRoots(property.initializer) : [],
+    );
+  }
+  if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return mutatedObjectRoots(target.left);
+  }
+  return [];
+}
+
+/** The identifier at the base of a property/element access chain, if any. */
+function accessRoot(expr: ts.Expression): string | undefined {
+  let current = expr;
+  while (
+    ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current) ||
+    ts.isParenthesizedExpression(current) || ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return ts.isIdentifier(current) ? current.text : undefined;
 }
 
 /** Identifiers written by an assignment target, including destructuring patterns. */
@@ -872,18 +966,18 @@ function collectBoundNames(root: ts.Node): Set<string> {
   return names;
 }
 
-/** Names assigned inside any function nested in `body`. */
-function collectClosureAssignedNames(body: ts.Block): Set<string> {
-  const names = new Set<string>();
+/** Writes inside any function nested in `body`. */
+function collectClosureWrites(body: ts.Block): Writes {
+  const writes: Writes = { names: new Set(), objectRoots: new Set() };
   const visit = (n: ts.Node): void => {
     if (ts.isFunctionLike(n)) {
-      for (const name of collectAssignedNames(n, { includeNestedFunctions: true })) names.add(name);
+      mergeWrites(writes, collectWrites(n, { includeNestedFunctions: true }));
       return;
     }
     ts.forEachChild(n, visit);
   };
   ts.forEachChild(body, visit);
-  return names;
+  return writes;
 }
 
 const SUPPORTED_MUTATION_DELTA = 1;
