@@ -11,6 +11,7 @@ import ts from "typescript";
 import fc from "fast-check";
 import { instrumentFunction, buildSymExpr, BRANCH_FUNCTION, RECORD_FUNCTION, SCOPE_EVENT_FUNCTION } from "./instrumentor";
 import type { BranchDecision, SymExpr } from "./protocol";
+import { fastCheckParameters } from "./fast-check-config.js";
 
 interface CorpusFunction {
   name: string;
@@ -482,7 +483,7 @@ describe("flow-map-program-point", () => {
           }
         },
       ),
-      { numRuns: 500 },
+      fastCheckParameters(500),
     );
   });
 
