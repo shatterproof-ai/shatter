@@ -606,7 +606,7 @@ impl Default for MetaConfig {
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// Per-strategy scoring state.
 struct StrategyState {
@@ -1223,6 +1223,9 @@ pub struct Z3SolverStrategy {
     /// just that isn't enough to avoid the solver oscillating between two
     /// variants forever — see `solver::assert_enum_param_domains`'s doc.
     enum_history: std::collections::HashMap<String, Vec<String>>,
+    /// Fingerprints of negated queries already solved, so re-observing a path
+    /// does not re-run identical Z3 queries (str-w0lgl).
+    solved_queries: HashSet<u64>,
 }
 
 impl Z3SolverStrategy {
@@ -1237,7 +1240,22 @@ impl Z3SolverStrategy {
             pending: VecDeque::new(),
             loops,
             enum_history: std::collections::HashMap::new(),
+            solved_queries: HashSet::new(),
         }
+    }
+
+    /// Fingerprint of the query "keep `solvable[..idx]`, negate `solvable[idx]`"
+    /// under the current enum history, which is the only other solver input
+    /// that varies between calls on one strategy instance.
+    fn query_fingerprint(&self, solvable: &[SymExpr], idx: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        idx.hash(&mut hasher);
+        format!("{:?}", &solvable[..=idx]).hash(&mut hasher);
+        let mut history: Vec<_> = self.enum_history.iter().collect();
+        history.sort();
+        format!("{history:?}").hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -1275,6 +1293,12 @@ impl InputStrategy for Z3SolverStrategy {
         let param_names: Vec<String> = self.param_infos.iter().map(|p| p.name.clone()).collect();
 
         for solve_idx in 0..solvable.len() {
+            if !self
+                .solved_queries
+                .insert(self.query_fingerprint(&solvable, solve_idx))
+            {
+                continue;
+            }
             // solve_for_new_path may fail (unsupported expressions, type mismatches,
             // or constraint/param misalignment). Treat all failures as "no solution".
             let enum_history = &self.enum_history;
@@ -2641,6 +2665,55 @@ mod tests {
             count += 1;
         }
         assert!(count >= 2, "expected at least 2 solved inputs, got {count}");
+    }
+
+    /// Re-observing a path whose constraints were already negated and solved
+    /// must not re-run Z3: identical queries were being re-solved 100+ times
+    /// per function, dominating scan CPU (str-w0lgl).
+    #[test]
+    fn z3_solver_does_not_resolve_identical_queries() {
+        use crate::sym_expr::{BinOpKind, ConstValue, SymExpr};
+
+        let mut s = make_z3_solver(vec![int_param("x")]);
+        let constraint = SymExpr::BinOp {
+            op: BinOpKind::Eq,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Int(5))),
+        };
+        let result: ExecuteResult = serde_json::from_value(serde_json::json!({
+            "return_value": 0,
+            "branch_path": [{
+                "branch_id": 1,
+                "line": 10,
+                "taken": true,
+                "constraint": { "kind": "expr", "expr": constraint }
+            }],
+            "lines_executed": [10],
+            "path_constraints": [],
+            "performance": {
+                "wall_time_ms": 1.0,
+                "cpu_time_us": 0,
+                "heap_used_bytes": 0,
+                "heap_allocated_bytes": 0
+            }
+        }))
+        .expect("valid ExecuteResult JSON");
+
+        s.feedback(&[Value::from(5)], &result, false);
+        let mut first = 0;
+        while s.next(&empty_ctx()).is_some() {
+            first += 1;
+        }
+        assert_eq!(first, 1, "first observation solves the negated branch once");
+
+        s.feedback(&[Value::from(5)], &result, false);
+        assert!(
+            s.next(&empty_ctx()).is_none(),
+            "an identical query must not be solved and queued again"
+        );
     }
 
     mod z3_solver_proptests {
