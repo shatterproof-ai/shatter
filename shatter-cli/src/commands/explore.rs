@@ -36,6 +36,7 @@ struct FuncExploreOutcome {
     result: Result<shatter_core::explorer::ObservationOutput, String>,
     wall_time: Duration,
     genetic_config: GeneticConfig,
+    provenance: ResultProvenance,
 }
 
 /// Result of a single batch (one slice of iterations for one function), returned
@@ -67,15 +68,28 @@ const EXPLORE_ARTIFACT_VERSION: u32 = 2;
 struct PersistedExploreState {
     covered_paths: Vec<u64>,
     discovery_inputs: Vec<Vec<serde_json::Value>>,
+    /// Deep fingerprint of the function when the state was written. Legacy
+    /// sidecars lack it and are discarded (str-49drv.10).
+    #[serde(default)]
+    deep_fingerprint: Option<String>,
+    /// Result-affecting options in force when the state was written.
+    #[serde(default)]
+    resume_key: Option<ResumeKey>,
 }
 
 impl PersistedExploreState {
-    fn from_explore_state(state: &shatter_core::orchestrator::ExploreState) -> Self {
+    fn from_explore_state(
+        state: &shatter_core::orchestrator::ExploreState,
+        deep_fingerprint: Option<&str>,
+        resume_key: &ResumeKey,
+    ) -> Self {
         let mut paths: Vec<u64> = state.covered_paths.iter().copied().collect();
         paths.sort_unstable();
         Self {
             covered_paths: paths,
             discovery_inputs: state.discovery_inputs.clone(),
+            deep_fingerprint: deep_fingerprint.map(str::to_string),
+            resume_key: Some(resume_key.clone()),
         }
     }
 
@@ -84,6 +98,172 @@ impl PersistedExploreState {
             covered_paths: self.covered_paths.into_iter().collect(),
             discovery_inputs: self.discovery_inputs,
         }
+    }
+}
+
+/// Explorer label stored with results: `"random"` or `"concolic"`.
+const EXPLORER_RANDOM: &str = "random";
+const EXPLORER_CONCOLIC: &str = "concolic";
+
+/// Everything besides the source that decides whether a prior explore result
+/// may stand in for a fresh run (str-49drv.10): the explorer mode plus the
+/// budget / seed / mock / solver options and the engine version.
+///
+/// `options` keeps the individual fields so a rejection can name the first
+/// one that differs; `options_hash` is the stable SHA-256 over their canonical
+/// JSON. Output-only flags (`-o`, `--format`, `--spec-out`) and `--no-cache`
+/// are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ResumeKey {
+    explorer: String,
+    options_hash: String,
+    options: std::collections::BTreeMap<String, String>,
+}
+
+impl ResumeKey {
+    fn new(explorer: &str, options: std::collections::BTreeMap<String, String>) -> Self {
+        use sha2::{Digest, Sha256};
+        let canonical = serde_json::to_string(&options).unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(explorer.as_bytes());
+        hasher.update([0]);
+        hasher.update(canonical.as_bytes());
+        Self {
+            explorer: explorer.to_string(),
+            options_hash: hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            options,
+        }
+    }
+}
+
+/// Result-affecting explore options for one function, as `name -> value`
+/// strings for [`ResumeKey`]. Cache-derived seeds and pool contents are left
+/// out on purpose: every run rewrites them, so including them would make
+/// resume impossible. `observer_pool` (throughput only) and
+/// `max_executions_override` (always `None` here) are excluded deliberately.
+struct ResumeKeyInputs<'a> {
+    explore_config: &'a ExploreConfig,
+    user_candidate_inputs: Vec<Vec<serde_json::Value>>,
+    use_concolic: bool,
+    solver_timeout_secs: Option<u64>,
+    mcdc: bool,
+    refine_budget: usize,
+    fuzz: String,
+    no_seeds: bool,
+}
+
+fn build_resume_key(inputs: &ResumeKeyInputs<'_>) -> ResumeKey {
+    let cfg = inputs.explore_config;
+    let mut options = std::collections::BTreeMap::new();
+    let mut put = |name: &str, value: String| {
+        options.insert(name.to_string(), value);
+    };
+    put("engine_version", env!("CARGO_PKG_VERSION").to_string());
+    put("max_iterations", format!("{:?}", cfg.max_iterations));
+    put("timeout_explore", format!("{:?}", cfg.timeout_explore));
+    put("seed", format!("{:?}", cfg.seed));
+    put(
+        "mocks",
+        serde_json::to_string(&cfg.mocks).unwrap_or_default(),
+    );
+    put("mock_params", format!("{:?}", cfg.mock_params));
+    put("setup_file", format!("{:?}", cfg.setup_file));
+    put("setup_level", format!("{:?}", cfg.setup_level));
+    put(
+        "candidate_inputs",
+        serde_json::to_string(&inputs.user_candidate_inputs).unwrap_or_default(),
+    );
+    put("value_sources", format!("{:?}", cfg.value_sources));
+    put("execution_profile", format!("{:?}", cfg.execution_profile));
+    put("loop_buckets", format!("{:?}", cfg.loop_buckets));
+    put("shrink_budget", format!("{:?}", cfg.shrink_budget));
+    put("isolation", format!("{:?}", cfg.isolation));
+    put("capture_side_effects", cfg.capture_side_effects.to_string());
+    put("planner", format!("{:?}", cfg.planner));
+    put("meta_config", format!("{:?}", cfg.meta_config));
+    put("no_seeds", inputs.no_seeds.to_string());
+    put("solver_timeout", format!("{:?}", inputs.solver_timeout_secs));
+    put("mcdc", inputs.mcdc.to_string());
+    put("refine_budget", inputs.refine_budget.to_string());
+    put("fuzz", inputs.fuzz.clone());
+    let explorer = if inputs.use_concolic {
+        EXPLORER_CONCOLIC
+    } else {
+        EXPLORER_RANDOM
+    };
+    ResumeKey::new(explorer, options)
+}
+
+/// Provenance of a function's result: the key it was produced under and
+/// whether it was replayed from a prior run rather than explored now.
+#[derive(Debug, Clone)]
+struct ResultProvenance {
+    key: ResumeKey,
+    resumed: bool,
+}
+
+impl ResultProvenance {
+    fn fresh(key: ResumeKey) -> Self {
+        Self {
+            key,
+            resumed: false,
+        }
+    }
+
+    fn is_concolic(&self) -> bool {
+        self.key.explorer == EXPLORER_CONCOLIC
+    }
+}
+
+/// Shared full/partial resume validation: `Ok(())` when a prior result stored
+/// under `stored_fp`/`stored_key` may be reused for the current run, otherwise
+/// `Err` naming the first differing field (fingerprint, explorer, or option).
+/// Missing stored data (legacy artifacts) is a mismatch.
+fn validate_resume(
+    stored_fp: Option<&str>,
+    stored_key: Option<&ResumeKey>,
+    current_fp: Option<&str>,
+    current_key: &ResumeKey,
+) -> Result<(), String> {
+    let stored_fp = stored_fp.ok_or("fingerprint: no stored fingerprint (legacy state)")?;
+    let current_fp = current_fp.ok_or("fingerprint: no current fingerprint")?;
+    if stored_fp != current_fp {
+        return Err("fingerprint: source changed since the prior run".to_string());
+    }
+    let stored = stored_key.ok_or("options: no stored options (legacy state)")?;
+    if stored.explorer != current_key.explorer {
+        return Err(format!(
+            "explorer: {} -> {}",
+            stored.explorer, current_key.explorer
+        ));
+    }
+    if stored.options_hash == current_key.options_hash {
+        return Ok(());
+    }
+    let differing = current_key
+        .options
+        .keys()
+        .chain(stored.options.keys())
+        .find(|k| stored.options.get(*k) != current_key.options.get(*k));
+    match differing {
+        Some(k) => Err(format!(
+            "option {k}: {} -> {}",
+            stored.options.get(k).map_or("<unset>", String::as_str),
+            current_key.options.get(k).map_or("<unset>", String::as_str),
+        )),
+        None => Err("options: hash differs".to_string()),
+    }
+}
+
+/// Log why a prior full or partial result was reused or rejected.
+fn log_resume_decision(func: &str, kind: &str, verdict: &Result<(), String>) {
+    match verdict {
+        Ok(()) => log::info!("[resume] {func}: reusing prior {kind} result (fingerprint and options match)"),
+        Err(reason) => log::info!("[resume] {func}: not reusing prior {kind} result: {reason}"),
     }
 }
 
@@ -381,6 +561,11 @@ struct ExploreFunctionArtifactWrite<'a> {
     end_line: u32,
     wall_time_ms: u64,
     mock_symbols: &'a [String],
+    /// Explorer that produced the stored observation (`random`/`concolic`),
+    /// preserved across resumes so reports keep the original label.
+    explorer: &'a str,
+    /// True when the observation was replayed from a prior run.
+    resumed: bool,
     analysis: &'a shatter_core::protocol::FunctionAnalysis,
     #[serde(skip_serializing_if = "Option::is_none")]
     observation: Option<&'a shatter_core::explorer::ObservationOutput>,
@@ -401,6 +586,12 @@ struct ExploreFunctionArtifact {
     end_line: u32,
     wall_time_ms: u64,
     mock_symbols: Vec<String>,
+    /// Absent in artifacts written before str-49drv.10; readers then fall back
+    /// to the current run's explorer flag.
+    #[serde(default)]
+    explorer: Option<String>,
+    #[serde(default)]
+    resumed: bool,
     analysis: shatter_core::protocol::FunctionAnalysis,
     observation: Option<shatter_core::explorer::ObservationOutput>,
     error: Option<String>,
@@ -492,6 +683,11 @@ struct ExploreSummaryEntry {
     /// body (or any transitive callee) changed between runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deep_fingerprint: Option<String>,
+    /// Explorer mode and result-affecting options the entry was produced
+    /// under. Together with `deep_fingerprint` this is the resume key
+    /// (str-49drv.10); legacy entries without it are never resumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume_key: Option<ResumeKey>,
     /// Source-line span for the analyzed function (`end_line - start_line + 1`).
     /// Populated when a `FunctionAnalysis` is in scope at construction time;
     /// `0` for entries seeded without analyzer metadata. Used by the Go
@@ -543,6 +739,7 @@ impl ExploreSummaryEntry {
             artifact: Some(artifact_relpath),
             reason,
             deep_fingerprint,
+            resume_key: None,
             line_count: 0,
             covered_lines: 0,
         }
@@ -568,9 +765,16 @@ impl ExploreSummaryEntry {
             artifact: None,
             reason: Some(reason_text),
             deep_fingerprint,
+            resume_key: None,
             line_count: 0,
             covered_lines: 0,
         }
+    }
+
+    /// Attach the resume key the outcome was produced under (str-49drv.10).
+    fn with_resume_key(mut self, key: ResumeKey) -> Self {
+        self.resume_key = Some(key);
+        self
     }
 
     /// Attach a source-line span. Returns the entry by value so the
@@ -968,6 +1172,9 @@ struct FuncWorkItem {
     /// Pre-computed known uncovered targets from static analysis.
     /// Empty means the function has no branch targets to explore.
     known_targets: Vec<shatter_core::coverage_metrics::KnownTarget>,
+    /// Explorer mode + options the result will be produced under; the resume
+    /// key compared against prior summaries and sidecars (str-49drv.10).
+    resume_key: ResumeKey,
 }
 
 /// All per-target state produced by the analyze + prepare phase. Held across
@@ -1158,6 +1365,8 @@ fn write_explore_artifact(
         end_line: outcome.func.end_line,
         wall_time_ms: outcome.wall_time.as_millis() as u64,
         mock_symbols: &outcome.mock_symbols,
+        explorer: &outcome.provenance.key.explorer,
+        resumed: outcome.provenance.resumed,
         analysis: &outcome.func,
         observation: outcome.result.as_ref().ok(),
         error: outcome.result.as_ref().err().map(String::as_str),
@@ -1238,11 +1447,12 @@ fn clean_target_artifacts(root: &Path, file: &str) {
 
 /// Try to resume a completed function from a prior explore run.
 ///
-/// Returns the loaded `ObservationOutput` and wall time if **all** of the
-/// following hold:
+/// Returns the loaded `ObservationOutput`, wall time and the key the prior
+/// result was produced under if **all** of the following hold:
 /// 1. The function appears in the prior summary with status "completed".
-/// 2. The summary entry carries a `deep_fingerprint` that matches the current
-///    deep fingerprint (source + transitive callees unchanged).
+/// 2. [`validate_resume`] accepts the entry: the deep fingerprint matches
+///    (source + transitive callees unchanged) and the stored explorer mode and
+///    result-affecting options equal the current ones (str-49drv.10).
 /// 3. The artifact file referenced by the summary entry still exists on disk
 ///    and parses successfully.
 /// 4. The artifact contains an `observation` (not just an error).
@@ -1253,24 +1463,35 @@ fn try_resume_function(
     func: &shatter_core::protocol::FunctionAnalysis,
     deep_fingerprints: &HashMap<String, String>,
     prior_summary: Option<&ExploreSummary>,
-) -> Option<(shatter_core::explorer::ObservationOutput, Duration)> {
+    current_key: &ResumeKey,
+) -> Option<(
+    shatter_core::explorer::ObservationOutput,
+    Duration,
+    ResumeKey,
+)> {
     let summary = prior_summary?;
     let entry = summary
         .functions
         .iter()
         .find(|e| e.function_name == func.name && e.status == "completed")?;
-    // Require fingerprint match — legacy summaries without fingerprints
-    // gracefully cause re-exploration.
-    let stored_fp = entry.deep_fingerprint.as_deref()?;
-    let current_fp = deep_fingerprints.get(&func.name)?;
-    if stored_fp != current_fp {
-        return None;
-    }
+    let verdict = validate_resume(
+        entry.deep_fingerprint.as_deref(),
+        entry.resume_key.as_ref(),
+        deep_fingerprints.get(&func.name).map(String::as_str),
+        current_key,
+    );
+    log_resume_decision(&func.name, "full", &verdict);
+    verdict.ok()?;
     let artifact_relpath = entry.artifact.as_deref()?;
     let artifact_path = artifact_root.join(artifact_relpath);
     let artifact = read_explore_artifact(&artifact_path).ok()?;
     let observation = artifact.observation?;
-    Some((observation, Duration::from_millis(artifact.wall_time_ms)))
+    let stored_key = entry.resume_key.clone()?;
+    Some((
+        observation,
+        Duration::from_millis(artifact.wall_time_ms),
+        stored_key,
+    ))
 }
 
 /// Path to the per-function resume-state sidecar, stored alongside the
@@ -1290,27 +1511,43 @@ fn resume_state_path(
 
 /// Persist the orchestrator's resume state for a partially-explored function.
 /// Called after each batch so a subsequent run can skip path rediscovery.
+/// The sidecar records the function's deep fingerprint and the resume key so
+/// [`read_resume_state`] can reject it after a source or option change.
 fn write_resume_state(
     root: &Path,
     file: &str,
     func: &shatter_core::protocol::FunctionAnalysis,
     state: &shatter_core::orchestrator::ExploreState,
+    deep_fingerprint: Option<&str>,
+    resume_key: &ResumeKey,
 ) -> Result<(), String> {
-    let persisted = PersistedExploreState::from_explore_state(state);
+    let persisted = PersistedExploreState::from_explore_state(state, deep_fingerprint, resume_key);
     let path = resume_state_path(root, file, func);
     write_artifact_json(&path, &persisted)
 }
 
 /// Load a persisted resume state for a partially-explored function.
-/// Returns `None` on any error (missing file, corrupt JSON, etc.).
+/// Returns `None` on any error (missing file, corrupt JSON, etc.) and when
+/// [`validate_resume`] rejects the sidecar (legacy sidecar, changed source,
+/// or a different explorer mode / option set); the reason is logged.
 fn read_resume_state(
     root: &Path,
     file: &str,
     func: &shatter_core::protocol::FunctionAnalysis,
+    current_fp: Option<&str>,
+    current_key: &ResumeKey,
 ) -> Option<shatter_core::orchestrator::ExploreState> {
     let path = resume_state_path(root, file, func);
     let json = std::fs::read_to_string(&path).ok()?;
     let persisted: PersistedExploreState = serde_json::from_str(&json).ok()?;
+    let verdict = validate_resume(
+        persisted.deep_fingerprint.as_deref(),
+        persisted.resume_key.as_ref(),
+        current_fp,
+        current_key,
+    );
+    log_resume_decision(&func.name, "partial", &verdict);
+    verdict.ok()?;
     Some(persisted.into_explore_state())
 }
 
@@ -3554,7 +3791,6 @@ struct AssemblyOpts<'a> {
     show_spec: bool,
     spec_as_json: bool,
     detect_invariants: bool,
-    use_concolic: bool,
     solver_timeout_ms: Option<u64>,
     show_perf: bool,
     use_color: bool,
@@ -3611,6 +3847,7 @@ fn assemble_function_result(
     mock_symbols: &[String],
     ga_stats: Option<GeneticStats>,
     opts: &AssemblyOpts<'_>,
+    provenance: &ResultProvenance,
     acc: &mut AssemblyAccumulator,
 ) {
     // Accumulate stats for footer.
@@ -3677,7 +3914,8 @@ fn assemble_function_result(
             crate::render::ExploreRenderOpts {
                 location: Some(&location),
                 mocks_used: mock_symbols,
-                is_concolic: opts.use_concolic,
+                is_concolic: provenance.is_concolic(),
+                resumed: provenance.resumed,
             },
         );
         let md = {
@@ -3709,16 +3947,22 @@ fn assemble_function_result(
             if !mock_symbols.is_empty() {
                 eprintln!("  Mocks used: {}", mock_symbols.join(", "));
             }
-            if opts.use_concolic {
+            if provenance.is_concolic() {
                 eprintln!("  Explorer: concolic (Z3-backed)");
+            }
+            if provenance.resumed {
+                eprintln!("  {}", crate::render::RESUMED_NOTE);
             }
         } else if should_print_report {
             print!("{report}");
             if !mock_symbols.is_empty() {
                 println!("  Mocks used: {}", mock_symbols.join(", "));
             }
-            if opts.use_concolic {
+            if provenance.is_concolic() {
                 println!("  Explorer: concolic (Z3-backed)");
+            }
+            if provenance.resumed {
+                println!("  {}", crate::render::RESUMED_NOTE);
             }
         }
     }
@@ -3955,7 +4199,6 @@ fn finalize_explore(
         show_spec: show_spec || detect_invariants || bundle_sink,
         spec_as_json: spec_as_json || bundle_sink,
         detect_invariants,
-        use_concolic,
         solver_timeout_ms: None,
         show_perf,
         use_color,
@@ -4041,6 +4284,19 @@ fn finalize_explore(
         };
 
         let wall_time = Duration::from_millis(artifact.wall_time_ms);
+        // Artifacts carry the explorer that produced them; only legacy
+        // artifacts fall back to the current run's flag.
+        let provenance = ResultProvenance {
+            key: ResumeKey::new(
+                artifact.explorer.as_deref().unwrap_or(if use_concolic {
+                    EXPLORER_CONCOLIC
+                } else {
+                    EXPLORER_RANDOM
+                }),
+                Default::default(),
+            ),
+            resumed: artifact.resumed,
+        };
 
         assemble_function_result(
             &artifact.analysis,
@@ -4050,6 +4306,7 @@ fn finalize_explore(
             &artifact.mock_symbols,
             None, // GA stats not available from artifacts
             &opts,
+            &provenance,
             &mut acc,
         );
     }
@@ -4676,6 +4933,8 @@ pub(crate) async fn run_explore(
     let mut explore_states: HashMap<usize, shatter_core::orchestrator::ExploreState> =
         HashMap::new();
     let mut resumed_total: usize = 0;
+    // Keys of results replayed from a prior run, by work index (str-49drv.10).
+    let mut resumed_keys: HashMap<usize, ResumeKey> = HashMap::new();
 
     for target in &parsed {
         let file_str = target.file.to_string_lossy();
@@ -5347,6 +5606,20 @@ pub(crate) async fn run_explore(
             let _ = &shatter_configs; // suppress unused warning
 
             let known_targets = shatter_core::coverage_metrics::discover_known_targets(func);
+            let resume_key = build_resume_key(&ResumeKeyInputs {
+                explore_config: &explore_config,
+                user_candidate_inputs: resolved
+                    .candidate_inputs
+                    .iter()
+                    .map(|input| input.args.clone())
+                    .collect(),
+                use_concolic,
+                solver_timeout_secs: solver_timeout,
+                mcdc,
+                refine_budget,
+                fuzz: format!("{:?}", resolved.fuzz),
+                no_seeds,
+            });
             work_items.push(FuncWorkItem {
                 func: func.clone(),
                 explore_config,
@@ -5360,6 +5633,7 @@ pub(crate) async fn run_explore(
                 project_root_str: project_root_str.clone(),
                 target_idx: prepared_targets.len(),
                 known_targets,
+                resume_key,
             });
         }
 
@@ -5402,12 +5676,14 @@ pub(crate) async fn run_explore(
             func_first_error.push(None);
 
             // Try to resume from a prior completed artifact.
-            if let Some((observation, wall_time)) = try_resume_function(
+            if let Some((observation, wall_time, prior_key)) = try_resume_function(
                 &artifact_root,
                 &item.func,
                 &deep_fingerprints,
                 prior_summary.as_ref(),
+                &item.resume_key,
             ) {
+                resumed_keys.insert(work_index, prior_key);
                 accumulators[work_index].merge(Ok(observation));
                 func_wall_time[work_index] = wall_time;
                 target_resumed_count += 1;
@@ -5425,7 +5701,14 @@ pub(crate) async fn run_explore(
             // str-060a: `--clean` already removed the target artifact directory
             // above, but keep the explicit gate so future code paths that add
             // new resume sources can't silently bypass `--clean`.
-            if !clean && let Some(state) = read_resume_state(&artifact_root, &file_str, &item.func)
+            if !clean
+                && let Some(state) = read_resume_state(
+                    &artifact_root,
+                    &file_str,
+                    &item.func,
+                    deep_fingerprints.get(&item.func.name).map(String::as_str),
+                    &item.resume_key,
+                )
             {
                 let paths_count = state.covered_paths.len();
                 explore_states.insert(work_index, state);
@@ -5787,6 +6070,10 @@ pub(crate) async fn run_explore(
                     &pt.file_str,
                     &work_items[work_index].func,
                     &state,
+                    pt.deep_fingerprints
+                        .get(&work_items[work_index].func.name)
+                        .map(String::as_str),
+                    &work_items[work_index].resume_key,
                 )
             {
                 log::warn!(
@@ -6052,6 +6339,10 @@ pub(crate) async fn run_explore(
             result,
             wall_time: func_wall_time[work_index],
             genetic_config: work_items[work_index].genetic_config.clone(),
+            provenance: match resumed_keys.remove(&work_index) {
+                Some(key) => ResultProvenance { key, resumed: true },
+                None => ResultProvenance::fresh(work_items[work_index].resume_key.clone()),
+            },
         };
         outcomes_by_target
             .entry(target_idx)
@@ -6163,7 +6454,8 @@ pub(crate) async fn run_explore(
                     entry_fingerprint,
                 )
                 .with_line_count(entry_line_count)
-                .with_covered_lines(entry_covered_lines),
+                .with_covered_lines(entry_covered_lines)
+                .with_resume_key(outcome.provenance.key.clone()),
                 None => {
                     let inferred = match (&outcome.result, summary_status) {
                         (Ok(_), _) => UnavailableReason::WriteFailed,
@@ -6197,6 +6489,7 @@ pub(crate) async fn run_explore(
                     )
                     .with_line_count(entry_line_count)
                     .with_covered_lines(entry_covered_lines)
+                    .with_resume_key(outcome.provenance.key.clone())
                 }
             };
             match outcome_status_from_entry(&bucket_entry) {
@@ -6501,7 +6794,6 @@ pub(crate) async fn run_explore(
                         show_spec,
                         spec_as_json,
                         detect_invariants,
-                        use_concolic,
                         solver_timeout_ms,
                         show_perf,
                         use_color,
@@ -6524,6 +6816,7 @@ pub(crate) async fn run_explore(
                         mock_symbols,
                         ga_stats,
                         &assembly_opts,
+                        &outcome.provenance,
                         &mut func_acc,
                     );
                     total_paths += func_acc.total_paths;
@@ -7429,7 +7722,21 @@ mod tests {
             result: Ok(sample_observation()),
             wall_time: Duration::from_millis(25),
             genetic_config: GeneticConfig::default(),
+            provenance: ResultProvenance::fresh(test_key()),
         }
+    }
+
+    fn test_key() -> ResumeKey {
+        test_key_with(EXPLORER_RANDOM, "Some(5)")
+    }
+
+    fn test_key_with(explorer: &str, max_iterations: &str) -> ResumeKey {
+        ResumeKey::new(
+            explorer,
+            [("max_iterations".to_string(), max_iterations.to_string())]
+                .into_iter()
+                .collect(),
+        )
     }
 
     // --- ExploreResultAccumulator unit tests (str-b2my.6) ---
@@ -8348,6 +8655,7 @@ mod tests {
                     artifact: Some("src_user.ts/00012_load.json".to_string()),
                     reason: None,
                     deep_fingerprint: None,
+                    resume_key: None,
                     line_count: 0,
                     covered_lines: 0,
                 },
@@ -8357,6 +8665,7 @@ mod tests {
                     artifact: Some("src_user.ts/00025_save.json".to_string()),
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: None,
+                    resume_key: None,
                     line_count: 0,
                     covered_lines: 0,
                 },
@@ -8432,6 +8741,7 @@ mod tests {
                     artifact: Some(artifact_relpath),
                     reason: None,
                     deep_fingerprint: None,
+                    resume_key: None,
                     line_count: 0,
                     covered_lines: 0,
                 },
@@ -8441,6 +8751,7 @@ mod tests {
                     artifact: None,
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: None,
+                    resume_key: None,
                     line_count: 0,
                     covered_lines: 0,
                 },
@@ -8450,6 +8761,7 @@ mod tests {
                     artifact: None,
                     reason: Some("unexecutable parameter types".to_string()),
                     deep_fingerprint: None,
+                    resume_key: None,
                     line_count: 0,
                     covered_lines: 0,
                 },
@@ -8520,6 +8832,7 @@ mod tests {
                 artifact: None,
                 reason: Some("unexecutable parameter types".to_string()),
                 deep_fingerprint: None,
+                resume_key: None,
                 line_count: 0,
                 covered_lines: 0,
             }],
@@ -8702,8 +9015,9 @@ mod tests {
     // --- Resume logic tests (str-b2my.15) ---
 
     use super::{
-        PersistedExploreState, cleanup_resume_state, read_explore_summary, read_resume_state,
-        resume_state_path, try_resume_function, write_resume_state,
+        EXPLORER_CONCOLIC, EXPLORER_RANDOM, PersistedExploreState, ResultProvenance, ResumeKey,
+        cleanup_resume_state, read_explore_summary, read_resume_state, resume_state_path,
+        try_resume_function, validate_resume, write_resume_state,
     };
 
     #[test]
@@ -8715,7 +9029,7 @@ mod tests {
                 vec![serde_json::json!(null)],
             ],
         };
-        let persisted = PersistedExploreState::from_explore_state(&original);
+        let persisted = PersistedExploreState::from_explore_state(&original, Some("fp"), &test_key());
         // covered_paths should be sorted for deterministic serialization
         assert_eq!(persisted.covered_paths, vec![7, 42, 99]);
 
@@ -8746,6 +9060,7 @@ mod tests {
                     artifact: Some("src_user.ts/00012_load.json".to_string()),
                     reason: None,
                     deep_fingerprint: Some("abc123".to_string()),
+                    resume_key: None,
                     line_count: 0,
                     covered_lines: 0,
                 },
@@ -8755,6 +9070,7 @@ mod tests {
                     artifact: None,
                     reason: Some("timeout".to_string()),
                     deep_fingerprint: Some("def456".to_string()),
+                    resume_key: None,
                     line_count: 0,
                     covered_lines: 0,
                 },
@@ -8839,6 +9155,7 @@ mod tests {
                 artifact: Some(artifact_relpath),
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
+                resume_key: Some(test_key()),
                 line_count: 0,
                 covered_lines: 0,
             }],
@@ -8848,9 +9165,9 @@ mod tests {
         let mut deep_fps = std::collections::HashMap::new();
         deep_fps.insert(func.name.clone(), "fp-abc".to_string());
 
-        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary), &test_key());
         assert!(result.is_some(), "should resume with matching fingerprint");
-        let (obs, wall_time) = result.unwrap();
+        let (obs, wall_time, _prior_key) = result.unwrap();
         assert_eq!(obs.function_name, "load/user");
         assert_eq!(wall_time, Duration::from_millis(25));
     }
@@ -8875,6 +9192,7 @@ mod tests {
                 artifact: Some("src_user.ts/00012_load_user.json".to_string()),
                 reason: None,
                 deep_fingerprint: Some("fp-old".to_string()),
+                resume_key: None,
                 line_count: 0,
                 covered_lines: 0,
             }],
@@ -8884,7 +9202,7 @@ mod tests {
         let mut deep_fps = std::collections::HashMap::new();
         deep_fps.insert(func.name.clone(), "fp-new".to_string());
 
-        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary), &test_key());
         assert!(
             result.is_none(),
             "should not resume with mismatched fingerprint"
@@ -8908,6 +9226,7 @@ mod tests {
                 artifact: Some("src_user.ts/00012_load_user.json".to_string()),
                 reason: None,
                 deep_fingerprint: None, // legacy summary
+                resume_key: None,
                 line_count: 0,
                 covered_lines: 0,
             }],
@@ -8919,7 +9238,7 @@ mod tests {
         deep_fps.insert(func.name.clone(), "fp-abc".to_string());
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary), &test_key());
         assert!(
             result.is_none(),
             "should not resume without stored fingerprint"
@@ -8943,6 +9262,7 @@ mod tests {
                 artifact: None,
                 reason: Some("timeout".to_string()),
                 deep_fingerprint: Some("fp-abc".to_string()),
+                resume_key: None,
                 line_count: 0,
                 covered_lines: 0,
             }],
@@ -8954,7 +9274,7 @@ mod tests {
         deep_fps.insert(func.name.clone(), "fp-abc".to_string());
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary), &test_key());
         assert!(result.is_none(), "should not resume failed function");
     }
 
@@ -8975,6 +9295,7 @@ mod tests {
                 artifact: Some("src_user.ts/00012_nonexistent.json".to_string()),
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
+                resume_key: None,
                 line_count: 0,
                 covered_lines: 0,
             }],
@@ -8986,7 +9307,7 @@ mod tests {
         deep_fps.insert(func.name.clone(), "fp-abc".to_string());
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary));
+        let result = try_resume_function(dir.path(), &func, &deep_fps, Some(&summary), &test_key());
         assert!(
             result.is_none(),
             "should not resume when artifact file missing"
@@ -9009,7 +9330,7 @@ mod tests {
             covered_paths: [1, 2].into_iter().collect(),
             discovery_inputs: vec![],
         };
-        write_resume_state(dir.path(), "src/user.ts", &func, &state).expect("write state");
+        write_resume_state(dir.path(), "src/user.ts", &func, &state, Some("fp"), &test_key()).expect("write state");
 
         let artifacts = load_explore_artifacts(dir.path()).expect("load");
         assert_eq!(artifacts.len(), 1, "resume-state file should be skipped");
@@ -9028,8 +9349,8 @@ mod tests {
             ],
         };
 
-        write_resume_state(dir.path(), "src/user.ts", &func, &state).expect("write");
-        let loaded = read_resume_state(dir.path(), "src/user.ts", &func);
+        write_resume_state(dir.path(), "src/user.ts", &func, &state, Some("fp"), &test_key()).expect("write");
+        let loaded = read_resume_state(dir.path(), "src/user.ts", &func, Some("fp"), &test_key());
         assert!(loaded.is_some(), "should load resume state");
         let loaded = loaded.unwrap();
         assert_eq!(loaded.covered_paths, state.covered_paths);
@@ -9068,6 +9389,7 @@ mod tests {
                 artifact: Some("src_user.ts/00012_load.json".to_string()),
                 reason: None,
                 deep_fingerprint: Some("fp-abc".to_string()),
+                resume_key: None,
                 line_count: 0,
                 covered_lines: 0,
             }],
@@ -9078,7 +9400,7 @@ mod tests {
         // Pre-populate a per-function resume-state sidecar.
         let func = sample_func_analysis();
         let state = shatter_core::orchestrator::ExploreState::default();
-        write_resume_state(root, file, &func, &state).expect("write resume state");
+        write_resume_state(root, file, &func, &state, Some("fp"), &test_key()).expect("write resume state");
 
         // Sanity: prior artifacts visible before clean.
         let target_dir = target_artifact_dir(root, file);
@@ -9088,7 +9410,7 @@ mod tests {
             "prior summary must be loadable before --clean",
         );
         assert!(
-            read_resume_state(root, file, &func).is_some(),
+            read_resume_state(root, file, &func, Some("fp"), &test_key()).is_some(),
             "resume state must be loadable before --clean",
         );
 
@@ -9105,7 +9427,7 @@ mod tests {
             "prior summary must not survive --clean",
         );
         assert!(
-            read_resume_state(root, file, &func).is_none(),
+            read_resume_state(root, file, &func, Some("fp"), &test_key()).is_none(),
             "resume-state sidecar must not survive --clean",
         );
     }
@@ -9178,12 +9500,137 @@ mod tests {
         let func = sample_func_analysis();
         let state = shatter_core::orchestrator::ExploreState::default();
 
-        write_resume_state(dir.path(), "src/user.ts", &func, &state).expect("write");
+        write_resume_state(dir.path(), "src/user.ts", &func, &state, Some("fp"), &test_key()).expect("write");
         let path = resume_state_path(dir.path(), "src/user.ts", &func);
         assert!(path.exists(), "sidecar should exist before cleanup");
 
         cleanup_resume_state(dir.path(), "src/user.ts", &func);
         assert!(!path.exists(), "sidecar should be removed after cleanup");
+    }
+
+    fn resume_summary(func: &str, artifact: &str, key: Option<ResumeKey>) -> ExploreSummary {
+        ExploreSummary {
+            version: EXPLORE_ARTIFACT_VERSION,
+            status: "completed".to_string(),
+            file: "src/user.ts".to_string(),
+            total_functions: 1,
+            completed: 1,
+            functions: vec![ExploreSummaryEntry {
+                function_name: func.to_string(),
+                status: "completed".to_string(),
+                artifact: Some(artifact.to_string()),
+                reason: None,
+                deep_fingerprint: Some("fp-abc".to_string()),
+                resume_key: key,
+                line_count: 0,
+                covered_lines: 0,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn try_resume_rejects_changed_explorer_and_budget_and_legacy_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        write_explore_artifact(dir.path(), "src/user.ts", &sample_outcome()).expect("artifact");
+        let relpath = super::explore_artifact_path(dir.path(), "src/user.ts", &func)
+            .strip_prefix(dir.path())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let deep_fps: std::collections::HashMap<String, String> =
+            [(func.name.clone(), "fp-abc".to_string())].into();
+        let resume = |stored: Option<ResumeKey>, current: &ResumeKey| {
+            let summary = resume_summary(&func.name, &relpath, stored);
+            try_resume_function(dir.path(), &func, &deep_fps, Some(&summary), current)
+        };
+
+        let random5 = test_key();
+        assert!(resume(Some(random5.clone()), &random5).is_some());
+        assert!(
+            resume(Some(random5.clone()), &test_key_with(EXPLORER_CONCOLIC, "Some(5)")).is_none(),
+            "explorer change must re-explore"
+        );
+        assert!(
+            resume(Some(random5.clone()), &test_key_with(EXPLORER_RANDOM, "Some(7)")).is_none(),
+            "budget change must re-explore"
+        );
+        assert!(resume(None, &random5).is_none(), "legacy entry must re-explore");
+    }
+
+    #[test]
+    fn resumed_result_keeps_prior_explorer_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        let mut outcome = sample_outcome();
+        outcome.provenance = ResultProvenance::fresh(test_key_with(EXPLORER_CONCOLIC, "Some(5)"));
+        write_explore_artifact(dir.path(), "src/user.ts", &outcome).expect("artifact");
+        let path = super::explore_artifact_path(dir.path(), "src/user.ts", &func);
+        let artifact = super::read_explore_artifact(&path).expect("read artifact");
+        assert_eq!(artifact.explorer.as_deref(), Some(EXPLORER_CONCOLIC));
+        assert!(!artifact.resumed);
+    }
+
+    #[test]
+    fn read_resume_state_rejects_stale_fingerprint_mode_change_and_legacy_sidecars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let func = sample_func_analysis();
+        let state = shatter_core::orchestrator::ExploreState {
+            covered_paths: [1].into_iter().collect(),
+            discovery_inputs: vec![],
+        };
+        let concolic = test_key_with(EXPLORER_CONCOLIC, "Some(5)");
+        write_resume_state(dir.path(), "src/user.ts", &func, &state, Some("fp"), &concolic)
+            .expect("write");
+        let read = |fp: Option<&str>, key: &ResumeKey| {
+            read_resume_state(dir.path(), "src/user.ts", &func, fp, key)
+        };
+        assert!(read(Some("fp"), &concolic).is_some());
+        assert!(read(Some("edited"), &concolic).is_none(), "source edit");
+        assert!(read(Some("fp"), &test_key()).is_none(), "concolic -> random");
+
+        let legacy = serde_json::json!({"covered_paths": [1], "discovery_inputs": []});
+        std::fs::write(
+            resume_state_path(dir.path(), "src/user.ts", &func),
+            legacy.to_string(),
+        )
+        .expect("write legacy");
+        assert!(read(Some("fp"), &concolic).is_none(), "legacy sidecar");
+    }
+
+    #[test]
+    fn validate_resume_names_first_differing_field() {
+        let stored = test_key_with(EXPLORER_RANDOM, "Some(5)");
+        let ok = |fp: &str, key: &ResumeKey| {
+            validate_resume(Some("fp"), Some(&stored), Some(fp), key)
+        };
+        assert!(ok("fp", &stored).is_ok());
+        assert!(ok("other", &stored).unwrap_err().starts_with("fingerprint"));
+        let err = ok("fp", &test_key_with(EXPLORER_CONCOLIC, "Some(9)")).unwrap_err();
+        assert!(err.starts_with("explorer"), "{err}");
+        let err = ok("fp", &test_key_with(EXPLORER_RANDOM, "Some(9)")).unwrap_err();
+        assert!(err.contains("max_iterations"), "{err}");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn resume_key_hash_is_deterministic_and_option_sensitive(
+            a in "[a-z0-9]{0,12}",
+            b in "[a-z0-9]{0,12}",
+        ) {
+            let k1 = test_key_with(EXPLORER_RANDOM, &a);
+            let k2 = test_key_with(EXPLORER_RANDOM, &a);
+            proptest::prop_assert_eq!(&k1.options_hash, &k2.options_hash);
+            let other = test_key_with(EXPLORER_RANDOM, &b);
+            proptest::prop_assert_eq!(a == b, k1.options_hash == other.options_hash);
+            let concolic = test_key_with(EXPLORER_CONCOLIC, &a);
+            proptest::prop_assert_ne!(&k1.options_hash, &concolic.options_hash);
+            proptest::prop_assert_eq!(
+                validate_resume(Some("f"), Some(&k1), Some("f"), &other).is_ok(),
+                a == b
+            );
+        }
     }
 
     #[test]
@@ -9209,7 +9656,7 @@ mod tests {
         let mut deep_fps = std::collections::HashMap::new();
         deep_fps.insert(func.name.clone(), "fp-abc".to_string());
 
-        let result = try_resume_function(dir.path(), &func, &deep_fps, None);
+        let result = try_resume_function(dir.path(), &func, &deep_fps, None, &test_key());
         assert!(result.is_none(), "should not resume without prior summary");
     }
 
@@ -9242,6 +9689,7 @@ mod tests {
             artifact: None,
             reason: reason.map(|s| s.to_string()),
             deep_fingerprint: None,
+            resume_key: None,
             line_count: 0,
             covered_lines: 0,
         }
@@ -9861,6 +10309,7 @@ mod tests {
             artifact: None,
             reason: Some(reason_str),
             deep_fingerprint: None,
+            resume_key: None,
             line_count: 0,
             covered_lines: 0,
         };
@@ -10070,6 +10519,7 @@ mod tests {
             artifact: None,
             reason: None,
             deep_fingerprint: None,
+            resume_key: None,
             line_count: 0,
             covered_lines: 0,
         };

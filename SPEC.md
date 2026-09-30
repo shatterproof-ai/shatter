@@ -123,6 +123,8 @@ Every command accepts the [global options](#210-global-options) in §2.10.
 4. Send `shutdown` to the frontend.
 5. Write the exploration report to stdout and/or files (`-o`).
 
+**Auto-resume**: Before exploring a function, `explore` looks for a completed result from a prior run in the artifact directory and replays it instead of re-exploring when the resume key matches. The key is the function's deep source fingerprint (function body and transitive callees) plus an options hash covering: explorer mode (random/concolic), iteration and time budgets (`--max-iterations`, `--timeout-explore`), seed, configured candidate inputs, mocks, setup/teardown, solver settings (`--solver-timeout`, `--mcdc`, `--refine-budget`), shrink budget, isolation, side-effect capture, planner, and the engine version. A partial-resume sidecar left by an interrupted run is validated against the same key and discarded on any difference (legacy sidecars without a key are discarded). Any mismatch re-explores the function; an `[info]` line names the first differing field. A replayed result keeps its original explorer label and the report notes `(resumed from prior run; --clean to re-run)`, including under `--from-artifacts`. Output-only flags (`-o`, `--format`, `--spec-out`) and `--no-cache` are not part of the key; `--no-cache` governs the behavior-map cache, not explore resume. Use `--clean` to force a fresh run.
+
 **Key options** (run `shatter explore --help` for the exhaustive list — `explore` has ~60 flags):
 
 *Exploration control*
@@ -178,7 +180,7 @@ Every command accepts the [global options](#210-global-options) in §2.10.
 | `--memory-limit MB` | — | Frontend memory cap (TS: `--max-old-space-size`; Go: `GOMEMLIMIT`). |
 | `--cache-dir PATH` | `.shatter-cache/behavior-maps/` | Behavior-map cache dir (env: `SHATTER_CACHE_DIR`). |
 | `--no-cache` | false | Disable behavior-map caching. |
-| `--clean` | false | Force full re-exploration; discard prior explore artifacts for the targets. |
+| `--clean` | false | Force full re-exploration; discard prior explore artifacts for the targets (the only way to bypass auto-resume when the options and source are unchanged). |
 | `--isolation MODE` | `none` | Execution isolation: `none`, `function`, or `serial`. |
 | `--capture-side-effects` | false | Record console/file/network/env/global side effects per execution. |
 | `-w, --workers N` (alias `--jobs`) | 0 (auto) | Across-function parallel workers. Bounded by `--parallelism-min` / `--parallelism-max`. |
