@@ -8,11 +8,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/shatter-dev/shatter/shatter-go/harnessembed"
 )
 
 const defaultExecTimeout = 5 * time.Second
@@ -43,13 +43,11 @@ const harnessRuntimeModuleName = "shatter-harness"
 // the host environment.
 var workspaceGoEnvProvider func() []string
 
-// harnessRuntimeOnce caches the resolved path to the checked-in harness module
-// so repeated builds do not need to rediscover it.
-var (
-	harnessRuntimeOnce sync.Once
-	harnessRuntimeDir  string
-	harnessRuntimeErr  error
-)
+// harnessRuntimeRootProvider returns the directory under which the embedded
+// harness runtime module is materialized (<root>/harness-runtime/<hash>/).
+// The protocol handler installs the workspace root; when nil, a per-user temp
+// location is used.
+var harnessRuntimeRootProvider func() string
 
 // subprocessPackages lists Go packages that spawn external processes.
 var subprocessPackages = map[string]bool{
@@ -106,30 +104,33 @@ func WorkspaceGoEnv() []string {
 	return workspaceGoEnvProvider()
 }
 
-// ensureHarnessRuntimeDir returns the absolute path to the checked-in
-// shatter-go/harness module so generated launcher builds can import
-// shatter-harness through a stable local replace target.
-func ensureHarnessRuntimeDir() (string, error) {
-	harnessRuntimeOnce.Do(func() {
-		_, currentFile, _, ok := runtime.Caller(0)
-		if !ok {
-			harnessRuntimeErr = fmt.Errorf("locating instrument package source")
-			return
-		}
+// SetHarnessRuntimeRootProvider installs the provider of the directory that
+// hosts the materialized harness runtime module. Passing nil restores the
+// temp-dir fallback.
+func SetHarnessRuntimeRootProvider(fn func() string) {
+	harnessRuntimeRootProvider = fn
+}
 
-		moduleDir := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "harness"))
-		absModuleDir, err := filepath.Abs(moduleDir)
-		if err != nil {
-			harnessRuntimeErr = fmt.Errorf("resolving harness runtime dir: %w", err)
-			return
+// harnessRuntimeRoot resolves where the embedded harness module is written.
+func harnessRuntimeRoot() string {
+	if harnessRuntimeRootProvider != nil {
+		if root := harnessRuntimeRootProvider(); root != "" {
+			return root
 		}
-		if _, err := os.Stat(filepath.Join(absModuleDir, "go.mod")); err != nil {
-			harnessRuntimeErr = fmt.Errorf("stat harness runtime go.mod: %w", err)
-			return
-		}
-		harnessRuntimeDir = absModuleDir
-	})
-	return harnessRuntimeDir, harnessRuntimeErr
+	}
+	return filepath.Join(os.TempDir(), "shatter-go-runtime")
+}
+
+// ensureHarnessRuntimeDir materializes the embedded shatter-harness module
+// (see harnessembed) and returns its absolute directory, so generated launcher
+// builds can import shatter-harness through a stable local replace target
+// without depending on where the frontend was compiled.
+func ensureHarnessRuntimeDir() (string, error) {
+	dir, err := harnessembed.Materialize(harnessRuntimeRoot())
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", HarnessRuntimeUnavailableMarker, err)
+	}
+	return dir, nil
 }
 
 // generateLoopMockFile generates the mock support source consumed by the
