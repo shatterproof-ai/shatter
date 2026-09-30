@@ -206,6 +206,19 @@ fn max_iterations_change_reexplores() {
 }
 
 #[test]
+fn meta_config_change_reexplores() {
+    let fixture = write_fixture();
+    run_explore(&fixture, &["--max-iterations", "5"]);
+    let second = run_explore(&fixture, &["--max-iterations", "5", "--no-adaptive"]);
+    assert_not_resumed(&second);
+    assert!(
+        stderr(&second).contains("meta_config"),
+        "info line must name the differing option; stderr=\n{}",
+        stderr(&second)
+    );
+}
+
+#[test]
 fn partial_resume_after_source_edit_rejects_sidecar() {
     let fixture = write_fixture();
     run_explore(&fixture, &["--max-iterations", "5", "--concolic"]);

@@ -143,7 +143,8 @@ impl ResumeKey {
 /// Result-affecting explore options for one function, as `name -> value`
 /// strings for [`ResumeKey`]. Cache-derived seeds and pool contents are left
 /// out on purpose: every run rewrites them, so including them would make
-/// resume impossible.
+/// resume impossible. `observer_pool` (throughput only) and
+/// `max_executions_override` (always `None` here) are excluded deliberately.
 struct ResumeKeyInputs<'a> {
     explore_config: &'a ExploreConfig,
     user_candidate_inputs: Vec<Vec<serde_json::Value>>,
@@ -183,6 +184,7 @@ fn build_resume_key(inputs: &ResumeKeyInputs<'_>) -> ResumeKey {
     put("isolation", format!("{:?}", cfg.isolation));
     put("capture_side_effects", cfg.capture_side_effects.to_string());
     put("planner", format!("{:?}", cfg.planner));
+    put("meta_config", format!("{:?}", cfg.meta_config));
     put("no_seeds", inputs.no_seeds.to_string());
     put("solver_timeout", format!("{:?}", inputs.solver_timeout_secs));
     put("mcdc", inputs.mcdc.to_string());
