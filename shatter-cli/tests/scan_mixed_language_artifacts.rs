@@ -79,14 +79,26 @@ fn toolchains_available() -> bool {
 }
 
 /// Run a scan over the fixture and return the parsed stdout report.
-fn run_scan(target: &Path, artifact_dir: Option<&Path>, resume: Option<&str>) -> serde_json::Value {
+///
+/// `cache_dir: None` runs with `--no-cache`; `Some` uses that behavior-map
+/// cache directory (kept out of the crate dir, which is the test's cwd).
+fn run_scan(
+    target: &Path,
+    artifact_dir: Option<&Path>,
+    cache_dir: Option<&Path>,
+    resume: Option<&str>,
+) -> serde_json::Value {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_shatter"));
     cmd.env("SHATTER_ALLOW_HOST_WRITES", "1")
         .arg("scan")
         .arg(target)
         .args(["--include", "*.go", "--include", "*.ts"])
-        .args(["--no-cache", "--no-seeds", "--parallelism", "1"])
+        .args(["--no-seeds", "--parallelism", "1"])
         .args(["--format", "json", "--color", "never"]);
+    match cache_dir {
+        Some(dir) => cmd.arg("--cache-dir").arg(dir),
+        None => cmd.arg("--no-cache"),
+    };
     match artifact_dir {
         Some(dir) => cmd.env("SHATTER_ARTIFACT_DIR", dir),
         None => cmd.env_remove("SHATTER_ARTIFACT_DIR"),
@@ -205,7 +217,7 @@ fn fresh_scan_case(with_artifact_dir: bool) {
         target.join("shatter-artifacts")
     };
 
-    let report = run_scan(&target, with_artifact_dir.then_some(art.as_path()), None);
+    let report = run_scan(&target, with_artifact_dir.then_some(art.as_path()), None, None);
     let scan_dir = only_scan_dir(&root);
     assert_summary_covers_report(&scan_dir, &report);
 
@@ -224,6 +236,26 @@ fn fresh_mixed_scan_keeps_every_language_artifacts_default_root() {
     fresh_scan_case(false);
 }
 
+/// Every function of both languages is recorded as completed in the checkpoint:
+/// a later language phase must extend, not replace, an earlier phase's entries.
+///
+/// Whether the second run then *skips* those functions is not asserted: on
+/// current main a repeated `--resume auto` scan re-explores every function
+/// even for a single language, so resumption is not observable here.
+fn assert_checkpoint_covers_both_languages(checkpoint: &Path) {
+    let text = std::fs::read_to_string(checkpoint).expect("read checkpoint");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parse checkpoint");
+    let completed: Vec<&str> = value["completed"]
+        .as_object()
+        .expect("completed map")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(completed.len(), 4, "checkpoint entries: {completed:?}");
+    assert!(completed.iter().any(|k| k.contains(".go::")), "{completed:?}");
+    assert!(completed.iter().any(|k| k.contains(".ts::")), "{completed:?}");
+}
+
 fn resume_auto_case(with_artifact_dir: bool) {
     if !toolchains_available() {
         eprintln!("skipping: go/node not available");
@@ -238,8 +270,9 @@ fn resume_auto_case(with_artifact_dir: bool) {
         target.join("shatter-artifacts")
     };
     let dir_arg = with_artifact_dir.then_some(art.as_path());
+    let cache = tmp.path().join("cache");
 
-    let first = run_scan(&target, dir_arg, Some("auto"));
+    let first = run_scan(&target, dir_arg, Some(cache.as_path()), Some("auto"));
     let scan_dir = only_scan_dir(&root);
     assert!(
         scan_dir.join("checkpoint.json").exists(),
@@ -249,11 +282,13 @@ fn resume_auto_case(with_artifact_dir: bool) {
     all_files_named(tmp.path(), "checkpoint.json", &mut checkpoints);
     assert_eq!(checkpoints.len(), 1, "exactly one checkpoint: {checkpoints:?}");
     assert_summary_covers_report(&scan_dir, &first);
+    assert_checkpoint_covers_both_languages(&scan_dir.join("checkpoint.json"));
 
-    let second = run_scan(&target, dir_arg, Some("auto"));
+    let second = run_scan(&target, dir_arg, Some(cache.as_path()), Some("auto"));
     assert_eq!(only_scan_dir(&root), scan_dir);
     assert_eq!(report_function_count(&second), 4);
     assert_summary_covers_report(&scan_dir, &second);
+    assert_checkpoint_covers_both_languages(&scan_dir.join("checkpoint.json"));
     let mut checkpoints = Vec::new();
     all_files_named(tmp.path(), "checkpoint.json", &mut checkpoints);
     assert_eq!(checkpoints.len(), 1, "still one checkpoint: {checkpoints:?}");
@@ -279,13 +314,13 @@ fn resume_off_and_explicit_path_behave_as_before() {
     let target = make_fixture(tmp.path());
     let art = tmp.path().join("art");
 
-    run_scan(&target, Some(&art), Some("off"));
+    run_scan(&target, Some(&art), None, Some("off"));
     let mut checkpoints = Vec::new();
     all_files_named(tmp.path(), "checkpoint.json", &mut checkpoints);
     assert!(checkpoints.is_empty(), "--resume off writes none: {checkpoints:?}");
 
     let explicit = tmp.path().join("explicit-ckpt.json");
-    run_scan(&target, Some(&art), Some(explicit.to_str().unwrap()));
+    run_scan(&target, Some(&art), None, Some(explicit.to_str().unwrap()));
     assert!(explicit.exists(), "--resume PATH writes exactly PATH");
     let mut checkpoints = Vec::new();
     all_files_named(tmp.path(), "checkpoint.json", &mut checkpoints);

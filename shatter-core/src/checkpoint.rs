@@ -510,4 +510,39 @@ mod tests {
         let path = ScanCheckpoint::default_path(Path::new("/art/scan-results/fullid"));
         assert_eq!(path, PathBuf::from("/art/scan-results/fullid/checkpoint.json"));
     }
+
+    mod path_props {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// The auto checkpoint is always `<scan_root>/checkpoint.json`,
+            /// whatever the scan root (so it follows the artifact root).
+            #[test]
+            fn default_path_is_always_directly_under_scan_root(
+                segments in proptest::collection::vec("[a-zA-Z0-9_.-]{1,12}", 1..6),
+            ) {
+                let root: PathBuf = segments.iter().collect();
+                let path = ScanCheckpoint::default_path(&root);
+                prop_assert!(path.starts_with(&root));
+                prop_assert_eq!(path.parent(), Some(root.as_path()));
+                prop_assert_eq!(path.file_name().unwrap(), "checkpoint.json");
+            }
+
+            /// `auto_discover` finds exactly the file at `default_path`, and
+            /// only when it exists.
+            #[test]
+            fn auto_discover_iff_default_path_exists(create in any::<bool>()) {
+                let dir = tempfile::tempdir().unwrap();
+                let expected = ScanCheckpoint::default_path(dir.path());
+                if create {
+                    fs::write(&expected, "{}").unwrap();
+                }
+                prop_assert_eq!(
+                    ScanCheckpoint::auto_discover(dir.path()),
+                    create.then_some(expected)
+                );
+            }
+        }
+    }
 }
