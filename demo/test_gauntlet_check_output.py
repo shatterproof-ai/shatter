@@ -2,6 +2,7 @@
 coverage to 0%-coverage function blocks, lifecycle/scope-mismatch thrown-error
 clusters, and allowlist expiry)."""
 
+import json
 import re
 import subprocess
 import sys
@@ -131,6 +132,53 @@ class GauntletCheckScanJsonTest(unittest.TestCase):
     def test_expected_interrupted_does_not_excuse_failures(self) -> None:
         result = run_scan_json(FAILED_JSON, extra_args=("--expect-interrupted", "x"))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def _run_nested_id_report(self, section: dict) -> subprocess.CompletedProcess:
+        allow_nested = textwrap.dedent(
+            """\
+            expected_failures:
+              - file: lib.rs
+                function: method
+                tracker: str-49drv.149
+                reason: nested qualified id (Type::method)
+                expires: "2099-01-01"
+            """
+        )
+        with TemporaryDirectory() as td:
+            report = Path(td) / "scan.json"
+            report.write_text(json.dumps({"codebase": {"failed": [], "skipped_functions": [], **section}}))
+            return run_scan_json(report, allow_nested)
+
+    def test_nested_qualified_id_matches_file_allowlist_for_interrupted(self) -> None:
+        # `/x/src/lib.rs::Type::method`: the file is the text before the FIRST
+        # `::`; splitting on the last one yields `lib.rs::Type` and never matches.
+        result = self._run_nested_id_report(
+            {
+                "skipped_functions": [
+                    {
+                        "function_name": "method",
+                        "category": "interrupted",
+                        "qualified_id": "/x/src/lib.rs::Type::method",
+                        "reason": "interrupted",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_nested_qualified_id_matches_file_allowlist_for_failed_without_file_path(self) -> None:
+        result = self._run_nested_id_report(
+            {
+                "failed": [
+                    {
+                        "function_name": "method",
+                        "qualified_id": "/x/src/lib.rs::Type::method",
+                        "reason": "timed out",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_missing_scan_json_is_an_error(self) -> None:
         result = run_scan_json(FIXTURES / "does-not-exist.json")
@@ -473,6 +521,55 @@ class GauntletCheckOutputAllowlistExpiryTest(unittest.TestCase):
         result = run_helper("clean output\n")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("ALLOWLIST ENTRY EXPIRED", result.stdout)
+
+
+CHECK_STEP_LIB = REPO_ROOT / "demo" / "check_step_lib.sh"
+
+
+def scan_step_setup(*shatter_args: str) -> tuple[list[str], list[str]]:
+    """Source demo/check_step_lib.sh, run scan_step_setup, and return
+    (SCAN_JSON_EXTRA_ARGS, SCAN_CHECK_ARGS)."""
+    script = (
+        'source "$1"; shift; scan_step_setup /host /cmd "$@"; '
+        'printf "%s\\n" ${SCAN_JSON_EXTRA_ARGS[@]+"${SCAN_JSON_EXTRA_ARGS[@]}"}; '
+        "echo '---'; "
+        'printf "%s\\n" ${SCAN_CHECK_ARGS[@]+"${SCAN_CHECK_ARGS[@]}"}'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", str(CHECK_STEP_LIB), *shatter_args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    extra, _, check_args = result.stdout.partition("---\n")
+    # printf '%s\n' with an empty array still prints one blank line.
+    return [a for a in extra.splitlines() if a], [a for a in check_args.splitlines() if a]
+
+
+class CheckStepLibScanSetupTest(unittest.TestCase):
+    def test_scan_step_writes_json_and_keeps_the_markdown_report_on_stdout(self) -> None:
+        # `scan -o FILE` alone silences the per-function markdown report on
+        # stdout (4.5 KB -> 0.5 KB on one file), which would blind the 0%-coverage
+        # table check and empty the demo output. `--stdout` keeps both.
+        extra, check_args = scan_step_setup("scan", "examples/standalone/ts")
+        self.assertEqual(extra[0], "-o")
+        self.assertTrue(extra[1].startswith("/cmd/shatter-scan-json."), extra)
+        self.assertIn("--stdout", extra)
+        self.assertEqual(check_args[0], "--scan-json")
+
+    def test_non_scan_step_gets_no_extra_args(self) -> None:
+        extra, check_args = scan_step_setup("explore", "x.ts:f")
+        self.assertEqual(extra, [])
+        self.assertEqual(check_args, [])
+
+    def test_dry_run_scan_skips_the_json_check(self) -> None:
+        extra, check_args = scan_step_setup("scan", "--dry-run", "examples/standalone/ts")
+        self.assertEqual(extra, [])
+        self.assertEqual(check_args[0], "--no-scan-json")
+
+    def test_timeout_total_scan_expects_interruption(self) -> None:
+        _, check_args = scan_step_setup("scan", "--timeout-total", "120", "examples/standalone/ts")
+        self.assertIn("--expect-interrupted", check_args)
 
 
 if __name__ == "__main__":

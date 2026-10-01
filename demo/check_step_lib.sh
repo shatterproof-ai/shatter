@@ -46,7 +46,10 @@ scan_step_setup() {
     fi
     local name="shatter-scan-json.$$.${RANDOM}${RANDOM}.json"
     SCAN_JSON_FILE="$host_dir/$name"
-    SCAN_JSON_EXTRA_ARGS=(-o "$cmd_dir/$name")
+    # `-o FILE` alone silences the per-function markdown report on stdout (4.5 KB
+    # -> 0.5 KB on one file), which would blind the 0%-coverage table check and
+    # empty the demo output; `--stdout` keeps the report as well as the file.
+    SCAN_JSON_EXTRA_ARGS=(-o "$cmd_dir/$name" --stdout)
     SCAN_CHECK_ARGS=(--scan-json "$SCAN_JSON_FILE")
     if [[ "$bounded" == true ]]; then
         SCAN_CHECK_ARGS+=(--expect-interrupted "--timeout-total bounds the scan by design")

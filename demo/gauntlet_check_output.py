@@ -172,8 +172,13 @@ def load_allowlist(path: str, today: date | None = None) -> Allowlist:
 
 
 def _basename_of_qualified_id(qualified_id: str) -> str:
-    """`/abs/path/file.ts::fn` -> `file.ts` (skipped entries carry no file_path)."""
-    return os.path.basename(qualified_id.rsplit("::", 1)[0]) if "::" in qualified_id else ""
+    """`/abs/path/file.ts::fn` -> `file.ts` (skipped entries carry no file_path).
+
+    The file is the text before the FIRST `::`: the name part can itself
+    contain `::` (Rust `Type::method`), so splitting on the last one would
+    yield `file.rs::Type` and never match a file-keyed allowlist entry.
+    """
+    return os.path.basename(qualified_id.split("::", 1)[0]) if "::" in qualified_id else ""
 
 
 def check_scan_json(
