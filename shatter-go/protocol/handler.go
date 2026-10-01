@@ -128,6 +128,7 @@ func newHandler(r io.Reader, w io.Writer, logw io.Writer, level slog.Level, work
 	if workspace != nil {
 		ws := workspace
 		instrument.SetWorkspaceGoEnvProvider(ws.GoEnv)
+		instrument.SetHarnessRuntimeRootProvider(ws.Root)
 	}
 	return h
 }
@@ -1436,6 +1437,13 @@ func failureOutcome(err error) *InvocationOutcome {
 		status = OutcomeStatusUnsupported
 		reason = "target function not found in source file"
 		errInfo.ErrorType = "function_not_found"
+	case strings.Contains(msg, instrument.HarnessRuntimeUnavailableMarker):
+		// str-49drv.100: the embedded harness module could not be written to
+		// disk. No compiler ran, so this is an infrastructure fault, not a
+		// build failure of the target.
+		status = OutcomeStatusRuntimeFailed
+		reason = "embedded harness runtime could not be materialized"
+		errInfo.ErrorType = "harness_runtime_unavailable"
 	case strings.Contains(msg, "build failed"):
 		status = OutcomeStatusBuildFailed
 		reason = "go build failed during harness compilation"

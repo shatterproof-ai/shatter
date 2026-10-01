@@ -13,8 +13,14 @@ func ExecTimeout() time.Duration {
 // harness builds when importing the shared runtime support package.
 const HarnessRuntimeModuleName = harnessRuntimeModuleName
 
-// EnsureHarnessRuntimeDir materializes the shared harness runtime module and
-// returns the directory path that should be used in a replace directive.
+// HarnessRuntimeUnavailableMarker prefixes errors returned when the embedded
+// harness runtime cannot be materialized. Host-level error classification keys
+// on it to report an infrastructure fault rather than a compile failure.
+const HarnessRuntimeUnavailableMarker = "harness runtime unavailable"
+
+// EnsureHarnessRuntimeDir materializes the embedded harness runtime module
+// under the workspace and returns the directory path that should be used in a
+// replace directive.
 func EnsureHarnessRuntimeDir() (string, error) {
 	return ensureHarnessRuntimeDir()
 }

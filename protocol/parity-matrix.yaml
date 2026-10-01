@@ -1108,7 +1108,8 @@ allowed_divergences:
     description: >
       The ite SymExpr variant represents SSA phi-node merges from conditional
       variable reassignment. TypeScript produces ite expressions via data flow
-      analysis in visitStatementsForDataFlow (str-4kop). Go now also produces
+      analysis in buildBranchFlowMaps (str-4kop; program-point flow maps,
+      str-49drv.130). Go now also produces
       ite expressions: walkBodyForFlow builds a flow map (str-1hlk.17.1/17.2)
       and extractBranches threads it through buildSymExprWithFlow so branch
       conditions referencing conditionally-assigned local variables resolve to

@@ -480,7 +480,7 @@ fn scan_artifact_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
 }
 
 /// Root directory for the entire scan (parent of `functions/`).
-fn scan_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
+pub fn scan_root(project_root: Option<&str>, scan_id: &str) -> PathBuf {
     let root = project_root
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -3989,6 +3989,86 @@ pub async fn parallel_scan_with_progress(
     config: &ScanConfig,
     progress_handler: Option<ProgressHandler>,
 ) -> Result<ParallelScanResult, ScanError> {
+    parallel_scan_phase(
+        frontend_config,
+        analyses,
+        config,
+        progress_handler,
+        ScanPhase::solo(analyses.len()),
+    )
+    .await
+    .map(|(result, _summary)| result)
+}
+
+/// Position of one per-language sub-scan inside a single scan invocation
+/// (str-49drv.13). All sub-scans of one invocation share one artifact
+/// namespace (`scan-results/<id>/`), so later phases continue the artifact
+/// index and summary of earlier ones instead of restarting them.
+pub struct ScanPhase<'a> {
+    /// Functions handled by earlier phases; artifact and progress indexes
+    /// start after this many.
+    pub index_offset: usize,
+    /// Function count across every phase of the invocation.
+    pub global_total: usize,
+    /// Summary accumulated by earlier phases. `None` for the first (or only)
+    /// phase, which is also the one that cleans stale artifacts.
+    pub prior_summary: Option<ScanSummary>,
+    /// Analyses of every phase, for the shared run-status export. Falls back
+    /// to this phase's analyses when `None`.
+    pub all_analyses: Option<&'a [FunctionAnalysis]>,
+}
+
+impl ScanPhase<'_> {
+    /// Whether this phase removes stale `functions/` artifacts. Only the
+    /// first phase of a fresh (non-resumed) scan does; later phases add to
+    /// the directory the first one prepared.
+    fn cleans_stale_artifacts(&self, write_artifacts: bool, resuming: bool) -> bool {
+        write_artifacts && !resuming && self.prior_summary.is_none()
+    }
+
+    /// A scan that is a single phase covering `total` functions.
+    pub fn solo(total: usize) -> Self {
+        ScanPhase {
+            index_offset: 0,
+            global_total: total,
+            prior_summary: None,
+            all_analyses: None,
+        }
+    }
+}
+
+/// Summary a phase starts from, plus the elapsed time already accounted for.
+///
+/// The first phase gets a fresh `Running` summary. A later phase continues the
+/// prior one: `total_functions` becomes the global total, and because the
+/// prior phase already finalized its status this phase re-finalizes over the
+/// cumulative counts (an interrupted scan stays interrupted).
+fn begin_phase_summary(
+    prior: Option<ScanSummary>,
+    scan_id: &str,
+    total_functions: usize,
+) -> (ScanSummary, Duration) {
+    let elapsed_base = prior
+        .as_ref()
+        .map_or(Duration::ZERO, |p| Duration::from_secs_f64(p.elapsed_secs));
+    let mut summary = prior.unwrap_or_else(|| new_scan_summary(scan_id, total_functions));
+    summary.total_functions = total_functions;
+    if summary.status != ScanRunStatus::Interrupted {
+        summary.status = ScanRunStatus::Running;
+    }
+    summary.source_diff = None;
+    (summary, elapsed_base)
+}
+
+/// Run one phase of a (possibly multi-phase) scan and return its result plus
+/// the cumulative summary to hand to the next phase.
+pub async fn parallel_scan_phase(
+    frontend_config: &FrontendConfig,
+    analyses: &[FunctionAnalysis],
+    config: &ScanConfig,
+    progress_handler: Option<ProgressHandler>,
+    phase: ScanPhase<'_>,
+) -> Result<(ParallelScanResult, ScanSummary), ScanError> {
     let call_graph = CallGraph::from_analyses(analyses);
     let order_entries = call_graph.test_order()?;
 
@@ -4081,8 +4161,8 @@ pub async fn parallel_scan_with_progress(
 
     let scan_start = Instant::now();
     let scan_deadline = total_deadline(scan_start, config.timeout_total);
-    let total_functions = analyses.len();
-    let mut progress_index = 0usize;
+    let total_functions = phase.global_total;
+    let mut progress_index = phase.index_offset;
     // When `config.write_artifacts` is false, every project-local artifact
     // path is suppressed: the per-function `Option<Arc<PathBuf>>` is `None`
     // (which the per-function helpers treat as a no-op), and every
@@ -4092,10 +4172,11 @@ pub async fn parallel_scan_with_progress(
     let artifact_root: Option<Arc<PathBuf>> = write_artifacts
         .then(|| Arc::new(scan_artifact_root(config.project_root.as_deref(), &scan_id)));
     let scan_root_dir = scan_root(config.project_root.as_deref(), &scan_id);
-    if write_artifacts && config.resume_path.is_none() {
+    if phase.cleans_stale_artifacts(write_artifacts, config.resume_path.is_some()) {
         prepare_fresh_scan_artifact_root(&scan_root_dir);
     }
-    let mut summary = new_scan_summary(&scan_id, total_functions);
+    let (mut summary, elapsed_base) =
+        begin_phase_summary(phase.prior_summary, &scan_id, total_functions);
     // Gating closure used by every summary write in this function so that
     // `--no-cache --no-seeds + -o <external>` runs leave nothing under
     // `<project>/shatter-artifacts/` (str-1wcl).
@@ -5400,7 +5481,7 @@ pub async fn parallel_scan_with_progress(
     // promoted to `StaleSourceSet` rather than `Completed`.
     summary_finalize_with_manifest_check(
         &mut summary,
-        scan_start.elapsed(),
+        elapsed_base + scan_start.elapsed(),
         &run_manifest,
         &manifest_source_paths,
     );
@@ -5411,7 +5492,7 @@ pub async fn parallel_scan_with_progress(
             &scan_root_dir,
             &summary,
             &config.file_map,
-            analyses,
+            phase.all_analyses.unwrap_or(analyses),
         );
         write_scan_status(
             &scan_root_dir,
@@ -5422,15 +5503,18 @@ pub async fn parallel_scan_with_progress(
         );
     }
 
-    Ok(ParallelScanResult {
-        function_results: all_results,
-        test_order,
-        skipped,
-        workers_used: peak_workers,
-        workers_reaped: total_reaped,
-        sampling: None,
-        source_files: run_manifest.source_files,
-    })
+    Ok((
+        ParallelScanResult {
+            function_results: all_results,
+            test_order,
+            skipped,
+            workers_used: peak_workers,
+            workers_reaped: total_reaped,
+            sampling: None,
+            source_files: run_manifest.source_files,
+        },
+        summary,
+    ))
 }
 
 /// Build exploration layers from test order entries and call graph.
@@ -16215,6 +16299,169 @@ mod proptests_nesting_depth {
             branches in proptest::collection::vec(arb_branch_info(), 0..20),
         ) {
             prop_assert_eq!(estimate_nesting_depth(&branches, &[]), 0);
+        }
+    }
+}
+
+/// Properties of the multi-phase scan bookkeeping (str-49drv.13): every
+/// language phase of one scan continues the same artifact index, summary and
+/// artifact directory.
+#[cfg(test)]
+mod proptests_scan_phase {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Per-function outcome: 0 = completed, 1 = failed, 2 = skipped.
+    fn arb_phases() -> impl Strategy<Value = Vec<Vec<u8>>> {
+        proptest::collection::vec(proptest::collection::vec(0u8..3, 1..6), 1..5)
+    }
+
+    /// Drive the same per-phase bookkeeping `parallel_scan_phase` performs,
+    /// writing one artifact per function into `scan_dir`.
+    fn run_phases(scan_dir: &Path, phases: &[Vec<u8>]) -> ScanSummary {
+        let total: usize = phases.iter().map(Vec::len).sum();
+        let functions_dir = scan_dir.join("functions");
+        let mut prior: Option<ScanSummary> = None;
+        let mut offset = 0usize;
+        for (p, outcomes) in phases.iter().enumerate() {
+            let phase = ScanPhase {
+                index_offset: offset,
+                global_total: total,
+                prior_summary: prior.take(),
+                all_analyses: None,
+            };
+            if phase.cleans_stale_artifacts(true, false) {
+                prepare_fresh_scan_artifact_root(scan_dir);
+            }
+            let (mut summary, base) = begin_phase_summary(phase.prior_summary, "sid", total);
+            let mut index = phase.index_offset;
+            for (i, outcome) in outcomes.iter().enumerate() {
+                index += 1;
+                let name = format!("p{p}f{i}");
+                let elapsed = Duration::from_millis(index as u64);
+                match outcome {
+                    0 => summary_record_completed(&mut summary, &name, index, elapsed),
+                    1 => summary_record_failed(&mut summary, &name, index, "boom", elapsed),
+                    _ => summary_record_skipped(
+                        &mut summary,
+                        &name,
+                        index,
+                        "skip",
+                        SkipCategory::Expected,
+                        elapsed,
+                    ),
+                }
+                write_failed_scan_artifact(Some(&functions_dir), index, total, &name, "x");
+            }
+            summary_finalize(&mut summary, base + Duration::from_millis(1));
+            offset += outcomes.len();
+            prior = Some(summary);
+        }
+        prior.expect("at least one phase")
+    }
+
+    proptest! {
+        /// Indexes across N phases are exactly 1..=total (contiguous, no
+        /// collisions), every summary entry points at an existing artifact,
+        /// and counts equal the sum over phases.
+        #[test]
+        fn phases_share_one_contiguous_index_and_summary(phases in arb_phases()) {
+            let dir = tempfile::tempdir().unwrap();
+            let scan_dir = dir.path().join("scan");
+            // A stale artifact from a previous scan of the same id.
+            let functions_dir = scan_dir.join("functions");
+            std::fs::create_dir_all(&functions_dir).unwrap();
+            std::fs::write(functions_dir.join("99999_stale.json"), "{}").unwrap();
+
+            let summary = run_phases(&scan_dir, &phases);
+            let total: usize = phases.iter().map(Vec::len).sum();
+
+            let mut indexes: Vec<usize> = summary.functions.iter().map(|e| e.index).collect();
+            indexes.sort_unstable();
+            prop_assert_eq!(indexes, (1..=total).collect::<Vec<_>>());
+            prop_assert_eq!(summary.total_functions, total);
+            prop_assert_eq!(summary.functions.len(), total);
+
+            let count = |o: u8| phases.iter().flatten().filter(|&&x| x == o).count();
+            prop_assert_eq!(summary.completed, count(0));
+            prop_assert_eq!(summary.failed, count(1));
+            prop_assert_eq!(summary.skipped, count(2));
+
+            // Only the first phase cleaned: the stale file is gone, and no
+            // phase removed an earlier phase's artifacts.
+            prop_assert!(!functions_dir.join("99999_stale.json").exists());
+            let files = std::fs::read_dir(&functions_dir).unwrap().count();
+            prop_assert_eq!(files, total);
+            for entry in &summary.functions {
+                let rel = entry.artifact.as_ref().unwrap();
+                prop_assert!(scan_dir.join(rel).exists(), "missing {}", rel);
+            }
+            prop_assert!(matches!(
+                summary.status,
+                ScanRunStatus::Completed | ScanRunStatus::Failed
+            ));
+        }
+
+        /// A phase cleans stale artifacts iff it is the first phase of a
+        /// fresh, artifact-writing scan.
+        #[test]
+        fn only_first_fresh_phase_cleans(
+            write in any::<bool>(),
+            resuming in any::<bool>(),
+            has_prior in any::<bool>(),
+        ) {
+            let prior = has_prior.then(|| new_scan_summary("sid", 3));
+            let phase = ScanPhase {
+                index_offset: 0,
+                global_total: 3,
+                prior_summary: prior,
+                all_analyses: None,
+            };
+            prop_assert_eq!(
+                phase.cleans_stale_artifacts(write, resuming),
+                write && !resuming && !has_prior
+            );
+        }
+
+        /// Elapsed time accumulates across phases, and an interrupted status
+        /// is never reset by a later phase.
+        #[test]
+        fn later_phase_keeps_elapsed_and_interruption(
+            elapsed_ms in 0u64..100_000,
+            interrupted in any::<bool>(),
+        ) {
+            let mut prior = new_scan_summary("sid", 2);
+            prior.elapsed_secs = Duration::from_millis(elapsed_ms).as_secs_f64();
+            prior.status = if interrupted {
+                ScanRunStatus::Interrupted
+            } else {
+                ScanRunStatus::Completed
+            };
+            let (next, base) = begin_phase_summary(Some(prior), "sid", 7);
+            prop_assert_eq!(next.total_functions, 7);
+            prop_assert!((base.as_secs_f64() - elapsed_ms as f64 / 1000.0).abs() < 1e-6);
+            prop_assert_eq!(
+                next.status == ScanRunStatus::Interrupted,
+                interrupted
+            );
+            if !interrupted {
+                prop_assert_eq!(next.status, ScanRunStatus::Running);
+            }
+        }
+
+        /// The scan directory is always `<root>/scan-results/<id>`, so a
+        /// checkpoint derived from it stays inside the scan's namespace.
+        #[test]
+        fn scan_root_is_scan_results_id(id in "[0-9a-f]{64}") {
+            let dir = tempfile::tempdir().unwrap();
+            let root = scan_root(Some(dir.path().to_str().unwrap()), &id);
+            prop_assert_eq!(root.file_name().unwrap().to_str().unwrap(), id.as_str());
+            prop_assert_eq!(
+                root.parent().unwrap().file_name().unwrap().to_str().unwrap(),
+                "scan-results"
+            );
+            let ckpt = crate::checkpoint::ScanCheckpoint::default_path(&root);
+            prop_assert!(ckpt.starts_with(&root));
         }
     }
 }
