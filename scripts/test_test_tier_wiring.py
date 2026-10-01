@@ -272,7 +272,7 @@ exit 0
             explicit_counts.extend(re.findall(r"\{\s*numRuns\s*:", source))
             helper_calls.extend(re.findall(r"fastCheckParameters\([0-9]+\)", source))
         self.assertEqual(explicit_counts, [])
-        self.assertEqual(len(helper_calls), 16)
+        self.assertEqual(len(helper_calls), 17)
 
         jest_config = (ROOT / "shatter-ts/jest.config.js").read_text()
         self.assertIn("fast-check-setup.ts", jest_config)
