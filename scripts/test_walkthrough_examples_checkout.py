@@ -559,6 +559,8 @@ class WalkthroughExamplesCheckoutTest(unittest.TestCase):
             root = Path(tmp)
             (root / "demo").mkdir()
             shutil.copy2(WALKTHROUGH, root / "demo" / "walkthrough.sh")
+            # walkthrough.sh sources its sibling check_step_lib.sh at startup.
+            shutil.copy2(WALKTHROUGH.parent / "check_step_lib.sh", root / "demo" / "check_step_lib.sh")
             (root / "examples" / "rust" / "target").mkdir(parents=True)
             (root / "examples" / "rust" / "target" / "CACHEDIR.TAG").write_text(
                 "leftover build dir",
