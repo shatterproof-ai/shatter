@@ -53,7 +53,7 @@ impl BoundaryEntry {
 #[must_use]
 pub fn get_boundary_values(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
     match type_info {
-        TypeInfo::Int { .. } => int_boundaries(),
+        TypeInfo::Int { .. } => int_boundaries_within(type_info),
         TypeInfo::Float => float_boundaries(),
         TypeInfo::Str => string_boundaries(),
         TypeInfo::Bool => bool_boundaries(),
@@ -103,6 +103,40 @@ pub fn get_boundary_values_for_category(
         .into_iter()
         .filter(|e| e.category == category)
         .collect()
+}
+
+/// Integer boundaries restricted to the declared width/signedness.
+///
+/// A sized int (e.g. `u8`) must never be seeded with values outside its range
+/// (`-1`, `i64::MAX`): they cannot deserialize into the narrow field. Keeps the
+/// in-range generic boundaries and adds the range's own edges.
+fn int_boundaries_within(type_info: &TypeInfo) -> Vec<BoundaryEntry> {
+    let entries = int_boundaries();
+    let Some((min, max)) = type_info.int_range() else {
+        // Unsigned 64-bit and wider have no i64 range but still exclude negatives.
+        if matches!(type_info, TypeInfo::Int { int_signed: Some(false), .. }) {
+            return entries
+                .into_iter()
+                .filter(|e| e.value.as_i64().is_some_and(|n| n >= 0))
+                .collect();
+        }
+        return entries;
+    };
+    let mut entries: Vec<BoundaryEntry> = entries
+        .into_iter()
+        .filter(|e| e.value.as_i64().is_some_and(|n| n >= min && n <= max))
+        .collect();
+    for (value, category, description) in [
+        (min, BoundaryCategory::Boundary, "range minimum"),
+        (min.saturating_add(1), BoundaryCategory::Boundary, "range minimum + 1"),
+        (max.saturating_sub(1), BoundaryCategory::Boundary, "range maximum - 1"),
+        (max, BoundaryCategory::Boundary, "range maximum"),
+    ] {
+        if !entries.iter().any(|e| e.value == json!(value)) {
+            entries.push(BoundaryEntry::new(json!(value), category, description));
+        }
+    }
+    entries
 }
 
 fn int_boundaries() -> Vec<BoundaryEntry> {
@@ -408,6 +442,47 @@ pub fn generate_boundary_inputs(params: &[crate::types::ParamInfo]) -> Vec<Vec<V
 mod tests {
     use super::*;
     use crate::types::ParamInfo;
+
+    /// Sized ints must only be seeded with in-range boundaries (str-w0lgl):
+    /// an unsigned u8 was being handed -1 and i64::MAX.
+    #[test]
+    fn sized_int_boundaries_stay_in_range_and_include_edges() {
+        for (width, signed, min, max) in [
+            (8_u8, false, 0_i64, 255_i64),
+            (8, true, -128, 127),
+            (16, false, 0, 65_535),
+            (32, true, i32::MIN as i64, i32::MAX as i64),
+        ] {
+            let typ = TypeInfo::Int {
+                int_width: Some(width),
+                int_signed: Some(signed),
+            };
+            let values: Vec<i64> = get_boundary_values(&typ)
+                .iter()
+                .map(|e| e.value.as_i64().expect("int boundary is an i64"))
+                .collect();
+            assert!(
+                values.iter().all(|n| (min..=max).contains(n)),
+                "u/i{width} (signed={signed}) boundaries out of range: {values:?}"
+            );
+            assert!(values.contains(&min), "missing range minimum {min}");
+            assert!(values.contains(&max), "missing range maximum {max}");
+        }
+    }
+
+    #[test]
+    fn unsigned_64_bit_boundaries_exclude_negatives() {
+        let typ = TypeInfo::Int {
+            int_width: Some(64),
+            int_signed: Some(false),
+        };
+        let values: Vec<i64> = get_boundary_values(&typ)
+            .iter()
+            .map(|e| e.value.as_i64().expect("int boundary is an i64"))
+            .collect();
+        assert!(values.iter().all(|n| *n >= 0), "negative seed: {values:?}");
+        assert!(values.contains(&0));
+    }
 
     #[test]
     fn int_boundaries_include_expected_values() {
