@@ -1244,17 +1244,14 @@ impl Z3SolverStrategy {
         }
     }
 
-    /// Fingerprint of the query "keep `solvable[..idx]`, negate `solvable[idx]`"
-    /// under the current enum history, which is the only other solver input
-    /// that varies between calls on one strategy instance.
-    fn query_fingerprint(&self, solvable: &[SymExpr], idx: usize) -> u64 {
+    /// Hash of the enum history, the only solver input besides the
+    /// constraints that varies between calls on one strategy instance.
+    fn enum_history_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        idx.hash(&mut hasher);
-        format!("{:?}", &solvable[..=idx]).hash(&mut hasher);
         let mut history: Vec<_> = self.enum_history.iter().collect();
         history.sort();
-        format!("{history:?}").hash(&mut hasher);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        history.hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -1292,11 +1289,18 @@ impl InputStrategy for Z3SolverStrategy {
 
         let param_names: Vec<String> = self.param_infos.iter().map(|p| p.name.clone()).collect();
 
+        // Fingerprint of "keep solvable[..idx], negate solvable[idx]", built
+        // incrementally so each constraint is formatted once per call.
+        let enum_fingerprint = self.enum_history_fingerprint();
+        let mut prefix_hasher = std::collections::hash_map::DefaultHasher::new();
         for solve_idx in 0..solvable.len() {
-            if !self
-                .solved_queries
-                .insert(self.query_fingerprint(&solvable, solve_idx))
-            {
+            use std::hash::{Hash, Hasher};
+            format!("{:?}", solvable[solve_idx]).hash(&mut prefix_hasher);
+            let mut query_hasher = prefix_hasher.clone();
+            solve_idx.hash(&mut query_hasher);
+            enum_fingerprint.hash(&mut query_hasher);
+            let fingerprint = query_hasher.finish();
+            if self.solved_queries.contains(&fingerprint) {
                 continue;
             }
             // solve_for_new_path may fail (unsupported expressions, type mismatches,
@@ -1312,6 +1316,14 @@ impl InputStrategy for Z3SolverStrategy {
                 )
             }));
 
+            // Only a definitive answer is memoized: a timeout, solver error or
+            // panic (likely under CPU contention) must stay retryable.
+            if matches!(
+                solve_result,
+                Ok(Ok(SolveResult::Sat(_) | SolveResult::Unsat))
+            ) {
+                self.solved_queries.insert(fingerprint);
+            }
             match solve_result {
                 Ok(Ok(SolveResult::Sat(values))) => {
                     let param_types = crate::orchestrator::param_types_of(&self.param_infos);
