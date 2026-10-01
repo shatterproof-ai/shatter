@@ -646,12 +646,60 @@ pub fn load_pool(path: &std::path::Path) -> Result<Option<InterestingPool>, std:
 fn load_pool_unlocked(path: &std::path::Path) -> Result<Option<InterestingPool>, std::io::Error> {
     match std::fs::read_to_string(path) {
         Ok(content) => {
-            let pool: InterestingPool = serde_json::from_str(&content)
+            let mut pool: InterestingPool = serde_json::from_str(&content)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            prune_dead_observations(&mut pool);
             Ok(Some(pool))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+/// Drop observations whose function id names an absolute source path that no
+/// longer exists on disk, then drop entries and buckets left empty.
+///
+/// A function id is `<path>::<name>` and the name can itself contain `::`
+/// (Rust `Type::method`), so the source path is the text before the *first*
+/// `::`. Ids whose path is not absolute are kept, and so is any path whose
+/// existence cannot be determined (a stat error is not evidence of deletion).
+///
+/// Without this, a project that is cloned into a fresh directory per run (the
+/// walkthrough and gauntlet do this) turns every run's observations into new
+/// `BehaviorSig`s, the per-behavior cap never saturates, and the pool grows
+/// without bound until each insert is slow enough to time out scans
+/// (str-l2l14). The pruned pool is persisted by the next `save_pool`.
+fn prune_dead_observations(pool: &mut InterestingPool) {
+    let mut path_is_live: HashMap<String, bool> = HashMap::new();
+    let mut pruned = 0usize;
+
+    for bucket in pool.buckets.values_mut() {
+        for entry in bucket.iter_mut() {
+            let before = entry.behaviors.len();
+            entry.behaviors.retain(|obs| {
+                let source = obs.function.split("::").next().unwrap_or(&obs.function);
+                let path = std::path::Path::new(source);
+                if !path.is_absolute() {
+                    return true;
+                }
+                if let Some(live) = path_is_live.get(source) {
+                    return *live;
+                }
+                let live = path.try_exists().unwrap_or(true);
+                path_is_live.insert(source.to_string(), live);
+                live
+            });
+            pruned += before - entry.behaviors.len();
+        }
+        bucket.retain(|entry| !entry.behaviors.is_empty());
+    }
+    pool.buckets.retain(|_, bucket| !bucket.is_empty());
+
+    if pruned > 0 {
+        log::debug!(
+            "pruned {pruned} pool observation(s) for {} deleted source path(s)",
+            path_is_live.values().filter(|live| !**live).count()
+        );
     }
 }
 
@@ -1046,6 +1094,189 @@ mod tests {
         let path = std::path::Path::new("/nonexistent/pool.json");
         let result = load_pool(path).expect("should not error");
         assert!(result.is_none());
+    }
+
+    // -- Stale-observation pruning on load (str-l2l14) --
+
+    fn int_type() -> TypeInfo {
+        TypeInfo::Int { int_width: None, int_signed: None }
+    }
+
+    fn entry_with_functions(value: i64, functions: &[String]) -> PoolEntry {
+        PoolEntry {
+            value: serde_json::json!(value),
+            ty: int_type(),
+            behaviors: functions
+                .iter()
+                .enumerate()
+                .map(|(i, f)| BehaviorObservation {
+                    function: f.clone(),
+                    branch_id: i as u32,
+                    severity: Severity::RarePath,
+                    mode: CoverageMode::Branch,
+                })
+                .collect(),
+            discovered_epoch: 0,
+            last_hit_epoch: 0,
+        }
+    }
+
+    fn functions_of(entry: &PoolEntry) -> Vec<String> {
+        entry.behaviors.iter().map(|o| o.function.clone()).collect()
+    }
+
+    /// Save `pool` into a fresh temp dir and load it back through `load_pool`.
+    fn save_and_load(pool: &InterestingPool, dir: &std::path::Path) -> InterestingPool {
+        let path = dir.join("seeds/pool.json");
+        save_pool(pool, &path).expect("save pool");
+        load_pool(&path).expect("load pool").expect("pool exists")
+    }
+
+    #[test]
+    fn load_pool_drops_observations_for_deleted_source_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let live = dir.path().join("live.ts");
+        std::fs::write(&live, "export const x = 1;").expect("write live file");
+        let dead = dir.path().join("deleted-run/standalone/ts/gone.ts");
+        let live_id = format!("{}::keep", live.display());
+        let dead_id = format!("{}::drop", dead.display());
+
+        let mut pool = InterestingPool::default();
+        assert!(pool.insert(entry_with_functions(1, &[live_id.clone(), dead_id.clone()])));
+        assert!(pool.insert(entry_with_functions(2, &[dead_id.clone()])));
+
+        let loaded = save_and_load(&pool, dir.path());
+
+        let bucket = &loaded.buckets[&type_key(&int_type())];
+        assert_eq!(bucket.len(), 1, "an entry whose only observations are dead must be dropped");
+        assert_eq!(bucket[0].value, serde_json::json!(1));
+        assert_eq!(functions_of(&bucket[0]), vec![live_id]);
+    }
+
+    #[test]
+    fn load_pool_removes_buckets_left_empty_by_pruning() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dead = dir.path().join("deleted-run/gone.ts");
+        let mut pool = InterestingPool::default();
+        assert!(pool.insert(entry_with_functions(1, &[format!("{}::f", dead.display())])));
+
+        let loaded = save_and_load(&pool, dir.path());
+
+        assert!(
+            loaded.buckets.values().all(|b| !b.is_empty()),
+            "no empty bucket may survive a load: {:?}",
+            loaded.buckets.keys().collect::<Vec<_>>()
+        );
+        assert!(loaded.buckets.is_empty(), "every observation was dead");
+    }
+
+    #[test]
+    fn load_pool_keeps_function_ids_that_are_not_absolute_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ids = vec![
+            "bare_name".to_string(),
+            "src/relative.ts::f".to_string(),
+            "::leading_separator".to_string(),
+        ];
+        let mut pool = InterestingPool::default();
+        assert!(pool.insert(entry_with_functions(7, &ids)));
+
+        let loaded = save_and_load(&pool, dir.path());
+
+        let bucket = &loaded.buckets[&type_key(&int_type())];
+        assert_eq!(functions_of(&bucket[0]), ids);
+    }
+
+    #[test]
+    fn load_pool_takes_the_source_path_before_the_first_double_colon() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let live = dir.path().join("lib.rs");
+        std::fs::write(&live, "fn main() {}").expect("write live file");
+        let dead = dir.path().join("deleted-run/lib.rs");
+        let live_id = format!("{}::Type::method", live.display());
+        let dead_id = format!("{}::Type::method", dead.display());
+
+        let mut pool = InterestingPool::default();
+        assert!(pool.insert(entry_with_functions(3, &[live_id.clone(), dead_id])));
+
+        let loaded = save_and_load(&pool, dir.path());
+
+        let bucket = &loaded.buckets[&type_key(&int_type())];
+        assert_eq!(functions_of(&bucket[0]), vec![live_id]);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        /// Loading keeps exactly the observations whose function id is not an
+        /// absolute path or whose source file exists, never leaves an entry
+        /// without observations, and is idempotent.
+        #[test]
+        fn prop_load_pool_keeps_exactly_live_or_non_path_observations(
+            ops in proptest::collection::vec((0i64..12, 0usize..6, 0u32..3), 0..30usize),
+        ) {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let live_a = dir.path().join("a.ts");
+            let live_b = dir.path().join("b.ts");
+            std::fs::write(&live_a, "a").expect("write a");
+            std::fs::write(&live_b, "b").expect("write b");
+            let dead_a = dir.path().join("gone-a/x.ts");
+            let dead_b = dir.path().join("gone-b/x.ts");
+            let ids = [
+                format!("{}::f", live_a.display()),
+                format!("{}::g", live_b.display()),
+                format!("{}::f", dead_a.display()),
+                format!("{}::g", dead_b.display()),
+                "relative.ts::f".to_string(),
+                "bare_name".to_string(),
+            ];
+            let is_dead = |idx: usize| idx == 2 || idx == 3;
+
+            let mut pool = InterestingPool {
+                bucket_cap: 10_000,
+                ..Default::default()
+            };
+            for (value, idx, branch) in &ops {
+                let _ = pool.insert(behavior_entry_with_mode(
+                    *value,
+                    &ids[*idx],
+                    *branch,
+                    Severity::RarePath,
+                    CoverageMode::Branch,
+                ));
+            }
+
+            let observations = |p: &InterestingPool| -> std::collections::BTreeSet<(String, String, u32)> {
+                p.buckets
+                    .values()
+                    .flat_map(|b| b.iter())
+                    .flat_map(|e| {
+                        e.behaviors
+                            .iter()
+                            .map(move |o| (e.value.to_string(), o.function.clone(), o.branch_id))
+                    })
+                    .collect()
+            };
+            let expected: std::collections::BTreeSet<_> = observations(&pool)
+                .into_iter()
+                .filter(|(_, function, _)| {
+                    let idx = ids.iter().position(|i| i == function).expect("known id");
+                    !is_dead(idx)
+                })
+                .collect();
+
+            let loaded = save_and_load(&pool, dir.path());
+            prop_assert_eq!(observations(&loaded), expected.clone());
+            for bucket in loaded.buckets.values() {
+                prop_assert!(!bucket.is_empty());
+                for entry in bucket {
+                    prop_assert!(!entry.behaviors.is_empty());
+                }
+            }
+
+            let reloaded = save_and_load(&loaded, dir.path());
+            prop_assert_eq!(observations(&reloaded), expected);
+        }
     }
 
     #[test]
