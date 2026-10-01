@@ -28,9 +28,11 @@ scan_step_setup() {
     local host_dir="$1" cmd_dir="$2"
     shift 2
     [[ "${1:-}" == "scan" ]] || return 0
-    local arg dry_run=false bounded=false selects=false
+    local arg dry_run=false bounded=false selects=false has_stdout=false has_output=false
     for arg in "$@"; do
         case "$arg" in
+            --stdout) has_stdout=true ;;
+            -o|--output|--output=*) has_output=true ;;
             --dry-run) dry_run=true ;;
             --changed|--since|--since=*) selects=true ;;
             --timeout-total|--timeout-total=*) bounded=true ;;
@@ -46,10 +48,17 @@ scan_step_setup() {
     fi
     local name="shatter-scan-json.$$.${RANDOM}${RANDOM}.json"
     SCAN_JSON_FILE="$host_dir/$name"
-    # `-o FILE` alone silences the per-function markdown report on stdout (4.5 KB
-    # -> 0.5 KB on one file), which would blind the 0%-coverage table check and
-    # empty the demo output; `--stdout` keeps the report as well as the file.
-    SCAN_JSON_EXTRA_ARGS=(-o "$cmd_dir/$name" --stdout)
+    SCAN_JSON_EXTRA_ARGS=(-o "$cmd_dir/$name")
+    # For a step with neither `--stdout` nor an `-o` of its own, `-o FILE` alone
+    # would silence the per-function markdown report on stdout (4.5 KB -> 0.5 KB
+    # on one file), blinding the 0%-coverage table check and emptying the demo
+    # output; `--stdout` keeps the report as well as the file. A step that
+    # already has `--stdout` must not get a second (the CLI rejects it), and a
+    # step with its own `-o` writes its report to a file on purpose. `-o` itself
+    # may repeat.
+    if [[ "$has_stdout" == false && "$has_output" == false ]]; then
+        SCAN_JSON_EXTRA_ARGS+=(--stdout)
+    fi
     SCAN_CHECK_ARGS=(--scan-json "$SCAN_JSON_FILE")
     if [[ "$bounded" == true ]]; then
         SCAN_CHECK_ARGS+=(--expect-interrupted "--timeout-total bounds the scan by design")

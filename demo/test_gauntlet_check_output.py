@@ -557,6 +557,20 @@ class CheckStepLibScanSetupTest(unittest.TestCase):
         self.assertIn("--stdout", extra)
         self.assertEqual(check_args[0], "--scan-json")
 
+    def test_step_that_already_passes_stdout_is_not_given_a_second_one(self) -> None:
+        # The CLI rejects `--stdout` twice (exit 2); gauntlet steps 6 and 55
+        # pass it themselves.
+        extra, _ = scan_step_setup("scan", "-o", "/tmp/r.html", "--stdout", "examples/standalone/ts")
+        self.assertEqual(extra[0], "-o")
+        self.assertNotIn("--stdout", extra)
+
+    def test_step_with_its_own_output_file_keeps_its_stdout_behaviour(self) -> None:
+        # `scan -o report.md` writes the report to the file only, on purpose;
+        # adding our JSON `-o` must not turn stdout on.
+        extra, _ = scan_step_setup("scan", "-o", "/tmp/shatter-scan-report.md", "examples/standalone/ts")
+        self.assertEqual(extra[0], "-o")
+        self.assertNotIn("--stdout", extra)
+
     def test_non_scan_step_gets_no_extra_args(self) -> None:
         extra, check_args = scan_step_setup("explore", "x.ts:f")
         self.assertEqual(extra, [])
