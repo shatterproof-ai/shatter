@@ -956,6 +956,12 @@ allowed_divergences:
       unadvertised drop so callers can rely on the field shape across
       languages even when only Go acts on it today.
 
+      str-mhinv.2: TypeScript now has typed wire support — `plan?:
+      InvocationPlan | null` on PrepareRequest and ExecuteRequest, with
+      `InvocationPlan`/`ValuePlan`/`ReceiverFieldPlan` interfaces in
+      shatter-ts/src/protocol.ts. This is typing only; TS still does not
+      consume the plan, so the divergence remains.
+
       The divergence has a second, observable axis on method targets.
       In Go (str-hy9b.H5), an Execute on a method now dispatches through
       the launcher wrapper's receiver-kind switch: with a plan it invokes

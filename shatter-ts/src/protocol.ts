@@ -123,6 +123,48 @@ export interface InstrumentRequest extends BaseRequest {
   execution_profile?: ExecutionProfile | null;
 }
 
+/** Strategy for producing a value in an InvocationPlan (mirrors Rust `ValuePlanKind`). */
+export type ValuePlanKind =
+  | "literal"
+  | "zero"
+  | "random"
+  | "symbolic"
+  | "runtime_value";
+
+/** Production strategy for one argument of an InvocationPlan. */
+export interface ValuePlan {
+  param_index: number;
+  param_name: string;
+  kind: ValuePlanKind;
+  /** Concrete value when `kind` is `literal` (source expression string for `runtime_value`). */
+  literal?: unknown;
+  type_hint?: string;
+}
+
+/** Typed plan for populating one field on a constructed receiver (str-mhinv.1). */
+export interface ReceiverFieldPlan {
+  /** Field path from the receiver root, e.g. ["Resolver", "SearchBackend"]. */
+  path: string[];
+  kind: ValuePlanKind;
+  literal?: unknown;
+  type_hint?: string;
+}
+
+/**
+ * Resolved plan for invoking a target once (wire shape of Rust `InvocationPlan`).
+ * TS accepts and types this on requests but does not consume it.
+ */
+export interface InvocationPlan {
+  target_id: string;
+  receiver_kind: string;
+  generic_type_args?: string[];
+  argument_plans: ValuePlan[];
+  constructor_arg_plans?: ValuePlan[];
+  receiver_field_plans?: ReceiverFieldPlan[];
+  priority: number;
+  label?: string;
+}
+
 export interface PrepareRequest extends BaseRequest {
   command: "prepare";
   file: string;
@@ -130,6 +172,8 @@ export interface PrepareRequest extends BaseRequest {
   mocks: MockConfig[];
   project_root?: string | null;
   execution_profile?: ExecutionProfile | null;
+  /** Accepted on the wire; ignored by TS (ts-rust-execute-plan-not-implemented). */
+  plan?: InvocationPlan | null;
 }
 
 export interface ExecuteRequest extends BaseRequest {
@@ -143,6 +187,8 @@ export interface ExecuteRequest extends BaseRequest {
   /** When false, skip side-effect capture (console/process interception) for lower overhead. Defaults to true. */
   capture?: boolean;
   execution_profile?: ExecutionProfile | null;
+  /** Accepted on the wire; ignored by TS (ts-rust-execute-plan-not-implemented). */
+  plan?: InvocationPlan | null;
 }
 
 export interface SetupRequest extends BaseRequest {
