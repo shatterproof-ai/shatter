@@ -511,10 +511,7 @@ fn to_z3_expr(vars: &mut VarTable, expr: &SymExpr, hint_sort: Sort) -> Result<Z3
 
         SymExpr::Const(c) => match c {
             ConstValue::Int(v) => Ok(Z3Ast::Int(Int::from_i64(*v))),
-            ConstValue::Float(v) => {
-                let scaled = (*v * 1_000_000.0).round() as i64;
-                Ok(Z3Ast::Real(Real::from_rational(scaled, 1_000_000)))
-            }
+            ConstValue::Float(v) => Ok(Z3Ast::Real(float_to_real(*v)?)),
             ConstValue::Str(s) => Ok(Z3Ast::Str(Z3String::from_str(s).map_err(|_| {
                 SolverError::Unsupported("failed to create Z3 string constant".into())
             })?)),
@@ -1019,8 +1016,120 @@ fn to_z3_string(vars: &mut VarTable, expr: &SymExpr) -> Result<Z3String, SolverE
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// Multiply a decimal digit vector (little-endian base 10) by `2^shift` in place.
+fn decimal_shl(digits: &mut Vec<u32>, shift: u32) {
+    for _ in 0..shift {
+        let mut carry = 0;
+        for d in digits.iter_mut() {
+            let t = *d * 2 + carry;
+            *d = t % 10;
+            carry = t / 10;
+        }
+        if carry > 0 {
+            digits.push(carry);
+        }
+    }
+}
+
+fn digits_to_string(digits: &[u32]) -> String {
+    digits
+        .iter()
+        .rev()
+        .map(|d| char::from(b'0' + *d as u8))
+        .collect()
+}
+
+/// Encode a finite `f64` as its exact binary rational `m * 2^e` Z3 real numeral.
+///
+/// This preserves the literal exactly; it does not give real arithmetic IEEE-754
+/// operation semantics (rounding, overflow, infinities, NaN). Non-finite values
+/// are reported as [`SolverError::Unsupported`].
+fn float_to_real(v: f64) -> Result<Real, SolverError> {
+    if !v.is_finite() {
+        return Err(SolverError::Unsupported(format!(
+            "non-finite float constant {v} has no real-valued encoding"
+        )));
+    }
+    let bits = v.to_bits();
+    let sign = if bits >> 63 == 1 { "-" } else { "" };
+    let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & ((1u64 << 52) - 1);
+    let (mant, exp) = if exp_bits == 0 {
+        (frac, -1074)
+    } else {
+        (frac | (1u64 << 52), exp_bits - 1075)
+    };
+    let (num, den) = if mant == 0 {
+        ("0".to_string(), "1".to_string())
+    } else {
+        let tz = mant.trailing_zeros();
+        let (mant, exp) = (mant >> tz, exp + tz as i32);
+        if exp >= 0 {
+            let mut digits: Vec<u32> = mant
+                .to_string()
+                .bytes()
+                .rev()
+                .map(|b| u32::from(b - b'0'))
+                .collect();
+            decimal_shl(&mut digits, exp as u32);
+            (
+                format!("{sign}{}", digits_to_string(&digits)),
+                "1".to_string(),
+            )
+        } else {
+            let mut digits = vec![1u32];
+            decimal_shl(&mut digits, exp.unsigned_abs());
+            (format!("{sign}{mant}"), digits_to_string(&digits))
+        }
+    };
+    Real::from_rational_str(&num, &den)
+        .ok_or_else(|| SolverError::Unsupported(format!("failed to encode float constant {v}")))
+}
+
+/// Decimal digits requested when a model numeral does not fit exactly in an `f64`
+/// quotient: enough to resolve the smallest subnormal (`5e-324`) with full precision.
+const REAL_APPROX_DIGITS: usize = 1100;
+
+/// Convert a model's real numeral to the nearest `f64`, or report it as unsupported
+/// (e.g. magnitude beyond `f64`) rather than dropping the assignment.
+fn real_to_f64(name: &str, val: &Real) -> Result<f64, SolverError> {
+    if let Some((num, den)) = val.as_rational()
+        && den != 0
+        && num.unsigned_abs() < (1 << 53)
+        && den.unsigned_abs() < (1 << 53)
+    {
+        // Both operands exact in f64, so one IEEE division is correctly rounded.
+        return Ok(num as f64 / den as f64);
+    }
+    let approx = val.approx(REAL_APPROX_DIGITS);
+    match approx.parse::<f64>() {
+        Ok(f) if f.is_finite() => Ok(f),
+        _ => Err(SolverError::Unsupported(format!(
+            "model value for `{name}` is not representable as f64"
+        ))),
+    }
+}
+
+#[cfg(test)]
+/// Exact decimal numeral string of a Z3 real numeral (`"n"` or `"n/d"`), of any size.
+fn real_numeral_string(r: &Real) -> Option<String> {
+    let ctx = r.get_ctx().get_z3_context();
+    // SAFETY: `r` is a live numeral AST in `ctx`; the returned string is owned by Z3
+    // and copied before the next Z3 call.
+    unsafe {
+        let p = z3_sys::Z3_get_numeral_string(ctx, r.get_z3_ast());
+        if p.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr(p).to_str().ok()?.to_owned())
+    }
+}
+
 /// Extract concrete values for all declared variables from a Z3 model.
-fn extract_concrete_values(model: &z3::Model, vars: &VarTable) -> HashMap<String, ConcreteValue> {
+fn extract_concrete_values(
+    model: &z3::Model,
+    vars: &VarTable,
+) -> Result<HashMap<String, ConcreteValue>, SolverError> {
     let mut result = HashMap::new();
 
     for (name, ast) in &vars.ints {
@@ -1033,16 +1142,7 @@ fn extract_concrete_values(model: &z3::Model, vars: &VarTable) -> HashMap<String
 
     for (name, ast) in &vars.reals {
         if let Some(val) = model.eval(ast, true) {
-            if let Some((num, den)) = val.as_rational() {
-                if den != 0 {
-                    result.insert(name.clone(), ConcreteValue::Float(num as f64 / den as f64));
-                }
-            } else {
-                let s = val.to_string();
-                if let Ok(f) = s.parse::<f64>() {
-                    result.insert(name.clone(), ConcreteValue::Float(f));
-                }
-            }
+            result.insert(name.clone(), ConcreteValue::Float(real_to_f64(name, &val)?));
         }
     }
 
@@ -1062,7 +1162,7 @@ fn extract_concrete_values(model: &z3::Model, vars: &VarTable) -> HashMap<String
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Check that solved `ConcreteValue` types are compatible with declared `ParamInfo` types.
@@ -1406,7 +1506,7 @@ fn check_and_extract(solver: &Solver, vars: &VarTable) -> Result<SolveResult, So
             let model = solver.get_model().ok_or_else(|| {
                 SolverError::Unknown("solver returned sat but no model available".into())
             })?;
-            let values = extract_concrete_values(&model, vars);
+            let values = extract_concrete_values(&model, vars)?;
             Ok(SolveResult::Sat(values))
         }
         SatResult::Unsat => Ok(SolveResult::Unsat),
@@ -2199,6 +2299,215 @@ mod tests {
                 assert!(x > 3.5, "expected x > 3.5, got x={x}");
             }
             SolveResult::Unsat => panic!("expected sat"),
+        }
+    }
+
+    // ── Float constant fidelity (str-aureo) ──────────────────────────────
+
+    fn float_param(name: &str) -> ParamInfo {
+        ParamInfo {
+            name: name.into(),
+            typ: TypeInfo::Float,
+            type_name: None,
+        }
+    }
+
+    fn float_cmp(op: BinOpKind, c: f64) -> SymExpr {
+        SymExpr::BinOp {
+            op,
+            left: Box::new(SymExpr::Param {
+                name: "x".into(),
+                path: vec![],
+            }),
+            right: Box::new(SymExpr::Const(ConstValue::Float(c))),
+        }
+    }
+
+    fn solve_float_x(op: BinOpKind, c: f64) -> Result<f64, SolverError> {
+        match solve_constraints(&[float_cmp(op, c)], Some(5000), &[float_param("x")])? {
+            SolveResult::Sat(values) => match values.get("x") {
+                Some(ConcreteValue::Float(v)) => Ok(*v),
+                other => panic!("expected Float for x, got {other:?}"),
+            },
+            SolveResult::Unsat => panic!("expected sat for x {op:?} {c}"),
+        }
+    }
+
+    #[test]
+    fn float_constant_tiny_identity_equality() {
+        assert_eq!(solve_float_x(BinOpKind::Eq, 1e-7).unwrap(), 1e-7);
+        assert_eq!(solve_float_x(BinOpKind::Eq, -1e-7).unwrap(), -1e-7);
+    }
+
+    #[test]
+    fn float_constant_above_i32_scaled_range_is_not_wrapped() {
+        // 3000.0 * 1e6 overflowed a 32-bit numerator and became -1294.967296.
+        for c in [3000.0, 86400.0, 1e6, 1e13, 1e20] {
+            // Beyond 2^53 the real witness c+1 rounds back to c in f64, so only
+            // require strictness where f64 can express it.
+            let strict = c < 9.0e15;
+            let x = solve_float_x(BinOpKind::Gt, c).unwrap();
+            assert!(x > c || (!strict && x == c), "x > {c} produced x={x}");
+            let x = solve_float_x(BinOpKind::Lt, -c).unwrap();
+            assert!(x < -c || (!strict && x == -c), "x < -{c} produced x={x}");
+        }
+    }
+
+    #[test]
+    fn float_constant_identity_corpus() {
+        for c in [
+            0.1,
+            -0.1,
+            2147.483648,
+            3000.0,
+            -3000.0,
+            1e13,
+            1e-7,
+            -1e-7,
+            5e-324,
+            -5e-324,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            assert_eq!(
+                solve_float_x(BinOpKind::Eq, c).unwrap(),
+                c,
+                "identity for {c:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn float_constant_non_finite_is_unsupported() {
+        for c in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let r = solve_constraints(
+                &[float_cmp(BinOpKind::Eq, c)],
+                Some(5000),
+                &[float_param("x")],
+            );
+            assert!(
+                matches!(r, Err(SolverError::Unsupported(_))),
+                "{c} should be Unsupported, got {r:?}"
+            );
+        }
+    }
+
+    /// Exact binary rational of a finite f64 as decimal (numerator, denominator),
+    /// via integer_decode and i128/string arithmetic independent of the encoder.
+    fn expected_rational(v: f64) -> (String, String) {
+        let bits = v.to_bits();
+        let sign = if bits >> 63 == 1 { "-" } else { "" };
+        let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+        let frac = bits & ((1u64 << 52) - 1);
+        let (mant, exp) = if exp_bits == 0 {
+            (frac, -1074)
+        } else {
+            (frac | (1u64 << 52), exp_bits - 1075)
+        };
+        // Reduce: strip trailing zero bits of mantissa.
+        let tz = if mant == 0 {
+            0
+        } else {
+            mant.trailing_zeros() as i32
+        };
+        let (mant, exp) = (mant >> tz, exp + tz);
+        let mul_pow2 = |m: u64, k: i32| -> String {
+            let mut digits: Vec<u32> = m
+                .to_string()
+                .bytes()
+                .rev()
+                .map(|b| u32::from(b - b'0'))
+                .collect();
+            for _ in 0..k {
+                let mut carry = 0;
+                for d in digits.iter_mut() {
+                    let t = *d * 2 + carry;
+                    *d = t % 10;
+                    carry = t / 10;
+                }
+                if carry > 0 {
+                    digits.push(carry);
+                }
+            }
+            digits
+                .iter()
+                .rev()
+                .map(|d| char::from(b'0' + *d as u8))
+                .collect()
+        };
+        if exp >= 0 || mant == 0 {
+            (format!("{sign}{}", mul_pow2(mant, exp.max(0))), "1".into())
+        } else {
+            (format!("{sign}{mant}"), mul_pow2(1, -exp))
+        }
+    }
+
+    fn z3_numeral_parts(v: f64) -> (String, String) {
+        let ast = to_z3_expr(
+            &mut VarTable::new(HashMap::new()),
+            &SymExpr::Const(ConstValue::Float(v)),
+            Sort::Real,
+        )
+        .expect("finite float translates");
+        let Z3Ast::Real(r) = ast else {
+            panic!("expected Real");
+        };
+        let s = real_numeral_string(&r).expect("numeral string");
+        match s.split_once('/') {
+            Some((n, d)) => (n.to_string(), d.to_string()),
+            None => (s, "1".into()),
+        }
+    }
+
+    #[test]
+    fn float_constant_translation_is_exact_binary_rational() {
+        for c in [
+            0.1,
+            -0.1,
+            2147.483648,
+            3000.0,
+            -3000.0,
+            1e13,
+            1e-7,
+            5e-324,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            0.0,
+        ] {
+            assert_eq!(
+                z3_numeral_parts(c),
+                expected_rational(c),
+                "numeral for {c:e}"
+            );
+        }
+    }
+
+    mod float_const_proptest {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn finite_f64() -> impl Strategy<Value = f64> {
+            any::<u64>()
+                .prop_map(f64::from_bits)
+                .prop_filter("finite", |v| v.is_finite())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            #[test]
+            fn translation_matches_exact_rational(v in finite_f64()) {
+                prop_assert_eq!(z3_numeral_parts(v), expected_rational(v));
+            }
+
+            #[test]
+            fn identity_equality_roundtrips(v in finite_f64()) {
+                // Real-valued encoding preserves the literal; -0.0 has no real
+                // counterpart and is witnessed as 0.0.
+                let got = solve_float_x(BinOpKind::Eq, v).unwrap();
+                prop_assert_eq!(got, v);
+            }
         }
     }
 
