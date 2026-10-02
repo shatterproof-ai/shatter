@@ -61,7 +61,7 @@ binary.
 Use this when a Go repo has no root Node tooling:
 
 ```bash
-go get -tool github.com/shatterproof-ai/shatter/go-tool/cmd/shatter@continuous-20260512-1735-abc123def456
+go get -tool github.com/shatterproof-ai/shatter/shatter-go-tool/cmd/shatter@continuous-20260512-1735-abc123def456
 SHATTER_BUILD=continuous-20260512-1735-abc123def456 go tool shatter --version
 ```
 
@@ -69,6 +69,12 @@ The wrapper downloads `shatter-release.json`, verifies the matching archive
 checksum, caches the payload under the user cache directory, and forwards
 arguments to the real binary. Set `SHATTER_BUILD` or pass `--shatter-build` for
 an exact binary build.
+
+The module lives in the `shatter-go-tool/` directory of the repository, which is
+why its path ends in `/shatter-go-tool`. `continuous-*` tags are not semantic
+versions, so `@continuous-...` is a revision query: Go resolves it in the
+repository and records a pseudo-version for the nested module. No
+directory-prefixed tags are needed.
 
 ## GitHub Setup Action
 
@@ -107,7 +113,7 @@ is the best fit for registryless tarball URLs and cross-file grouping.
     {
       "fileMatch": ["(^|/)go\\.mod$"],
       "matchStrings": [
-        "github\\.com/shatterproof-ai/shatter/go-tool/cmd/shatter\\s+(?<currentValue>[^\\s]+)"
+        "github\\.com/shatterproof-ai/shatter/shatter-go-tool/cmd/shatter\\s+(?<currentValue>[^\\s]+)"
       ],
       "depNameTemplate": "shatterproof-ai/shatter",
       "datasourceTemplate": "github-releases"
