@@ -1577,8 +1577,32 @@ fn check_bin_only_compatibility(
     Err(ExecuteError::NonExecutable(msg))
 }
 
-/// Generate a Cargo.toml for the temp project.
+/// Generate a Cargo.toml for the temp project (default package name).
+#[cfg(test)]
 fn generate_cargo_toml(
+    runtime_path: &Path,
+    needs_tokio: bool,
+    needs_axum: bool,
+    needs_shatter_rust: bool,
+) -> String {
+    generate_cargo_toml_named(
+        "shatter-exec-temp",
+        runtime_path,
+        needs_tokio,
+        needs_axum,
+        needs_shatter_rust,
+    )
+}
+
+/// Package (and so binary) name for a standalone harness built into the shared
+/// `CARGO_TARGET_DIR`. It is derived from the unique per-harness directory so two
+/// harnesses never resolve to the same binary path (str-qwua7.14).
+fn standalone_harness_package_name(harness_dir: &Path) -> String {
+    crate_bridge_driver_package_name("shatter-exec-temp", harness_dir)
+}
+
+fn generate_cargo_toml_named(
+    package_name: &str,
     runtime_path: &Path,
     needs_tokio: bool,
     needs_axum: bool,
@@ -1614,7 +1638,7 @@ fn generate_cargo_toml(
     };
     format!(
         r#"[package]
-name = "shatter-exec-temp"
+name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
 
@@ -2959,7 +2983,14 @@ fn build_and_spawn_harness(
     let src_dir = harness_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
 
-    let cargo_toml = generate_cargo_toml(runtime_path, needs_tokio, needs_axum, needs_shatter_rust);
+    let package_name = standalone_harness_package_name(harness_dir);
+    let cargo_toml = generate_cargo_toml_named(
+        &package_name,
+        runtime_path,
+        needs_tokio,
+        needs_axum,
+        needs_shatter_rust,
+    );
     std::fs::write(harness_dir.join("Cargo.toml"), &cargo_toml)?;
     std::fs::write(src_dir.join("main.rs"), harness_source)?;
 
@@ -3019,11 +3050,7 @@ fn build_and_spawn_harness(
     mark_cargo_lock_built(&harness_dir.join("Cargo.toml"))?;
 
     // Locate binary
-    let binary_name = if cfg!(windows) {
-        "shatter-exec-temp.exe"
-    } else {
-        "shatter-exec-temp"
-    };
+    let binary_name = cargo_binary_name(&package_name);
     let profile_dir = if release { "release" } else { "debug" };
     let binary_path = target_dir.join(profile_dir).join(binary_name);
     if !binary_path.exists() {
@@ -16335,5 +16362,77 @@ edition = "2021"
         let _ = std::fs::remove_dir_all(&crate_root);
         let _ = std::fs::remove_dir_all(&staging_root);
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// Standalone harnesses share one `CARGO_TARGET_DIR`; each must build to its
+    /// own binary path, otherwise a concurrent build for another function replaces
+    /// the binary before this harness spawns it and inputs reach the wrong
+    /// function ("invalid type: string, expected f64"). str-qwua7.14.
+    #[test]
+    fn standalone_harness_package_names_are_unique_per_harness_dir() {
+        let a = standalone_harness_package_name(Path::new("/cache/rust/harnesses/rust-harness-1-0"));
+        let b = standalone_harness_package_name(Path::new("/cache/rust/harnesses/rust-harness-1-1"));
+        assert_ne!(a, b, "distinct harness dirs must not share a binary name");
+        let toml = generate_cargo_toml_named(&a, Path::new("/rt"), false, false, false);
+        assert!(
+            toml.contains(&format!("name = \"{a}\"")),
+            "generated Cargo.toml must use the per-harness package name:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn concurrent_standalone_harnesses_run_their_own_function() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source_file = dir.path().join("standalone.rs");
+        let mut src = String::new();
+        let names: Vec<String> = (0..4).map(|i| format!("answer_{i}")).collect();
+        for (i, name) in names.iter().enumerate() {
+            src.push_str(&format!("fn {name}(n: i64) -> i64 {{ n + {} }}\n", i * 1000));
+        }
+        std::fs::write(&source_file, src).expect("write source");
+        let path = source_file.to_string_lossy().to_string();
+
+        let cache: HarnessCache = Mutex::new(HashMap::new());
+        let crate_cache: CrateHarnessCache = Mutex::new(HashMap::new());
+        let bridge_cache: CrateBridgeHarnessCache = Mutex::new(HashMap::new());
+        let outcomes: Vec<Result<ExecuteResult, ExecuteError>> = std::thread::scope(|s| {
+            let handles: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    let (path, cache, crate_cache, bridge_cache) =
+                        (&path, &cache, &crate_cache, &bridge_cache);
+                    s.spawn(move || {
+                        execute_function(
+                            path,
+                            name,
+                            &[serde_json::json!(1)],
+                            &[],
+                            120_000,
+                            None,
+                            cache,
+                            crate_cache,
+                            bridge_cache,
+                        )
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().expect("join")).collect()
+        });
+
+        for (i, outcome) in outcomes.into_iter().enumerate() {
+            match outcome {
+                Ok(result) => assert_eq!(
+                    result.return_value,
+                    Some(serde_json::json!(1 + i as i64 * 1000)),
+                    "answer_{i} ran another function's harness: {:?}",
+                    result.thrown_error
+                ),
+                Err(ExecuteError::CompilationFailed(msg)) if cargo_build_unavailable(&msg) => {
+                    eprintln!("skipping concurrent_standalone_harnesses: cargo unavailable ({msg})");
+                    return;
+                }
+                Err(err) => panic!("execute answer_{i} failed: {err:?}"),
+            }
+        }
     }
 }
