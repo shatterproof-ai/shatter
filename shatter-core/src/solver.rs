@@ -1043,7 +1043,8 @@ fn digits_to_string(digits: &[u32]) -> String {
 ///
 /// This preserves the literal exactly; it does not give real arithmetic IEEE-754
 /// operation semantics (rounding, overflow, infinities, NaN). Non-finite values
-/// are reported as [`SolverError::Unsupported`].
+/// are reported as [`SolverError::Unsupported`]. `-0.0` encodes as `0`, since the
+/// reals have no negative zero.
 fn float_to_real(v: f64) -> Result<Real, SolverError> {
     if !v.is_finite() {
         return Err(SolverError::Unsupported(format!(
@@ -1087,7 +1088,9 @@ fn float_to_real(v: f64) -> Result<Real, SolverError> {
 }
 
 /// Decimal digits requested when a model numeral does not fit exactly in an `f64`
-/// quotient: enough to resolve the smallest subnormal (`5e-324`) with full precision.
+/// quotient. The smallest subnormal `2^-1074` needs 1074 decimal places, so 1100
+/// resolves it exactly. Z3's `approx` truncates (it does not round), which is
+/// harmless at this many digits because the `f64` parse rounds correctly.
 const REAL_APPROX_DIGITS: usize = 1100;
 
 /// Convert a model's real numeral to the nearest `f64`, or report it as unsupported
@@ -1110,8 +1113,8 @@ fn real_to_f64(name: &str, val: &Real) -> Result<f64, SolverError> {
     }
 }
 
-#[cfg(test)]
 /// Exact decimal numeral string of a Z3 real numeral (`"n"` or `"n/d"`), of any size.
+#[cfg(test)]
 fn real_numeral_string(r: &Real) -> Option<String> {
     let ctx = r.get_ctx().get_z3_context();
     // SAFETY: `r` is a live numeral AST in `ctx`; the returned string is owned by Z3
@@ -2347,9 +2350,9 @@ mod tests {
             // require strictness where f64 can express it.
             let strict = c < 9.0e15;
             let x = solve_float_x(BinOpKind::Gt, c).unwrap();
-            assert!(x > c || (!strict && x == c), "x > {c} produced x={x}");
+            assert!(x > c || (!strict && x >= c), "x > {c} produced x={x}");
             let x = solve_float_x(BinOpKind::Lt, -c).unwrap();
-            assert!(x < -c || (!strict && x == -c), "x < -{c} produced x={x}");
+            assert!(x < -c || (!strict && x <= -c), "x < -{c} produced x={x}");
         }
     }
 
@@ -2379,6 +2382,27 @@ mod tests {
     }
 
     #[test]
+    fn model_value_beyond_f64_is_unsupported_not_dropped() {
+        // A model numeral far outside f64 must be reported, not omitted or
+        // saturated: 10^400 has no finite f64 value.
+        let huge = format!("1{}", "0".repeat(400));
+        let r = Real::from_rational_str(&huge, "1").unwrap();
+        assert!(matches!(
+            real_to_f64("x", &r),
+            Err(SolverError::Unsupported(_))
+        ));
+        let exact = Real::from_rational_str("3", "4").unwrap();
+        assert_eq!(real_to_f64("x", &exact).unwrap(), 0.75);
+    }
+
+    #[test]
+    fn real_numeral_string_is_exact_decimal_ratio() {
+        assert_eq!(real_numeral_string(&translated_real(3000.0)).unwrap(), "3000");
+        assert_eq!(real_numeral_string(&translated_real(0.5)).unwrap(), "1/2");
+        assert_eq!(real_numeral_string(&translated_real(-0.75)).unwrap(), "-3/4");
+    }
+
+    #[test]
     fn float_constant_non_finite_is_unsupported() {
         for c in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let r = solve_constraints(
@@ -2393,57 +2417,34 @@ mod tests {
         }
     }
 
-    /// Exact binary rational of a finite f64 as decimal (numerator, denominator),
-    /// via integer_decode and i128/string arithmetic independent of the encoder.
-    fn expected_rational(v: f64) -> (String, String) {
+    /// Independent oracle for the encoding: `mant * 2^exp` rebuilt with exact Z3
+    /// arithmetic (repeated multiplication by 2 or 1/2), sharing no code with the
+    /// decimal-string routine in `float_to_real`.
+    fn expected_real(v: f64) -> Real {
         let bits = v.to_bits();
-        let sign = if bits >> 63 == 1 { "-" } else { "" };
         let exp_bits = ((bits >> 52) & 0x7ff) as i32;
-        let frac = bits & ((1u64 << 52) - 1);
+        let frac = (bits & ((1u64 << 52) - 1)) as i64;
         let (mant, exp) = if exp_bits == 0 {
             (frac, -1074)
         } else {
-            (frac | (1u64 << 52), exp_bits - 1075)
+            (frac | (1i64 << 52), exp_bits - 1075)
         };
-        // Reduce: strip trailing zero bits of mantissa.
-        let tz = if mant == 0 {
-            0
+        let signed = if bits >> 63 == 1 { -mant } else { mant };
+        let step = if exp >= 0 {
+            Real::from_rational(2, 1)
         } else {
-            mant.trailing_zeros() as i32
+            Real::from_rational(1, 2)
         };
-        let (mant, exp) = (mant >> tz, exp + tz);
-        let mul_pow2 = |m: u64, k: i32| -> String {
-            let mut digits: Vec<u32> = m
-                .to_string()
-                .bytes()
-                .rev()
-                .map(|b| u32::from(b - b'0'))
-                .collect();
-            for _ in 0..k {
-                let mut carry = 0;
-                for d in digits.iter_mut() {
-                    let t = *d * 2 + carry;
-                    *d = t % 10;
-                    carry = t / 10;
-                }
-                if carry > 0 {
-                    digits.push(carry);
-                }
-            }
-            digits
-                .iter()
-                .rev()
-                .map(|d| char::from(b'0' + *d as u8))
-                .collect()
-        };
-        if exp >= 0 || mant == 0 {
-            (format!("{sign}{}", mul_pow2(mant, exp.max(0))), "1".into())
-        } else {
-            (format!("{sign}{mant}"), mul_pow2(1, -exp))
+        // `Real::from_rational` takes i32 operands, so build the 53-bit mantissa
+        // from its decimal string.
+        let mut acc = Real::from_rational_str(&signed.to_string(), "1").expect("mantissa");
+        for _ in 0..exp.unsigned_abs() {
+            acc = Real::mul(&[&acc, &step]);
         }
+        acc
     }
 
-    fn z3_numeral_parts(v: f64) -> (String, String) {
+    fn translated_real(v: f64) -> Real {
         let ast = to_z3_expr(
             &mut VarTable::new(HashMap::new()),
             &SymExpr::Const(ConstValue::Float(v)),
@@ -2453,11 +2454,19 @@ mod tests {
         let Z3Ast::Real(r) = ast else {
             panic!("expected Real");
         };
-        let s = real_numeral_string(&r).expect("numeral string");
-        match s.split_once('/') {
-            Some((n, d)) => (n.to_string(), d.to_string()),
-            None => (s, "1".into()),
-        }
+        r
+    }
+
+    /// True when the translated numeral equals the exact binary rational of `v`.
+    fn encoding_is_exact(v: f64) -> bool {
+        let got = translated_real(v);
+        // -0.0 has no real counterpart and is encoded as 0.
+        let want = if v == 0.0 {
+            Real::from_rational(0, 1)
+        } else {
+            expected_real(v)
+        };
+        got.eq(&want).simplify().as_bool() == Some(true)
     }
 
     #[test]
@@ -2475,11 +2484,7 @@ mod tests {
             f64::MIN_POSITIVE,
             0.0,
         ] {
-            assert_eq!(
-                z3_numeral_parts(c),
-                expected_rational(c),
-                "numeral for {c:e}"
-            );
+            assert!(encoding_is_exact(c), "numeral for {c:e} is not exact");
         }
     }
 
@@ -2498,7 +2503,7 @@ mod tests {
 
             #[test]
             fn translation_matches_exact_rational(v in finite_f64()) {
-                prop_assert_eq!(z3_numeral_parts(v), expected_rational(v));
+                prop_assert!(encoding_is_exact(v), "numeral for {v:e} is not exact");
             }
 
             #[test]
