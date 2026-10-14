@@ -160,9 +160,10 @@ implement them; conformance tests (`task conformance`) expect TS to
 return a clean "capability not supported" response rather than crashing
 or returning malformed data when these are probed.
 
-The Execute command's optional `plan` field (an `InvocationPlan` from
-`get_invocation_plan`, added in str-hy9b.H5) is accepted on the wire but
-ignored by the TS executor. This is a tracked divergence — see the
+The Prepare and Execute commands' optional `plan` field (an `InvocationPlan`
+from `get_invocation_plan`, added in str-hy9b.H5) is typed in
+`src/protocol.ts` (`InvocationPlan`, `ValuePlan`, `ReceiverFieldPlan`,
+str-mhinv.2) but ignored by the TS executor. This is a tracked divergence — see the
 `ts-rust-execute-plan-not-implemented` entry in
 `protocol/parity-matrix.yaml`. TS callers that pass `plan` should expect
 identical behavior to a request without `plan`; the field exists so that
