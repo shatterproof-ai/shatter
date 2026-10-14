@@ -651,7 +651,8 @@ feature_capabilities:
       so method targets dispatch through the wrapper's receiver-kind
       switch instead of hard-erroring with `method_not_supported`. The
       CLI `--planner=go` flag seeds the observe stage for both explorer
-      and orchestrator paths. TypeScript has no planner yet; the Rust
+      and orchestrator paths. TypeScript has no planner yet (it only types
+      the `plan` wire field); the Rust
       frontend does not yet consume `Execute.plan` either — see
       `ts-rust-execute-plan-not-implemented` below.
 
@@ -956,7 +957,8 @@ allowed_divergences:
       unadvertised drop so callers can rely on the field shape across
       languages even when only Go acts on it today.
 
-      str-mhinv.2: TypeScript now has typed wire support — `plan?:
+      str-mhinv.2: TypeScript now has typed wire support for both
+      `Prepare.plan` and `Execute.plan` — `plan?:
       InvocationPlan | null` on PrepareRequest and ExecuteRequest, with
       `InvocationPlan`/`ValuePlan`/`ReceiverFieldPlan` interfaces in
       shatter-ts/src/protocol.ts. This is typing only; TS still does not

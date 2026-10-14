@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION } from "./protocol.js";
 
 // Wire shape produced by the Rust core / Go planner, including
 // receiver_field_plans (str-mhinv.1) and a runtime_value plan.
-const planWire = {
+const planWire: InvocationPlan = {
   target_id: "example.com/pkg:(*queryResolver).Search",
   receiver_kind: "constructor:NewResolver",
   generic_type_args: ["int"],
@@ -30,9 +30,34 @@ const planWire = {
   label: "ctor",
 };
 
+// Verbatim wire JSON (snake_case, optional fields omitted) as the Rust core and
+// Go planner emit it. Decoding a string, not re-serializing a TS literal, is
+// what makes a field rename on either side fail this test.
+const planWireJson = `{
+  "target_id": "example.com/pkg:(*queryResolver).Search",
+  "receiver_kind": "constructor:NewResolver",
+  "argument_plans": [
+    {"param_index": 0, "param_name": "ctx", "kind": "runtime_value", "literal": "context.Background()", "type_hint": "context.Context"}
+  ],
+  "receiver_field_plans": [
+    {"path": ["Resolver", "SearchBackend"], "kind": "runtime_value", "literal": "stub()"}
+  ],
+  "priority": 1
+}`;
+
 describe("InvocationPlan request typing", () => {
+  it("decodes the Rust/Go wire JSON into the typed plan", () => {
+    const decoded = JSON.parse(`{"protocol_version":"${PROTOCOL_VERSION}","id":9,"command":"execute","function":"Search","inputs":[],"mocks":[],"plan":${planWireJson}}`) as ExecuteRequest;
+    expect(decoded.plan?.target_id).toBe("example.com/pkg:(*queryResolver).Search");
+    expect(decoded.plan?.receiver_kind).toBe("constructor:NewResolver");
+    expect(decoded.plan?.argument_plans[0]?.kind).toBe("runtime_value");
+    expect(decoded.plan?.argument_plans[0]?.param_index).toBe(0);
+    expect(decoded.plan?.receiver_field_plans?.[0]?.path).toEqual(["Resolver", "SearchBackend"]);
+    expect(decoded.plan?.priority).toBe(1);
+  });
+
   it("ExecuteRequest with plan survives JSON round-trip", () => {
-    const plan: InvocationPlan = planWire as InvocationPlan;
+    const plan: InvocationPlan = planWire;
     const req: ExecuteRequest = {
       protocol_version: PROTOCOL_VERSION,
       id: 1,
@@ -55,7 +80,7 @@ describe("InvocationPlan request typing", () => {
       file: "a.ts",
       function: "f",
       mocks: [],
-      plan: planWire as InvocationPlan,
+      plan: planWire,
     };
     expect(JSON.parse(JSON.stringify(req))).toEqual(req);
   });
