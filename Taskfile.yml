@@ -480,6 +480,7 @@ tasks:
       - python3 -m unittest scripts.test_bench_budget_alloc
       - python3 -m unittest scripts.test_test_tier_wiring
       - cd shatter-go-tool && go test ./...
+      - python3 -m unittest scripts.test_go_tool_module_path
       - |
         if [ -d .github/workflows ] && command -v actionlint >/dev/null 2>&1; then
           actionlint
