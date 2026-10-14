@@ -5,7 +5,9 @@ github.com/shatterproof-ai/shatter/<X> to the <X>/ directory at the repo root.
 The wrapper module path must therefore end in its directory name, and the path
 documented in docs/distribution.md (install command and Renovate regex) must
 match the module line. The build test resolves the documented path against the
-local checkout with a replace directive, so it needs no network.
+local checkout with a replace directive, so it needs no network. It does not
+exercise remote resolution on GitHub; the module-path-matches-directory test
+covers that mapping at the string level.
 """
 
 import os
@@ -35,12 +37,14 @@ class GoToolModulePath(unittest.TestCase):
 
     def test_install_command_uses_module_path(self):
         text = DOCS.read_text()
-        match = re.search(r"^go get -tool (\S+?)/cmd/shatter@", text, re.M)
-        self.assertIsNotNone(match, "go get -tool command missing from docs")
-        self.assertEqual(match.group(1), module_path())
+        paths = re.findall(r"^go get -tool (\S+?)/cmd/shatter@", text, re.M)
+        self.assertTrue(paths, "go get -tool command missing from docs")
+        for documented in paths:
+            self.assertEqual(documented, module_path())
 
     def test_renovate_regex_uses_module_path(self):
         text = DOCS.read_text()
+        # The docs hold the Renovate regex JSON-escaped, so "." appears as "\\.".
         escaped = module_path().replace(".", "\\\\.")
         self.assertIn(f"{escaped}/cmd/shatter", text)
 
