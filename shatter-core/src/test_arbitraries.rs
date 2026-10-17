@@ -1343,6 +1343,7 @@ pub fn arb_function_spec() -> impl Strategy<Value = FunctionSpec> {
                 invariants,
                 fingerprint,
                 nondeterministic_fields: vec![],
+                comparison_witnesses: vec![],
             },
         )
 }

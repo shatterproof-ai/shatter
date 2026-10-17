@@ -1141,6 +1141,7 @@ mod tests {
             invariants: vec![],
             fingerprint: None,
             nondeterministic_fields: vec![],
+            comparison_witnesses: vec![],
         }
     }
 
