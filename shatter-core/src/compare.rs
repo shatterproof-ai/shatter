@@ -444,6 +444,7 @@ mod tests {
             invariants: Vec::new(),
             fingerprint: None,
             nondeterministic_fields: Vec::new(),
+            comparison_witnesses: vec![],
         }
     }
 

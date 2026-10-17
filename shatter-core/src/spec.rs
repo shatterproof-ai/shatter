@@ -249,7 +249,9 @@ pub enum FileSpecBundleStatus {
 /// `version == 0`, distinguishing legacy/unversioned output from `v1`.
 ///
 /// - v1: initial versioned spec bundle (str-12us).
-pub const SPEC_SCHEMA_VERSION: u32 = 1;
+/// - v2: `FunctionSpec.comparison_witnesses` — every observed execution is
+///   retained as comparison evidence; absent/empty in legacy bundles (str-wztht).
+pub const SPEC_SCHEMA_VERSION: u32 = 2;
 
 /// Per-file spec bundle: all function specs from a single source file.
 ///
@@ -325,6 +327,36 @@ pub struct FunctionSpec {
     /// Used by spec diff to exclude nondeterministic fields from postcondition comparison.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nondeterministic_fields: Vec<crate::nondeterminism::NondeterministicField>,
+    /// Every observed execution, retained as comparison evidence (not a set of
+    /// all possible outcomes). Legacy artifacts omit this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comparison_witnesses: Vec<ComparisonWitness>,
+}
+
+/// One observed execution retained for later spec comparison.
+///
+/// Carries the inputs, supplied mocks, branch path and outcome, plus the
+/// recorded context needed to reject known-incomparable observations.
+/// Unrelated performance counters are deliberately excluded, which is why this
+/// is a separate type rather than a reuse of `ConcreteExample` (one canonical
+/// display example) or `ExecutionRecord` (carries perf data).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComparisonWitness {
+    pub inputs: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mocks: Vec<crate::protocol::MockConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branch_path: Vec<crate::execution_record::BranchDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_value: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thrown_error: Option<ErrorInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub side_effects: Vec<SideEffect>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls_to_external: Vec<crate::execution_record::ExternalCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_truncation: Option<crate::execution_record::TruncationInfo>,
 }
 
 /// Build a [`FunctionSpec`] from an observation output and its equivalence classes.
@@ -355,6 +387,20 @@ pub fn build_spec(
         invariants: vec![],
         fingerprint,
         nondeterministic_fields: result.nondeterministic_fields.clone(),
+        comparison_witnesses: result
+            .raw_results
+            .iter()
+            .map(|(inputs, mocks, res)| ComparisonWitness {
+                inputs: inputs.clone(),
+                mocks: mocks.clone(),
+                branch_path: res.branch_path.clone(),
+                return_value: res.return_value.clone(),
+                thrown_error: res.thrown_error.clone(),
+                side_effects: res.side_effects.clone(),
+                calls_to_external: res.calls_to_external.clone(),
+                capture_truncation: res.capture_truncation.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -680,8 +726,8 @@ pub fn format_file_spec_json(bundles: &[FileSpecBundle]) -> Result<String, serde
 // These private structs mirror FunctionSpec / SpecClass / FileSpecBundle but
 // use Vec<SpecInvariant> for the invariants fields so that YAML output shows
 // human-friendly property descriptions instead of raw ClassifiedInvariant data.
-// They are Serialize-only (no Deserialize) — the JSON / binary representations
-// of FunctionSpec are unchanged.
+// They are Serialize-only (no Deserialize). `comparison_witnesses` is machine
+// evidence for spec diff and is intentionally omitted from the YAML view.
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -1029,8 +1075,133 @@ fn format_value_short(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::equivalence::{BranchPath, BranchStep, EquivalenceClass, Precondition};
-    use crate::execution_record::ErrorInfo;
+
+    fn witness_spec(pairs: &[(i64, i64)]) -> FunctionSpec {
+        let raw_results: Vec<_> = pairs
+            .iter()
+            .map(|(input, output)| {
+                let result = ExecuteResult {
+                    return_value: Some(json!(output)),
+                    branch_path: vec![BranchDecision {
+                        branch_id: 1,
+                        line: 1,
+                        taken: true,
+                        constraint: Default::default(),
+                        conditions: None,
+                    }],
+                    lines_executed: vec![1],
+                    ..Default::default()
+                };
+                (vec![json!(input)], vec![], result)
+            })
+            .collect();
+        let classes = group_into_classes(&raw_results);
+        let observation = ObservationOutput {
+            function_name: "f".to_string(),
+            iterations: pairs.len() as u32,
+            unique_paths: 1,
+            lines_covered: 1,
+            total_lines: 1,
+            raw_results,
+            ..Default::default()
+        };
+        build_spec(
+            &observation,
+            &classes,
+            None,
+            None,
+            &TypeInfo::Int {
+                int_width: None,
+                int_signed: None,
+            },
+        )
+    }
+
+    #[test]
+    fn comparison_witnesses_retain_every_observation_through_round_trip() {
+        let spec = witness_spec(&[(1, 1), (2, 2)]);
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: FunctionSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.comparison_witnesses.len(), 2);
+        assert_eq!(back.comparison_witnesses[1].inputs, vec![json!(2)]);
+        assert_eq!(back.comparison_witnesses[1].return_value, Some(json!(2)));
+        // The canonical example stays a single concise representative.
+        assert_eq!(back.classes.len(), 1);
+    }
+
+    #[test]
+    fn comparison_witnesses_keep_repeated_and_conflicting_outcomes() {
+        let spec = witness_spec(&[(2, 2), (2, 4), (2, 2)]);
+        let returns: Vec<_> = spec
+            .comparison_witnesses
+            .iter()
+            .map(|w| w.return_value.clone())
+            .collect();
+        assert_eq!(returns, vec![Some(json!(2)), Some(json!(4)), Some(json!(2))]);
+    }
+
+    #[test]
+    fn bundle_file_round_trip_preserves_witnesses() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("spec.json");
+        let bundle = FileSpecBundle {
+            file: "f.ts".to_string(),
+            functions: vec![witness_spec(&[(2, 2), (2, 4)])],
+            ..FileSpecBundle::default()
+        };
+        write_file_spec_bundle(&bundle, &path).expect("write");
+        let back = read_file_spec_bundle(&path).expect("read");
+        assert_eq!(back.version, SPEC_SCHEMA_VERSION);
+        assert_eq!(back.functions[0].comparison_witnesses.len(), 2);
+        assert_eq!(
+            back.functions[0].comparison_witnesses,
+            bundle.functions[0].comparison_witnesses
+        );
+    }
+
+    #[test]
+    fn legacy_spec_json_without_witnesses_loads_empty() {
+        let mut value = serde_json::to_value(witness_spec(&[(1, 1)])).unwrap();
+        value.as_object_mut().unwrap().remove("comparison_witnesses");
+        let spec: FunctionSpec = serde_json::from_value(value).unwrap();
+        assert!(spec.comparison_witnesses.is_empty());
+    }
+
+    #[test]
+    fn witnesses_retain_recorded_context_not_performance() {
+        use crate::execution_record::{ExternalCall, SideEffect};
+        let result = ExecuteResult {
+            return_value: Some(json!(1)),
+            side_effects: vec![SideEffect::EnvironmentRead {
+                variable: "HOME".into(),
+                value: Some("/h".into()),
+            }],
+            calls_to_external: vec![ExternalCall {
+                symbol: "dep".into(),
+                args: vec![json!(1)],
+                return_value: json!(2),
+            }],
+            ..Default::default()
+        };
+        let raw_results = vec![(vec![json!(1)], vec![], result)];
+        let classes = group_into_classes(&raw_results);
+        let observation = ObservationOutput {
+            function_name: "f".to_string(),
+            raw_results,
+            ..Default::default()
+        };
+        let spec = build_spec(&observation, &classes, None, None, &TypeInfo::Unknown);
+        let w = &spec.comparison_witnesses[0];
+        assert_eq!(w.side_effects.len(), 1);
+        assert_eq!(w.calls_to_external[0].symbol, "dep");
+        let wire = serde_json::to_value(w).unwrap();
+        assert!(wire.get("performance").is_none());
+    }
+    use crate::equivalence::{
+        group_into_classes, BranchPath, BranchStep, EquivalenceClass, Precondition,
+    };
+    use crate::execution_record::{BranchDecision, ErrorInfo};
+    use crate::protocol::ExecuteResult;
     use crate::explorer::ObservationOutput;
     use serde_json::json;
 
@@ -1698,6 +1869,7 @@ mod tests {
             invariants: vec![],
             fingerprint: None,
             nondeterministic_fields: vec![],
+            comparison_witnesses: vec![],
         };
 
         let json_str = serde_json::to_string_pretty(&spec).expect("serialize");
@@ -2147,6 +2319,7 @@ mod tests {
             invariants: vec![],
             fingerprint: fingerprint.map(|s| s.to_string()),
             nondeterministic_fields: vec![],
+            comparison_witnesses: vec![],
         }
     }
 
@@ -2724,6 +2897,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
             invariants: vec![ci],
             fingerprint: None,
             nondeterministic_fields: vec![],
+            comparison_witnesses: vec![],
         };
         // Populate a per-class invariant too
         spec.classes.push(SpecClass {
@@ -2789,6 +2963,7 @@ function detectLanguageID(x) {\n  if (x > 0) return 5;\n  return 0;\n}\n";
             invariants: vec![],
             fingerprint: None,
             nondeterministic_fields: vec![],
+            comparison_witnesses: vec![],
         };
 
         let yaml = format_spec_yaml(&spec).expect("yaml serialization should succeed");

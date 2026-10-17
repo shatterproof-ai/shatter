@@ -537,6 +537,7 @@ mod tests {
             invariants: vec![],
             fingerprint: None,
             nondeterministic_fields: vec![],
+            comparison_witnesses: vec![],
         }
     }
 
@@ -1307,6 +1308,17 @@ mod tests {
     fn round_trip(spec: &FunctionSpec) -> FunctionSpec {
         let json = serde_json::to_string(spec).expect("serialize spec");
         serde_json::from_str(&json).expect("deserialize spec")
+    }
+
+    #[test]
+    fn witnesses_do_not_change_diff_output_in_this_slice() {
+        let old = round_trip(&spec_from_observations("f", &[(1, 1), (2, 2)]));
+        let new = round_trip(&spec_from_observations("f", &[(1, 1), (2, 4)]));
+        let mut old_bare = old.clone();
+        let mut new_bare = new.clone();
+        old_bare.comparison_witnesses.clear();
+        new_bare.comparison_witnesses.clear();
+        assert_eq!(diff_specs(&old, &new), diff_specs(&old_bare, &new_bare));
     }
 
     #[test]
