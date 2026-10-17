@@ -1311,6 +1311,17 @@ mod tests {
     }
 
     #[test]
+    fn witnesses_do_not_change_diff_output_in_this_slice() {
+        let old = round_trip(&spec_from_observations("f", &[(1, 1), (2, 2)]));
+        let new = round_trip(&spec_from_observations("f", &[(1, 1), (2, 4)]));
+        let mut old_bare = old.clone();
+        let mut new_bare = new.clone();
+        old_bare.comparison_witnesses.clear();
+        new_bare.comparison_witnesses.clear();
+        assert_eq!(diff_specs(&old, &new), diff_specs(&old_bare, &new_bare));
+    }
+
+    #[test]
     fn population_shift_identity_function_is_not_a_regression() {
         // Baseline observes (1 -> 1), (2 -> 2); pick_simplest selects [1] as
         // canonical. Candidate observes only (2 -> 2); canonical becomes

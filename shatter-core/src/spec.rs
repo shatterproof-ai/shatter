@@ -249,7 +249,9 @@ pub enum FileSpecBundleStatus {
 /// `version == 0`, distinguishing legacy/unversioned output from `v1`.
 ///
 /// - v1: initial versioned spec bundle (str-12us).
-pub const SPEC_SCHEMA_VERSION: u32 = 1;
+/// - v2: `FunctionSpec.comparison_witnesses` — every observed execution is
+///   retained as comparison evidence; absent/empty in legacy bundles (str-wztht).
+pub const SPEC_SCHEMA_VERSION: u32 = 2;
 
 /// Per-file spec bundle: all function specs from a single source file.
 ///
@@ -335,13 +337,15 @@ pub struct FunctionSpec {
 ///
 /// Carries the inputs, supplied mocks, branch path and outcome, plus the
 /// recorded context needed to reject known-incomparable observations.
-/// Unrelated performance counters are deliberately excluded.
+/// Unrelated performance counters are deliberately excluded, which is why this
+/// is a separate type rather than a reuse of `ConcreteExample` (one canonical
+/// display example) or `ExecutionRecord` (carries perf data).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComparisonWitness {
     pub inputs: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mocks: Vec<crate::protocol::MockConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub branch_path: Vec<crate::execution_record::BranchDecision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_value: Option<serde_json::Value>,
@@ -722,8 +726,8 @@ pub fn format_file_spec_json(bundles: &[FileSpecBundle]) -> Result<String, serde
 // These private structs mirror FunctionSpec / SpecClass / FileSpecBundle but
 // use Vec<SpecInvariant> for the invariants fields so that YAML output shows
 // human-friendly property descriptions instead of raw ClassifiedInvariant data.
-// They are Serialize-only (no Deserialize) — the JSON / binary representations
-// of FunctionSpec are unchanged.
+// They are Serialize-only (no Deserialize). `comparison_witnesses` is machine
+// evidence for spec diff and is intentionally omitted from the YAML view.
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -1071,9 +1075,6 @@ fn format_value_short(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::equivalence::group_into_classes;
-    use crate::execution_record::BranchDecision;
-    use crate::protocol::ExecuteResult;
 
     fn witness_spec(pairs: &[(i64, i64)]) -> FunctionSpec {
         let raw_results: Vec<_> = pairs
@@ -1140,6 +1141,25 @@ mod tests {
     }
 
     #[test]
+    fn bundle_file_round_trip_preserves_witnesses() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("spec.json");
+        let bundle = FileSpecBundle {
+            file: "f.ts".to_string(),
+            functions: vec![witness_spec(&[(2, 2), (2, 4)])],
+            ..FileSpecBundle::default()
+        };
+        write_file_spec_bundle(&bundle, &path).expect("write");
+        let back = read_file_spec_bundle(&path).expect("read");
+        assert_eq!(back.version, SPEC_SCHEMA_VERSION);
+        assert_eq!(back.functions[0].comparison_witnesses.len(), 2);
+        assert_eq!(
+            back.functions[0].comparison_witnesses,
+            bundle.functions[0].comparison_witnesses
+        );
+    }
+
+    #[test]
     fn legacy_spec_json_without_witnesses_loads_empty() {
         let mut value = serde_json::to_value(witness_spec(&[(1, 1)])).unwrap();
         value.as_object_mut().unwrap().remove("comparison_witnesses");
@@ -1177,8 +1197,11 @@ mod tests {
         let wire = serde_json::to_value(w).unwrap();
         assert!(wire.get("performance").is_none());
     }
-    use crate::equivalence::{BranchPath, BranchStep, EquivalenceClass, Precondition};
-    use crate::execution_record::ErrorInfo;
+    use crate::equivalence::{
+        group_into_classes, BranchPath, BranchStep, EquivalenceClass, Precondition,
+    };
+    use crate::execution_record::{BranchDecision, ErrorInfo};
+    use crate::protocol::ExecuteResult;
     use crate::explorer::ObservationOutput;
     use serde_json::json;
 
